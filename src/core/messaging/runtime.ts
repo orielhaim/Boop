@@ -1,5 +1,6 @@
 import type { NDKRelay, NDKSigner } from "@nostr-dev-kit/ndk";
 import type { MessagingRepository } from "@/db/messaging";
+import { type CallSignal, callSignalKind } from "../calling/signals";
 import { publicKeySchema } from "../identity/keys";
 import { createMessagingRelays } from "../nostr/messaging-relays";
 import { secureRelays } from "../nostr/relays";
@@ -35,6 +36,7 @@ export function createMessagingService({
   const publicKey = signer.userSync.pubkey;
   const transport = createMessagingRelays(signer);
   const listeners = new Set<() => void>();
+  const callListeners = new Set<(signal: CallSignal) => void>();
   let status: MessagingStatus = "disabled";
   let generation = 0;
   let configured: NDKRelay[] = [];
@@ -149,7 +151,10 @@ export function createMessagingService({
               if (session !== generation) return;
               const event = await unwrapPrivateEvent(wrapped, signer);
               if (!event || session !== generation) return;
-              if (event.type === "reaction") {
+              if (event.type === "call") {
+                if (event.recipientKey === publicKey)
+                  for (const listener of callListeners) listener(event.signal);
+              } else if (event.type === "reaction") {
                 chat.receiveReaction({
                   peerKey: event.peerKey,
                   eventId: event.id,
@@ -232,6 +237,27 @@ export function createMessagingService({
       return connectedRelays().length === 0 ? "interrupted" : "relay-rejected";
     }
     return "accepted";
+  }
+
+  async function sendCall(signal: CallSignal, active: () => boolean) {
+    const session = generation;
+    const live = () =>
+      active() && session === generation && Date.now() < signal.expiresAt;
+    if (!live() || connectedRelays().length === 0) return false;
+    const urls = await transport.findInbox(
+      signal.recipientKey,
+      connectedRelays(),
+    );
+    if (!live() || !urls.length) return false;
+    const rumor = createRumor({
+      kind: callSignalKind,
+      pubkey: publicKey,
+      content: JSON.stringify(signal),
+      tags: [["p", signal.recipientKey]],
+      created_at: signal.createdAt / 1_000,
+    });
+    const envelope = await transport.wrap(rumor, signal.recipientKey);
+    return live() && transport.publish(envelope, urls, live);
   }
 
   async function storeSenderCopy(rumor: Rumor, session: number) {
@@ -399,6 +425,13 @@ export function createMessagingService({
     send,
     retry,
     toggleReaction,
+    sendCall,
+    subscribeCalls: (listener: (signal: CallSignal) => void) => {
+      callListeners.add(listener);
+      return () => {
+        callListeners.delete(listener);
+      };
+    },
     getStatus: () => status,
     subscribeStatus: (listener: () => void) => {
       listeners.add(listener);

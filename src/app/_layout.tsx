@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import { CallIndicator } from "@/components/calls/call-indicator";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { Action, Ink } from "@/components/ui/kit";
 import {
@@ -91,7 +92,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
             <Stack.Screen
               name="call/[key]"
-              options={{ title: "Call", presentation: "modal" }}
+              options={{ headerShown: false, presentation: "card" }}
             />
             <Stack.Screen name="chat/[key]" options={{ headerShown: false }} />
             <Stack.Screen name="contact/[key]" options={{ title: "Contact" }} />
@@ -112,6 +113,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
               options={{ title: "Settings" }}
             />
           </Stack>
+          <CallIndicator />
         </LocalContext.Provider>
       ) : (
         <View style={[styles.boot, { backgroundColor: colors.background }]}>

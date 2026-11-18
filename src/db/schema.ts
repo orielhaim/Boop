@@ -89,9 +89,21 @@ export const callHistory = sqliteTable("call_history", {
   peerKey: text("peer_key").notNull(),
   direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
   outcome: text({
-    enum: ["answered", "missed", "rejected", "failed"],
+    enum: [
+      "answered",
+      "completed",
+      "missed",
+      "rejected",
+      "failed",
+      "cancelled",
+      "busy",
+      "unanswered",
+      "remote-disconnected",
+    ],
   }).notNull(),
   startedAt: integer("started_at").notNull(),
+  answeredAt: integer("answered_at"),
+  endedAt: integer("ended_at"),
   durationSeconds: integer("duration_seconds").notNull().default(0),
 });
 

@@ -3,7 +3,6 @@ import NDK, {
   NDKEvent,
   type NDKFilter,
   NDKRelay,
-  NDKRelayAuthPolicies,
   NDKRelaySet,
   NDKRelayStatus,
   type NDKSigner,
@@ -22,6 +21,7 @@ const connected = (relay: NDKRelay) => relay.status >= NDKRelayStatus.CONNECTED;
 
 export function createMessagingRelays(signer: NDKSigner) {
   const ndk = new NDK({
+    signer,
     enableOutboxModel: false,
     autoConnectUserRelays: false,
   });
@@ -29,11 +29,10 @@ export function createMessagingRelays(signer: NDKSigner) {
   const known = new Map<string, NDKRelay>();
   const publishing = new Map<NDKRelay, number>();
   const discoveryRequests = new Set<() => void>();
-  const signIn = NDKRelayAuthPolicies.signIn({ signer });
-  const auth: NDKAuthPolicy = async (relay, challenge) => {
-    if (!configured.has(relay.url)) return undefined;
-    return signIn(relay, challenge);
-  };
+  // NDK 3.0.3 handles a relay rejecting AUTH on its boolean policy path.
+  // Its signed-event policy path leaves the same rejection unhandled.
+  const auth: NDKAuthPolicy = async (relay) =>
+    configured.has(relay.url) ? true : undefined;
 
   function getRelay(url: string) {
     let relay = known.get(url);
@@ -63,7 +62,9 @@ export function createMessagingRelays(signer: NDKSigner) {
   function unconfigure(relay: NDKRelay) {
     configured.delete(relay.url);
     disconnect(relay);
-    ndk.pool.removeRelay(relay.url);
+    // NDK 3.0.3 leaves its connect listeners attached after removeRelay.
+    // Keep the reusable relay registered. Boop controls its connection and
+    // passes an explicit set of enabled relays to each subscription.
   }
 
   function subscription(

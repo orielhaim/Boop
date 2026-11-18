@@ -2,7 +2,7 @@ import { Host, Switch } from "@expo/ui";
 import * as Clipboard from "expo-clipboard";
 import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import { Alert, StyleSheet, useWindowDimensions, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import {
   GlassSegmentedControl,
@@ -24,8 +24,8 @@ import {
   Screen,
   Section,
 } from "@/components/ui/kit";
+import { PermissionSettings } from "@/components/ui/permission-settings";
 import { RelaySettings } from "@/components/ui/relay-settings";
-import { checkNativeCalling } from "@/core/calling/native-check";
 import { setPreference } from "@/db/queries";
 import { useLocal } from "@/services/local";
 import { themes, useAppPreferences } from "@/stores/preferences";
@@ -33,7 +33,7 @@ import { radius, space, useTheme } from "@/theme";
 
 export default function Settings() {
   const { qr: showQr } = useLocalSearchParams<{ qr?: string }>();
-  const { db, identity, chat } = useLocal();
+  const { db, identity, chat, calling, messaging } = useLocal();
   const { theme, colors } = useTheme();
   const selected = useAppPreferences((state) => state.theme);
   const haptics = useAppPreferences((state) => state.haptics);
@@ -55,6 +55,7 @@ export default function Settings() {
 
   return (
     <Screen>
+      <Section>Identity</Section>
       <Hero>
         <View style={styles.identity}>
           <Avatar name="Boop" size="xl" />
@@ -98,13 +99,10 @@ export default function Settings() {
           </View>
         </GlassSheetContent>
       </GlassSheet>
-      <Section>Preferences</Section>
+      <Section>Appearance and feedback</Section>
       <Card>
         <View style={styles.preference}>
-          <View style={layout.row}>
-            <Icon name="chat" />
-            <Ink kind="label">Appearance</Ink>
-          </View>
+          <Ink kind="label">Theme</Ink>
           <GlassSegmentedControl
             value={selected}
             accessibilityLabel="Theme"
@@ -149,10 +147,12 @@ export default function Settings() {
           </Host>
         </View>
       </Card>
-      <Section>Network</Section>
+      <Section>Connections</Section>
       <Card>
         <RelaySettings />
       </Card>
+      <Section>Permissions</Section>
+      <PermissionSettings />
       {__DEV__ ? (
         <>
           <Section>Development</Section>
@@ -201,7 +201,24 @@ export default function Settings() {
             onPress={async () => {
               setChecking(true);
               try {
-                setNotice(await checkNativeCalling());
+                const { checkNativeCalling } =
+                  await import("@/core/calling/native-check");
+                const call = calling.store.getState().call;
+                const media = await calling.inspect()?.catch(() => undefined);
+                const status = [
+                  await checkNativeCalling(),
+                  `Call state: ${call?.phase ?? "idle"}. Inbox transport: ${messaging.getStatus()}.`,
+                  call?.phase === "connected"
+                    ? `Audio output: ${call.routing.selected ?? "system managed"}.`
+                    : "",
+                  media
+                    ? `ICE: ${media.ice}. Microphone: ${media.microphone ? "on" : "off"}. Remote audio track: ${media.remoteTrack ? "present" : "absent"}. Audio RTP packets sent / received: ${media.sentPackets} / ${media.receivedPackets}.`
+                    : "",
+                  call?.phase === "ended" ? (call.reason ?? call.outcome) : "",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n");
+                Alert.alert("Calling diagnostics", status);
               } finally {
                 setChecking(false);
               }

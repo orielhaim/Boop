@@ -1,33 +1,20 @@
 import { NativeModules } from "react-native";
-import { missingTrysteroCapabilities } from "./transport";
+import { initializeCallingRuntime } from "./trystero";
 
 export async function checkNativeCalling() {
-  let webRTC = "Native WebRTC could not create a local peer connection.";
-  let peerConnectionClass: unknown;
   try {
-    const { RTCPeerConnection } = await import("react-native-webrtc");
-    peerConnectionClass = RTCPeerConnection;
-    const peer = new RTCPeerConnection({ iceServers: [] });
-    peer.close();
-    webRTC = "Native WebRTC opened and closed a local peer connection.";
+    const { RTCPeerConnection } = await initializeCallingRuntime();
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new Uint8Array([1]),
+    );
+    if (digest.byteLength !== 32) throw new Error("Unexpected SHA-256 length");
+    const connection = new RTCPeerConnection({ iceServers: [] });
+    connection.close();
+    return typeof NativeModules.InCallManager?.start === "function"
+      ? "WebCrypto SHA-256, local WebRTC, and InCallManager are available."
+      : "WebCrypto and local WebRTC are available. Native call audio is missing.";
   } catch {
-    // Keep native exception details out of this diagnostic screen.
+    return "The local WebCrypto or WebRTC runtime could not start.";
   }
-
-  const missing = missingTrysteroCapabilities({
-    crypto: globalThis.crypto,
-    RTCPeerConnection: peerConnectionClass,
-    WebSocket: globalThis.WebSocket,
-    TextEncoder: globalThis.TextEncoder,
-    TextDecoder: globalThis.TextDecoder,
-  });
-  return [
-    webRTC,
-    typeof NativeModules.InCallManager?.start === "function"
-      ? "InCallManager is linked. Audio routing remains untested."
-      : "InCallManager is unavailable.",
-    missing.length > 0
-      ? `Missing Trystero APIs: ${missing.join(", ")}.`
-      : "Required API names are present. Trystero rooms and audio still need device testing.",
-  ].join("\n");
 }

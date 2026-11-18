@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { type Filter, matchFilters } from "nostr-tools/filter";
 import type { Event } from "nostr-tools/pure";
 import { z } from "zod";
+import type { CallSignal } from "../src/core/calling/signals";
 import { verifiedEvent } from "../src/core/messaging/nip17";
 import { createMessagingService } from "../src/core/messaging/runtime";
 import { createMessagingRepository } from "../src/db/messaging";
@@ -238,6 +239,38 @@ async function runScenario(tlsDirectory: string) {
     }
     if (alice.chat.conversation(bob.key)?.unread !== 1)
       throw new Error("Incorrect unread count");
+
+    const callSignals: CallSignal[] = [];
+    const stopCalls = bob.service.subscribeCalls((signal) =>
+      callSignals.push(signal),
+    );
+    const stamp = Math.floor(Date.now() / 1000) * 1000;
+    const signal = {
+      type: "call.invite",
+      version: 1,
+      callId: "ab".repeat(32),
+      nonce: "01".repeat(32),
+      roomId: "02".repeat(32),
+      roomSecret: "03".repeat(32),
+      senderKey: alice.key,
+      recipientKey: bob.key,
+      createdAt: stamp,
+      expiresAt: stamp + 30_000,
+    } satisfies CallSignal;
+    if (!(await alice.service.sendCall(signal, () => true))) {
+      throw new Error("Relay rejected the call invitation");
+    }
+    await wait("encrypted call invitation", () =>
+      callSignals.some(
+        (event) =>
+          event.type === "call.invite" &&
+          event.roomSecret === signal.roomSecret,
+      ),
+    );
+    stopCalls();
+    if (bob.chat.history(alice.key).messages.length !== 2) {
+      throw new Error("Call signaling leaked into chat history");
+    }
     if (
       [...events.values()].some(
         ({ kind, content }) =>
@@ -310,7 +343,7 @@ async function runScenario(tlsDirectory: string) {
     );
 
     console.log(
-      "TLS relay verified offline send, live receive, relay acknowledgment, encrypted replies and reactions, sender deduplication, catch-up, automatic reconnect, and stable retries without an inbox fallback.",
+      "TLS relay verified live encrypted messaging and call control, sender deduplication, catch-up, reconnect, and stable retries without an inbox fallback.",
     );
   } finally {
     alice.service.stop();

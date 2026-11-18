@@ -7,6 +7,11 @@ import {
 } from "@nostr-dev-kit/ndk";
 import { getEventHash, verifyEvent } from "nostr-tools/pure";
 import { z } from "zod";
+import {
+  type CallSignal,
+  callSignalKind,
+  parseCallSignal,
+} from "../calling/signals";
 import { publicKeySchema } from "../identity/keys";
 
 export const messageKind = 14;
@@ -26,7 +31,11 @@ const event = z.object({
 });
 const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
 const rumorSchema = event.extend({
-  kind: z.union([z.literal(messageKind), z.literal(reactionKind)]),
+  kind: z.union([
+    z.literal(messageKind),
+    z.literal(reactionKind),
+    z.literal(callSignalKind),
+  ]),
   sig: z.undefined().optional(),
 });
 
@@ -42,6 +51,7 @@ export type PrivateEvent = {
 } & (
   | { type: "message"; body: string; replyTo: string | null }
   | { type: "reaction"; emoji: string; targetEventId: string }
+  | { type: "call"; signal: CallSignal }
 );
 
 export function createRumor(core: RumorCore): Rumor {
@@ -131,6 +141,10 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     sentAt: rumor.created_at * 1_000,
   };
   if (base.sentAt > Date.now() + 5 * 60_000) return null;
+  if (rumor.kind === callSignalKind) {
+    const signal = parseCallSignal(rumor.content, base, Date.now());
+    return signal ? { ...base, type: "call", signal } : null;
+  }
   if (rumor.kind === reactionKind) {
     const emoji = parseReaction(rumor.content);
     return target && emoji

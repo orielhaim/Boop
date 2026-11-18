@@ -17,7 +17,6 @@ import {
   Section,
 } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
-import { toNpub } from "@/core/identity/keys";
 import { nameOrAddress, useContacts } from "@/db/contacts";
 import { callList } from "@/db/queries";
 import { useLocal } from "@/services/local";
@@ -30,9 +29,14 @@ const timeFormat = new Intl.DateTimeFormat(getLocales()[0]?.languageTag, {
 
 const outcomes = {
   answered: "Answered",
+  completed: "Completed",
   missed: "Missed",
   rejected: "Declined",
-  failed: "Call unavailable",
+  failed: "Connection failed",
+  cancelled: "Cancelled",
+  busy: "Busy",
+  unanswered: "No answer",
+  "remote-disconnected": "Connection lost",
 };
 
 function call(key: string) {
@@ -91,39 +95,29 @@ export default function Calls() {
         <Card>
           {calls.map((entry) => {
             const name = nameOrAddress(entry.name, entry.peerKey);
-            const unsuccessful = entry.outcome !== "answered";
+            const unsuccessful =
+              entry.outcome !== "answered" && entry.outcome !== "completed";
             return (
               <Row
                 key={entry.id}
                 title={name}
                 leading={<Avatar name={name} uri={entry.avatarUrl} />}
+                leadingAction={{
+                  label: `Open profile for ${name}`,
+                  onPress: () =>
+                    router.push({
+                      pathname: "/contact/[key]",
+                      params: { key: entry.peerKey },
+                    }),
+                }}
                 detail={`${outcomes[entry.outcome]} · ${timeFormat.format(entry.startedAt)}`}
-                onPress={entry.name ? () => call(entry.peerKey) : undefined}
+                accessibilityLabel={`Call ${name}`}
+                onPress={() => call(entry.peerKey)}
                 trailing={
-                  entry.name ? (
-                    <Icon
-                      name={unsuccessful ? "missed" : entry.direction}
-                      color={unsuccessful ? colors.danger : colors.accent}
-                    />
-                  ) : (
-                    <View style={styles.recentActions}>
-                      <IconButton
-                        icon="person"
-                        label={`Save ${name} as a contact`}
-                        onPress={() =>
-                          router.push({
-                            pathname: "/contact/new",
-                            params: { address: toNpub(entry.peerKey) },
-                          })
-                        }
-                      />
-                      <IconButton
-                        icon="phone"
-                        label={`Call ${name}`}
-                        onPress={() => call(entry.peerKey)}
-                      />
-                    </View>
-                  )
+                  <Icon
+                    name={unsuccessful ? "missed" : entry.direction}
+                    color={unsuccessful ? colors.danger : colors.accent}
+                  />
                 }
               />
             );
@@ -149,5 +143,4 @@ const styles = StyleSheet.create({
     gap: space.xs,
     borderRadius: radius.input,
   },
-  recentActions: { flexDirection: "row", gap: space.xs },
 });

@@ -260,77 +260,33 @@ Do not falsely display delivery or read receipts. Relay acknowledgment is not re
 
 Group chats, media attachments, voice messages, and advanced synchronization are future features.
 
-## 7. Calling Architecture
+## 7. Calling architecture
 
-Calls use two separate mechanisms:
+Boop supports one foreground voice call per identity. The application-level controller in `src/core/calling/controller.ts` owns each call and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
 
-**Nostr:** An encrypted, authenticated call invitation and signaling channel.
+### Private call control
 
-**Trystero:** Peer connection establishment and WebRTC audio transport.
+`src/core/calling/signals.ts` defines seven version 1 signals: invite, ringing, accept, reject, cancel, busy, and end. Each signal carries the caller or responder's public key, the recipient's public key, a call ID, a random nonce, a creation timestamp, and an expiration timestamp. Invites also carry a random room ID and a 256-bit room password. The maximum signal lifetime is 35 seconds.
 
-Only one-to-one audio calls are required initially.
+The messaging service sends inner kind 24880 rumors through the existing NIP-17 inbox discovery and NIP-44/NIP-59 envelope code. The dispatcher verifies the outer event and seal, checks the inner event hash and signer, then validates the inner payload. Call events go to the call controller and make no chat rows or unread changes. Relay acknowledgment indicates relay acceptance. Only the peer's authenticated ringing signal starts ringback.
 
-### Calling sequence
+### Direct media and identity
 
-1. The caller creates a random call ID and a high-entropy, one-time room secret.
-2. The caller sends an encrypted call invitation through Nostr.
-3. The recipient receives and validates the invitation while the application is active.
-4. The recipient can answer or reject.
-5. Upon acceptance, both devices establish the Trystero session.
-6. The peers authenticate the relationship between their WebRTC session and their Nostr identities.
-7. The audio stream starts.
-8. Either peer can end the call.
-9. All audio tracks, peer connections, subscriptions, and timers are cleaned up.
+`src/core/calling/trystero.ts` uses Trystero 0.27's Nostr strategy with a stable application ID, separate signaling sockets, a temporary identity, and a two-user room. React Native WebRTC provides peer connections, microphone capture, and native playback. Quick Crypto supplies WebCrypto. The adapter supplies the missing Promise and event registration APIs used by Trystero on React Native.
 
-### Security requirements
+Each peer challenges the other over the direct Trystero data channel. The signed Nostr proof binds the challenge, both identity keys, both Trystero peer IDs, the room and call IDs, and the actual WebRTC certificate fingerprints. The transport requires the expected signature before capturing or sending microphone audio. The caller attaches audio first to avoid overlapping WebRTC offers. The controller starts elapsed time after both peers confirm receiving an audio track.
 
-Trystero and Nostr use different cryptographic identity systems.
+### Lifecycle and audio
 
-A Trystero peer ID must **never** automatically be treated as proof of ownership of a Nostr public key.
+The controller tracks calling, ringing, incoming, connecting, connected, and terminal states. It bounds waits, ignores late responses, and suppresses duplicate and reordered invitations within their validity window. When both people call at the same time, the lower public key keeps its outgoing call. The other client takes the incoming call. Leaving the call screen preserves the session. Moving the app to the background stops the call.
 
-An authenticated handshake must bind the call ID, expected Nostr identity, and the actual session peer/connection to a verified signature.
+`src/core/calling/native-audio.ts` owns ringtone, ringback, audio focus, and route selection. On Android the selector uses InCallManager's native device list and current route events. On iOS the speaker override can be enabled or released, and AVAudioSession manages accessory routing. InCallManager controls proximity where the OS supports it. Muting disables the actual local audio tracks.
 
-Do not accept an unknown participant merely because they know the room ID.
+Hangup mutes the microphone immediately and sends an authenticated notice over the data channel and an encrypted end signal through Nostr. Terminal cleanup aborts pending work, stops tracks and tones, leaves the room, and releases the audio session. SQLite stores one final history entry per call ID, with the start, answer and end times, outcome, and connected duration. The migration keeps the original history rows.
 
-Treat signaling payloads as untrusted input. Validate their schemas, expiry, call IDs, and participants.
+### Background and network limits
 
-Call invitations must be short-lived, replay-resistant, and isolated per call.
-
-### Call state machine
-
-Use an explicit lifecycle:
-
-`idle → outgoing/incoming → ringing → connecting → active → ended/failed`
-
-Support cancellation and cleanup from every relevant state.
-
-Handle timeouts, rejected calls, remote disconnects, denied microphone permissions, and failed direct connectivity.
-
-### Background limitations
-
-The initial version supports calls only while the application is running and sufficiently active to receive Nostr events.
-
-Do not implement:
-
-- Push notifications
-- PushKit
-- Firebase Cloud Messaging
-- Background VoIP wake-up
-- OS-level incoming call registration
-
-No guaranteed incoming calls while the application is suspended or terminated.
-
-### Network limitations
-
-Prefer direct peer-to-peer connections.
-
-Do not deploy proprietary STUN/TURN services.
-
-Public STUN services may be used for ICE discovery. A TURN relay is not part of the initial architecture.
-
-If direct connectivity cannot be established, fail gracefully and show a useful explanation.
-
-Never claim that every pair of mobile networks can establish a direct connection.
+Both clients must be open and able to reach a compatible inbox relay. Suspended and terminated clients have no call wake-up mechanism. Direct ICE uses Trystero's supported recovery and public STUN. Networks that require a TURN relay can fail to connect. The call does not retry indefinitely.
 
 ## 8. Local Database
 

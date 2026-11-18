@@ -60,6 +60,7 @@ export function RelaySettings() {
   return (
     <>
       <View style={styles.controls}>
+        <Ink kind="label">Relays</Ink>
         <Ink kind="label" accessibilityLiveRegion="polite">
           {
             {

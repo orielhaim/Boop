@@ -3,113 +3,75 @@ import { z } from "zod";
 import { publicKeySchema } from "../identity/keys";
 
 export const opaqueId = z.string().regex(/^[0-9a-f]{64}$/);
-const timestamp = z.number().int().nonnegative();
-export const callInvitation = z.strictObject({
-  callId: opaqueId,
-  roomSecret: opaqueId,
-  caller: publicKeySchema,
-  recipient: publicKeySchema,
-  expiresAt: timestamp,
-});
-
-export type CallInvitation = z.infer<typeof callInvitation>;
-
-/** One gate per active identity. The caller first verifies the NIP-17 envelope. */
-export class IncomingInvitations {
-  #seen = new Map<string, number>();
-
-  accept(
-    input: unknown,
-    verifiedSender: string,
-    recipient: string,
-    now: number,
-  ) {
-    const invitation = validateInvitation(
-      input,
-      verifiedSender,
-      recipient,
-      now,
-    );
-    if (!invitation) return null;
-    for (const [id, expiresAt] of this.#seen) {
-      if (expiresAt <= now) this.#seen.delete(id);
-    }
-    const id = `${invitation.caller}:${invitation.callId}`;
-    if (this.#seen.has(id) || this.#seen.size >= 256) return null;
-    this.#seen.set(id, invitation.expiresAt);
-    return invitation;
-  }
-}
-
-function validateInvitation(
-  input: unknown,
-  verifiedSender: string,
-  recipient: string,
-  now: number,
-) {
-  const decoded = callInvitation.safeParse(input);
-  if (!decoded.success) return null;
-  const invitation = decoded.data;
-  if (
-    invitation.caller !== verifiedSender ||
-    invitation.recipient !== recipient ||
-    invitation.caller === recipient ||
-    invitation.expiresAt <= now ||
-    invitation.expiresAt - now > 60_000
-  )
-    return null;
-  return invitation;
-}
+export const proofKind = 20058;
 
 const proofEvent = z.strictObject({
   id: opaqueId,
   pubkey: publicKeySchema,
   sig: z.string().regex(/^[0-9a-f]{128}$/),
-  kind: z.literal(20058),
-  created_at: timestamp,
+  kind: z.literal(proofKind),
+  created_at: z.number().int().nonnegative(),
   tags: z.tuple([]),
-  content: z.string().max(1024),
+  content: z.string().max(4096),
 });
 
-export type PeerChallenge = {
-  callId: string;
-  challenge: string;
-  remotePeerId: string;
-  localPeerId: string;
-  expectedKey: string;
-  localKey: string;
+type Peer = {
+  id: string;
+  key: string;
+  sdp: string | undefined;
 };
+
+function fingerprints(sdp: string | undefined) {
+  const values = [
+    ...new Set(
+      sdp
+        ?.match(/^a=fingerprint:sha-256 [A-Fa-f0-9:]{95}\s*$/gm)
+        ?.map((line) => line.trim().toLowerCase()) ?? [],
+    ),
+  ].sort();
+  if (!values.length) throw new Error("Missing WebRTC fingerprint");
+  return values;
+}
+
+export function peerTranscript({
+  callId,
+  roomId,
+  challenge,
+  sender,
+  recipient,
+}: {
+  callId: string;
+  roomId: string;
+  challenge: string;
+  sender: Peer;
+  recipient: Peer;
+}) {
+  return JSON.stringify([
+    "boop-call-proof-v2",
+    callId,
+    roomId,
+    challenge,
+    sender.id,
+    recipient.id,
+    sender.key,
+    recipient.key,
+    fingerprints(sender.sdp),
+    fingerprints(recipient.sdp),
+  ]);
+}
 
 export function verifyPeerProof(
   input: unknown,
-  session: PeerChallenge,
-  nowSeconds: number,
+  expected: string,
+  signer: string,
+  seconds: number,
 ) {
-  const decoded = proofEvent.safeParse(input);
-  if (!decoded.success) return false;
-  const proof = decoded.data;
+  const proof = proofEvent.safeParse(input).data;
   return (
-    proof.pubkey === session.expectedKey &&
-    Math.abs(nowSeconds - proof.created_at) <= 60 &&
-    proof.content ===
-      JSON.stringify([
-        "boop-call-proof-v1",
-        session.callId,
-        session.challenge,
-        session.remotePeerId,
-        session.localPeerId,
-        session.expectedKey,
-        session.localKey,
-      ]) &&
+    !!proof &&
+    proof.pubkey === signer &&
+    proof.content === expected &&
+    Math.abs(seconds - proof.created_at) <= 30 &&
     verifyEvent(proof)
   );
-}
-
-export interface CallSignaling {
-  invite(invitation: CallInvitation): Promise<void>;
-  respond(
-    callId: string,
-    peerKey: string,
-    response: "accepted" | "rejected" | "cancelled",
-  ): Promise<void>;
 }

@@ -51,6 +51,8 @@ const icons = {
   outgoing: { ios: "arrow.up.right", android: "north_east" },
   incoming: { ios: "arrow.down.left", android: "south_west" },
   missed: { ios: "phone.down.fill", android: "call_missed" },
+  hangup: { ios: "xmark", android: "close" },
+  audio: { ios: "headphones", android: "headphones" },
   qr: { ios: "qrcode.viewfinder", android: "qr_code_scanner" },
   copy: { ios: "document.on.document", android: "content_copy" },
   send: { ios: "arrow.up", android: "arrow_upward" },
@@ -162,7 +164,7 @@ export function IconButton({
   );
 }
 
-function tapFeedback() {
+export function tapFeedback() {
   if (useAppPreferences.getState().haptics)
     void Haptics.selectionAsync().catch(() => {});
 }
@@ -341,37 +343,82 @@ export function Empty({
 
 export function Row({
   leading,
+  leadingAction,
   title,
   detail,
   trailing,
   onPress,
+  accessibilityLabel,
   expanded,
 }: {
   leading?: ReactNode;
+  leadingAction?: { label: string; onPress: () => void };
   title: string;
   detail?: string;
   trailing?: ReactNode;
   onPress?: () => void;
+  accessibilityLabel?: string;
   expanded?: boolean;
 }) {
   const { colors } = useTheme();
+  const copy = (
+    <View style={styles.rowCopy}>
+      <Ink kind="label">{title}</Ink>
+      {detail ? (
+        <Ink kind="caption" muted numberOfLines={2}>
+          {detail}
+        </Ink>
+      ) : null}
+    </View>
+  );
+  if (leadingAction) {
+    return (
+      <View style={styles.row}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={leadingAction.label}
+          onPress={leadingAction.onPress}
+          style={({ pressed }) => [
+            styles.rowLeading,
+            pressed && { opacity: 0.7 },
+          ]}
+        >
+          {leading}
+        </Pressable>
+        {onPress ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel}
+            accessibilityHint={detail}
+            onPress={onPress}
+            style={({ pressed }) => [
+              styles.rowAction,
+              pressed && { backgroundColor: colors.accentSoft },
+            ]}
+          >
+            {copy}
+            {trailing}
+          </Pressable>
+        ) : (
+          <>
+            {copy}
+            {trailing}
+          </>
+        )}
+      </View>
+    );
+  }
   const content = (
     <>
       {leading}
-      <View style={styles.rowCopy}>
-        <Ink kind="label">{title}</Ink>
-        {detail ? (
-          <Ink kind="caption" muted numberOfLines={2}>
-            {detail}
-          </Ink>
-        ) : null}
-      </View>
+      {copy}
       {trailing}
     </>
   );
   return onPress ? (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={expanded === undefined ? undefined : { expanded }}
       onPress={onPress}
       style={({ pressed }) => [
@@ -441,4 +488,18 @@ const styles = StyleSheet.create({
     gap: space.md,
   },
   rowCopy: { flex: 1, gap: 2 },
+  rowLeading: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rowAction: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    borderRadius: radius.input,
+  },
 });

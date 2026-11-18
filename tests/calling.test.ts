@@ -1,0 +1,371 @@
+import { expect, test } from "bun:test";
+import NDK, { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { finalizeEvent } from "nostr-tools/pure";
+import {
+  type CallMedia,
+  type CallRecord,
+  createCallController,
+  type OpenMedia,
+} from "../src/core/calling/controller";
+import {
+  peerTranscript,
+  proofKind,
+  verifyPeerProof,
+} from "../src/core/calling/protocol";
+import {
+  type CallSignal,
+  callSignalKind,
+  type InviteSignal,
+  parseCallSignal,
+} from "../src/core/calling/signals";
+import {
+  createRumor,
+  unwrapPrivateEvent,
+  wrapRumor,
+} from "../src/core/messaging/nip17";
+
+const caller = new NDKPrivateKeySigner("01".repeat(32));
+const callee = new NDKPrivateKeySigner("02".repeat(32));
+const third = new NDKPrivateKeySigner("03".repeat(32));
+const id = (n: number) => n.toString(16).padStart(64, "0");
+
+function invitation(now: number): InviteSignal {
+  const createdAt = Math.floor(now / 1000) * 1000;
+  return {
+    version: 1,
+    type: "call.invite",
+    callId: id(1),
+    nonce: id(2),
+    roomId: id(3),
+    roomSecret: id(4),
+    senderKey: caller.pubkey,
+    recipientKey: callee.pubkey,
+    createdAt,
+    expiresAt: createdAt + 35000,
+  };
+}
+
+test("signed NIP-59 call rumor reaches only its intended inbox, expires, and stays outside chat", async () => {
+  const invite = invitation(Date.now());
+  const rumor = createRumor({
+    kind: callSignalKind,
+    pubkey: invite.senderKey,
+    content: JSON.stringify(invite),
+    tags: [["p", invite.recipientKey]],
+    created_at: invite.createdAt / 1000,
+  });
+  const wrapped = await wrapRumor(new NDK(), rumor, callee.pubkey, caller);
+  expect(wrapped.rawEvent().kind).toBe(1059);
+  expect(wrapped.rawEvent().content).not.toContain(invite.roomSecret);
+  expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toMatchObject({
+    type: "call",
+    signal: invite,
+  });
+  expect(await unwrapPrivateEvent(wrapped.rawEvent(), third)).toBeNull();
+  const envelope = {
+    senderKey: caller.pubkey,
+    recipientKey: callee.pubkey,
+    sentAt: invite.createdAt,
+  };
+  expect(parseCallSignal(rumor.content, envelope, invite.expiresAt)).toBeNull();
+  expect(
+    parseCallSignal(
+      rumor.content,
+      { ...envelope, senderKey: third.pubkey },
+      invite.createdAt,
+    ),
+  ).toBeNull();
+  expect(
+    parseCallSignal(
+      JSON.stringify({ ...invite, extra: true }),
+      envelope,
+      invite.createdAt,
+    ),
+  ).toBeNull();
+});
+
+test("proof binds both actual certificate fingerprints, identities, fresh challenge and room", () => {
+  const fingerprint = (hex: string) =>
+    `a=fingerprint:sha-256 ${Array.from({ length: 32 }, () => hex).join(":")}`;
+  const challenge = {
+    callId: id(1),
+    roomId: id(3),
+    challenge: id(9),
+    sender: { id: "boop-one", key: caller.pubkey, sdp: fingerprint("AA") },
+    recipient: { id: "boop-two", key: callee.pubkey, sdp: fingerprint("BB") },
+  };
+  const expected = peerTranscript(challenge);
+  const proof = finalizeEvent(
+    { kind: proofKind, created_at: 1000, tags: [], content: expected },
+    new Uint8Array(32).fill(1),
+  );
+  expect(verifyPeerProof(proof, expected, caller.pubkey, 1000)).toBe(true);
+  for (const changed of [
+    { ...challenge, roomId: id(13) },
+    { ...challenge, challenge: id(15) },
+    { ...challenge, sender: { ...challenge.sender, sdp: fingerprint("AB") } },
+    {
+      ...challenge,
+      recipient: { ...challenge.recipient, sdp: fingerprint("AC") },
+    },
+    { ...challenge, recipient: { ...challenge.recipient, id: "reconnect" } },
+  ])
+    expect(
+      verifyPeerProof(proof, peerTranscript(changed), caller.pubkey, 1000),
+    ).toBe(false);
+  expect(verifyPeerProof(proof, expected, caller.pubkey, 1031)).toBe(false);
+});
+
+function pair(
+  openMedia?: OpenMedia,
+  connectTimeout?: number,
+  acceptAcknowledgment?: Promise<boolean>,
+) {
+  const events: CallSignal[] = [];
+  const records: CallRecord[] = [];
+  const closed: string[] = [];
+  let nonce = 20;
+  let clock = 1_700_000_000_000;
+  const build = (localKey: string) =>
+    createCallController({
+      localKey,
+      randomId: () => id(nonce++),
+      send: async (signal) => {
+        events.push(signal);
+        if (signal.type === "call.accept" && acceptAcknowledgment)
+          return acceptAcknowledgment;
+        return true;
+      },
+      openMedia:
+        openMedia ??
+        (async () => ({
+          close: () => closed.push(localKey),
+          mute() {},
+          async route() {},
+        })),
+      record: (entry) => records.push(entry),
+      tone() {},
+      now: () => clock,
+      connectTimeout,
+    });
+  const a = build(caller.pubkey);
+  const b = build(callee.pubkey);
+  a.setForeground(true);
+  b.setForeground(true);
+  const deliver = () => {
+    for (const event of events.splice(0)) {
+      (event.recipientKey === caller.pubkey ? a : b).receive(event);
+    }
+  };
+  return {
+    a,
+    b,
+    deliver,
+    events,
+    records,
+    closed,
+    advance: (ms: number) => {
+      clock += ms;
+    },
+  };
+}
+
+test("answer starts transport while waiting for relay acknowledgment and closes it when publication fails", async () => {
+  const acknowledgment = Promise.withResolvers<boolean>();
+  let started = false;
+  let closed = false;
+  const { a, b, deliver } = pair(
+    async () => {
+      started = true;
+      return {
+        close: () => {
+          closed = true;
+        },
+        mute() {},
+        async route() {},
+      };
+    },
+    undefined,
+    acknowledgment.promise,
+  );
+  try {
+    a.dial(callee.pubkey);
+    deliver();
+    b.accept();
+    expect(started).toBe(true);
+    expect(b.store.getState().call?.phase).toBe("connecting");
+    acknowledgment.resolve(false);
+    await Bun.sleep(0);
+    expect(closed).toBe(true);
+    expect(b.store.getState().call).toMatchObject({
+      phase: "ended",
+      outcome: "failed",
+    });
+  } finally {
+    acknowledgment.resolve(false);
+    a.end();
+    b.end();
+  }
+});
+
+test("ringing waits for recipient, connected waits for media, and remote hangup records once", async () => {
+  const { a, b, deliver, advance, records, closed } = pair();
+  a.dial(callee.pubkey);
+  expect(a.store.getState().call?.phase).toBe("outgoing");
+  deliver();
+  expect(b.store.getState().call?.phase).toBe("incoming");
+  deliver();
+  expect(a.store.getState().call?.phase).toBe("ringing");
+  b.accept();
+  expect(b.store.getState().call?.phase).toBe("connecting");
+  deliver();
+  expect(a.store.getState().call?.phase).toBe("connecting");
+  await Bun.sleep(0);
+  expect(a.store.getState().call?.phase).toBe("connected");
+  expect(b.store.getState().call?.phase).toBe("connected");
+  advance(5100);
+  a.end();
+  a.end();
+  deliver();
+  expect(
+    records.map(({ outcome, durationSeconds }) => [outcome, durationSeconds]),
+  ).toEqual([
+    ["completed", 5],
+    ["completed", 5],
+  ]);
+  expect(closed).toHaveLength(2);
+});
+
+test("late acceptance and reordered invitations do not restart cancelled calls", () => {
+  const { a, b, events, deliver, records } = pair();
+  a.dial(callee.pubkey);
+  const invite = events.shift();
+  if (invite?.type !== "call.invite") throw new Error("No invitation");
+  a.end();
+  deliver();
+  b.receive(invite);
+  b.receive(invite);
+  const { roomId: _room, roomSecret: _secret, ...details } = invite;
+  a.receive({
+    ...details,
+    type: "call.accept",
+    senderKey: callee.pubkey,
+    recipientKey: caller.pubkey,
+  });
+  expect(a.store.getState().call).toMatchObject({
+    phase: "ended",
+    outcome: "cancelled",
+  });
+  expect(b.store.getState().call).toBeNull();
+  expect(records).toHaveLength(1);
+});
+
+test("duplicates, Busy, and Decline preserve the first incoming call", () => {
+  const { a, b, deliver, events, records } = pair();
+  a.dial(callee.pubkey);
+  const invite = events.at(0);
+  if (invite?.type !== "call.invite") throw new Error("No invitation");
+  deliver();
+  b.receive(invite);
+  b.receive({ ...invite, callId: id(99), senderKey: third.pubkey });
+  expect(events.map((event) => event.type)).toEqual([
+    "call.ringing",
+    "call.busy",
+  ]);
+  events.pop();
+  deliver();
+  b.end();
+  deliver();
+  expect(records.map(({ outcome }) => outcome)).toEqual([
+    "rejected",
+    "rejected",
+  ]);
+});
+
+test("crossed calls choose one room deterministically", () => {
+  const { a, b, deliver } = pair();
+  a.dial(callee.pubkey);
+  b.dial(caller.pubkey);
+  deliver();
+  deliver();
+  expect(a.store.getState().call?.id).toBe(b.store.getState().call?.id);
+  expect(
+    [a.store.getState().call?.phase, b.store.getState().call?.phase].sort(),
+  ).toEqual(["incoming", "ringing"]);
+  a.end();
+  deliver();
+});
+
+test("cancel during media permission and close resources returned after teardown", async () => {
+  const pending: ((media: CallMedia) => void)[] = [];
+  const { a, b, deliver, records } = pair(
+    () => new Promise((resolve) => pending.push(resolve)),
+  );
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  await Bun.sleep(0);
+  a.end();
+  deliver();
+  let closed = 0;
+  for (const resolve of pending)
+    resolve({ close: () => closed++, mute() {}, async route() {} });
+  await Bun.sleep(0);
+  expect(closed).toBe(2);
+  expect(records).toHaveLength(2);
+  expect(records.every((entry) => entry.answeredAt === null)).toBe(true);
+});
+
+test("microphone denial ends the attempt and reports a permission failure", async () => {
+  const { a, b, deliver, records } = pair(async () => {
+    throw new Error("microphone-permission");
+  });
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  await Bun.sleep(0);
+  expect(b.store.getState().call).toMatchObject({
+    phase: "ended",
+    outcome: "failed",
+    reason: "Allow microphone access to make calls.",
+  });
+  expect(records.map((row) => row.durationSeconds)).toEqual([0, 0]);
+});
+
+test("negotiation times out and aborts both pending transports", async () => {
+  const signals: AbortSignal[] = [];
+  const { a, b, deliver, records } = pair(({ signal }) => {
+    signals.push(signal);
+    return new Promise(() => {});
+  }, 5);
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  await Bun.sleep(15);
+  expect(signals.map((value) => value.aborted)).toEqual([true, true]);
+  expect(records.map(({ outcome }) => outcome)).toEqual(["failed", "failed"]);
+});
+
+test("the OS microphone prompt keeps the attempt pending without accepting new foreground invitations", async () => {
+  const { a, b, deliver } = pair(async ({ onMicrophonePrompt }) => {
+    onMicrophonePrompt(true);
+    return new Promise(() => {});
+  });
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  await Bun.sleep(0);
+  expect(b.isRequestingMicrophone()).toBe(true);
+  b.setForeground(false);
+  expect(b.store.getState().call?.phase).toBe("connecting");
+  const existing = b.store.getState().call?.id;
+  b.receive(invitation(1_700_000_000_000));
+  expect(b.store.getState().call?.id).toBe(existing);
+  a.end();
+  deliver();
+  expect(b.store.getState().call?.phase).toBe("ended");
+});

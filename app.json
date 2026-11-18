@@ -18,6 +18,7 @@
       },
       "predictiveBackGestureEnabled": true,
       "package": "app.boop.mobile",
+      "permissions": ["android.permission.BLUETOOTH_CONNECT"],
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WRITE_CONTACTS"
@@ -67,7 +68,9 @@
           "cameraPermission": "Scan a Boop address to start a chat, make a call, or add a contact."
         }
       ],
-      "expo-font"
+      "expo-font",
+      "react-native-quick-crypto",
+      "./plugins/with-call-tones.js"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -3,19 +3,6 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { getExactRoutes } from "expo-router/build/getRoutes";
-import { finalizeEvent } from "nostr-tools/pure";
-import { CallSession } from "../src/core/calling/lifecycle";
-import {
-  type CallInvitation,
-  IncomingInvitations,
-  type PeerChallenge,
-  verifyPeerProof,
-} from "../src/core/calling/protocol";
-import {
-  missingTrysteroCapabilities,
-  type PendingCallPeer,
-  trysteroTransport,
-} from "../src/core/calling/transport";
 import {
   deriveIdentity,
   loadIdentity,
@@ -31,15 +18,6 @@ const secret = "01".repeat(32);
 const bytes = new Uint8Array(32).fill(1);
 const peerKey = deriveIdentity(secret).publicKey;
 const localKey = deriveIdentity("02".repeat(32)).publicKey;
-const callId = "ab".repeat(32);
-const makeInvitation = (now: number): CallInvitation => ({
-  callId,
-  roomSecret: "cd".repeat(32),
-  caller: peerKey,
-  recipient: localKey,
-  expiresAt: now + 30_000,
-});
-
 test("creates one identity and derives the same npub after restart", async () => {
   let stored: string | null = null;
   let writes = 0;
@@ -189,25 +167,16 @@ test("queries local call history, conversation previews, drafts and preferences"
   expect(preference(db, "theme")).toBe("dark");
 });
 
-test("requires a timely invitation from the expected verified Nostr sender", () => {
-  const now = 1_700_000_000_000;
-  const invite = makeInvitation(now);
-  const gate = new IncomingInvitations();
-  expect(gate.accept(invite, peerKey, localKey, now)).toEqual(invite);
-  expect(gate.accept(invite, peerKey, localKey, now + 1)).toBeNull();
-  expect(gate.accept(invite, localKey, peerKey, now)).toBeNull();
-  expect(gate.accept(invite, peerKey, localKey, invite.expiresAt)).toBeNull();
-  expect(
-    gate.accept({ ...invite, expiresAt: now + 60_001 }, peerKey, localKey, now),
-  ).toBeNull();
-  expect(relayUrl.safeParse("ws://relay.example").success).toBe(false);
-  expect(relayUrl.safeParse("").success).toBe(false);
-  expect(relayUrl.safeParse("relay.example").success).toBe(false);
-  expect(relayUrl.safeParse("wss://name:password@relay.example").success).toBe(
-    false,
-  );
+test("requires a secure relay URL", () => {
+  for (const invalid of [
+    "",
+    "relay.example",
+    "ws://relay.example",
+    "wss://user:password@relay.example",
+  ]) {
+    expect(relayUrl.safeParse(invalid).success).toBe(false);
+  }
 });
-
 test("Expo Router discovers three primary tabs and the detail routes", () => {
   const context = Object.assign(() => ({}), {
     keys: () =>
@@ -237,160 +206,4 @@ test("Expo Router discovers three primary tabs and the detail routes", () => {
       ?.children.map((route) => route.route)
       .sort(),
   ).toEqual(["contacts", "index", "messages"]);
-});
-
-function signProof(challenge: PeerChallenge, timestamp: number) {
-  return finalizeEvent(
-    {
-      kind: 20058,
-      created_at: timestamp,
-      tags: [],
-      content: JSON.stringify([
-        "boop-call-proof-v1",
-        challenge.callId,
-        challenge.challenge,
-        challenge.remotePeerId,
-        challenge.localPeerId,
-        challenge.expectedKey,
-        challenge.localKey,
-      ]),
-    },
-    bytes,
-  );
-}
-
-test("binds a verified proof to its call, challenge and both peer IDs", () => {
-  const now = 1_700_000_000;
-  const challenge = {
-    callId,
-    challenge: "aa".repeat(32),
-    remotePeerId: "peer-a",
-    localPeerId: "peer-b",
-    expectedKey: peerKey,
-    localKey,
-  };
-  const proof = signProof(challenge, now);
-  expect(verifyPeerProof(proof, challenge, now)).toBe(true);
-  expect(
-    verifyPeerProof(proof, { ...challenge, remotePeerId: "peer-c" }, now),
-  ).toBe(false);
-  expect(
-    verifyPeerProof(proof, { ...challenge, challenge: "bb".repeat(32) }, now),
-  ).toBe(false);
-  expect(
-    verifyPeerProof({ ...proof, sig: "00".repeat(64) }, challenge, now),
-  ).toBe(false);
-});
-
-test("never starts audio before proof and releases resources on failure", async () => {
-  const events: string[] = [];
-  const peer: PendingCallPeer = {
-    remotePeerId: "rtc-a",
-    localPeerId: "rtc-b",
-    async prove() {
-      events.push("proof");
-      return {};
-    },
-    async startAudio() {
-      events.push("audio");
-    },
-    onDisconnect() {
-      return () => {
-        events.push("unsubscribe");
-      };
-    },
-    setMuted() {},
-    setSpeaker() {},
-    close() {
-      events.push("close");
-    },
-  };
-  const session = new CallSession((state) => events.push(state.phase));
-  session.start("incoming");
-  await session.accept(
-    { connect: async () => peer },
-    makeInvitation(Date.now()),
-    localKey,
-    peerKey,
-    async () => "aa".repeat(32),
-  );
-  session.finish();
-  expect(events).toEqual([
-    "incoming",
-    "ringing",
-    "connecting",
-    "proof",
-    "unsubscribe",
-    "close",
-    "failed",
-  ]);
-});
-
-test("a verified peer opens audio and disconnect closes the connection once", async () => {
-  const events: string[] = [];
-  let disconnect: (() => void) | undefined;
-  const peer: PendingCallPeer = {
-    remotePeerId: "rtc-a",
-    localPeerId: "rtc-b",
-    async prove(challenge) {
-      events.push("proof");
-      return signProof(challenge, Math.floor(Date.now() / 1000));
-    },
-    async startAudio() {
-      events.push("audio");
-    },
-    onDisconnect(listener) {
-      disconnect = listener;
-      return () => {
-        events.push("unsubscribe");
-      };
-    },
-    setMuted(muted) {
-      events.push(String(muted));
-    },
-    setSpeaker() {},
-    close() {
-      events.push("close");
-    },
-  };
-  const session = new CallSession((state) => events.push(state.phase));
-  session.start("incoming");
-  await session.accept(
-    { connect: async () => peer },
-    makeInvitation(Date.now()),
-    localKey,
-    peerKey,
-    async () => "aa".repeat(32),
-  );
-  session.mute(true);
-  disconnect?.();
-  session.finish();
-  expect(events).toEqual([
-    "incoming",
-    "ringing",
-    "connecting",
-    "proof",
-    "audio",
-    "active",
-    "true",
-    "unsubscribe",
-    "close",
-    "ended",
-  ]);
-});
-
-test("unconfigured transport rejects connection and reports missing RN capabilities", async () => {
-  const now = Date.now();
-  await expect(
-    trysteroTransport.connect(
-      makeInvitation(now),
-      new AbortController().signal,
-    ),
-  ).rejects.toThrow("unavailable");
-  expect(
-    missingTrysteroCapabilities({
-      crypto: { getRandomValues() {} },
-      RTCPeerConnection() {},
-    }),
-  ).toContain("WebCrypto SubtleCrypto");
 });

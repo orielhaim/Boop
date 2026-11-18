@@ -30,11 +30,12 @@ export async function createMessagingRuntime({
     import("./runtime"),
     loadIdentitySigner(identity),
   ]);
-  return createMessagingService({
+  const messaging = createMessagingService({
     signer,
     chat,
     readState: (key) => preference(db, key),
     writeState: (key, value) => setPreference(db, key, value),
     createId: randomUUID,
   });
+  return { messaging, signer };
 }
