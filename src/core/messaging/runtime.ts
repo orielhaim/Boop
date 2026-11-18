@@ -2,10 +2,18 @@ import type { NDKRelay, NDKSigner } from "@nostr-dev-kit/ndk";
 import type { MessagingRepository } from "@/db/messaging";
 import { type CallSignal, callSignalKind } from "../calling/signals";
 import { publicKeySchema } from "../identity/keys";
+import {
+  type InboxPublication,
+  inboxHandoffMs,
+  inboxPublicationKey,
+  type RelayConfiguration,
+  readPublication,
+  sameRelays,
+} from "../nostr/config";
 import { createMessagingRelays } from "../nostr/messaging-relays";
-import { secureRelays } from "../nostr/relays";
 import {
   createRumor,
+  inboxListKind,
   maxMessageLength,
   messageKind,
   parseReaction,
@@ -16,6 +24,20 @@ import {
 } from "./nip17";
 
 export type MessagingStatus = "disabled" | "connecting" | "online" | "offline";
+export type RelayState = {
+  status:
+    | "connected"
+    | "connecting"
+    | "disconnected"
+    | "auth-required"
+    | "rejected"
+    | "unavailable";
+  lastConnected?: number;
+  inboxVerified?: boolean;
+  lastWrite?: "accepted" | "rejected";
+};
+export type InboxStatus =
+  "idle" | "validating" | "published" | "conflict" | "unverified" | "pending";
 type SendInput = { peerKey: string; body: string; replyTo: string | null };
 const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 const catchupOverlap = 3 * 24 * 60 * 60;
@@ -41,7 +63,33 @@ export function createMessagingService({
   let generation = 0;
   let configured: NDKRelay[] = [];
   let connectionKey = "";
-  let cleanups: (() => void)[] = [];
+  let configuration: RelayConfiguration = {
+    general: [],
+    inbox: [],
+    discovery: [],
+    intent: null,
+  };
+  const connections = new Map<
+    string,
+    {
+      relay: NDKRelay;
+      inbox: boolean;
+      close: () => void;
+      reconnect: () => void;
+    }
+  >();
+  const diagnostics = new Map<string, RelayState>();
+  let snapshot: Readonly<Record<string, RelayState>> = {};
+  let publication = readPublication(readState(inboxPublicationKey));
+  let publicationStatus: InboxStatus = "idle";
+  let publishingList = false;
+  let publicationRetries = 0;
+  let needsPublication = false;
+  let revision = 0;
+  let publicationTimer: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+  const verified = new Set<string>();
+  const previousTargets = new Set<string>();
   let running = false;
 
   function updateStatus(next: MessagingStatus) {
@@ -54,45 +102,296 @@ export function createMessagingService({
     return configured.filter(transport.connected);
   }
 
+  function discoveryRelays() {
+    const urls = new Set([
+      ...configuration.general,
+      ...configuration.discovery,
+    ]);
+    return connectedRelays().filter(
+      (relay) => urls.has(relay.url) || connections.get(relay.url)?.inbox,
+    );
+  }
+
+  function report(url: string, patch: Partial<RelayState>) {
+    diagnostics.set(url, {
+      status: "disconnected",
+      ...diagnostics.get(url),
+      ...patch,
+    });
+    snapshot = Object.fromEntries(diagnostics);
+    for (const listener of listeners) listener();
+  }
+
+  function reportInbox(next: InboxStatus) {
+    if (next === publicationStatus) return;
+    publicationStatus = next;
+    for (const listener of listeners) listener();
+  }
+
+  function syncConnections() {
+    const inbox = new Set(configuration.inbox);
+    if (inbox.size) {
+      for (const url of publication?.urls ?? []) inbox.add(url);
+      for (const url of previousTargets) inbox.add(url);
+      for (const item of publication?.previous ?? [])
+        if (item.until > Date.now()) inbox.add(item.url);
+    }
+    const wanted = new Set([
+      ...configuration.general,
+      ...configuration.discovery,
+      ...inbox,
+    ]);
+    for (const [url, connection] of connections) {
+      if (wanted.has(url) && connection.inbox === inbox.has(url)) continue;
+      connection.close();
+      connections.delete(url);
+      if (!wanted.has(url)) report(url, { status: "disconnected" });
+    }
+    const added: { relay: NDKRelay; inbox: boolean }[] = [];
+    for (const url of wanted) {
+      if (!connections.has(url))
+        added.push({
+          relay: transport.addConfigured(url, inbox.has(url)),
+          inbox: inbox.has(url),
+        });
+    }
+    configured = [...connections.values()]
+      .map(({ relay }) => relay)
+      .concat(added.map(({ relay }) => relay));
+    for (const { relay, inbox } of added) {
+      connections.set(relay.url, {
+        relay,
+        inbox,
+        ...connectRelay(relay, generation, inbox),
+      });
+    }
+    if (!configured.length) updateStatus("disabled");
+    else if (!connectedRelays().length) updateStatus("connecting");
+    if (handoffTimer) clearTimeout(handoffTimer);
+    const nextExpiry = Math.min(
+      ...(publication?.previous ?? [])
+        .map(({ until }) => until)
+        .filter((until) => until > Date.now()),
+    );
+    if (Number.isFinite(nextExpiry))
+      handoffTimer = setTimeout(syncConnections, nextExpiry - Date.now() + 1);
+  }
+
+  function schedulePublication(delay = 350) {
+    if (publicationTimer) clearTimeout(publicationTimer);
+    publicationTimer = setTimeout(() => void publishInbox(), delay);
+  }
+
+  async function publishInbox() {
+    if (publishingList) {
+      needsPublication = true;
+      return;
+    }
+    if (!configuration.inbox.length) return;
+    if (!discoveryRelays().length) {
+      if (configuration.intent) reportInbox("pending");
+      return;
+    }
+    const expected = revision;
+    const active = () => expected === revision;
+    const { inbox, intent } = configuration;
+    if (inbox.length > 3) {
+      reportInbox("unverified");
+      return;
+    }
+    const discovery = [
+      ...new Set([
+        ...discoveryRelays(),
+        ...connectedRelays().filter((relay) => inbox.includes(relay.url)),
+      ]),
+    ];
+    publishingList = true;
+    try {
+      const { inbox: remote, complete } = await transport.lookupLists(
+        publicKey,
+        discovery,
+        [inboxListKind],
+      );
+      if (!active()) return;
+      const remoteUrls = remote
+        ? transport.safeTargets(remote.tags, "inbox")
+        : [];
+      const confirmed = remote && sameRelays(inbox, remoteUrls);
+      const explicit =
+        intent && intent !== "initial" && intent !== publication?.intent;
+      const externalChange =
+        remote &&
+        !confirmed &&
+        (!publication || remote.created_at >= publication.eventTime);
+      if (externalChange) {
+        previousTargets.clear();
+        for (const url of remoteUrls) previousTargets.add(url);
+        syncConnections();
+      }
+      if (externalChange && !explicit) {
+        reportInbox("conflict");
+        return;
+      }
+      if (!confirmed && !intent) {
+        reportInbox("idle");
+        return;
+      }
+      if (!confirmed && !complete) {
+        reportInbox("pending");
+        return;
+      }
+      if (
+        confirmed &&
+        publication &&
+        sameRelays(publication.urls, inbox) &&
+        publication.eventTime === remote.created_at &&
+        publication.intent === intent
+      ) {
+        reportInbox("published");
+        return;
+      }
+      const candidates = connectedRelays().filter((relay) =>
+        inbox.includes(relay.url),
+      );
+      if (candidates.length !== inbox.length) {
+        reportInbox("pending");
+        return;
+      }
+      reportInbox("validating");
+      const checks = await Promise.all(
+        candidates.map(async (relay) => {
+          if (verified.has(relay.url)) return true;
+          const pass = await transport
+            .verifyInbox(relay, active)
+            .catch(() => false);
+          if (active()) {
+            if (pass) verified.add(relay.url);
+            report(relay.url, { inboxVerified: pass });
+          }
+          return pass;
+        }),
+      );
+      if (!active()) return;
+      if (!checks.every(Boolean)) {
+        reportInbox("unverified");
+        return;
+      }
+      const eventTime = confirmed
+        ? remote.created_at
+        : Math.max(
+            Math.floor(Date.now() / 1_000),
+            (remote?.created_at ?? 0) + 1,
+            (publication?.eventTime ?? 0) + 1,
+          );
+      if (!confirmed) {
+        const accepted = await transport.advertise(
+          discovery,
+          inbox,
+          eventTime,
+          active,
+        );
+        if (!active()) return;
+        const published = accepted
+          ? (await transport.lookupLists(publicKey, discovery, [inboxListKind]))
+              .inbox
+          : null;
+        if (!active()) return;
+        if (
+          !published ||
+          !sameRelays(inbox, transport.safeTargets(published.tags, "inbox")) ||
+          published.created_at < eventTime
+        ) {
+          reportInbox("pending");
+          return;
+        }
+      }
+      const until = Date.now() + inboxHandoffMs;
+      const previous = new Map(
+        (publication?.previous ?? [])
+          .filter((item) => item.until > Date.now())
+          .map((item) => [item.url, item]),
+      );
+      for (const url of [...(publication?.urls ?? []), ...previousTargets]) {
+        if (!inbox.includes(url)) previous.set(url, { url, until });
+      }
+      const next: InboxPublication = {
+        urls: [...inbox],
+        eventTime,
+        intent,
+        previous: [...previous.values()]
+          .filter((item) => !inbox.includes(item.url))
+          .slice(-12),
+      };
+      writeState(inboxPublicationKey, JSON.stringify(next));
+      publication = next;
+      previousTargets.clear();
+      reportInbox("published");
+      syncConnections();
+    } catch {
+      if (active()) reportInbox("pending");
+    } finally {
+      publishingList = false;
+      if (needsPublication) {
+        needsPublication = false;
+        schedulePublication();
+      } else if (
+        active() &&
+        (publicationStatus === "pending" ||
+          publicationStatus === "unverified") &&
+        publicationRetries < 2
+      ) {
+        schedulePublication(5_000 * ++publicationRetries);
+      }
+    }
+  }
+
   function stop() {
     generation++;
-    for (const cleanup of cleanups) cleanup();
-    cleanups = [];
+    revision++;
+    if (publicationTimer) clearTimeout(publicationTimer);
+    if (handoffTimer) clearTimeout(handoffTimer);
+    needsPublication = false;
+    for (const connection of connections.values()) connection.close();
+    connections.clear();
     configured = [];
     connectionKey = "";
     transport.closePeerRelays();
+    for (const url of diagnostics.keys())
+      report(url, { status: "disconnected" });
     updateStatus("disabled");
   }
 
-  function start(urls: readonly string[]) {
-    const next = secureRelays(urls).sort();
+  function start(next: RelayConfiguration) {
     const key = JSON.stringify(next);
     if (connectionKey === key) return;
-    stop();
     connectionKey = key;
-    if (next.length === 0) return;
-    const session = generation;
-    configured = next.map(transport.addConfigured);
-    updateStatus("connecting");
-    cleanups = configured.map((relay) => connectInbox(relay, session));
+    configuration = next;
+    publicationRetries = 0;
+    revision++;
+    reportInbox("idle");
+    syncConnections();
+    schedulePublication();
   }
 
-  function connectInbox(relay: NDKRelay, session: number) {
+  function connectRelay(relay: NDKRelay, session: number, inbox: boolean) {
     let attempts = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let closeWatch: (() => void) | undefined;
     let receive = Promise.resolve();
-    let inboxWriteSucceeded = false;
-    let advertising = false;
+    let live = true;
+    const active = () => live && session === generation;
     const syncKey = `chat.sync.${relay.url}`;
-    const advertisementKey = `chat.inbox.${relay.url}`;
 
     function attemptConnection() {
-      if (session !== generation || transport.connected(relay)) return;
-      if (attempts >= retryDelays.length) return;
+      if (!active() || transport.connected(relay)) return;
+      if (attempts >= retryDelays.length) {
+        report(relay.url, { status: "unavailable" });
+        return;
+      }
+      report(relay.url, { status: "connecting" });
       const delay = retryDelays[attempts++];
       retryTimer = setTimeout(() => {
-        if (session !== generation || transport.connected(relay)) return;
+        if (!active() || transport.connected(relay)) return;
         updateStatus(connectedRelays().length ? "online" : "offline");
         // A connection can remain stuck in CONNECTING after a failed handshake.
         // Close it before giving the next scheduled attempt a fresh socket.
@@ -105,33 +404,8 @@ export function createMessagingService({
       void transport.connect(relay);
     }
 
-    async function advertiseInbox() {
-      if (advertising || inboxWriteSucceeded || session !== generation) return;
-      advertising = true;
-      const inbox = configured.map((item) => item.url).slice(0, 3);
-      const value = JSON.stringify(inbox);
-      try {
-        if (
-          readState(advertisementKey) === value ||
-          (await transport.advertise(
-            relay,
-            inbox,
-            () => session === generation,
-          ))
-        ) {
-          if (session !== generation) return;
-          writeState(advertisementKey, value);
-          inboxWriteSucceeded = true;
-        }
-      } catch {
-        // Read access can still work. The next connection can retry the listing.
-      } finally {
-        advertising = false;
-      }
-    }
-
     function onConnect() {
-      if (session !== generation) return;
+      if (!active()) return;
       if (retryTimer) clearTimeout(retryTimer);
       attempts = 0;
       closeWatch?.();
@@ -142,62 +416,66 @@ export function createMessagingService({
         previousSync > 0 && previousSync <= beganAt
           ? Math.max(0, previousSync - catchupOverlap)
           : undefined;
-      closeWatch = transport.watchInbox(
-        relay,
-        since,
-        (wrapped) => {
-          receive = receive
-            .then(async () => {
-              if (session !== generation) return;
-              const event = await unwrapPrivateEvent(wrapped, signer);
-              if (!event || session !== generation) return;
-              if (event.type === "call") {
-                if (event.recipientKey === publicKey)
-                  for (const listener of callListeners) listener(event.signal);
-              } else if (event.type === "reaction") {
-                chat.receiveReaction({
-                  peerKey: event.peerKey,
-                  eventId: event.id,
-                  author: event.senderKey,
-                  emoji: event.emoji,
-                  targetEventId: event.targetEventId,
-                });
-              } else {
-                chat.receive({
-                  id: event.id,
-                  eventId: event.id,
-                  peerKey: event.peerKey,
-                  senderKey: event.senderKey,
-                  recipientKey: event.recipientKey,
-                  sentAt: event.sentAt,
-                  body: event.body,
-                  replyTo: event.replyTo,
-                  direction:
-                    event.senderKey === publicKey ? "outgoing" : "incoming",
-                });
-              }
-            })
-            .catch(() => {
-              receiveSucceeded = false;
-            });
-        },
-        () => {
-          void receive
-            .then(() => {
-              if (session === generation && receiveSucceeded)
-                writeState(syncKey, String(beganAt));
-            })
-            .catch(() => undefined);
-        },
-      );
+      if (inbox)
+        closeWatch = transport.watchInbox(
+          relay,
+          since,
+          (wrapped) => {
+            receive = receive
+              .then(async () => {
+                if (!active()) return;
+                const event = await unwrapPrivateEvent(wrapped, signer);
+                if (!event || !active()) return;
+                if (event.type === "call") {
+                  if (event.recipientKey === publicKey)
+                    for (const listener of callListeners)
+                      listener(event.signal);
+                } else if (event.type === "reaction") {
+                  chat.receiveReaction({
+                    peerKey: event.peerKey,
+                    eventId: event.id,
+                    author: event.senderKey,
+                    emoji: event.emoji,
+                    targetEventId: event.targetEventId,
+                  });
+                } else {
+                  chat.receive({
+                    id: event.id,
+                    eventId: event.id,
+                    peerKey: event.peerKey,
+                    senderKey: event.senderKey,
+                    recipientKey: event.recipientKey,
+                    sentAt: event.sentAt,
+                    body: event.body,
+                    replyTo: event.replyTo,
+                    direction:
+                      event.senderKey === publicKey ? "outgoing" : "incoming",
+                  });
+                }
+              })
+              .catch(() => {
+                receiveSucceeded = false;
+              });
+          },
+          () => {
+            void receive
+              .then(() => {
+                if (active() && receiveSucceeded)
+                  writeState(syncKey, String(beganAt));
+              })
+              .catch(() => undefined);
+          },
+        );
+      report(relay.url, { status: "connected", lastConnected: Date.now() });
       updateStatus("online");
-      void advertiseInbox();
+      schedulePublication();
       // Retry discovered/queued sends only when a relay is actually reachable.
       void flush();
     }
 
     function onDisconnect() {
-      if (session !== generation) return;
+      if (!active()) return;
+      report(relay.url, { status: "disconnected" });
       closeWatch?.();
       closeWatch = undefined;
       if (retryTimer) clearTimeout(retryTimer);
@@ -209,23 +487,51 @@ export function createMessagingService({
       );
     }
 
+    const onAuth = () => report(relay.url, { status: "auth-required" });
+    const onAuthed = () => {
+      report(relay.url, { status: "connected" });
+      schedulePublication();
+    };
+    const onRejected = () => report(relay.url, { status: "rejected" });
+    const onWrite = () => report(relay.url, { lastWrite: "accepted" });
+    const onWriteFailed = () => report(relay.url, { lastWrite: "rejected" });
     relay.on("connect", onConnect);
     relay.on("disconnect", onDisconnect);
-    relay.on("authed", advertiseInbox);
+    relay.on("auth", onAuth);
+    relay.on("authed", onAuthed);
+    relay.on("auth:failed", onRejected);
+    relay.on("published", onWrite);
+    relay.on("publish:failed", onWriteFailed);
     if (transport.connected(relay)) onConnect();
     else attemptConnection();
-    return () => {
-      if (retryTimer) clearTimeout(retryTimer);
-      closeWatch?.();
-      relay.off("connect", onConnect);
-      relay.off("disconnect", onDisconnect);
-      relay.off("authed", advertiseInbox);
-      transport.unconfigure(relay);
+    return {
+      reconnect() {
+        attempts = 0;
+        if (retryTimer) clearTimeout(retryTimer);
+        if (!transport.connected(relay)) attemptConnection();
+      },
+      close() {
+        live = false;
+        if (retryTimer) clearTimeout(retryTimer);
+        closeWatch?.();
+        relay.off("connect", onConnect);
+        relay.off("disconnect", onDisconnect);
+        relay.off("auth", onAuth);
+        relay.off("authed", onAuthed);
+        relay.off("auth:failed", onRejected);
+        relay.off("published", onWrite);
+        relay.off("publish:failed", onWriteFailed);
+        transport.unconfigure(relay);
+      },
     };
   }
 
   async function publishRumor(rumor: Rumor, peerKey: string, session: number) {
-    const relays = await transport.findInbox(peerKey, connectedRelays());
+    const relays = await transport.findInbox(
+      peerKey,
+      discoveryRelays(),
+      () => session === generation,
+    );
     if (session !== generation || connectedRelays().length === 0)
       return "interrupted";
     if (relays.length === 0) return "no-inbox";
@@ -246,7 +552,8 @@ export function createMessagingService({
     if (!live() || connectedRelays().length === 0) return false;
     const urls = await transport.findInbox(
       signal.recipientKey,
-      connectedRelays(),
+      discoveryRelays(),
+      live,
     );
     if (!live() || !urls.length) return false;
     const rumor = createRumor({
@@ -264,7 +571,7 @@ export function createMessagingService({
     try {
       const copy = await transport.wrap(rumor, publicKey);
       if (session !== generation) return;
-      const inbox = configured.map((relay) => relay.url).slice(0, 3);
+      const inbox = publication?.urls ?? configuration.inbox.slice(0, 3);
       await transport.publish(copy, inbox, () => session === generation);
     } catch {
       // Acceptance on the recipient's inbox remains valid if our copy fails.
@@ -375,9 +682,9 @@ export function createMessagingService({
   }
 
   function startAgain() {
-    const urls = configured.map((relay) => relay.url);
-    connectionKey = "";
-    start(urls);
+    publicationRetries = 0;
+    for (const connection of connections.values()) connection.reconnect();
+    schedulePublication();
   }
 
   function toggleReaction({
@@ -422,6 +729,9 @@ export function createMessagingService({
   return {
     start,
     stop,
+    reconnect: startAgain,
+    getRelayStates: () => snapshot,
+    getInboxStatus: () => publicationStatus,
     send,
     retry,
     toggleReaction,

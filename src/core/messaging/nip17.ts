@@ -77,11 +77,15 @@ export async function wrapRumor(
   rumor: Rumor,
   recipient: string,
   signer: NDKSigner,
+  expiresAt?: number,
 ) {
   return giftWrap(
     new NDKEvent(ndk, rumor),
     new NDKUser({ pubkey: recipient }),
     signer,
+    expiresAt === undefined
+      ? undefined
+      : { wrapTags: [["expiration", String(expiresAt)]] },
   );
 }
 

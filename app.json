@@ -43,6 +43,12 @@
         }
       ],
       "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Use Face ID to unlock Boop when App Lock is enabled."
+        }
+      ],
       "expo-sqlite",
       [
         "expo-localization",

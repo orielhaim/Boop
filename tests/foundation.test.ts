@@ -8,10 +8,12 @@ import {
   loadIdentity,
   parsePublicKey,
 } from "../src/core/identity/keys";
+import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
 import { createMessagingRepository } from "../src/db/messaging";
 import migrations from "../src/db/migrations/bundle";
 import { callList, preference, setPreference } from "../src/db/queries";
+import { editRelays, seedRelays } from "../src/db/relays";
 import * as schema from "../src/db/schema";
 
 const secret = "01".repeat(32);
@@ -167,12 +169,60 @@ test("queries local call history, conversation previews, drafts and preferences"
   expect(preference(db, "theme")).toBe("dark");
 });
 
+test("seeds verified roles on a new identity and does not reseed after removal", () => {
+  using sqlite = new Database(":memory:");
+  for (const migration of Object.values(migrations.migrations))
+    sqlite.exec(migration);
+  const db = drizzle(sqlite, { schema });
+  seedRelays(db, true);
+  const saved = db.select().from(schema.relaySettings).all();
+  expect(configuredRelays(saved, preference(db, inboxIntentKey))).toEqual({
+    general: ["wss://nos.lol/", "wss://relay.primal.net/"],
+    inbox: ["wss://nos.lol/", "wss://relay.primal.net/"],
+    discovery: ["wss://purplepag.es/"],
+    intent: "initial",
+  });
+  editRelays(
+    db,
+    saved.map(({ url }) => ({ url, next: null })),
+    "explicit-removal",
+  );
+  seedRelays(db, false);
+  expect(db.select().from(schema.relaySettings).all()).toEqual([]);
+  expect(preference(db, inboxIntentKey)).toBe("explicit-removal");
+});
+
+test("migrates a disabled custom relay without replacing it or its publication policy", () => {
+  using sqlite = new Database(":memory:");
+  const steps = Object.values(migrations.migrations);
+  for (const migration of steps.slice(0, -1)) sqlite.exec(migration);
+  sqlite.run(
+    "insert into relay_settings (url, enabled) values ('wss://custom.example/', 0)",
+  );
+  const current = steps.at(-1);
+  if (!current) throw new Error("Missing relay migration");
+  sqlite.exec(current);
+  const db = drizzle(sqlite, { schema });
+  seedRelays(db, false);
+  expect(db.select().from(schema.relaySettings).all()).toEqual([
+    {
+      url: "wss://custom.example/",
+      enabled: false,
+      general: true,
+      inbox: true,
+      discovery: false,
+    },
+  ]);
+  expect(preference(db, inboxIntentKey)).toBeNull();
+});
+
 test("requires a secure relay URL", () => {
   for (const invalid of [
     "",
     "relay.example",
     "ws://relay.example",
     "wss://user:password@relay.example",
+    "wss:relay.example",
   ]) {
     expect(relayUrl.safeParse(invalid).success).toBe(false);
   }
@@ -198,7 +248,24 @@ test("Expo Router discovers three primary tabs and the detail routes", () => {
     "contact/[key]",
     "contact/new",
     "scan",
-    "settings/index",
+    "settings",
+  ]);
+  expect(
+    root?.children
+      .find((route) => route.route === "settings")
+      ?.children.map((route) => route.route)
+      .sort(),
+  ).toEqual([
+    "about",
+    "appearance",
+    "calls",
+    "connections",
+    "identity",
+    "index",
+    "privacy",
+    "privacy/app-lock",
+    "privacy/incoming-video",
+    "privacy/permissions",
   ]);
   expect(
     root?.children

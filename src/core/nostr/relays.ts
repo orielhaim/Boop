@@ -9,6 +9,7 @@ export const relayUrl = z.string().transform((value, context) => {
     return z.NEVER;
   }
   if (
+    !/^wss:\/\//i.test(value) ||
     url.protocol !== "wss:" ||
     url.username ||
     url.password ||

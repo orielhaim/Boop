@@ -171,6 +171,8 @@ Use SQLite for durable data and Zustand for transient application state. Do not 
 - `react-native-qrcode-svg` — displaying identity QR codes.
 - `expo-clipboard` — copying keys, addresses, and messages.
 - `expo-localization` — language and RTL awareness.
+- `expo-local-authentication` — optional device authentication for App Lock.
+- `expo-screen-capture` — operating-system app-switcher protection.
 - `expo-splash-screen` — polished startup experience.
 - `expo-dev-client` — native development builds.
 
@@ -236,6 +238,16 @@ Nostr relays are untrusted transport and storage providers.
 Messages may arrive late, more than once, or out of order. Storage and synchronization must handle these conditions.
 
 Messages can be retrieved after the recipient reconnects, subject to relay retention and availability.
+
+### Relay configuration and discovery
+
+SQLite stores relay addresses, enabled state, and general, discovery, and inbox roles. On the first relay configuration startup, Boop seeds recommendations only when the table is empty. Existing addresses and enabled states survive migration. Previously enabled relays keep their original inbox and general roles. Removing the last entry does not cause defaults to reappear.
+
+Defaults are `nos.lol` and `relay.primal.net` for general connections and private inboxes, plus `purplepag.es` for relay-list discovery. Public probes accepted and retrieved encrypted kind 1059 on both inbox defaults. Purple Pages accepted kind 10050 and rejected kind 1059. Relay policies and retention can change.
+
+The existing NDK service keeps one pool. SQLite configuration changes add or remove the affected relay connections and inbox subscriptions. The relay screen reports socket state, authentication outcomes, and relay write acknowledgment when observed. NIP-65 kind 10002 author write relays can help discover an inbox list. The recipient's verified kind 10050 determines delivery destinations for private messages and call invitations. NIP-42 signs challenges on configured inbox connections. Trystero continues to use its independent signaling strategy.
+
+A new identity can advertise its inbox automatically. Boop first checks for an existing signed kind 10050 and verifies each selected relay by publishing and reading back an expiring self-addressed encrypted envelope. An existing conflicting publication is preserved unless the user requests an inbox change. The app waits for a relay acknowledgment and reads the list back before recording the new publication. With at least one inbox still selected, it retains the previous published listeners during handoff and for three days after an acknowledged switch. Disabling every inbox stops local inbox listening and may leave previously published metadata visible.
 
 ### Chat persistence and presentation
 
@@ -457,7 +469,7 @@ Additional screens:
 - Active call.
 - Contact details.
 - Add contact, enter an address, or scan an address.
-- Settings with identity, preferences, and relay configuration.
+- Settings with a native nested stack for Identity & keys, Appearance, Calls & sounds, Privacy & security, Connections, and About. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
 
 The dialer must work with real application identities. A numeric keypad must not imply interoperability with ordinary telephone numbers unless such an addressing system is actually implemented.
 
@@ -472,6 +484,14 @@ The dialer must work with real application identities. A numeric keypad must not
 - Require explicit permission when a feature needs the microphone or camera.
 - Provide clear errors for missing connectivity and unavailable permissions.
 - Use established cryptographic implementations.
+
+### App Lock
+
+The root checks the SQLite App Lock policy before mounting protected routes or starting inbox subscriptions on a fresh launch. App Lock is off by default. Enabling, disabling, and unlocking each require the native authentication prompt. Android uses Class 3 biometrics and supports device credentials where Android permits the combined policy. iOS uses device-owner authentication with the configured Face ID usage description and system fallback.
+
+The lock controller tracks foreground transitions and supports immediate, one-minute, five-minute, and thirty-minute timeouts. A solid lock screen covers the router and hides its accessibility tree while locked or inactive. It opens the system prompt once per lock, with a centered Unlock action for retry after cancellation. Native app-switcher protection adds an iOS privacy blur. Android blocks window capture while App Lock is enabled. Warm deep links are dropped while protected content is obscured. The gate retains the mounted navigation and call controller after first unlock. It preserves calls during the app's native authentication prompt. The existing foreground-only call lifecycle still ends calls on ordinary backgrounding.
+
+App Lock controls access through the app interface. SecureStore still owns private key storage under the same key and accessibility policy. Biometric changes do not change the stored key. App Lock leaves the local database encryption policy unchanged. Boop has no private-key viewing or export route.
 
 Threat boundaries must be explicit:
 

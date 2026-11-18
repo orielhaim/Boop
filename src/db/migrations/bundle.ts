@@ -32,6 +32,13 @@ export default {
         tag: "0003_crazy_jetstream",
         breakpoints: true,
       },
+      {
+        idx: 4,
+        version: "6",
+        when: 1795042927453,
+        tag: "0004_cloudy_inertia",
+        breakpoints: true,
+      },
     ],
   },
   migrations: {
@@ -43,5 +50,7 @@ export default {
       "ALTER TABLE `call_history` ADD `answered_at` integer;--> statement-breakpoint\nALTER TABLE `call_history` ADD `ended_at` integer;",
     m0003:
       "ALTER TABLE `contacts` ADD `allow_incoming_video` integer DEFAULT false NOT NULL;",
+    m0004:
+      "ALTER TABLE `relay_settings` ADD `general` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `inbox` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `discovery` integer DEFAULT false NOT NULL;",
   },
 };

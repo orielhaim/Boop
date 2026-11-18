@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdtemp, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { type Filter, matchFilters } from "nostr-tools/filter";
 import type { Event } from "nostr-tools/pure";
@@ -50,7 +50,21 @@ function client(seed: string) {
     readState: (key) => preference(db, key),
     writeState: (key, value) => setPreference(db, key, value),
   });
-  return { service, chat, key: signer.pubkey, sqlite };
+  function start(urls: string[], intent: string | null = "initial") {
+    service.start({
+      general: urls,
+      inbox: urls,
+      discovery: [],
+      intent,
+    });
+  }
+  return {
+    service: { ...service, start },
+    chat,
+    key: signer.pubkey,
+    signer,
+    sqlite,
+  };
 }
 
 async function wait(label: string, condition: () => boolean) {
@@ -64,6 +78,7 @@ async function wait(label: string, condition: () => boolean) {
 
 async function runScenario(tlsDirectory: string) {
   const events = new Map<string, Event>();
+  let refuseMessages = false;
   const sockets = new Set<Bun.ServerWebSocket<RelayConnection>>();
   const relay = Bun.serve<RelayConnection>({
     hostname: "127.0.0.1",
@@ -131,6 +146,12 @@ async function runScenario(tlsDirectory: string) {
             socket.send(encode(["OK", event.id, true, ""]));
             return;
           }
+          if (refuseMessages && event.kind === 1059) {
+            socket.send(
+              encode(["OK", event.id, false, "blocked: test write refusal"]),
+            );
+            return;
+          }
           if (event.kind === 10050) {
             for (const [key, previous] of events) {
               if (
@@ -196,6 +217,7 @@ async function runScenario(tlsDirectory: string) {
       [...events.values()].some(
         ({ kind, tags }) =>
           kind === 1059 &&
+          !tags.some(([tag]) => tag === "expiration") &&
           tags.some(([tag, key]) => tag === "p" && key === alice.key),
       ),
     );
@@ -203,6 +225,11 @@ async function runScenario(tlsDirectory: string) {
       throw new Error("Sender copy duplicated the outgoing message");
 
     const original = bob.chat.history(alice.key).messages[0];
+    await wait("Alice's advertised inbox", () =>
+      [...events.values()].some(
+        ({ pubkey, kind }) => pubkey === alice.key && kind === 10050,
+      ),
+    );
     bob.service.toggleReaction({
       peerKey: alice.key,
       messageId: original.id,
@@ -342,8 +369,54 @@ async function runScenario(tlsDirectory: string) {
       () => charlie.chat.history(alice.key).messages[0]?.eventId === canonical,
     );
 
+    refuseMessages = true;
+    const refused = await alice.service.send({
+      peerKey: bob.key,
+      body: "Rejected by this relay",
+      replyTo: null,
+    });
+    await wait(
+      "relay refusal",
+      () => alice.chat.message(bob.key, refused)?.failure === "relay-rejected",
+    );
+    if (
+      bob.chat
+        .history(alice.key)
+        .messages.some(({ body }) => body === "Rejected by this relay")
+    )
+      throw new Error("A rejected event reached the inbox");
+    refuseMessages = false;
+
+    charlie.service.stop();
+    const existing = new NDKEvent(undefined, {
+      kind: 10050,
+      tags: [],
+      created_at: Math.floor(Date.now() / 1000) + 10,
+    });
+    await existing.sign(charlie.signer);
+    const signed = verifiedEvent(existing.rawEvent());
+    if (!signed) throw new Error("External inbox list was not signed");
+    for (const [id, event] of events)
+      if (event.pubkey === charlie.key && event.kind === 10050)
+        events.delete(id);
+    events.set(signed.id, signed);
+    charlie.service.start([url], null);
+    await wait(
+      "external inbox conflict",
+      () => charlie.service.getInboxStatus() === "conflict",
+    );
+    if (!events.has(signed.id))
+      throw new Error("The client replaced a published list without approval");
+    charlie.service.start([url], "explicit-test-change");
+    await wait(
+      "explicit inbox reconciliation",
+      () => charlie.service.getInboxStatus() === "published",
+    );
+    if (events.has(signed.id))
+      throw new Error("The relay did not replace the old inbox list");
+
     console.log(
-      "TLS relay verified live encrypted messaging and call control, sender deduplication, catch-up, reconnect, and stable retries without an inbox fallback.",
+      "TLS relay verified encrypted messaging and call invitations, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, catch-up, reconnect, and stable retries.",
     );
   } finally {
     alice.service.stop();

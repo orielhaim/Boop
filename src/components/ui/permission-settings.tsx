@@ -1,13 +1,17 @@
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
-import { AppState, Linking, Platform, StyleSheet, View } from "react-native";
-import { Action, Card, Ink, Row } from "@/components/ui/kit";
+import { AppState, Linking, Platform, StyleSheet } from "react-native";
+import {
+  SettingsDescription,
+  SettingsGroup,
+  SettingsRow,
+} from "@/components/settings/group";
+import { Action } from "@/components/ui/kit";
 import {
   allowBluetoothOutput,
   hasBluetoothOutputPermission,
 } from "@/core/calling/permissions";
-import { space } from "@/theme";
 
 const showsBluetooth = Platform.OS === "android" && Platform.Version >= 31;
 type Status = "Allowed" | "Not allowed" | "Not requested" | "Unavailable";
@@ -77,72 +81,77 @@ export function PermissionSettings() {
   );
 
   return (
-    <Card>
-      <Row
-        title="Camera"
-        detail={`${camera ?? "Checking…"} · Scan addresses and share your camera on calls`}
-      />
-      <Row
-        title="Microphone"
-        detail={`${microphone ?? "Checking…"} · Voice calls`}
-      />
-      {showsBluetooth && (
-        <Row
-          title="Nearby devices"
-          detail={`${bluetooth ?? "Checking…"} · Bluetooth headsets`}
-          trailing={
-            bluetooth === "Not allowed" && (
-              <Action
-                size="sm"
-                disabled={requesting}
-                accessibilityLabel="Allow nearby devices"
-                onPress={async () => {
-                  setRequesting(true);
-                  setNotice("");
-                  try {
-                    const allowed = await allowBluetoothOutput();
-                    setBluetooth(allowed ? "Allowed" : "Not allowed");
-                    if (!allowed)
-                      setNotice(
-                        "You can change Nearby devices access in system settings.",
-                      );
-                  } catch {
-                    setNotice("Could not request Bluetooth access.");
-                  } finally {
-                    setRequesting(false);
-                  }
-                }}
-              >
-                Allow
-              </Action>
-            )
-          }
+    <>
+      <SettingsGroup>
+        <SettingsRow
+          title="Camera"
+          icon="camera"
+          value={camera ?? "Checking…"}
         />
-      )}
-      <View style={styles.footer}>
-        <Action
-          size="sm"
-          onPress={async () => {
-            try {
-              await Linking.openSettings();
-              setNotice("");
-            } catch {
-              setNotice("Could not open system settings.");
+        <SettingsRow
+          title="Microphone"
+          icon="microphone"
+          value={microphone ?? "Checking…"}
+        />
+        {showsBluetooth && (
+          <SettingsRow
+            title="Nearby devices"
+            icon="audio"
+            value={
+              bluetooth === "Not allowed"
+                ? undefined
+                : (bluetooth ?? "Checking…")
             }
-          }}
-        >
-          Open system settings
-        </Action>
-        {notice ? (
-          <Ink kind="caption" accessibilityLiveRegion="polite">
-            {notice}
-          </Ink>
-        ) : null}
-      </View>
-    </Card>
+            trailing={
+              bluetooth === "Not allowed" && (
+                <Action
+                  size="sm"
+                  variant="soft"
+                  disabled={requesting}
+                  accessibilityLabel="Allow nearby devices"
+                  onPress={async () => {
+                    setRequesting(true);
+                    setNotice("");
+                    try {
+                      const allowed = await allowBluetoothOutput();
+                      setBluetooth(allowed ? "Allowed" : "Not allowed");
+                      if (!allowed)
+                        setNotice(
+                          "You can change Nearby devices access in system settings.",
+                        );
+                    } catch {
+                      setNotice("Could not request Bluetooth access.");
+                    } finally {
+                      setRequesting(false);
+                    }
+                  }}
+                >
+                  Allow
+                </Action>
+              )
+            }
+          />
+        )}
+      </SettingsGroup>
+      <Action
+        variant="soft"
+        style={styles.settings}
+        onPress={async () => {
+          try {
+            await Linking.openSettings();
+            setNotice("");
+          } catch {
+            setNotice("Could not open system settings.");
+          }
+        }}
+      >
+        Open system settings
+      </Action>
+      {notice && <SettingsDescription>{notice}</SettingsDescription>}
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  footer: { alignItems: "flex-start", gap: space.sm, padding: space.lg },
+  settings: { alignSelf: "flex-start" },
 });

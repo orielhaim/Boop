@@ -63,6 +63,13 @@ const icons = {
   cameraSwitch: { ios: "camera.rotate.fill", android: "flip_camera_ios" },
   speaker: { ios: "speaker.wave.2", android: "volume_up" },
   history: { ios: "clock", android: "history" },
+  fingerprint: { ios: "touchid", android: "fingerprint" },
+  faceId: { ios: "faceid", android: "face" },
+  lock: { ios: "lock.shield.fill", android: "shield" },
+  key: { ios: "key.fill", android: "key" },
+  palette: { ios: "circle.lefthalf.filled", android: "contrast" },
+  connection: { ios: "antenna.radiowaves.left.and.right", android: "sensors" },
+  check: { ios: "checkmark", android: "check" },
 } satisfies Record<string, SymbolViewProps["name"]>;
 
 type IconName = keyof typeof icons;

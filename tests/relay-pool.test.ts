@@ -9,11 +9,11 @@ test("late relay connections remain registered across configuration changes", ()
       new NDKPrivateKeySigner("01".repeat(32)),
     );
     const address = "wss://relay.example/";
-    const relay = transport.addConfigured(address);
+    const relay = transport.addConfigured(address, true);
     transport.unconfigure(relay);
     relay.emit("connect");
     expect(error).not.toHaveBeenCalled();
-    expect(transport.addConfigured(address)).toBe(relay);
+    expect(transport.addConfigured(address, true)).toBe(relay);
     transport.unconfigure(relay);
   } finally {
     error.mockRestore();

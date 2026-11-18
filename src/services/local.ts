@@ -4,15 +4,21 @@ import { createContext, useContext, useEffect, useMemo } from "react";
 import { AppState } from "react-native";
 import { initializeIdentity } from "@/core/identity";
 import { createMessagingRuntime } from "@/core/messaging";
+import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
+import { type AppLock, createAppLock } from "@/core/security/app-lock";
+import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
-import { preference } from "@/db/queries";
-import { callHistory, contacts, relaySettings } from "@/db/schema";
+import { preference, setPreference } from "@/db/queries";
+import { seedRelays } from "@/db/relays";
+import { callHistory, contacts, relaySettings, settings } from "@/db/schema";
 
 async function start() {
   const db = await openDatabase();
   try {
+    const fresh = preference(db, "identity.publicKey") === null;
     const identity = await initializeIdentity(db);
+    seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
     const { messaging, signer } = await createMessagingRuntime({
       db,
@@ -63,12 +69,21 @@ async function start() {
           .get(),
     });
     messaging.subscribeCalls(calling.receive);
+    const lock = createAppLock({
+      read: (key) => preference(db, key),
+      write: (key, value) => setPreference(db, key, value),
+      startActive: AppState.currentState === "active",
+      authenticate: authenticateApp,
+      protect: protectAppWindow,
+    });
+    appLock = lock;
     return {
       db,
       identity,
       chat,
       messaging,
       calling,
+      lock,
       theme: preference(db, "theme"),
       haptics: preference(db, "haptics") !== "off",
     };
@@ -78,7 +93,13 @@ async function start() {
   }
 }
 
+let appLock: AppLock | undefined;
 let initialization: ReturnType<typeof start> | undefined;
+
+export function acceptsLiveLink() {
+  const state = appLock?.getState();
+  return state && (!state.enabled || (state.active && !state.locked));
+}
 export function initializeLocal() {
   initialization ??= start().catch((error) => {
     initialization = undefined;
@@ -98,32 +119,59 @@ export function useLocal() {
 }
 
 export function MessagingLifecycle() {
-  const { db, messaging, calling } = useLocal();
+  const { db, messaging, calling, lock } = useLocal();
   const query = useMemo(
     () => db.select().from(relaySettings).orderBy(asc(relaySettings.url)),
     [db],
   );
   const { data: relays } = useLiveQuery(query, [query]);
-  const enabled = useMemo(
-    () => relays.filter((relay) => relay.enabled).map((relay) => relay.url),
-    [relays],
+  const intentQuery = useMemo(
+    () => db.select().from(settings).where(eq(settings.key, inboxIntentKey)),
+    [db],
+  );
+  const { data: intent } = useLiveQuery(intentQuery, [intentQuery]);
+  const configuration = useMemo(
+    () => configuredRelays(relays, intent[0]?.value ?? null),
+    [relays, intent],
   );
   useEffect(() => {
+    let checkAfterPrompt: ReturnType<typeof setTimeout> | undefined;
+    function background() {
+      calling.setForeground(false);
+      if (!calling.isRequestingMicrophone()) messaging.stop();
+    }
     const update = (state: typeof AppState.currentState) => {
+      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       if (state === "active") {
         calling.setForeground(true);
-        messaging.start(enabled);
-      } else if (state === "background") {
-        calling.setForeground(false);
-        if (!calling.isRequestingMicrophone()) messaging.stop();
+        messaging.start(configuration);
+      } else if (state === "background" && !lock.getState().authenticating) {
+        background();
       }
     };
+    const unsubscribeLock = lock.subscribe(() => {
+      if (
+        lock.getState().authenticating ||
+        AppState.currentState !== "background"
+      )
+        return;
+      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
+      checkAfterPrompt = setTimeout(() => {
+        if (
+          AppState.currentState === "background" &&
+          !lock.getState().authenticating
+        )
+          background();
+      }, 800);
+    });
     update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
     return () => {
+      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
+      unsubscribeLock();
       subscription.remove();
-      messaging.stop();
     };
-  }, [enabled, messaging, calling]);
+  }, [configuration, messaging, calling, lock]);
+  useEffect(() => () => messaging.stop(), [messaging]);
   return null;
 }
