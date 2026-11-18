@@ -1,6 +1,8 @@
+import { Host, Switch } from "@expo/ui";
 import { eq } from "drizzle-orm";
 import { router, useLocalSearchParams } from "expo-router";
 import { StyleSheet, View } from "react-native";
+import { useVideoLabels } from "@/components/calls/video-labels";
 import {
   Action,
   Avatar,
@@ -18,7 +20,7 @@ import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { useContact } from "@/db/contacts";
 import { contacts } from "@/db/schema";
 import { useLocal } from "@/services/local";
-import { space } from "@/theme";
+import { space, useTheme } from "@/theme";
 
 export default function ContactDetail() {
   const params = useLocalSearchParams<{ key: string }>();
@@ -26,6 +28,8 @@ export default function ContactDetail() {
     typeof params.key === "string" ? parsePublicKey(params.key) : null;
   const contact = useContact(key ?? "");
   const { db } = useLocal();
+  const { colors, theme } = useTheme();
+  const videoLabels = useVideoLabels();
 
   if (!key)
     return (
@@ -105,6 +109,21 @@ export default function ContactDetail() {
           Message
         </Action>
       </View>
+      <Section>Call permissions</Section>
+      <Card style={styles.key}>
+        <Host matchContents colorScheme={theme} seedColor={colors.accent}>
+          <Switch
+            label={videoLabels.automatic}
+            value={contact.allowIncomingVideo}
+            onValueChange={(allowed) => {
+              db.update(contacts)
+                .set({ allowIncomingVideo: allowed })
+                .where(eq(contacts.publicKey, key))
+                .run();
+            }}
+          />
+        </Host>
+      </Card>
       <Section>Boop address</Section>
       <Card style={styles.key}>
         <Ink kind="caption" selectable>

@@ -6,10 +6,13 @@ import { useStore } from "zustand";
 import { Action, Icon } from "@/components/ui/kit";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import { useLocal } from "@/services/local";
+import { useVideoLabels } from "./video-labels";
 
 export function CallIndicator() {
   const { calling } = useLocal();
   const call = useStore(calling.store, (state) => state.call);
+  const video = useStore(calling.store, (state) => state.video);
+  const labels = useVideoLabels();
   const pathname = usePathname();
   const navigation = useRootNavigationState();
   const insets = useSafeAreaInsets();
@@ -23,7 +26,7 @@ export function CallIndicator() {
     )
       return;
     shown.current = call.id;
-    router.push({
+    router.navigate({
       pathname: "/call/[key]",
       params: { key: call.peerKey, callId: call.id },
     });
@@ -31,6 +34,17 @@ export function CallIndicator() {
 
   if (!call || call.phase === "ended" || pathname === `/call/${call.peerKey}`)
     return null;
+  const name = nameOrAddress(contact?.name, call.peerKey);
+  const hasVideo =
+    video?.local.phase === "sharing" || video?.remote.phase === "receiving";
+  const label =
+    call.phase === "incoming"
+      ? "Incoming call"
+      : video?.remote.phase === "requesting"
+        ? labels.consent
+        : hasVideo
+          ? labels.active
+          : "Return to call";
   return (
     <View
       pointerEvents="box-none"
@@ -38,6 +52,7 @@ export function CallIndicator() {
     >
       <Action
         variant="prominent"
+        accessibilityLabel={`${label} · ${name}`}
         onPress={() =>
           router.navigate({
             pathname: "/call/[key]",
@@ -45,9 +60,8 @@ export function CallIndicator() {
           })
         }
       >
-        <Icon name="phone" size={16} color="#FFFFFF" />
-        {call.phase === "incoming" ? "Incoming call" : "Return to call"} ·{" "}
-        {nameOrAddress(contact?.name, call.peerKey)}
+        <Icon name={hasVideo ? "camera" : "phone"} size={16} color="#FFFFFF" />
+        {`${label} · ${name}`}
       </Action>
     </View>
   );

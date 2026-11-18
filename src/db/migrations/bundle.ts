@@ -25,6 +25,13 @@ export default {
         tag: "0002_handy_iron_man",
         breakpoints: true,
       },
+      {
+        idx: 3,
+        version: "6",
+        when: 1795040693995,
+        tag: "0003_crazy_jetstream",
+        breakpoints: true,
+      },
     ],
   },
   migrations: {
@@ -34,5 +41,7 @@ export default {
       "CREATE TABLE `message_reactions` (\n\t`peer_key` text NOT NULL,\n\t`target_id` text NOT NULL,\n\t`author` text NOT NULL,\n\t`emoji` text NOT NULL,\n\t`removed` integer DEFAULT false NOT NULL,\n\tPRIMARY KEY(`peer_key`, `target_id`, `author`, `emoji`),\n\tFOREIGN KEY (`peer_key`) REFERENCES `conversations`(`peer_key`) ON UPDATE no action ON DELETE no action\n);\n--> statement-breakpoint\nDROP INDEX `messages_peer_time`;--> statement-breakpoint\nALTER TABLE `messages` ADD `sender_key` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `recipient_key` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `status` text DEFAULT 'received' NOT NULL;--> statement-breakpoint\nALTER TABLE `messages` ADD `failure` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `deleted_at` integer;--> statement-breakpoint\nALTER TABLE `messages` ADD `is_unread` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `messages` ADD `rumor_json` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `content_type` text DEFAULT 'text' NOT NULL;--> statement-breakpoint\nCREATE INDEX `messages_peer_order` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_unread` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"is_unread\" = 1 AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_outbox` ON `messages` (`sent_at`,`id`) WHERE \"messages\".\"status\" = 'pending' AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `pinned_rank` integer;--> statement-breakpoint\nALTER TABLE `conversations` ADD `muted` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `archived` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `deleted_at` integer;--> statement-breakpoint\nUPDATE `messages`\nSET `sender_key` = CASE `direction` WHEN 'incoming' THEN `peer_key` ELSE (SELECT `value` FROM `settings` WHERE `key` = 'identity.publicKey') END,\n    `recipient_key` = CASE `direction` WHEN 'outgoing' THEN `peer_key` ELSE (SELECT `value` FROM `settings` WHERE `key` = 'identity.publicKey') END,\n    `status` = CASE WHEN `direction` = 'incoming' THEN 'received' WHEN `event_id` IS NOT NULL THEN 'synced' ELSE 'failed' END,\n    `failure` = CASE WHEN `direction` = 'outgoing' AND `event_id` IS NULL THEN 'legacy_message' END;--> statement-breakpoint\nWITH unread_rank AS (\n    SELECT `id`, `peer_key`, row_number() OVER (PARTITION BY `peer_key` ORDER BY `sent_at` DESC, `id` DESC) AS rank\n    FROM `messages` WHERE `direction` = 'incoming'\n)\nUPDATE `messages` SET `is_unread` = 1 WHERE `id` IN (\n    SELECT unread_rank.`id` FROM unread_rank JOIN `conversations` USING (`peer_key`)\n    WHERE unread_rank.rank <= `conversations`.`unread`\n);--> statement-breakpoint\nUPDATE `conversations` SET `unread` = (SELECT count(*) FROM `messages` WHERE `messages`.`peer_key` = `conversations`.`peer_key` AND `is_unread` = 1);\n",
     m0002:
       "ALTER TABLE `call_history` ADD `answered_at` integer;--> statement-breakpoint\nALTER TABLE `call_history` ADD `ended_at` integer;",
+    m0003:
+      "ALTER TABLE `contacts` ADD `allow_incoming_video` integer DEFAULT false NOT NULL;",
   },
 };

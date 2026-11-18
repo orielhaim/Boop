@@ -7,7 +7,7 @@ import { createMessagingRuntime } from "@/core/messaging";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
 import { preference } from "@/db/queries";
-import { callHistory, relaySettings } from "@/db/schema";
+import { callHistory, contacts, relaySettings } from "@/db/schema";
 
 async function start() {
   const db = await openDatabase();
@@ -31,7 +31,25 @@ async function start() {
     const calling = createCallController({
       localKey: identity.publicKey,
       randomId: randomCallId,
-      openMedia: trysteroMedia(signer),
+      openMedia: trysteroMedia(signer, {
+        get(peerKey) {
+          const row = db
+            .select({ allowed: contacts.allowIncomingVideo })
+            .from(contacts)
+            .where(eq(contacts.publicKey, peerKey))
+            .get();
+          return row ? (row.allowed ? "always" : "ask") : "unknown";
+        },
+        allow(peerKey) {
+          return (
+            db
+              .update(contacts)
+              .set({ allowIncomingVideo: true })
+              .where(eq(contacts.publicKey, peerKey))
+              .run().changes === 1
+          );
+        },
+      }),
       prepareMedia: initializeCallingRuntime,
       send: messaging.sendCall,
       tone: callTone,

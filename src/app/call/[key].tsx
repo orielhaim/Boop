@@ -1,5 +1,10 @@
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useRef } from "react";
+import {
+  router,
+  useFocusEffect,
+  useLocalSearchParams,
+  useRootNavigationState,
+} from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator } from "react-native";
 import { useStore } from "zustand";
 import { CallScreen } from "@/components/calls/call-screen";
@@ -18,6 +23,14 @@ export default function CallRoute() {
   const contact = useContact(peerKey ?? "");
   const call = useStore(calling.store, (state) => state.call);
   const initiated = useRef(false);
+  const navigation = useRootNavigationState();
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, []),
+  );
 
   useEffect(() => {
     if (
@@ -33,8 +46,16 @@ export default function CallRoute() {
 
   const close = () => {
     if (call?.phase === "ended") calling.dismiss(call.id);
-    if (router.canGoBack()) router.back();
-    else router.replace("/");
+    if (router.canGoBack()) {
+      let count = 1;
+      const index = navigation?.index ?? 0;
+      while (
+        count < index &&
+        navigation?.routes[index - count]?.name === "call/[key]"
+      )
+        count++;
+      router.dismiss(count);
+    } else router.replace("/");
   };
   useFocusEffect(
     useCallback(() => {
@@ -57,7 +78,11 @@ export default function CallRoute() {
       </Screen>
     );
   }
-  if (!call || call.peerKey !== peerKey || (callId && call.id !== callId)) {
+  if (
+    !call ||
+    call.peerKey !== peerKey ||
+    (call.phase === "ended" && callId && call.id !== callId)
+  ) {
     return (
       <Screen>
         <Empty
@@ -79,6 +104,7 @@ export default function CallRoute() {
       name={nameOrAddress(contact?.name, call.peerKey)}
       avatarUrl={contact?.avatarUrl}
       close={close}
+      focused={focused}
     />
   );
 }

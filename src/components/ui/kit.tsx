@@ -57,6 +57,10 @@ const icons = {
   copy: { ios: "document.on.document", android: "content_copy" },
   send: { ios: "arrow.up", android: "arrow_upward" },
   mic: { ios: "mic.slash", android: "mic_off" },
+  microphone: { ios: "mic.fill", android: "mic" },
+  camera: { ios: "video.fill", android: "videocam" },
+  cameraOff: { ios: "video.slash.fill", android: "videocam_off" },
+  cameraSwitch: { ios: "camera.rotate.fill", android: "flip_camera_ios" },
   speaker: { ios: "speaker.wave.2", android: "volume_up" },
   history: { ios: "clock", android: "history" },
 } satisfies Record<string, SymbolViewProps["name"]>;

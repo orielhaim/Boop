@@ -124,6 +124,7 @@ function pair(
   const events: CallSignal[] = [];
   const records: CallRecord[] = [];
   const closed: string[] = [];
+  const hangups = new Map<string, () => void>();
   let nonce = 20;
   let clock = 1_700_000_000_000;
   const build = (localKey: string) =>
@@ -138,11 +139,20 @@ function pair(
       },
       openMedia:
         openMedia ??
-        (async () => ({
-          close: () => closed.push(localKey),
-          mute() {},
-          async route() {},
-        })),
+        (async ({ peerKey, onHangup, onAuthenticated }) => {
+          hangups.set(localKey, onHangup);
+          const notifyHangup = async () => hangups.get(peerKey)?.();
+          onAuthenticated({ notifyHangup });
+          return {
+            close: () => {
+              hangups.delete(localKey);
+              closed.push(localKey);
+            },
+            notifyHangup,
+            mute() {},
+            async route() {},
+          };
+        }),
       record: (entry) => records.push(entry),
       tone() {},
       now: () => clock,
@@ -209,8 +219,10 @@ test("answer starts transport while waiting for relay acknowledgment and closes 
 });
 
 test("ringing waits for recipient, connected waits for media, and remote hangup records once", async () => {
-  const { a, b, deliver, advance, records, closed } = pair();
+  const { a, b, deliver, advance, records, closed, events } = pair();
   a.dial(callee.pubkey);
+  const initial = events[0];
+  if (initial?.type !== "call.invite") throw new Error("No invitation");
   expect(a.store.getState().call?.phase).toBe("outgoing");
   deliver();
   expect(b.store.getState().call?.phase).toBe("incoming");
@@ -223,10 +235,14 @@ test("ringing waits for recipient, connected waits for media, and remote hangup 
   await Bun.sleep(0);
   expect(a.store.getState().call?.phase).toBe("connected");
   expect(b.store.getState().call?.phase).toBe("connected");
+  const { roomId: _id, roomSecret: _secret, ...relaySignal } = initial;
+  b.receive({ ...relaySignal, type: "call.end" });
+  expect(b.store.getState().call?.phase).toBe("connected");
   advance(5100);
   a.end();
   a.end();
-  deliver();
+  await Bun.sleep(0);
+  expect(events).toEqual([]);
   expect(
     records.map(({ outcome, durationSeconds }) => [outcome, durationSeconds]),
   ).toEqual([
@@ -234,6 +250,38 @@ test("ringing waits for recipient, connected waits for media, and remote hangup 
     ["completed", 5],
   ]);
   expect(closed).toHaveLength(2);
+});
+
+test("hangup uses the direct channel as soon as identity is verified, even before audio is ready", async () => {
+  const pending = Promise.withResolvers<CallMedia>();
+  let notified = 0;
+  const { a, b, deliver, events } = pair(({ onAuthenticated }) => {
+    onAuthenticated({
+      notifyHangup: async () => {
+        notified++;
+      },
+    });
+    return pending.promise;
+  });
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  expect(a.store.getState().call?.phase).toBe("connecting");
+  a.end();
+  b.end();
+  await Bun.sleep(0);
+  expect(notified).toBe(2);
+  expect(events).toEqual([]);
+  expect(a.store.getState().call).toMatchObject({
+    phase: "ended",
+    outcome: "cancelled",
+  });
+  expect(b.store.getState().call).toMatchObject({
+    phase: "ended",
+    outcome: "cancelled",
+  });
+  pending.resolve({ close() {}, mute() {}, async route() {} });
 });
 
 test("late acceptance and reordered invitations do not restart cancelled calls", () => {

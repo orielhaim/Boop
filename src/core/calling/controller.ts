@@ -6,6 +6,7 @@ import {
   type InviteSignal,
   inviteLifetime,
 } from "./signals";
+import type { VideoControls, VideoState } from "./video";
 
 export type Outcome =
   | "completed"
@@ -39,6 +40,7 @@ export type CallView = Pick<
         phase: "connected";
         answeredAt: number;
         muted: boolean;
+        remoteMuted: boolean;
         routing: Routing;
         reconnecting: boolean;
       }
@@ -50,9 +52,12 @@ type Attempt = {
   abort: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   media?: CallMedia;
+  notifyHangup?: CallMedia["notifyHangup"];
   answeredAt: number | null;
   stoppedAt?: number;
   microphonePrompt: boolean;
+  cameraPrompt: boolean;
+  direct: boolean;
 };
 
 export type CallMedia = {
@@ -60,6 +65,7 @@ export type CallMedia = {
   mute(value: boolean): void;
   route(value: AudioRoute): Promise<void>;
   notifyHangup?(): Promise<void>;
+  video?: VideoControls;
   inspect?(): Promise<{
     ice: string;
     microphone: boolean;
@@ -75,9 +81,13 @@ export type OpenMedia = (options: {
   acceptance: Promise<boolean>;
   onDisconnect: () => void;
   onHangup: () => void;
+  onRemoteMute: (muted: boolean) => void;
   onReconnecting: (reconnecting: boolean) => void;
   onRouting: (routing: Routing) => void;
   onMicrophonePrompt: (open: boolean) => void;
+  onCameraPrompt: (open: boolean) => void;
+  onAuthenticated: (media: Pick<CallMedia, "notifyHangup">) => void;
+  onVideo: (video: VideoState | null) => void;
 }) => Promise<CallMedia>;
 
 export function createCallController({
@@ -103,7 +113,10 @@ export function createCallController({
   now?: () => number;
   connectTimeout?: number;
 }) {
-  const store = createStore<{ call: CallView | null }>(() => ({ call: null }));
+  const store = createStore<{
+    call: CallView | null;
+    video: VideoState | null;
+  }>(() => ({ call: null, video: null }));
   const seen = new Map<string, number>();
   let active: Attempt | undefined;
   let available = false;
@@ -142,7 +155,10 @@ export function createCallController({
     tone("silent");
     const endedAt = attempt.stoppedAt ?? now();
     const { answeredAt, base } = attempt;
-    store.setState({ call: { ...base, phase: "ended", outcome, reason } });
+    store.setState({
+      call: { ...base, phase: "ended", outcome, reason },
+      video: null,
+    });
     try {
       record({
         ...base,
@@ -173,6 +189,8 @@ export function createCallController({
       abort: new AbortController(),
       answeredAt: null,
       microphonePrompt: false,
+      cameraPrompt: false,
+      direct: false,
     };
     active = attempt;
     store.setState({ call: { ...base, phase: direction } });
@@ -199,9 +217,10 @@ export function createCallController({
         "failed",
         "A direct connection could not be established.",
       );
-      void response("call.end", base.peerKey, base.id);
+      if (!attempt.direct) void response("call.end", base.peerKey, base.id);
     }, connectTimeout);
     let routing: Routing = { selected: null, available: [] };
+    let remoteMuted = false;
     try {
       const acceptance = answering
         ? response(
@@ -242,6 +261,13 @@ export function createCallController({
             attempt,
             attempt.answeredAt === null ? "remote-disconnected" : "completed",
           ),
+        onRemoteMute: (muted) => {
+          if (active !== attempt) return;
+          remoteMuted = muted;
+          const { call } = store.getState();
+          if (call?.phase === "connected")
+            store.setState({ call: { ...call, remoteMuted } });
+        },
         onReconnecting: (reconnecting) => {
           const { call } = store.getState();
           if (active === attempt && call?.phase === "connected")
@@ -249,6 +275,17 @@ export function createCallController({
         },
         onMicrophonePrompt: (open) => {
           attempt.microphonePrompt = open;
+        },
+        onCameraPrompt: (open) => {
+          attempt.cameraPrompt = open;
+        },
+        onAuthenticated: ({ notifyHangup }) => {
+          if (active !== attempt) return;
+          attempt.direct = true;
+          attempt.notifyHangup = notifyHangup;
+        },
+        onVideo: (video) => {
+          if (active === attempt) store.setState({ video });
         },
         onRouting: (next) => {
           routing = next;
@@ -263,6 +300,8 @@ export function createCallController({
         return;
       }
       attempt.media = media;
+      attempt.direct = true;
+      attempt.notifyHangup = media.notifyHangup;
       if (!(await acceptance) || signal.aborted) return;
       attempt.answeredAt = now();
       clearTimeout(attempt.timer);
@@ -272,6 +311,7 @@ export function createCallController({
           phase: "connected",
           answeredAt: attempt.answeredAt,
           muted: false,
+          remoteMuted,
           routing,
           reconnecting: false,
         },
@@ -283,7 +323,7 @@ export function createCallController({
           ? "Allow microphone access to make calls."
           : "The private audio connection could not be opened.";
       finish(attempt, "failed", reason);
-      void response("call.end", base.peerKey, base.id);
+      if (!attempt.direct) void response("call.end", base.peerKey, base.id);
     }
   }
 
@@ -322,7 +362,12 @@ export function createCallController({
       }
       const incoming = begin(signal, "incoming");
       tone("incoming");
-      void response("call.ringing", incoming.base.peerKey, incoming.base.id);
+      void response(
+        "call.ringing",
+        incoming.base.peerKey,
+        incoming.base.id,
+        () => available && active === incoming && !incoming.direct,
+      );
       return;
     }
     if (
@@ -337,7 +382,8 @@ export function createCallController({
     if (
       !active ||
       active.base.id !== signal.callId ||
-      active.base.peerKey !== signal.senderKey
+      active.base.peerKey !== signal.senderKey ||
+      active.direct
     )
       return;
     const { call } = store.getState();
@@ -378,10 +424,17 @@ export function createCallController({
     inspect: () => active?.media?.inspect?.(),
     setForeground(value: boolean) {
       available = value;
-      if (!value && active && !active.microphonePrompt) {
+      if (
+        !value &&
+        active &&
+        !active.microphonePrompt &&
+        !active.cameraPrompt
+      ) {
+        const attempt = active;
+        void attempt.notifyHangup?.().catch(() => undefined);
         finish(
-          active,
-          active.answeredAt === null ? "cancelled" : "remote-disconnected",
+          attempt,
+          attempt.answeredAt === null ? "cancelled" : "remote-disconnected",
         );
       }
     },
@@ -427,15 +480,20 @@ export function createCallController({
       const attempt = active;
       const { call } = store.getState();
       if (call?.phase === "ending") return;
-      if (call?.phase === "connected" && attempt.media?.notifyHangup) {
+      if (attempt.direct) {
         clearTimeout(attempt.timer);
-        attempt.media.mute(true);
+        attempt.media?.mute(true);
+        attempt.media?.video?.close();
         attempt.stoppedAt = now();
         store.setState({ call: { ...attempt.base, phase: "ending" } });
-        const done = () => finish(attempt, "completed");
+        const done = () =>
+          finish(
+            attempt,
+            attempt.answeredAt === null ? "cancelled" : "completed",
+          );
         attempt.timer = setTimeout(done, 600);
-        void attempt.media.notifyHangup().then(done, done);
-        void response("call.end", attempt.base.peerKey, attempt.base.id);
+        if (attempt.notifyHangup) void attempt.notifyHangup().then(done, done);
+        else done();
         return;
       }
       const type =
@@ -460,6 +518,10 @@ export function createCallController({
       active.media.mute(!call.muted);
       store.setState({ call: { ...call, muted: !call.muted } });
     },
+    video: () =>
+      store.getState().call?.phase === "connected"
+        ? active?.media?.video
+        : undefined,
     async route(route: AudioRoute) {
       const { call } = store.getState();
       if (

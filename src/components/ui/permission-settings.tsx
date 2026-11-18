@@ -80,7 +80,7 @@ export function PermissionSettings() {
     <Card>
       <Row
         title="Camera"
-        detail={`${camera ?? "Checking…"} · Scan Boop addresses`}
+        detail={`${camera ?? "Checking…"} · Scan addresses and share your camera on calls`}
       />
       <Row
         title="Microphone"

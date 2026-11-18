@@ -23,16 +23,20 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useStore } from "zustand";
 import {
   GlassSheet,
   GlassSheetContent,
   GlassSheetTitle,
 } from "@/components/glassyui/glass-sheet";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
-import { Icon, tapFeedback } from "@/components/ui/kit";
+import { Action, Avatar, Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import type { AudioRoute, CallView } from "@/core/calling/controller";
+import { type VideoDecision, videoLayout } from "@/core/calling/video";
 import { useLocal } from "@/services/local";
 import { space, spring, useTheme } from "@/theme";
+import { useVideoLabels } from "./video-labels";
+import { VideoStage } from "./video-stage";
 
 type IconName = ComponentProps<typeof Icon>["name"];
 
@@ -70,13 +74,17 @@ export function CallScreen({
   avatarUrl,
   call,
   close,
+  focused,
 }: {
   name: string;
   avatarUrl?: string | null;
   call: CallView;
   close: () => void;
+  focused: boolean;
 }) {
   const { calling } = useLocal();
+  const video = useStore(calling.store, (state) => state.video);
+  const labels = useVideoLabels();
   const [showOutput, setShowOutput] = useState(false);
   const [outputError, setOutputError] = useState(false);
   const { height, width } = useWindowDimensions();
@@ -90,6 +98,31 @@ export function CallScreen({
     ),
   );
   const connected = call.phase === "connected";
+  const layout = connected && video ? videoLayout(video) : null;
+  const consent = video?.remote.phase === "requesting" ? video.remote : null;
+  const cameraOn = !!video && video.local.phase !== "off";
+  const videoError = video?.error ? labels.errors[video.error] : null;
+  const respond = (decision: VideoDecision) => {
+    if (consent) calling.video()?.respond(consent.sequence, decision);
+  };
+  const toggleCamera = () => {
+    const controls = calling.video();
+    if (cameraOn) controls?.disable();
+    else void controls?.enable();
+  };
+  const cameraControl = (compact = false) => (
+    <Control
+      icon={cameraOn ? "cameraOff" : "camera"}
+      label={cameraOn ? labels.cameraOff : labels.camera}
+      selected={cameraOn}
+      compact={compact}
+      onPress={toggleCamera}
+    />
+  );
+  const end = () => {
+    calling.end();
+    close();
+  };
   const waiting =
     call.phase === "incoming" ||
     call.phase === "ringing" ||
@@ -100,8 +133,6 @@ export function CallScreen({
       : call.phase === "connected" && call.reconnecting
         ? "Reconnecting…"
         : phases[call.phase];
-  const openChat = () =>
-    router.push({ pathname: "/chat/[key]", params: { key: call.peerKey } });
   const selectRoute = async (route: AudioRoute) => {
     try {
       await calling.route(route);
@@ -131,166 +162,267 @@ export function CallScreen({
       {!reduceTransparency && (
         <View pointerEvents="none" style={styles.orbit} />
       )}
-      <SafeAreaView
-        style={styles.screen}
-        edges={["top", "bottom", "left", "right"]}
-      >
-        <View style={styles.top}>
-          <Control
-            icon="collapse"
-            label={call.phase === "ended" ? "Close" : "Minimize"}
-            compact
-            onPress={close}
-          />
-        </View>
-        <ScrollView contentContainerStyle={styles.content} bounces={false}>
-          <Animated.View
-            entering={appear}
-            layout={reflow}
-            style={styles.identity}
-          >
-            <View style={styles.portraitRim}>
-              {waiting && <PortraitPulse />}
-              <View
-                style={[styles.portrait, { height: portrait, width: portrait }]}
-              >
-                <LinearGradient
-                  colors={["#6178BC", "#3F4597", "#2F315A"]}
-                  style={StyleSheet.absoluteFill}
-                />
-                <Text
-                  accessible={false}
-                  style={[styles.initials, { fontSize: portrait * 0.36 }]}
-                >
-                  {name.startsWith("npub")
-                    ? "•"
-                    : Array.from(name.trim())[0]?.toLocaleUpperCase()}
+      {focused && connected && video && layout?.stageUrl ? (
+        <VideoStage
+          stageUrl={layout.stageUrl}
+          previewUrl={layout.previewUrl}
+          mirrorStage={layout.source === "local" && layout.mirrorLocal}
+          mirrorPreview={layout.source === "remote" && layout.mirrorLocal}
+          corner={video.corner}
+          blockHiding={
+            !!consent ||
+            showOutput ||
+            !!videoError ||
+            outputError ||
+            call.reconnecting ||
+            video.local.phase === "starting"
+          }
+          toggleLabel={labels.toggle}
+          swapLabel={labels.swap}
+          onSwap={() => calling.video()?.swap()}
+          onCorner={(corner) => calling.video()?.setCorner(corner)}
+          header={
+            <GlassSurface
+              preset="control"
+              tint="#1B2335"
+              style={styles.videoHeader}
+            >
+              <Control
+                icon="collapse"
+                label="Minimize"
+                compact
+                onPress={close}
+              />
+              <Avatar name={name} uri={avatarUrl} />
+              <View style={styles.videoIdentity}>
+                <Text numberOfLines={1} style={styles.videoName}>
+                  {name}
                 </Text>
-                {avatarUrl ? (
-                  <Image
-                    source={avatarUrl}
+                <Text numberOfLines={1} style={styles.videoCaption}>
+                  {call.reconnecting
+                    ? "Reconnecting…"
+                    : layout.source === "local"
+                      ? labels.local
+                      : labels.remote}
+                </Text>
+              </View>
+              <Elapsed since={call.answeredAt} compact />
+            </GlassSurface>
+          }
+          notice={
+            video.local.phase === "waiting" || videoError || outputError ? (
+              <Text accessibilityLiveRegion="polite" style={styles.videoNotice}>
+                {videoError ??
+                  (outputError
+                    ? "Could not change audio output."
+                    : labels.waiting)}
+              </Text>
+            ) : null
+          }
+          controls={
+            <GlassSurface
+              preset="control"
+              tint="#1B2335"
+              style={styles.videoControls}
+            >
+              <Control
+                icon={call.muted ? "mic" : "microphone"}
+                label={call.muted ? "Unmute" : "Mute"}
+                selected={call.muted}
+                compact
+                onPress={calling.mute}
+              />
+              {cameraControl(true)}
+              {"url" in video.local && (
+                <Control
+                  icon="cameraSwitch"
+                  label={labels.switchCamera}
+                  compact
+                  onPress={() => void calling.video()?.switchCamera()}
+                />
+              )}
+              {!!call.routing.available.length && (
+                <Control
+                  icon="audio"
+                  label="Audio output"
+                  compact
+                  onPress={() => setShowOutput(true)}
+                />
+              )}
+              <Control
+                icon="hangup"
+                label="End call"
+                compact
+                tint="#BA304B"
+                onPress={end}
+              />
+            </GlassSurface>
+          }
+        />
+      ) : (
+        <SafeAreaView
+          style={styles.screen}
+          edges={["top", "bottom", "left", "right"]}
+        >
+          <View style={styles.top}>
+            <Control
+              icon="collapse"
+              label={call.phase === "ended" ? "Close" : "Minimize"}
+              compact
+              onPress={close}
+            />
+          </View>
+          <ScrollView contentContainerStyle={styles.content} bounces={false}>
+            <Animated.View
+              entering={appear}
+              layout={reflow}
+              style={styles.identity}
+            >
+              <View style={styles.portraitRim}>
+                {waiting && <PortraitPulse />}
+                <View
+                  style={[
+                    styles.portrait,
+                    { height: portrait, width: portrait },
+                  ]}
+                >
+                  <LinearGradient
+                    colors={["#6178BC", "#3F4597", "#2F315A"]}
                     style={StyleSheet.absoluteFill}
-                    contentFit="cover"
+                  />
+                  <Text
+                    accessible={false}
+                    style={[styles.initials, { fontSize: portrait * 0.36 }]}
+                  >
+                    {name.startsWith("npub")
+                      ? "•"
+                      : Array.from(name.trim())[0]?.toLocaleUpperCase()}
+                  </Text>
+                  {avatarUrl ? (
+                    <Image
+                      source={avatarUrl}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="cover"
+                    />
+                  ) : null}
+                </View>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open contact for ${name}`}
+                onPress={() => {
+                  tapFeedback();
+                  router.push({
+                    pathname: "/contact/[key]",
+                    params: { key: call.peerKey },
+                  });
+                }}
+              >
+                <Text numberOfLines={2} style={styles.name}>
+                  {name}
+                </Text>
+              </Pressable>
+              {status && (
+                <Animated.View
+                  key={call.phase}
+                  entering={FadeIn.duration(180).reduceMotion(
+                    ReduceMotion.System,
+                  )}
+                  style={styles.statusRow}
+                >
+                  <View style={styles.statusDot} />
+                  <Text style={styles.status} accessibilityLiveRegion="polite">
+                    {status}
+                  </Text>
+                </Animated.View>
+              )}
+              {connected && <Elapsed since={call.answeredAt} />}
+              {call.phase === "ended" && call.reason && (
+                <Text style={styles.reason}>{call.reason}</Text>
+              )}
+            </Animated.View>
+            <View style={styles.bottom}>
+              {connected && (
+                <Animated.View entering={appear} style={styles.controls}>
+                  <Control
+                    icon={call.muted ? "mic" : "microphone"}
+                    label={call.muted ? "Unmute" : "Mute"}
+                    selected={call.muted}
+                    onPress={calling.mute}
+                  />
+                  {video && cameraControl()}
+                  {call.routing.selected &&
+                  call.routing.available.includes("SPEAKER_PHONE") ? (
+                    <Control
+                      icon="speaker"
+                      label="Speaker"
+                      selected={call.routing.selected === "SPEAKER_PHONE"}
+                      onPress={() => {
+                        const next =
+                          call.routing.selected === "SPEAKER_PHONE"
+                            ? call.routing.available.find(
+                                (route) => route !== "SPEAKER_PHONE",
+                              )
+                            : "SPEAKER_PHONE";
+                        if (next) void selectRoute(next);
+                      }}
+                    />
+                  ) : null}
+                  {!!call.routing.available.length && (
+                    <Control
+                      icon="audio"
+                      label="Audio output"
+                      onPress={() => setShowOutput(true)}
+                    />
+                  )}
+                </Animated.View>
+              )}
+              {connected && videoError && (
+                <Text style={styles.reason} accessibilityLiveRegion="polite">
+                  {videoError}
+                </Text>
+              )}
+              {outputError && connected && (
+                <Text style={styles.reason} accessibilityLiveRegion="polite">
+                  Could not change audio output.
+                </Text>
+              )}
+              <View style={styles.primary}>
+                {call.phase === "incoming" ? (
+                  <>
+                    <Control
+                      icon="hangup"
+                      label="Decline"
+                      tint="#BA304B"
+                      onPress={() => {
+                        calling.end();
+                        close();
+                      }}
+                    />
+                    <Control
+                      icon="phone"
+                      label="Answer"
+                      tint="#087959"
+                      onPress={calling.accept}
+                    />
+                  </>
+                ) : call.phase === "ended" ? (
+                  <Control icon="hangup" label="Done" onPress={close} />
+                ) : call.phase !== "ending" ? (
+                  <Control
+                    icon="hangup"
+                    label="End call"
+                    iconOnly
+                    tint="#BA304B"
+                    onPress={end}
                   />
                 ) : null}
               </View>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open contact for ${name}`}
-              onPress={() => {
-                tapFeedback();
-                router.push({
-                  pathname: "/contact/[key]",
-                  params: { key: call.peerKey },
-                });
-              }}
-            >
-              <Text numberOfLines={2} style={styles.name}>
-                {name}
-              </Text>
-            </Pressable>
-            {status && (
-              <Animated.View
-                key={call.phase}
-                entering={FadeIn.duration(180).reduceMotion(
-                  ReduceMotion.System,
-                )}
-                style={styles.statusRow}
-              >
-                <View style={styles.statusDot} />
-                <Text style={styles.status} accessibilityLiveRegion="polite">
-                  {status}
-                </Text>
-              </Animated.View>
-            )}
-            {connected && <Elapsed since={call.answeredAt} />}
-            {call.phase === "ended" && call.reason && (
-              <Text style={styles.reason}>{call.reason}</Text>
-            )}
-          </Animated.View>
-          <View style={styles.bottom}>
-            {connected && (
-              <Animated.View entering={appear} style={styles.controls}>
-                <Control
-                  icon="mic"
-                  label={call.muted ? "Unmute" : "Mute"}
-                  selected={call.muted}
-                  onPress={calling.mute}
-                />
-                {call.routing.selected &&
-                call.routing.available.includes("SPEAKER_PHONE") ? (
-                  <Control
-                    icon="speaker"
-                    label="Speaker"
-                    selected={call.routing.selected === "SPEAKER_PHONE"}
-                    onPress={() => {
-                      const next =
-                        call.routing.selected === "SPEAKER_PHONE"
-                          ? call.routing.available.find(
-                              (route) => route !== "SPEAKER_PHONE",
-                            )
-                          : "SPEAKER_PHONE";
-                      if (next) void selectRoute(next);
-                    }}
-                  />
-                ) : null}
-                {!!call.routing.available.length && (
-                  <Control
-                    icon="audio"
-                    label="Audio output"
-                    onPress={() => setShowOutput(true)}
-                  />
-                )}
-                <Control icon="chat" label="Messages" onPress={openChat} />
-              </Animated.View>
-            )}
-            {outputError && connected && (
-              <Text style={styles.reason} accessibilityLiveRegion="polite">
-                Could not change audio output.
-              </Text>
-            )}
-            <View style={styles.primary}>
-              {call.phase === "incoming" ? (
-                <>
-                  <Control
-                    icon="hangup"
-                    label="Decline"
-                    tint="#BA304B"
-                    onPress={() => {
-                      calling.end();
-                      close();
-                    }}
-                  />
-                  <Control
-                    icon="phone"
-                    label="Answer"
-                    tint="#087959"
-                    onPress={calling.accept}
-                  />
-                </>
-              ) : call.phase === "ended" ? (
-                <>
-                  <Control icon="chat" label="Message" onPress={openChat} />
-                  <Control icon="hangup" label="Done" onPress={close} />
-                </>
-              ) : call.phase !== "ending" ? (
-                <Control
-                  icon="hangup"
-                  label="End call"
-                  iconOnly
-                  tint="#BA304B"
-                  onPress={() => {
-                    calling.end();
-                    close();
-                  }}
-                />
-              ) : null}
-            </View>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-      {connected && (
+          </ScrollView>
+        </SafeAreaView>
+      )}
+      {focused && connected && (
         <GlassSheet open={showOutput} onOpenChange={setShowOutput}>
           <GlassSheetContent>
             <GlassSheetTitle>Audio output</GlassSheetTitle>
@@ -326,11 +458,38 @@ export function CallScreen({
           </GlassSheetContent>
         </GlassSheet>
       )}
+      {focused && connected && consent && (
+        <GlassSheet
+          open
+          onOpenChange={(open) => {
+            if (!open) respond("deny");
+          }}
+        >
+          <GlassSheetContent>
+            <GlassSheetTitle>{labels.consent}</GlassSheetTitle>
+            <View style={styles.consent}>
+              <Ink>{labels.wants(name)}</Ink>
+              {video?.error === "preference" && (
+                <Ink kind="caption">{videoError}</Ink>
+              )}
+              <Action variant="prominent" onPress={() => respond("allow-once")}>
+                {labels.once}
+              </Action>
+              {consent.savedContact && (
+                <Action onPress={() => respond("allow-always")}>
+                  {labels.always}
+                </Action>
+              )}
+              <Action onPress={() => respond("deny")}>{labels.deny}</Action>
+            </View>
+          </GlassSheetContent>
+        </GlassSheet>
+      )}
     </View>
   );
 }
 
-function Elapsed({ since }: { since: number }) {
+function Elapsed({ since, compact }: { since: number; compact?: boolean }) {
   const [now, update] = useState(Date.now);
   useEffect(() => {
     const interval = setInterval(() => update(Date.now()), 1_000);
@@ -338,7 +497,7 @@ function Elapsed({ since }: { since: number }) {
   }, []);
   const seconds = Math.max(0, Math.floor((now - since) / 1_000));
   return (
-    <Text style={styles.timer}>
+    <Text style={[styles.timer, compact && styles.videoTimer]}>
       {String(Math.floor(seconds / 60)).padStart(2, "0")}:
       {String(seconds % 60).padStart(2, "0")}
     </Text>
@@ -403,7 +562,7 @@ function Control({
         style={[
           styles.button,
           tint && styles.strong,
-          compact && styles.compact,
+          compact && (tint ? styles.videoEnd : styles.compact),
         ]}
       >
         <Icon name={icon} size={tint ? 29 : 23} color="#F9FAFF" />
@@ -513,6 +672,36 @@ const styles = StyleSheet.create({
   },
   strong: { width: 74, height: 74 },
   compact: { width: 44, height: 44 },
+  videoEnd: { width: 56, height: 52 },
+  videoControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 36,
+    padding: 5,
+  },
+  videoHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 36,
+    padding: 6,
+    paddingEnd: 14,
+  },
+  videoIdentity: { flex: 1 },
+  videoName: { color: "#F6F8FF", fontSize: 16, fontWeight: "700" },
+  videoCaption: { color: "#D6DEF4", fontSize: 12 },
+  videoTimer: { fontSize: 16 },
+  videoNotice: {
+    color: "#FFF",
+    backgroundColor: "#151D31EE",
+    borderRadius: 22,
+    overflow: "hidden",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    textAlign: "center",
+  },
+  consent: { gap: 10, paddingVertical: 14 },
   pressed: { opacity: 0.7 },
   route: { paddingVertical: space.md, minHeight: 44, justifyContent: "center" },
   routeLabel: { fontSize: 16, fontWeight: "600" },

@@ -11,6 +11,8 @@ import {
   proofKind,
   verifyPeerProof,
 } from "./protocol";
+import { bindTrysteroVideo } from "./trystero-video";
+import type { VideoControls } from "./video";
 
 export function randomCallId() {
   const bytes = getRandomValues(new Uint8Array(32));
@@ -108,6 +110,20 @@ function stableSignaling(connection: RTCPeerConnection, signal: AbortSignal) {
   });
 }
 
+function waitForForeground(signal: AbortSignal) {
+  if (AppState.currentState === "active") return Promise.resolve();
+  return pending<void>(signal, (resolve) => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      signal.removeEventListener("abort", dispose);
+      dispose();
+      resolve();
+    });
+    const dispose = () => subscription.remove();
+    signal.addEventListener("abort", dispose, { once: true });
+  });
+}
+
 async function requestMicrophone(
   signal: AbortSignal,
   onPrompt: (open: boolean) => void,
@@ -118,24 +134,19 @@ async function requestMicrophone(
   try {
     if (!(await askForMicrophone())) throw new Error("microphone-permission");
     signal.throwIfAborted();
-    if (AppState.currentState !== "active") {
-      await pending<void>(signal, (resolve) => {
-        const subscription = AppState.addEventListener("change", (state) => {
-          if (state !== "active") return;
-          signal.removeEventListener("abort", dispose);
-          dispose();
-          resolve();
-        });
-        const dispose = () => subscription.remove();
-        signal.addEventListener("abort", dispose, { once: true });
-      });
-    }
+    await waitForForeground(signal);
   } finally {
     onPrompt(false);
   }
 }
 
-export function trysteroMedia(signer: NDKSigner): OpenMedia {
+export function trysteroMedia(
+  signer: NDKSigner,
+  videoPolicy: {
+    get: (peerKey: string) => "unknown" | "ask" | "always";
+    allow: (peerKey: string) => boolean;
+  },
+): OpenMedia {
   const localKey = signer.userSync.pubkey;
   return async ({
     invite,
@@ -144,9 +155,13 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
     acceptance,
     onDisconnect,
     onHangup,
+    onRemoteMute,
     onReconnecting,
     onRouting,
     onMicrophonePrompt,
+    onCameraPrompt,
+    onAuthenticated,
+    onVideo,
   }) => {
     const rtc = await initializeCallingRuntime();
     signal.throwIfAborted();
@@ -162,14 +177,17 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
     );
     let localStream: NativeStream | undefined;
     let audio: ReturnType<typeof openCallAudio> | undefined;
+    let video: VideoControls | undefined;
     let closed = false;
     const subscriptions: (() => void)[] = [];
     function close() {
       if (closed) return;
       closed = true;
+      video?.close();
       signal.removeEventListener("abort", close);
       for (const unsubscribe of subscriptions) unsubscribe();
       for (const track of localStream?.getTracks() ?? []) track.stop();
+      localStream?.release();
       audio?.close();
       void room.leave().catch(() => undefined);
     }
@@ -181,6 +199,7 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         kind: "request",
       });
       const hangup = room.makeAction<string>("boop-end");
+      const muteState = room.makeAction<boolean>("boop-mute");
       const confirmMedia = room.makeAction<string>("boop-media");
       function transcript(remote: string, challenge: string, signing: boolean) {
         const connection = room.getPeers()[remote]?.connection;
@@ -215,25 +234,31 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         }),
       );
       let authenticated: string | undefined;
+      let verifiedConnection: RTCPeerConnection | undefined;
+      const isDirect = (id: string) =>
+        !closed &&
+        authenticated === id &&
+        !!verifiedConnection &&
+        room.getPeers()[id]?.connection === verifiedConnection;
       let peerReady = false;
       let confirmReady: (() => void) | undefined;
       subscriptions.push(
         confirmMedia.onMessage((data, context) => {
-          if (data !== "ready" || authenticated !== context.peerId) return;
+          if (data !== "ready" || !isDirect(context.peerId)) return;
           peerReady = true;
           confirmReady?.();
         }),
       );
       subscriptions.push(
         hangup.onMessage((data, context) => {
-          if (data === "end" && authenticated === context.peerId) onHangup();
+          if (data === "end" && isDirect(context.peerId)) onHangup();
         }),
       );
       const remoteAudio = new Map<string, MediaStream>();
       let remoteReady: (() => void) | undefined;
       subscriptions.push(
         room.onPeerStream((stream, context) => {
-          const valid = authenticated === context.peerId;
+          const valid = isDirect(context.peerId);
           const tracks = stream.getAudioTracks();
           for (const track of tracks) track.enabled = valid;
           if (!tracks.some((track) => track.readyState === "live")) return;
@@ -258,6 +283,8 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         }),
       );
       const challenge = randomCallId();
+      const connection = room.getPeers()[peerId]?.connection;
+      if (!connection) throw new Error("Missing direct connection");
       const expected = transcript(peerId, challenge, false);
       const raw = await exchange.request(challenge, {
         target: peerId,
@@ -276,15 +303,28 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         transcript(peerId, challenge, false) !== expected
       )
         throw new Error("The peer did not prove its identity");
-      // Overlap room setup and peer proof with acceptance publication.
-      // Capture and playback still wait for acceptance and verified identity.
+      signal.throwIfAborted();
+      if (room.getPeers()[peerId]?.connection !== connection)
+        throw new Error("The authenticated connection changed");
+      authenticated = peerId;
+      verifiedConnection = connection;
+      const notifyHangup = () => hangup.send("end", { target: peerId });
+      onAuthenticated({ notifyHangup });
+      // The proof can finish while the acceptance publication is in flight.
+      // Capture and playback still wait for the relay acknowledgment.
       if (!(await acceptance)) throw new Error("Acceptance was not published");
       signal.throwIfAborted();
-      authenticated = peerId;
-      const connection = room.getPeers()[peerId]?.connection;
-      if (!connection) throw new Error("Missing direct connection");
-      const handleIce = () =>
+      if (!isDirect(peerId))
+        throw new Error("The authenticated connection changed");
+      subscriptions.push(
+        muteState.onMessage((value, context) => {
+          if (typeof value === "boolean" && isDirect(context.peerId))
+            onRemoteMute(value);
+        }),
+      );
+      const handleIce = () => {
         onReconnecting(connection.iceConnectionState === "disconnected");
+      };
       connection.addEventListener("iceconnectionstatechange", handleIce);
       subscriptions.push(() =>
         connection.removeEventListener("iceconnectionstatechange", handleIce),
@@ -340,9 +380,27 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         }),
       ]);
       signal.throwIfAborted();
+      video = bindTrysteroVideo({
+        rtc,
+        room,
+        connection,
+        callId: invite.callId,
+        coordinator: invite.senderKey === localKey,
+        peerId,
+        signal,
+        subscriptions,
+        isDirect,
+        randomCallId,
+        waitForForeground,
+        onCameraPrompt,
+        onVideo,
+        getPolicy: () => videoPolicy.get(peerKey),
+        allowAlways: () => videoPolicy.allow(peerKey),
+      });
       return {
         close,
-        notifyHangup: () => hangup.send("end", { target: peerId }),
+        notifyHangup,
+        video,
         async inspect() {
           const stats = await connection.getStats();
           let sentPackets = 0;
@@ -370,6 +428,10 @@ export function trysteroMedia(signer: NDKSigner): OpenMedia {
         },
         mute: (muted) => {
           for (const track of tracks) track.enabled = !muted;
+          if (isDirect(peerId))
+            void muteState
+              .send(muted, { target: peerId, signal })
+              .catch(() => undefined);
         },
         route: async (value) => audio?.route(value),
       };

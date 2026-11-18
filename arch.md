@@ -1,7 +1,8 @@
 # Architecture — P2P Phone
 
 > **Status:** Active architecture specification  
-> **Last updated:** 2026-11-18  
+> **Last updated:** 2026-11-19
+>
 > **Stack:** Expo, React Native, TypeScript, Bun, Nostr, Trystero
 
 ## 1. Project Overview
@@ -14,7 +15,7 @@ The application combines three familiar experiences:
 - **Messages:** Private conversations resembling iMessage, WhatsApp, and Telegram.
 - **Contacts:** A personal address book with profiles, search, and direct calling/messaging.
 
-The application uses Nostr for identity, encrypted messaging, and call invitations, while Trystero and WebRTC establish direct peer-to-peer audio connections.
+The application uses Nostr for identity, encrypted messaging, and call setup. Trystero and WebRTC carry direct audio and optional camera sharing.
 
 There is no proprietary backend or centralized account service.
 
@@ -27,7 +28,7 @@ The interface should feel like a premium, modern native phone application, with 
 - No application backend, centralized API, or hosted database.
 - No Firebase, Supabase, proprietary signaling services, or application-managed Push infrastructure.
 - Public, replaceable Nostr relays provide message transport and signaling.
-- Audio travels directly between peers using WebRTC whenever direct connectivity is possible.
+- Audio and video travel directly between peers using WebRTC.
 - No mandatory TURN infrastructure. Failed direct connectivity is an accepted limitation of the initial product.
 - The application must remain independent of any specific Nostr relay.
 
@@ -140,7 +141,7 @@ All glass usage should go through consistent application-level design primitives
 | `@kesha-antonov/react-native-chat`    | ChatList, Chat, ChatHeader, and chat interactions |
 | `@nostr-dev-kit/mobile`               | React Native integration, if compatible           |
 | `@nostr-dev-kit/react`                | Optional React integrations when useful           |
-| `trystero`                            | P2P connection management and audio streams       |
+| `trystero`                            | P2P connections, data channels, and media         |
 | `react-native-webrtc`                 | Native WebRTC                                     |
 | `@config-plugins/react-native-webrtc` | Expo native WebRTC configuration                  |
 | `react-native-incall-manager`         | Audio routing, ringtone, proximity handling       |
@@ -262,11 +263,11 @@ Group chats, media attachments, voice messages, and advanced synchronization are
 
 ## 7. Calling architecture
 
-Boop supports one foreground voice call per identity. The application-level controller in `src/core/calling/controller.ts` owns each call and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
+Boop supports one foreground call per device. Every call starts with audio. Both participants can share or stop their own camera independently during that call. The controller in `src/core/calling/controller.ts` owns the session and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
 
 ### Private call control
 
-`src/core/calling/signals.ts` defines seven version 1 signals: invite, ringing, accept, reject, cancel, busy, and end. Each signal carries the caller or responder's public key, the recipient's public key, a call ID, a random nonce, a creation timestamp, and an expiration timestamp. Invites also carry a random room ID and a 256-bit room password. The maximum signal lifetime is 35 seconds.
+`src/core/calling/signals.ts` defines relay signals for invite, ringing, accept, reject, cancel, busy, and setup termination. The wire name for setup termination is `call.end`. Each signal carries the call ID, both public keys, a nonce, a creation timestamp, and an expiration timestamp. Invites also carry a random room ID and a 256-bit room password. The maximum signal lifetime is 35 seconds.
 
 The messaging service sends inner kind 24880 rumors through the existing NIP-17 inbox discovery and NIP-44/NIP-59 envelope code. The dispatcher verifies the outer event and seal, checks the inner event hash and signer, then validates the inner payload. Call events go to the call controller and make no chat rows or unread changes. Relay acknowledgment indicates relay acceptance. Only the peer's authenticated ringing signal starts ringback.
 
@@ -276,17 +277,33 @@ The messaging service sends inner kind 24880 rumors through the existing NIP-17 
 
 Each peer challenges the other over the direct Trystero data channel. The signed Nostr proof binds the challenge, both identity keys, both Trystero peer IDs, the room and call IDs, and the actual WebRTC certificate fingerprints. The transport requires the expected signature before capturing or sending microphone audio. The caller attaches audio first to avoid overlapping WebRTC offers. The controller starts elapsed time after both peers confirm receiving an audio track.
 
+An accepted call switches permanently to direct application control as soon as the transport verifies the peer. The controller ignores later relay control for that call. Hangup and microphone state use targeted Trystero actions. Connection status comes from the native peer connection. A disconnected data channel ends locally when recovery fails. Trystero can still use its own relay strategy internally. SQLite stores local call metadata only.
+
+### Camera sharing
+
+`src/core/calling/video.ts` owns camera and consent state for the authenticated session. A local camera tap requests OS permission and opens a native preview. A targeted version 1 Trystero RPC carries the call ID and a monotonically increasing camera attempt number. A matching approval permits the sender to attach the track. A stop action invalidates that attempt, and the receiver rejects duplicate offers and stale approvals. Consent requests expire after 30 seconds.
+
+The receiving user can deny video, approve video for the current call, or save approval for a verified contact. The contact row stores the permanent decision under the peer's Nostr public key. Contact Details can change that preference. Incoming requests and approvals never open the recipient's camera.
+
+Camera capture uses React Native WebRTC at a target of 640 × 480 and 24 frames per second. The camera stream carries matching call and attempt metadata. The authenticated peer receives it in the existing room and connection. The caller coordinates bounded turns for track changes to avoid simultaneous SDP offers. Trystero manages the offer and answer. Camera stop disables capture immediately and removes the stream through Trystero. Front and rear camera switching applies constraints to the existing track. The native transport binding is in `src/core/calling/trystero-video.ts`.
+
+The receiver displays video after the native receiver reports decoded frames. A direct acknowledgment confirms that the sender's video reached the receiver. A stalled video feed leaves the stage while audio can continue. The call screen shows one feed fullscreen or shows the remote feed with a draggable local preview by default. Tapping the preview swaps the feeds. Stage choice and preview corner live in the call session. Video overlays hide after inactivity and stay visible during dialogs, errors, or screen-reader use.
+
+The fullscreen stage uses `RTCView`. iOS also uses `RTCView` for the floating preview. Android's `RTCView` uses a separately composited `SurfaceView`. The local Expo module in `modules/boop-camera-preview` uses a `TextureView` to clip floating video to its rounded outline. It attaches a renderer to the existing WebRTC track and shares the library's EGL context. The module uses React Native WebRTC 155's package-level stream lookup and executor. Verify these two interfaces when upgrading WebRTC. Android development clients need a native rebuild to include the module.
+
 ### Lifecycle and audio
 
 The controller tracks calling, ringing, incoming, connecting, connected, and terminal states. It bounds waits, ignores late responses, and suppresses duplicate and reordered invitations within their validity window. When both people call at the same time, the lower public key keeps its outgoing call. The other client takes the incoming call. Leaving the call screen preserves the session. Moving the app to the background stops the call.
 
 `src/core/calling/native-audio.ts` owns ringtone, ringback, audio focus, and route selection. On Android the selector uses InCallManager's native device list and current route events. On iOS the speaker override can be enabled or released, and AVAudioSession manages accessory routing. InCallManager controls proximity where the OS supports it. Muting disables the actual local audio tracks.
 
-Hangup mutes the microphone immediately and sends an authenticated notice over the data channel and an encrypted end signal through Nostr. Terminal cleanup aborts pending work, stops tracks and tones, leaves the room, and releases the audio session. SQLite stores one final history entry per call ID, with the start, answer and end times, outcome, and connected duration. The migration keeps the original history rows.
+Hangup stops local capture and sends an authenticated notice over the data channel. Terminal cleanup aborts camera operations, dismisses consent, stops tracks and tones, leaves the room, and releases the audio session. SQLite stores one final history entry per call ID with start, answer, end, outcome, and connected duration.
 
 ### Background and network limits
 
 Both clients must be open and able to reach a compatible inbox relay. Suspended and terminated clients have no call wake-up mechanism. Direct ICE uses Trystero's supported recovery and public STUN. Networks that require a TURN relay can fail to connect. The call does not retry indefinitely.
+
+Boop pauses the background teardown check while the app owns a native microphone or camera permission prompt. After that prompt, backgrounding the app ends the call and releases both capture devices. Navigating to another Boop screen preserves the call and removes the fullscreen video views until the user returns. The floating preview is inside Boop's call screen.
 
 ## 8. Local Database
 

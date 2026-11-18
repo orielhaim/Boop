@@ -12,6 +12,9 @@ export const contacts = sqliteTable("contacts", {
   name: text().notNull(),
   avatarUrl: text("avatar_url"),
   favorite: integer({ mode: "boolean" }).notNull().default(false),
+  allowIncomingVideo: integer("allow_incoming_video", { mode: "boolean" })
+    .notNull()
+    .default(false),
 });
 
 export const conversations = sqliteTable("conversations", {
