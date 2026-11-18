@@ -1,3 +1,7 @@
+# Project architecture
+
+Read `arch.md` at the repository root in full before making structural changes. It is the source of truth for the project.
+
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
 ## Expo has changed — do not trust your training data
@@ -23,9 +27,12 @@ bunx expo install --fix      # fix incompatible package versions
 
 Run lint and typecheck before declaring any task done.
 
+also use `bun fmt` to format. instead of prettier/biome etc.
+
 ## Navigation & Routing
 
 - Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
+- For changes to Messages, read the messaging section of `arch.md` and the installed Chat Kit API types. Use `ChatList`, `Chat`, and `ChatHeader` for presentation and keep durable state in SQLite.
 - Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
 - Docs: https://docs.expo.dev/router/introduction.md
 

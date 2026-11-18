@@ -1,0 +1,159 @@
+import type NDK from "@nostr-dev-kit/ndk";
+import {
+  giftWrap,
+  NDKEvent,
+  type NDKSigner,
+  NDKUser,
+} from "@nostr-dev-kit/ndk";
+import { getEventHash, verifyEvent } from "nostr-tools/pure";
+import { z } from "zod";
+import { publicKeySchema } from "../identity/keys";
+
+export const messageKind = 14;
+export const reactionKind = 7;
+export const giftWrapKind = 1059;
+export const inboxListKind = 10050;
+export const maxMessageLength = 4_000;
+const maxEnvelopeLength = 90_000;
+const eventId = z.string().regex(/^[0-9a-f]{64}$/);
+const event = z.object({
+  id: eventId,
+  pubkey: eventId,
+  kind: z.number().int().nonnegative(),
+  created_at: z.number().int().nonnegative(),
+  tags: z.array(z.array(z.string().max(2_048)).max(8)).max(64),
+  content: z.string().max(maxEnvelopeLength),
+});
+const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
+const rumorSchema = event.extend({
+  kind: z.union([z.literal(messageKind), z.literal(reactionKind)]),
+  sig: z.undefined().optional(),
+});
+
+export type Rumor = z.infer<typeof rumorSchema>;
+type RumorCore = Omit<Rumor, "id" | "sig">;
+
+export type PrivateEvent = {
+  id: string;
+  peerKey: string;
+  senderKey: string;
+  recipientKey: string;
+  sentAt: number;
+} & (
+  | { type: "message"; body: string; replyTo: string | null }
+  | { type: "reaction"; emoji: string; targetEventId: string }
+);
+
+export function createRumor(core: RumorCore): Rumor {
+  return { ...core, id: getEventHash(core) };
+}
+
+export function parseRumor(input: unknown): Rumor | null {
+  const parsed = rumorSchema.safeParse(input);
+  if (!parsed.success || getEventHash(parsed.data) !== parsed.data.id)
+    return null;
+  return parsed.data;
+}
+
+// Parse to a new object, so upstream verification caches cannot reuse another
+// event's verdict for an attacker-supplied copy of an ID.
+export function verifiedEvent(input: unknown) {
+  const parsed = signedEvent.safeParse(input);
+  return parsed.success && verifyEvent(parsed.data) ? parsed.data : null;
+}
+
+export async function wrapRumor(
+  ndk: NDK,
+  rumor: Rumor,
+  recipient: string,
+  signer: NDKSigner,
+) {
+  return giftWrap(
+    new NDKEvent(ndk, rumor),
+    new NDKUser({ pubkey: recipient }),
+    signer,
+  );
+}
+
+export async function unwrapPrivateEvent(
+  input: unknown,
+  signer: NDKSigner,
+): Promise<PrivateEvent | null> {
+  const myKey = signer.userSync.pubkey;
+  const wrap = verifiedEvent(input);
+  if (
+    wrap?.kind !== giftWrapKind ||
+    !wrap.tags.some(([tag, key]) => tag === "p" && key === myKey)
+  ) {
+    return null;
+  }
+  try {
+    const payload = await signer.decrypt(
+      new NDKUser({ pubkey: wrap.pubkey }),
+      wrap.content,
+      "nip44",
+    );
+    const seal = verifiedEvent(JSON.parse(payload));
+    if (seal?.kind !== 13 || seal.tags.length > 0) return null;
+
+    const plaintext = await signer.decrypt(
+      new NDKUser({ pubkey: seal.pubkey }),
+      seal.content,
+      "nip44",
+    );
+    const rumor = parseRumor(JSON.parse(plaintext));
+    if (!rumor || rumor.pubkey !== seal.pubkey) return null;
+
+    return privateEvent(rumor, myKey);
+  } catch {
+    return null;
+  }
+}
+
+function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
+  const participants = new Set(
+    rumor.tags.filter(([key]) => key === "p").map((tag) => tag[1]),
+  );
+  participants.add(rumor.pubkey);
+  if (participants.size !== 2 || !participants.has(myKey)) return null;
+
+  const peerKey = [...participants].find((key) => key !== myKey);
+  if (!peerKey || !publicKeySchema.safeParse(peerKey).success) return null;
+
+  const target = rumor.tags.findLast(
+    ([tag, id]) => tag === "e" && eventId.safeParse(id).success,
+  )?.[1];
+  const base = {
+    id: rumor.id,
+    peerKey,
+    senderKey: rumor.pubkey,
+    recipientKey: rumor.pubkey === myKey ? peerKey : myKey,
+    sentAt: rumor.created_at * 1_000,
+  };
+  if (base.sentAt > Date.now() + 5 * 60_000) return null;
+  if (rumor.kind === reactionKind) {
+    const emoji = parseReaction(rumor.content);
+    return target && emoji
+      ? { ...base, type: "reaction", targetEventId: target, emoji }
+      : null;
+  }
+  if (!rumor.content.trim() || rumor.content.length > 16_000) return null;
+  return {
+    ...base,
+    type: "message",
+    body: rumor.content,
+    replyTo: target ?? null,
+  };
+}
+
+export function parseReaction(value: string): string | null {
+  if (value === "" || value === "+") return "👍";
+  if (value === "-") return "👎";
+  // Standard Unicode emoji only. Remote custom emoji images could track recipients.
+  const emoji =
+    /^(?:\p{Emoji}|\u200d|\ufe0e|\ufe0f|\u20e3|[\u{E0020}-\u{E007F}])+$/u;
+  const emojiBase = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u;
+  return value.length <= 48 && emoji.test(value) && emojiBase.test(value)
+    ? value
+    : null;
+}

@@ -134,16 +134,16 @@ All glass usage should go through consistent application-level design primitives
 
 ### Messaging and network
 
-| Package                               | Responsibility                               |
-| ------------------------------------- | -------------------------------------------- |
-| `@nostr-dev-kit/ndk`                  | Nostr connections, identities, subscriptions |
-| `@nostr-dev-kit/messages`             | NIP-17 messaging and conversations           |
-| `@nostr-dev-kit/mobile`               | React Native integration, if compatible      |
-| `@nostr-dev-kit/react`                | Optional React integrations when useful      |
-| `trystero`                            | P2P connection management and audio streams  |
-| `react-native-webrtc`                 | Native WebRTC                                |
-| `@config-plugins/react-native-webrtc` | Expo native WebRTC configuration             |
-| `react-native-incall-manager`         | Audio routing, ringtone, proximity handling  |
+| Package                               | Responsibility                                    |
+| ------------------------------------- | ------------------------------------------------- |
+| `@nostr-dev-kit/ndk`                  | Nostr connections, identities, subscriptions      |
+| `@kesha-antonov/react-native-chat`    | ChatList, Chat, ChatHeader, and chat interactions |
+| `@nostr-dev-kit/mobile`               | React Native integration, if compatible           |
+| `@nostr-dev-kit/react`                | Optional React integrations when useful           |
+| `trystero`                            | P2P connection management and audio streams       |
+| `react-native-webrtc`                 | Native WebRTC                                     |
+| `@config-plugins/react-native-webrtc` | Expo native WebRTC configuration                  |
+| `react-native-incall-manager`         | Audio routing, ringtone, proximity handling       |
 
 Avoid installing competing Nostr SDK implementations unless a documented compatibility problem requires changing the selected stack.
 
@@ -164,10 +164,9 @@ Use SQLite for durable data and Zustand for transient application state. Do not 
 
 ### Additional device and presentation utilities
 
-- `@shopify/flash-list` — efficient conversation and message lists.
+- `@shopify/flash-list` — efficient contact lists.
 - `expo-image` — optimized avatars and images.
-- `expo-contacts` — optional access to device contacts.
-- `expo-camera` — scanning contact QR codes.
+- `expo-camera` — scanning public addresses for chats, calls, and contacts.
 - `react-native-qrcode-svg` — displaying identity QR codes.
 - `expo-clipboard` — copying keys, addresses, and messages.
 - `expo-localization` — language and RTL awareness.
@@ -209,9 +208,7 @@ Contacts are local application records containing:
 
 The contact name is controlled locally and takes precedence over externally published names.
 
-A device address-book entry can be linked to a Nostr identity, but ordinary phone numbers are not automatically convertible to `npub`.
-
-Do not upload the device address book.
+Contacts are Boop identities saved by public address. Calls and chats accept typed or scanned addresses directly. An unsaved caller can be added from Recents.
 
 ## 6. Messaging Architecture
 
@@ -239,6 +236,14 @@ Messages may arrive late, more than once, or out of order. Storage and synchroni
 
 Messages can be retrieved after the recipient reconnects, subject to relay retention and availability.
 
+### Chat persistence and presentation
+
+- The messaging service owns NIP-17 inbox discovery, NIP-44 encryption, NIP-59 envelopes, signing, relay acknowledgments, and foreground synchronization. It uses core NDK for relay access and established Nostr cryptography.
+- SQLite and Drizzle own messages, the pending outbox, replies, reactions, unread counts, drafts, and conversation preferences. An outgoing message keeps its local ID when publication is acknowledged. Synchronization deduplicates the inner rumor ID across relays and gift wraps.
+- Message history uses a cursor ordered by creation time and local ID. The latest page loads first, and earlier pages prepend in chronological order. Chat Kit's built-in AnimatedLegendList owns virtualization, scroll anchoring, and jump-to-message behavior.
+- Typed presentation adapters convert persisted rows into Chat Kit users, messages, quotes, reactions and conversation rows. `ChatList` presents conversations. `Chat` provides message rendering, composer, keyboard behavior, menus, and gestures. `ChatHeader` provides the detail header. Share the app's color and typography tokens through the library's appearance and theme APIs.
+- The app enables text and emoji. Private reaction additions use encrypted kind 7 rumors when the target and inbox are available. Reaction removal, deletion, read state, pinning, mute, and archive are device-local. Media requires an encrypted transfer and retrieval flow before it can be enabled.
+
 ### Initial messaging features
 
 - Private one-to-one conversations.
@@ -246,9 +251,9 @@ Messages can be retrieved after the recipient reconnects, subject to relay reten
 - Sending and receiving text.
 - Local message history.
 - Timestamps and message grouping.
-- Replying to messages.
+- Quoted replies and emoji reactions.
 - Copy and local delete.
-- Search and unread counts.
+- Conversation search, unread counts, persistent drafts, pin ordering, and archive.
 - Loading, connection, and failure states.
 
 Do not falsely display delivery or read receipts. Relay acknowledgment is not recipient delivery.
@@ -331,14 +336,15 @@ Never claim that every pair of mobile networks can establish a direct connection
 
 The initial schema should include:
 
-| Table            | Responsibility                         |
-| ---------------- | -------------------------------------- |
-| `contacts`       | Local address book and metadata        |
-| `conversations`  | Conversation summaries and local state |
-| `messages`       | Persisted messages and Nostr event IDs |
-| `call_history`   | Local call records                     |
-| `relay_settings` | Relay configuration                    |
-| `settings`       | Application preferences                |
+| Table               | Responsibility                                   |
+| ------------------- | ------------------------------------------------ |
+| `contacts`          | Local address book and metadata                  |
+| `conversations`     | Conversation summaries and local state           |
+| `messages`          | Persisted messages and Nostr event IDs           |
+| `message_reactions` | Private reaction records and local removal state |
+| `call_history`      | Local call records                               |
+| `relay_settings`    | Relay configuration                              |
+| `settings`          | Application preferences                          |
 
 Use typed migrations.
 
@@ -477,9 +483,8 @@ Additional screens:
 - Incoming call.
 - Active call.
 - Contact details.
-- New contact / scan QR.
-- Identity profile.
-- Settings and relay configuration.
+- Add contact, enter an address, or scan an address.
+- Settings with identity, preferences, and relay configuration.
 
 The dialer must work with real application identities. A numeric keypad must not imply interoperability with ordinary telephone numbers unless such an addressing system is actually implemented.
 
@@ -487,11 +492,11 @@ The dialer must work with real application identities. A numeric keypad must not
 
 - Never log private keys, plaintext secrets, or decrypted message contents.
 - Never expose private keys through URLs, analytics, crash reports, or navigation parameters.
-- Never silently upload contacts.
+- Keep contacts local to the device.
 - Validate every network-originated payload.
 - Verify identity before trusting an incoming call.
 - Do not embed private credentials in the application bundle.
-- Require explicit permission only when a feature needs microphone, camera, or device contacts.
+- Require explicit permission when a feature needs the microphone or camera.
 - Provide clear errors for missing connectivity and unavailable permissions.
 - Use established cryptographic implementations.
 

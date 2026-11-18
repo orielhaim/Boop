@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "boop",
+    "name": "Boop",
     "slug": "boop",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,35 +8,74 @@
     "scheme": "boop",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "app.boop.mobile"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#414DC3",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "output": "server",
-      "favicon": "./assets/images/favicon.png"
+      "predictiveBackGestureEnabled": true,
+      "package": "app.boop.mobile",
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_CONTACTS"
+      ]
     },
     "plugins": [
       "expo-router",
       [
+        "expo-dev-client",
+        {
+          "toolsButton": false,
+          "showMenuAtLaunch": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "backgroundColor": "#EDF3FF",
+          "dark": {
+            "backgroundColor": "#121828"
+          }
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-sqlite",
+      [
+        "expo-localization",
+        {
+          "supportedLocales": {
+            "android": ["en", "he"],
+            "ios": ["en", "he"]
+          }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "recordAudioAndroid": false,
+          "cameraPermission": "Scan a Boop address to start a chat, make a call, or add a contact.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Use the microphone for peer-to-peer audio calls.",
+          "cameraPermission": "Scan a Boop address to start a chat, make a call, or add a contact."
+        }
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "supportsRTL": true
+    },
+    "platforms": ["ios", "android"]
   }
 }
