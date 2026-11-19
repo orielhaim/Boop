@@ -2,14 +2,8 @@ import { DeviceEventEmitter, Platform } from "react-native";
 import InCallManager from "react-native-incall-manager";
 import { z } from "zod";
 import { useAppPreferences } from "@/stores/preferences";
-import type { AudioRoute, Routing } from "./controller";
+import { type AudioRoute, audioRoute, type Routing } from "./controller";
 
-const route = z.enum([
-  "EARPIECE",
-  "SPEAKER_PHONE",
-  "BLUETOOTH",
-  "WIRED_HEADSET",
-]);
 const nativeRouting = z.object({
   availableAudioDeviceList: z.string(),
   selectedAudioDevice: z.string(),
@@ -48,10 +42,10 @@ export function openCallAudio(
     if (closed || !parsed.success) return;
     try {
       const available = z
-        .array(route)
+        .array(audioRoute)
         .parse(JSON.parse(parsed.data.availableAudioDeviceList));
       const selected =
-        route.safeParse(parsed.data.selectedAudioDevice).data ?? null;
+        audioRoute.safeParse(parsed.data.selectedAudioDevice).data ?? null;
       onRouting({ selected, available });
     } catch {
       // Ignore incomplete routing notifications from the native bridge.

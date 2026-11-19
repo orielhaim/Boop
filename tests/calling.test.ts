@@ -120,6 +120,7 @@ function pair(
   openMedia?: OpenMedia,
   connectTimeout?: number,
   acceptAcknowledgment?: Promise<boolean>,
+  backgroundAudio = false,
 ) {
   const events: CallSignal[] = [];
   const records: CallRecord[] = [];
@@ -144,6 +145,7 @@ function pair(
           const notifyHangup = async () => hangups.get(peerKey)?.();
           onAuthenticated({ notifyHangup });
           return {
+            backgroundAudio,
             close: () => {
               hangups.delete(localKey);
               closed.push(localKey);
@@ -416,4 +418,41 @@ test("the OS microphone prompt keeps the attempt pending without accepting new f
   a.end();
   deliver();
   expect(b.store.getState().call?.phase).toBe("ended");
+});
+
+test("ongoing background audio keeps the authenticated session and records one system hangup", async () => {
+  const { a, b, deliver, records, events, advance, closed } = pair(
+    undefined,
+    undefined,
+    undefined,
+    true,
+  );
+  a.dial(callee.pubkey);
+  deliver();
+  b.accept();
+  deliver();
+  await Bun.sleep(0);
+  const answered = a.store.getState().call;
+  expect(answered?.phase).toBe("connected");
+  a.setForeground(false);
+  a.receive(invitation(1_700_000_000_000));
+  expect(a.store.getState().call).toEqual(answered);
+  expect(closed).toHaveLength(0);
+  a.setForeground(true);
+  a.setForeground(false);
+  advance(12_000);
+  a.end();
+  a.end();
+  await Bun.sleep(0);
+  expect(events).toHaveLength(0);
+  expect(
+    records.map(({ durationSeconds, outcome }) => ({
+      durationSeconds,
+      outcome,
+    })),
+  ).toEqual([
+    { durationSeconds: 12, outcome: "completed" },
+    { durationSeconds: 12, outcome: "completed" },
+  ]);
+  expect(closed).toHaveLength(2);
 });

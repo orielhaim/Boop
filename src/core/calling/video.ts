@@ -11,6 +11,7 @@ export type VideoError =
   | "timeout"
   | "transmission"
   | "switch"
+  | "background"
   | "preference";
 type Feed = { url: string; facing: CameraFacing };
 type LocalVideo =
@@ -73,6 +74,7 @@ export type VideoControls = Pick<
   ReturnType<typeof createVideoSession>,
   | "enable"
   | "disable"
+  | "suspendCamera"
   | "switchCamera"
   | "respond"
   | "swap"
@@ -87,6 +89,7 @@ export function createVideoSession({
   stop,
   policy,
   allowAlways,
+  foreground = () => true,
   update,
   timeout = consentTimeout,
 }: {
@@ -96,6 +99,7 @@ export function createVideoSession({
   stop: (message: Stop) => void;
   policy: () => "unknown" | "ask" | "always";
   allowAlways: () => boolean;
+  foreground?: () => boolean;
   update: (state: VideoState | null) => void;
   timeout?: number;
 }) {
@@ -237,7 +241,7 @@ export function createVideoSession({
     remoteSequence = data.sequence;
     resetRemote();
     const preference = policy();
-    if (allowOnce || preference === "always") {
+    if ((allowOnce && foreground()) || preference === "always") {
       show({ remote: { phase: "authorized", sequence: data.sequence } });
       return { ...fields(data.sequence), allowed: true };
     }
@@ -269,6 +273,9 @@ export function createVideoSession({
   return {
     enable,
     disable: () => disable(),
+    suspendCamera: () => {
+      if (local) disable("background");
+    },
     close,
     initialize: () => show({}),
     async switchCamera() {

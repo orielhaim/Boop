@@ -32,6 +32,7 @@ import {
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Avatar, Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import type { AudioRoute, CallView } from "@/core/calling/controller";
+import { systemRemoteVideo } from "@/core/calling/system-call-state";
 import { type VideoDecision, videoLayout } from "@/core/calling/video";
 import { useLocal } from "@/services/local";
 import { space, spring, useTheme } from "@/theme";
@@ -82,7 +83,7 @@ export function CallScreen({
   close: () => void;
   focused: boolean;
 }) {
-  const { calling } = useLocal();
+  const { calling, lock } = useLocal();
   const video = useStore(calling.store, (state) => state.video);
   const labels = useVideoLabels();
   const [showOutput, setShowOutput] = useState(false);
@@ -166,6 +167,11 @@ export function CallScreen({
         <VideoStage
           stageUrl={layout.stageUrl}
           previewUrl={layout.previewUrl}
+          systemVideoUrl={systemRemoteVideo(
+            call,
+            video,
+            lock.getState().enabled,
+          )}
           mirrorStage={layout.source === "local" && layout.mirrorLocal}
           mirrorPreview={layout.source === "remote" && layout.mirrorLocal}
           corner={video.corner}

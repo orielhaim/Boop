@@ -9,9 +9,10 @@ import { useLocal } from "@/services/local";
 import { useVideoLabels } from "./video-labels";
 
 export function CallIndicator() {
-  const { calling } = useLocal();
+  const { calling, nativeOpen } = useLocal();
   const call = useStore(calling.store, (state) => state.call);
   const video = useStore(calling.store, (state) => state.video);
+  const reopen = useStore(nativeOpen, (state) => state.id);
   const labels = useVideoLabels();
   const pathname = usePathname();
   const navigation = useRootNavigationState();
@@ -31,6 +32,15 @@ export function CallIndicator() {
       params: { key: call.peerKey, callId: call.id },
     });
   }, [call, navigation?.key]);
+  useEffect(() => {
+    if (!navigation?.key || !call || call.id !== reopen) return;
+    nativeOpen.setState({ id: null });
+    if (pathname === `/call/${call.peerKey}`) return;
+    router.navigate({
+      pathname: "/call/[key]",
+      params: { key: call.peerKey, callId: call.id },
+    });
+  }, [call, nativeOpen, navigation?.key, pathname, reopen]);
 
   if (!call || call.phase === "ended" || pathname === `/call/${call.peerKey}`)
     return null;

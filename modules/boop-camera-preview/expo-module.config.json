@@ -1,6 +1,9 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["com.oney.WebRTCModule.BoopCameraPreviewModule"]
+    "modules": [
+      "com.oney.WebRTCModule.BoopCameraPreviewModule",
+      "com.oney.WebRTCModule.BoopSystemCallingModule"
+    ]
   }
 }

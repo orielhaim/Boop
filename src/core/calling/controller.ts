@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { createStore } from "zustand/vanilla";
 import { publicKeySchema } from "../identity/keys";
 import {
@@ -17,8 +18,13 @@ export type Outcome =
   | "unanswered"
   | "failed"
   | "remote-disconnected";
-export type AudioRoute =
-  "EARPIECE" | "SPEAKER_PHONE" | "BLUETOOTH" | "WIRED_HEADSET";
+export const audioRoute = z.enum([
+  "EARPIECE",
+  "SPEAKER_PHONE",
+  "BLUETOOTH",
+  "WIRED_HEADSET",
+]);
+export type AudioRoute = z.infer<typeof audioRoute>;
 export type Routing = { available: AudioRoute[]; selected: AudioRoute | null };
 export type CallRecord = {
   id: string;
@@ -61,6 +67,7 @@ type Attempt = {
 };
 
 export type CallMedia = {
+  backgroundAudio?: boolean;
   close(): void;
   mute(value: boolean): void;
   route(value: AudioRoute): Promise<void>;
@@ -426,6 +433,14 @@ export function createCallController({
       available = value;
       if (
         !value &&
+        active?.media?.backgroundAudio &&
+        active.answeredAt !== null
+      ) {
+        if (!active.cameraPrompt) active.media.video?.suspendCamera();
+        return;
+      }
+      if (
+        !value &&
         active &&
         !active.microphonePrompt &&
         !active.cameraPrompt
@@ -437,6 +452,12 @@ export function createCallController({
           attempt.answeredAt === null ? "cancelled" : "remote-disconnected",
         );
       }
+    },
+    systemInterrupted(id: string) {
+      if (active?.base.id !== id) return;
+      const attempt = active;
+      void attempt.notifyHangup?.().catch(() => undefined);
+      finish(attempt, "failed", "The operating system interrupted the call.");
     },
     dial(peerKey: string) {
       if (

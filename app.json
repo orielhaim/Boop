@@ -76,7 +76,8 @@
       ],
       "expo-font",
       "react-native-quick-crypto",
-      "./plugins/with-call-tones.js"
+      "./plugins/with-call-tones.js",
+      "./plugins/with-system-calling.js"
     ],
     "experiments": {
       "typedRoutes": true,

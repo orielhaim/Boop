@@ -1,0 +1,11 @@
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <service
+      android:name="com.oney.WebRTCModule.OngoingCallService"
+      android:exported="false"
+      android:foregroundServiceType="phoneCall|microphone"
+      android:stopWithTask="false" />
+    <receiver android:name="com.oney.WebRTCModule.EndCallReceiver" android:exported="false" />
+  </application>
+</manifest>

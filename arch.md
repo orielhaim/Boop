@@ -275,7 +275,7 @@ Group chats, media attachments, voice messages, and advanced synchronization are
 
 ## 7. Calling architecture
 
-Boop supports one foreground call per device. Every call starts with audio. Both participants can share or stop their own camera independently during that call. The controller in `src/core/calling/controller.ts` owns the session and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
+Boop supports one call per device. Call setup requires an active app. A connected call can continue in the background on supported devices. Every call starts with audio. Both participants can share or stop their own camera independently during that call. The controller in `src/core/calling/controller.ts` owns the session and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
 
 ### Private call control
 
@@ -305,17 +305,29 @@ The fullscreen stage uses `RTCView`. iOS also uses `RTCView` for the floating pr
 
 ### Lifecycle and audio
 
-The controller tracks calling, ringing, incoming, connecting, connected, and terminal states. It bounds waits, ignores late responses, and suppresses duplicate and reordered invitations within their validity window. When both people call at the same time, the lower public key keeps its outgoing call. The other client takes the incoming call. Leaving the call screen preserves the session. Moving the app to the background stops the call.
+The controller tracks calling, ringing, incoming, connecting, connected, and terminal states. It bounds waits, ignores late responses, and suppresses duplicate and reordered invitations within their validity window. When both people call at the same time, the lower public key keeps its outgoing call. The other client takes the incoming call. Navigation and system presentation changes preserve a connected session.
 
-`src/core/calling/native-audio.ts` owns ringtone, ringback, audio focus, and route selection. On Android the selector uses InCallManager's native device list and current route events. On iOS the speaker override can be enabled or released, and AVAudioSession manages accessory routing. InCallManager controls proximity where the OS supports it. Muting disables the actual local audio tracks.
+`src/core/calling/native-audio.ts` owns ringtone and ringback. Android uses Core-Telecom for active audio focus and route selection, including speaker and available wired and Bluetooth endpoints. A device where registration fails uses the existing InCallManager foreground audio path. iOS uses the existing InCallManager play-and-record voice chat session with native WebRTC capture and playback. AVAudioSession manages accessory routing. Muting disables the actual local audio tracks.
 
 Hangup stops local capture and sends an authenticated notice over the data channel. Terminal cleanup aborts camera operations, dismisses consent, stops tracks and tones, leaves the room, and releases the audio session. SQLite stores one final history entry per call ID with start, answer, end, outcome, and connected duration.
 
 ### Background and network limits
 
-Both clients must be open and able to reach a compatible inbox relay. Suspended and terminated clients have no call wake-up mechanism. Direct ICE uses Trystero's supported recovery and public STUN. Networks that require a TURN relay can fail to connect. The call does not retry indefinitely.
+Both clients must be open and able to reach a compatible inbox relay during call setup. Suspended and terminated clients have no call wake-up mechanism. A terminated process cannot recover an existing call. Direct ICE uses Trystero's supported recovery and public STUN. Networks that require a TURN relay can fail to connect. The call does not retry indefinitely.
 
-Boop pauses the background teardown check while the app owns a native microphone or camera permission prompt. After that prompt, backgrounding the app ends the call and releases both capture devices. Navigating to another Boop screen preserves the call and removes the fullscreen video views until the user returns. The floating preview is inside Boop's call screen.
+Backgrounding stops inbox subscriptions and cancels unfinished calls, with an exception while the app owns its microphone permission prompt. Connected audio continues after Home or lock where the platform permits it. Boop stops outgoing camera capture on backgrounding, tells the peer over the existing direct data channel, and shows why camera sharing stopped on return. The user can restart the camera from the call screen. A video offer received while backgrounded requires foreground confirmation unless the verified contact has a saved Always Allow policy. A pending request can expire while the user is away.
+
+#### Android ongoing calls and system PiP
+
+The local Expo module in `modules/boop-camera-preview` shares the existing WebRTC TextureView renderer with the Android system call integration. `plugins/with-system-calling.js` supplies manifest permissions and Activity PiP callbacks through Expo Continuous Native Generation. AndroidX Core-Telecom 1.1 registers a self-managed call after peer authentication and microphone authorization. The app starts a `phoneCall|microphone` foreground service while visible, then starts media capture. Available route and current route changes come from Telecom. Boop supports this integration on Android 8 and later.
+
+The service posts one AndroidX CallStyle notification for the lifetime of the native registration. It uses an existing cached avatar when available and starts its chronometer at the controller's connected timestamp. The Open intent queues the matching call route through App Lock. Hang Up is an immutable broadcast scoped to the current call ID and invokes the normal direct hangup and teardown. Notification and service lifetimes end with the controller's media lease. Android 16 and later may promote the same notification when system and OEM policy allow it. Core 1.17 supplies CallStyle and the promotion API and matches the Expo SDK dependency baseline.
+
+System PiP uses stable Android framework APIs. Core PiP alpha04 can consolidate activity callbacks and add a fallback for some navigation gestures. Automatic entry, the source rectangle, and transition callbacks are available through the platform for Boop's single Activity. The module uses those APIs directly. PiP eligibility requires authenticated, authorized, decoded remote video and a connected native call. The PiP layer draws only that remote track using the existing decoder. On Android 12 and later, eligible calls allow automatic entry. On older PiP-capable devices the user-leave callback requests entry. Closing PiP or losing the last remote frames removes its presentation. Android may finish the Activity when closing PiP. The foreground service and controller preserve audio and the call can be reopened from the notification.
+
+#### iOS background audio and system PiP
+
+The config plugin enables the `audio` background mode for the existing AVAudioSession voice-call policy. The in-call screen opts the remote `RTCView` into react-native-webrtc's native AVKit video-call PiP on iOS 15 and later. The installed renderer attaches directly to the remote `RTCVideoTrack` and displays native frames through `AVSampleBufferDisplayLayer`. The remote view automatically requests PiP when leaving the fullscreen call and restores its inline presentation on foreground. Availability, restoration, lock-screen audio, and native interruption behavior require iPhone verification. Navigating away from the inline remote view on iOS removes its PiP entry point.
 
 ## 8. Local Database
 
@@ -489,7 +501,7 @@ The dialer must work with real application identities. A numeric keypad must not
 
 The root checks the SQLite App Lock policy before mounting protected routes or starting inbox subscriptions on a fresh launch. App Lock is off by default. Enabling, disabling, and unlocking each require the native authentication prompt. Android uses Class 3 biometrics and supports device credentials where Android permits the combined policy. iOS uses device-owner authentication with the configured Face ID usage description and system fallback.
 
-The lock controller tracks foreground transitions and supports immediate, one-minute, five-minute, and thirty-minute timeouts. A solid lock screen covers the router and hides its accessibility tree while locked or inactive. It opens the system prompt once per lock, with a centered Unlock action for retry after cancellation. Native app-switcher protection adds an iOS privacy blur. Android blocks window capture while App Lock is enabled. Warm deep links are dropped while protected content is obscured. The gate retains the mounted navigation and call controller after first unlock. It preserves calls during the app's native authentication prompt. The existing foreground-only call lifecycle still ends calls on ordinary backgrounding.
+The lock controller tracks foreground transitions and supports immediate, one-minute, five-minute, and thirty-minute timeouts. A solid lock screen covers the router and hides its accessibility tree while locked or inactive. It opens the system prompt once per lock, with a centered Unlock action for retry after cancellation. Native app-switcher protection adds an iOS privacy blur. Android blocks window capture while App Lock is enabled. Warm deep links are dropped while protected content is obscured. The gate retains the mounted navigation and call controller after first unlock. An ongoing audio call can continue under the gate. App Lock disables system video PiP and uses a generic identity in the Android notification. Opening the notification restores the call screen after unlock.
 
 App Lock controls access through the app interface. SecureStore still owns private key storage under the same key and accessibility policy. Biometric changes do not change the stored key. App Lock leaves the local database encryption policy unchanged. Boop has no private-key viewing or export route.
 

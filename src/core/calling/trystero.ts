@@ -1,6 +1,6 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { getRandomValues, randomUUID } from "expo-crypto";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import type { MediaStream as NativeStream } from "react-native-webrtc";
 import type { OpenMedia } from "./controller";
 import { openCallAudio } from "./native-audio";
@@ -146,6 +146,12 @@ export function trysteroMedia(
     get: (peerKey: string) => "unknown" | "ask" | "always";
     allow: (peerKey: string) => boolean;
   },
+  openSystemAudio: (
+    options: Pick<
+      Parameters<OpenMedia>[0],
+      "invite" | "peerKey" | "signal" | "onRouting"
+    >,
+  ) => Promise<ReturnType<typeof openCallAudio> | null>,
 ): OpenMedia {
   const localKey = signer.userSync.pubkey;
   return async ({
@@ -331,7 +337,14 @@ export function trysteroMedia(
       );
       await requestMicrophone(signal, onMicrophonePrompt);
       signal.throwIfAborted();
-      audio = openCallAudio(onRouting, onDisconnect);
+      const telecom = await openSystemAudio({
+        invite,
+        peerKey,
+        signal,
+        onRouting,
+      });
+      signal.throwIfAborted();
+      audio = telecom ?? openCallAudio(onRouting, onDisconnect);
       let captured: NativeStream;
       try {
         captured = await rtc.mediaDevices.getUserMedia({
@@ -398,6 +411,7 @@ export function trysteroMedia(
         allowAlways: () => videoPolicy.allow(peerKey),
       });
       return {
+        backgroundAudio: telecom !== null || Platform.OS === "ios",
         close,
         notifyHangup,
         video,

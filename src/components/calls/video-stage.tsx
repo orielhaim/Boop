@@ -28,6 +28,11 @@ import { spring } from "@/theme";
 
 type Corner = VideoState["corner"];
 const hideAfter = 3_800;
+const iosCallPip = {
+  startAutomatically: true,
+  stopAutomatically: true,
+  preferredSize: { width: 270, height: 480 },
+};
 const AndroidPreview =
   Platform.OS === "android"
     ? requireNativeView<ViewProps & { streamURL: string; mirror: boolean }>(
@@ -38,6 +43,7 @@ const AndroidPreview =
 export function VideoStage({
   stageUrl,
   previewUrl,
+  systemVideoUrl,
   mirrorStage,
   mirrorPreview,
   corner,
@@ -52,6 +58,7 @@ export function VideoStage({
 }: {
   stageUrl: string;
   previewUrl: string | null;
+  systemVideoUrl: string | null;
   mirrorStage: boolean;
   mirrorPreview: boolean;
   corner: Corner;
@@ -124,6 +131,11 @@ export function VideoStage({
     >
       <RTCView
         streamURL={stageUrl}
+        iosPIP={
+          Platform.OS === "ios" && stageUrl === systemVideoUrl
+            ? iosCallPip
+            : undefined
+        }
         mirror={mirrorStage}
         objectFit="cover"
         zOrder={0}
@@ -154,6 +166,7 @@ export function VideoStage({
       {previewUrl && (
         <VideoPreview
           url={previewUrl}
+          systemPip={previewUrl === systemVideoUrl}
           mirror={mirrorPreview}
           corner={corner}
           label={swapLabel}
@@ -196,6 +209,7 @@ export function VideoStage({
 
 function VideoPreview({
   url,
+  systemPip,
   mirror,
   corner,
   label,
@@ -203,6 +217,7 @@ function VideoPreview({
   onCorner,
 }: {
   url: string;
+  systemPip: boolean;
   mirror: boolean;
   corner: Corner;
   label: string;
@@ -280,6 +295,7 @@ function VideoPreview({
         ) : (
           <RTCView
             streamURL={url}
+            iosPIP={systemPip ? iosCallPip : undefined}
             mirror={mirror}
             objectFit="cover"
             zOrder={1}

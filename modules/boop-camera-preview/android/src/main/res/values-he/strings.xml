@@ -1,0 +1,7 @@
+
+<resources>
+  <string name="boop_calls_channel">שיחות פעילות</string>
+  <string name="boop_private_caller">שיחת Boop</string>
+  <string name="boop_call_active">שיחה פעילה</string>
+  <string name="boop_call_connecting">מתחבר…</string>
+</resources>

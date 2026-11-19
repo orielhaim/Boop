@@ -3,6 +3,7 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { createContext, useContext, useEffect, useMemo } from "react";
 import { AppState } from "react-native";
 import { initializeIdentity } from "@/core/identity";
+import { toNpub } from "@/core/identity/keys";
 import { createMessagingRuntime } from "@/core/messaging";
 import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
@@ -29,33 +30,62 @@ async function start() {
       { createCallController },
       { initializeCallingRuntime, randomCallId, trysteroMedia },
       { callTone },
+      { attachSystemPresentation, openTelecomAudio },
     ] = await Promise.all([
       import("@/core/calling/controller"),
       import("@/core/calling/trystero"),
       import("@/core/calling/native-audio"),
+      import("@/core/calling/system-calling"),
     ]);
+    const lock = createAppLock({
+      read: (key) => preference(db, key),
+      write: (key, value) => setPreference(db, key, value),
+      startActive: AppState.currentState === "active",
+      authenticate: authenticateApp,
+      protect: protectAppWindow,
+    });
     const calling = createCallController({
       localKey: identity.publicKey,
       randomId: randomCallId,
-      openMedia: trysteroMedia(signer, {
-        get(peerKey) {
-          const row = db
-            .select({ allowed: contacts.allowIncomingVideo })
+      openMedia: trysteroMedia(
+        signer,
+        {
+          get(peerKey) {
+            const row = db
+              .select({ allowed: contacts.allowIncomingVideo })
+              .from(contacts)
+              .where(eq(contacts.publicKey, peerKey))
+              .get();
+            return row ? (row.allowed ? "always" : "ask") : "unknown";
+          },
+          allow(peerKey) {
+            return (
+              db
+                .update(contacts)
+                .set({ allowIncomingVideo: true })
+                .where(eq(contacts.publicKey, peerKey))
+                .run().changes === 1
+            );
+          },
+        },
+        ({ invite, peerKey, signal, onRouting }) => {
+          const privateMode = lock.getState().enabled;
+          const contact = db
+            .select({ name: contacts.name, avatarUrl: contacts.avatarUrl })
             .from(contacts)
             .where(eq(contacts.publicKey, peerKey))
             .get();
-          return row ? (row.allowed ? "always" : "ask") : "unknown";
+          return openTelecomAudio({
+            id: invite.callId,
+            name: contact?.name ?? `${toNpub(peerKey).slice(0, 15)}…`,
+            avatarUrl: contact?.avatarUrl,
+            incoming: invite.recipientKey === identity.publicKey,
+            privateMode,
+            signal,
+            onRouting,
+          });
         },
-        allow(peerKey) {
-          return (
-            db
-              .update(contacts)
-              .set({ allowIncomingVideo: true })
-              .where(eq(contacts.publicKey, peerKey))
-              .run().changes === 1
-          );
-        },
-      }),
+      ),
       prepareMedia: initializeCallingRuntime,
       send: messaging.sendCall,
       tone: callTone,
@@ -69,12 +99,9 @@ async function start() {
           .get(),
     });
     messaging.subscribeCalls(calling.receive);
-    const lock = createAppLock({
-      read: (key) => preference(db, key),
-      write: (key, value) => setPreference(db, key, value),
-      startActive: AppState.currentState === "active",
-      authenticate: authenticateApp,
-      protect: protectAppWindow,
+    const nativeOpen = attachSystemPresentation(calling, {
+      privateMode: () => lock.getState().enabled,
+      subscribe: lock.subscribe,
     });
     appLock = lock;
     return {
@@ -83,6 +110,7 @@ async function start() {
       chat,
       messaging,
       calling,
+      nativeOpen,
       lock,
       theme: preference(db, "theme"),
       haptics: preference(db, "haptics") !== "off",

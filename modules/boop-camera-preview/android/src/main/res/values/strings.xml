@@ -1,0 +1,7 @@
+
+<resources>
+  <string name="boop_calls_channel">Ongoing calls</string>
+  <string name="boop_private_caller">Boop call</string>
+  <string name="boop_call_active">Ongoing call</string>
+  <string name="boop_call_connecting">Connecting…</string>
+</resources>

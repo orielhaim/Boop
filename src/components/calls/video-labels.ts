@@ -19,6 +19,7 @@ const english = {
   errors: {
     permission: "Allow camera access in Settings to share video.",
     capture: "The camera could not be opened.",
+    background: "Camera sharing stopped when you left Boop.",
     denied: "The request was declined or expired.",
     timeout: "No response to the video request.",
     transmission: "Video could not be shared.",
@@ -45,6 +46,7 @@ const hebrew: typeof english = {
   errors: {
     permission: "כדי לשתף וידאו יש לאפשר גישה למצלמה בהגדרות.",
     capture: "לא ניתן לפתוח את המצלמה.",
+    background: "שיתוף המצלמה הופסק כשיצאת מ־Boop.",
     denied: "הבקשה נדחתה או שפג תוקפה.",
     timeout: "לא התקבלה תשובה לבקשת הווידאו.",
     transmission: "לא ניתן לשתף וידאו.",

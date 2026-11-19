@@ -1,4 +1,5 @@
 import { Camera } from "expo-camera";
+import { AppState } from "react-native";
 import type { MediaStream as NativeStream } from "react-native-webrtc";
 import type { Room } from "trystero";
 import { createMediaTurns, mediaTurn, mediaTurnTimeout } from "./media-turn";
@@ -194,6 +195,7 @@ export function bindTrysteroVideo({
     },
     policy: getPolicy,
     allowAlways,
+    foreground: () => AppState.currentState === "active",
     update: onVideo,
   });
   subscriptions.push(
