@@ -10,11 +10,9 @@
     "start": "astro dev",
     "types:check": "astro sync && tsc --noEmit",
     "astro": "astro",
-    "generate-types": "wrangler types",
-    "deploy": "cf deploy"
+    "deploy": "bun run build && node ./node_modules/cf/bin/cf deploy ./dist"
   },
   "dependencies": {
-    "@astrojs/cloudflare": "^14.4.9",
     "@astrojs/react": "^7.1.9",
     "@fumadocs/astro": "0.3.0",
     "astro": "^7.4.13",
@@ -23,8 +21,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "sharp": "^0.35.5",
-    "takumi-js": "^2.20.0",
-    "wrangler": "^4.165.0"
+    "takumi-js": "^2.20.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",
