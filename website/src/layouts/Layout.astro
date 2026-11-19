@@ -1,0 +1,50 @@
+---
+import '@/styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  noindex?: boolean;
+}
+
+const { title, description, noindex } = Astro.props;
+const pathname = Astro.url.pathname.replace(/(?:\/index)?\.html$/, '') || '/';
+const canonical = new URL(pathname, Astro.site);
+const icon = new URL('/boop.png', Astro.site);
+const github = 'https://github.com/orielhaim/Boop';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
+    <link rel="icon" type="image/png" href="/boop.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Boop" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={icon} />
+    <meta property="og:image:alt" content="Boop app icon" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="shell bar">
+      <a class="brand" href="/"><img src="/boop.png" alt="" width="36" height="36" />Boop</a>
+      <nav aria-label="Main navigation">
+        <a href="/privacy" aria-current={pathname === '/privacy' ? 'page' : undefined}>Privacy Policy</a>
+        <a href={github}>GitHub</a>
+      </nav>
+    </header>
+    <main id="main" class="shell" tabindex="-1"><slot /></main>
+    <footer class="shell bar footer">
+      <span>Boop</span>
+      <a href="/privacy">Privacy Policy</a>
+    </footer>
+  </body>
+</html>

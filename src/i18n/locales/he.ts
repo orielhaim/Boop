@@ -447,6 +447,8 @@ export const he = {
     acceptRequest: "אישור",
     requestLocked: "הודעה מתוזמנת. אפשר לאשר את הבקשה כדי להוסיף אותה לצ׳אט.",
     blockedUsers: "משתמשים חסומים",
+    privacyPolicy: "מדיניות פרטיות",
+    privacyPolicyOpenFailed: "לא ניתן לפתוח את מדיניות הפרטיות.",
     block: "חסימה",
     unblock: "ביטול חסימה",
     blockConfirm: "לחסום את הזהות הזו?",

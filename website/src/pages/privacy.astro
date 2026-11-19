@@ -1,0 +1,16 @@
+---
+import { getEntry, render } from 'astro:content';
+import Layout from '@/layouts/Layout.astro';
+
+const policy = await getEntry('docs', 'privacy.mdx');
+if (!policy) throw new Error('Missing Boop privacy policy');
+const { Content } = await render(policy);
+---
+
+<Layout title="Privacy Policy | Boop" description={policy.data.description}>
+  <article class="policy">
+    <h1>{policy.data.title}</h1>
+    <p class="date">Effective <time datetime="2026-11-19">November 19, 2026</time></p>
+    <Content />
+  </article>
+</Layout>

@@ -453,6 +453,8 @@ export const en = {
     acceptRequest: "Accept",
     requestLocked: "A scheduled message. Accept to add it to your chat.",
     blockedUsers: "Blocked users",
+    privacyPolicy: "Privacy Policy",
+    privacyPolicyOpenFailed: "Could not open the privacy policy.",
     block: "Block",
     unblock: "Unblock",
     blockConfirm: "Block this identity?",

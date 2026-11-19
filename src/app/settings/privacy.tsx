@@ -1,7 +1,7 @@
 import { router } from "expo-router";
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { Alert, Linking } from "react-native";
 import {
   SettingsGroup,
   SettingsRow,
@@ -103,6 +103,15 @@ export default function Privacy() {
           title={t("security:blockedUsers")}
           icon="lock"
           onPress={() => router.push("/settings/privacy/blocked")}
+        />
+        <SettingsRow
+          title={t("security:privacyPolicy")}
+          icon="info"
+          onPress={() => {
+            void Linking.openURL("https://boop.orielhaim.com/privacy").catch(
+              () => Alert.alert(t("security:privacyPolicyOpenFailed")),
+            );
+          }}
         />
       </SettingsGroup>
     </Screen>
