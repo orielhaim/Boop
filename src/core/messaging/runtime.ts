@@ -14,6 +14,7 @@ import { createMessagingRelays } from "../nostr/messaging-relays";
 import { messagingMetric } from "./diagnostics";
 import { createInboxIngestion, inboxCatchup } from "./inbox-sync";
 import {
+  callReplyRelayTag,
   createRumor,
   inboxListKind,
   maxMessageLength,
@@ -61,6 +62,10 @@ export function createMessagingService({
   const transport = createMessagingRelays(signer);
   const listeners = new Set<() => void>();
   const callListeners = new Set<(signal: CallSignal) => void>();
+  const replyRoutes = new Map<
+    string,
+    { expiresAt: number; relays: string[] }
+  >();
   let status: MessagingStatus = "disabled";
   let generation = 0;
   let configured: NDKRelay[] = [];
@@ -99,8 +104,20 @@ export function createMessagingService({
     (wrapped) => unwrapPrivateEvent(wrapped, signer),
     (event) => {
       if (event.type === "call") {
-        if (event.recipientKey === publicKey)
-          for (const listener of callListeners) listener(event.signal);
+        if (event.recipientKey !== publicKey) return;
+        const { signal, replyRelays } = event;
+        if (signal.type === "call.invite" && replyRelays.length) {
+          const key = `${signal.callId}:${signal.senderKey}`;
+          if (!replyRoutes.has(key) && replyRoutes.size >= 32) {
+            const oldest = replyRoutes.keys().next().value;
+            if (oldest !== undefined) replyRoutes.delete(oldest);
+          }
+          replyRoutes.set(key, {
+            expiresAt: signal.expiresAt,
+            relays: replyRelays,
+          });
+        }
+        for (const listener of callListeners) listener(signal);
       } else if (event.type === "reaction") {
         chat.receiveReaction({
           peerKey: event.peerKey,
@@ -394,6 +411,7 @@ export function createMessagingService({
 
   function stop() {
     generation++;
+    replyRoutes.clear();
     revision++;
     if (publicationTimer) clearTimeout(publicationTimer);
     if (handoffTimer) clearTimeout(handoffTimer);
@@ -600,20 +618,50 @@ export function createMessagingService({
     const live = () =>
       active() && session === generation && Date.now() < signal.expiresAt;
     if (!live() || connectedRelays().length === 0) return false;
-    const urls = await transport.findInbox(
-      signal.recipientKey,
-      discoveryRelays(),
-      live,
+    const replyRoute = replyRoutes.get(
+      `${signal.callId}:${signal.recipientKey}`,
     );
-    if (!live() || !urls.length) return false;
+    const replyTargets =
+      replyRoute && replyRoute.expiresAt > Date.now()
+        ? transport.safeTargets(
+            replyRoute.relays.map((url) => ["relay", url]),
+            "inbox",
+          )
+        : [];
+    const tags = [["p", signal.recipientKey]];
+    if (signal.type === "call.invite") {
+      const listening = [...connections.values()]
+        .filter(({ relay, inbox }) => inbox && transport.connected(relay))
+        .map(({ relay }) => relay.url);
+      for (const url of listening.slice(0, 3))
+        tags.push([callReplyRelayTag, url]);
+    }
     const rumor = createRumor({
       kind: callSignalKind,
       pubkey: publicKey,
       content: JSON.stringify(signal),
-      tags: [["p", signal.recipientKey]],
+      tags,
       created_at: signal.createdAt / 1_000,
     });
     const envelope = await transport.wrap(rumor, signal.recipientKey);
+    if (!live()) return false;
+    if (replyTargets.length) {
+      const started = performance.now();
+      const accepted = await transport.publish(envelope, replyTargets, live);
+      messagingMetric("call reply via invitation", {
+        ms: performance.now() - started,
+        accepted,
+        answer: signal.type === "call.accept",
+      });
+      if (accepted) return true;
+    }
+    if (!live()) return false;
+    const urls = await transport.findCallInbox(
+      signal.callId,
+      signal.recipientKey,
+      discoveryRelays(),
+    );
+    if (!urls.length) return false;
     return live() && transport.publish(envelope, urls, live);
   }
 

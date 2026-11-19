@@ -108,6 +108,67 @@ test("navigation shares a pending recent page, keeps unrelated pages and evicts 
   await expect(oldIdentityWork).rejects.toThrow("Messaging session has ended");
 });
 
+test("foreground prefetch warms incoming chats despite repeated refreshes and stops when locked", async () => {
+  using sqlite = new Database(":memory:");
+  const { repo } = session(sqlite);
+  const reads: string[] = [];
+  const history = createHistoryLoader({
+    ...repo,
+    history(peerKey, options) {
+      reads.push(peerKey);
+      return repo.history(peerKey, options);
+    },
+  });
+  const feed = createConversationFeed(repo, history, () => undefined);
+  const stop = feed.start();
+  try {
+    feed.setPrefetchEnabled(true);
+    repo.receive(incoming("arrived while on calls", "alice"));
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await Bun.sleep(12);
+      feed.prefetch();
+    }
+    expect(reads).toEqual(["alice"]);
+    expect(history.recent("alice").page.messages).toHaveLength(1);
+    expect(reads).toEqual(["alice"]);
+
+    feed.setPrefetchEnabled(false);
+    repo.receive(incoming("arrived while locked", "bob", 200));
+    await Bun.sleep(60);
+    expect(reads).toEqual(["alice"]);
+    feed.setPrefetchEnabled(true);
+    await Bun.sleep(80);
+    expect(reads).toEqual(["alice", "bob"]);
+  } finally {
+    stop();
+    history.dispose();
+  }
+});
+
+test("a costly envelope yields to other work before processing the next envelope", async () => {
+  const order: string[] = [];
+  const ingestion = createInboxIngestion(
+    async (value) => {
+      if (value === "first") {
+        setTimeout(() => order.push("UI timer"), 0);
+        const started = performance.now();
+        while (performance.now() - started < 7) {}
+      }
+      return String(value);
+    },
+    (value) => order.push(value),
+  );
+  for (const id of ["first", "second"])
+    ingestion.receive(
+      id,
+      id,
+      () => true,
+      () => order.push("failed"),
+    );
+  await ingestion.drained();
+  expect(order).toEqual(["first", "UI timer", "second"]);
+});
+
 test("relay checkpoints use overlap, retain longer offline gaps, and audit delayed older wraps", () => {
   const now = 1_800_000_000;
   const day = 86_400;

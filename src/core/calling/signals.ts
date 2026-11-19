@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { publicKeySchema } from "../identity/keys";
+import { conferenceInvite } from "./conference";
 import { opaqueId } from "./protocol";
 
 // Application-specific inner rumor. Only kind 1059 envelopes are published.
@@ -21,9 +22,12 @@ export const callSignal = z.discriminatedUnion("type", [
     type: z.literal("call.invite"),
     roomId: opaqueId,
     roomSecret: opaqueId,
+    conference: conferenceInvite.optional(),
+    expandable: z.literal(2).optional(),
   }),
   z.strictObject({
     ...base,
+    invitationId: opaqueId.optional(),
     type: z.enum([
       "call.ringing",
       "call.accept",
@@ -45,7 +49,7 @@ export function parseCallSignal(
   envelope: { senderKey: string; recipientKey: string; sentAt: number },
   now: number,
 ) {
-  if (content.length > 1024) return null;
+  if (content.length > 2048) return null;
   try {
     const { success, data } = callSignal.safeParse(JSON.parse(content));
     if (
@@ -54,6 +58,11 @@ export function parseCallSignal(
       data.recipientKey !== envelope.recipientKey ||
       data.senderKey === data.recipientKey ||
       data.createdAt !== envelope.sentAt ||
+      (data.type === "call.invite" &&
+        data.conference &&
+        (data.expandable !== 2 ||
+          !data.conference.roster.includes(data.senderKey) ||
+          data.conference.roster.includes(data.recipientKey))) ||
       data.createdAt > now + 5_000 ||
       data.expiresAt <= now ||
       data.expiresAt <= data.createdAt ||

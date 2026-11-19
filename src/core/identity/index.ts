@@ -3,7 +3,7 @@ import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import type { Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
-import { type Identity, loadIdentity } from "./keys";
+import { loadIdentity } from "./keys";
 
 const key = "boop.identity.v1";
 const options = {
@@ -12,24 +12,23 @@ const options = {
 
 export async function initializeIdentity(db: Database) {
   const pinnedKey = preference(db, "identity.publicKey");
+  let secret = await SecureStore.getItemAsync(key, options);
   const identity = await loadIdentity(
     {
-      read: () => SecureStore.getItemAsync(key, options),
-      write: (secret) => SecureStore.setItemAsync(key, secret, options),
+      read: async () => secret,
+      write: async (value) => {
+        await SecureStore.setItemAsync(key, value, options);
+        secret = value;
+      },
     },
     pinnedKey,
     () => getRandomBytesAsync(32),
   );
-  if (pinnedKey === null)
-    setPreference(db, "identity.publicKey", identity.publicKey);
-  return identity;
-}
-
-export async function loadIdentitySigner(identity: Identity) {
-  const secret = await SecureStore.getItemAsync(key, options);
   if (secret === null) throw new Error("Identity missing from secure storage");
   const signer = new NDKPrivateKeySigner(secret);
   if (signer.pubkey !== identity.publicKey)
     throw new Error("Identity mismatch");
-  return signer;
+  const fresh = pinnedKey === null;
+  if (fresh) setPreference(db, "identity.publicKey", identity.publicKey);
+  return { identity, signer, fresh };
 }

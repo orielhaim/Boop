@@ -1,7 +1,7 @@
-import { Camera } from "expo-camera";
 import { AppState } from "react-native";
 import type { MediaStream as NativeStream } from "react-native-webrtc";
 import type { Room } from "trystero";
+import { captureCamera } from "./camera";
 import { createMediaTurns, mediaTurn, mediaTurnTimeout } from "./media-turn";
 import {
   cameraMetadata,
@@ -19,6 +19,7 @@ export function bindTrysteroVideo({
   peerId,
   signal,
   subscriptions,
+  turnSubscriptions,
   isDirect,
   randomCallId,
   waitForForeground,
@@ -35,6 +36,7 @@ export function bindTrysteroVideo({
   peerId: string;
   signal: AbortSignal;
   subscriptions: (() => void)[];
+  turnSubscriptions: (() => void)[];
   isDirect: (id: string) => boolean;
   randomCallId: () => string;
   waitForForeground: (signal: AbortSignal) => Promise<void>;
@@ -49,7 +51,7 @@ export function bindTrysteroVideo({
   const turnRequest = room.makeAction("boop-turn", { kind: "request" });
   const turnRelease = room.makeAction("boop-turnend");
   const turns = createMediaTurns();
-  subscriptions.push(
+  turnSubscriptions.push(
     turnRequest.onRequest((data, context) => {
       const turn = mediaTurn.safeParse(data).data;
       return turn &&
@@ -121,35 +123,17 @@ export function bindTrysteroVideo({
   const currentVideo = createVideoSession({
     callId,
     capture: async (operation, onEnded) => {
-      let permission = await Camera.getCameraPermissionsAsync();
-      operation.throwIfAborted();
-      if (!permission.granted && permission.canAskAgain) {
-        onCameraPrompt(true);
-        try {
-          permission = await Camera.requestCameraPermissionsAsync();
-          await waitForForeground(operation);
-        } finally {
-          onCameraPrompt(false);
-        }
-      }
-      operation.throwIfAborted();
-      if (!permission.granted) throw new Error("camera-permission");
-      const constraints = { width: 640, height: 480, frameRate: 24 };
-      const stream = await rtc.mediaDevices.getUserMedia({
-        audio: false,
-        video: { ...constraints, facingMode: "user" },
+      const capture = await captureCamera({
+        rtc,
+        operation,
+        onEnded,
+        onCameraPrompt,
+        waitForForeground,
       });
-      const track = stream.getVideoTracks()[0];
-      if (!track || operation.aborted) {
-        for (const track of stream.getTracks()) track.stop();
-        stream.release();
-        throw new Error("Camera unavailable");
-      }
-      track.onended = onEnded;
-      const peerStream = stream as unknown as MediaStream;
+      const peerStream = capture.stream;
       let attaching = false;
       return {
-        url: stream.toURL(),
+        url: capture.url,
         async attach(metadata) {
           await changeCameraTracks(() => {
             if (!isDirect(peerId))
@@ -159,11 +143,9 @@ export function bindTrysteroVideo({
           }, operation);
         },
         stop() {
-          track.onended = null;
-          track.enabled = false;
-          track.stop();
+          capture.stop();
           if (!attaching || signal.aborted || !isDirect(peerId)) {
-            stream.release();
+            capture.release();
             return;
           }
           void changeCameraTracks(
@@ -171,14 +153,9 @@ export function bindTrysteroVideo({
             signal,
           )
             .catch(() => undefined)
-            .finally(() => stream.release());
+            .finally(() => capture.release());
         },
-        async switchTo(facing) {
-          const facingMode = facing === "front" ? "user" : "environment";
-          await track.applyConstraints({ ...constraints, facingMode });
-          if (track.getSettings().facingMode !== facingMode)
-            throw new Error("Requested camera unavailable");
-        },
+        switchTo: capture.switchTo,
       };
     },
     offer: (data, operation) =>

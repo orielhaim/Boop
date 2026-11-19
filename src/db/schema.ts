@@ -126,6 +126,14 @@ export const messageReactions = sqliteTable(
 export const callHistory = sqliteTable("call_history", {
   id: text().primaryKey().notNull(),
   peerKey: text("peer_key").notNull(),
+  participantKeys: text("participant_keys", { mode: "json" })
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'`),
+  invitationIds: text("invitation_ids", { mode: "json" })
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'`),
   direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
   outcome: text({
     enum: [

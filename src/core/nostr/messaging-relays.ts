@@ -7,6 +7,7 @@ import NDK, {
   NDKRelayStatus,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk";
+import { inviteLifetime } from "../calling/signals";
 import {
   createRumor,
   giftWrapKind,
@@ -32,6 +33,14 @@ export function createMessagingRelays(signer: NDKSigner) {
   const known = new Map<string, NDKRelay>();
   const publishing = new Map<NDKRelay, number>();
   const discoveryRequests = new Set<() => void>();
+  const connecting = new Map<
+    NDKRelay,
+    { result: Promise<boolean>; cancel: () => void }
+  >();
+  const callInboxes = new Map<
+    string,
+    { expiresAt: number; result: Promise<string[]> }
+  >();
   // NDK 3.0.3 handles a relay rejecting AUTH on its boolean policy path.
   // Its signed-event policy path leaves the same rejection unhandled.
   const auth: NDKAuthPolicy = async (relay) =>
@@ -47,16 +56,47 @@ export function createMessagingRelays(signer: NDKSigner) {
   }
 
   function disconnect(relay: NDKRelay) {
+    connecting.get(relay)?.cancel();
     relay.connectivity.resetReconnectionState();
     relay.disconnect();
   }
 
   function connect(relay: NDKRelay) {
-    return relay.connect(timeout, false).catch(() => undefined);
+    if (connected(relay)) return Promise.resolve(true);
+    const pending = connecting.get(relay);
+    if (pending) return pending.result;
+
+    function cancel() {
+      finish(false);
+    }
+    function opened() {
+      finish(true);
+    }
+    function finish(ready: boolean) {
+      if (!connecting.delete(relay)) return;
+      clearTimeout(deadline);
+      relay.off("connect", opened);
+      relay.off("disconnect", cancel);
+      relay.off("delayed-connect", cancel);
+      resolve(ready);
+    }
+    let resolve: (ready: boolean) => void = () => {};
+    const result = new Promise<boolean>((done) => {
+      resolve = done;
+    });
+    const deadline = setTimeout(cancel, timeout);
+    connecting.set(relay, { result, cancel });
+    relay.on("connect", opened);
+    relay.on("disconnect", cancel);
+    relay.on("delayed-connect", cancel);
+    // NDK connect resolves after creating the socket, before its open event.
+    void relay.connect(timeout, false).catch(cancel);
+    return result;
   }
 
   function addConfigured(url: string, inbox: boolean) {
     const relay = getRelay(url);
+    if (!configured.has(relay.url)) callInboxes.clear();
     configured.add(relay.url);
     if (inbox) authenticate.add(relay.url);
     ndk.explicitRelayUrls ??= [];
@@ -67,6 +107,7 @@ export function createMessagingRelays(signer: NDKSigner) {
   }
 
   function unconfigure(relay: NDKRelay) {
+    callInboxes.clear();
     configured.delete(relay.url);
     authenticate.delete(relay.url);
     disconnect(relay);
@@ -219,6 +260,35 @@ export function createMessagingRelays(signer: NDKSigner) {
     });
   }
 
+  function findCallInbox(
+    callId: string,
+    peerKey: string,
+    discovery: NDKRelay[],
+  ) {
+    const key = `${callId}:${peerKey}`;
+    const now = Date.now();
+    const cached = callInboxes.get(key);
+    if (cached && cached.expiresAt > now) return cached.result;
+    callInboxes.delete(key);
+    if (callInboxes.size >= 32) {
+      const oldest = callInboxes.keys().next().value;
+      if (oldest !== undefined) callInboxes.delete(oldest);
+    }
+    const result: Promise<string[]> = findInbox(
+      peerKey,
+      discovery,
+      () => callInboxes.get(key)?.result === result,
+    )
+      .catch(() => [])
+      .then((urls) => {
+        if (!urls.length && callInboxes.get(key)?.result === result)
+          callInboxes.delete(key);
+        return urls;
+      });
+    callInboxes.set(key, { expiresAt: now + inviteLifetime, result });
+    return result;
+  }
+
   async function withRelays<T>(
     relays: NDKRelay[],
     operation: () => Promise<T>,
@@ -248,18 +318,26 @@ export function createMessagingRelays(signer: NDKSigner) {
     active: () => boolean,
   ) {
     const targets = relayUrls.map(getRelay);
-    const results = await Promise.allSettled(
-      targets.map((relay) =>
-        withRelays([relay], async () => {
-          if (!active()) return false;
-          if (!connected(relay)) await connect(relay);
-          return active() && connected(relay) && relay.publish(event, timeout);
-        }),
-      ),
-    );
-    return results.some(
-      (result) => result.status === "fulfilled" && result.value,
-    );
+    if (!targets.length) return false;
+    return new Promise<boolean>((resolve) => {
+      let remaining = targets.length;
+      function settle(accepted: boolean) {
+        remaining--;
+        if (accepted || remaining === 0) resolve(accepted);
+      }
+      for (const relay of targets) {
+        void withRelays([relay], async () => {
+          if (
+            !active() ||
+            !(await connect(relay)) ||
+            !active() ||
+            !connected(relay)
+          )
+            return false;
+          return relay.publish(event, timeout);
+        }).then(settle, () => settle(false));
+      }
+    });
   }
   async function advertise(
     relays: NDKRelay[],
@@ -329,6 +407,7 @@ export function createMessagingRelays(signer: NDKSigner) {
   }
 
   function closePeerRelays() {
+    callInboxes.clear();
     for (const cancel of discoveryRequests) cancel();
     for (const relay of known.values()) {
       if (!configured.has(relay.url)) disconnect(relay);
@@ -342,6 +421,7 @@ export function createMessagingRelays(signer: NDKSigner) {
     connected,
     watchInbox,
     findInbox,
+    findCallInbox,
     lookupLists,
     safeTargets,
     verifyInbox,

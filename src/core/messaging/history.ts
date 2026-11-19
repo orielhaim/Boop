@@ -8,7 +8,7 @@ import { messagingMetric } from "./diagnostics";
 export const recentPageSize = 50;
 const warmLimit = 5;
 const prefetchLimit = 3;
-const prefetchDelay = 120;
+const prefetchDelay = 32;
 type Page = ReturnType<MessagingRepository["history"]>;
 type Recent = { page: Page; unread: MessageCursor | undefined };
 
@@ -17,6 +17,7 @@ export function createHistoryLoader(chat: MessagingRepository) {
   const pending = new Map<string, Promise<Recent>>();
   const visited = new Map<string, MessageCursor | null>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let queue: string[] = [];
   let disposed = false;
 
   function recent(peerKey: string): Recent {
@@ -66,26 +67,30 @@ export function createHistoryLoader(chat: MessagingRepository) {
   function cancelPrefetch() {
     clearTimeout(timer);
     timer = undefined;
+    queue = [];
+  }
+
+  function needsPage(peerKey: string) {
+    return warm.get(peerKey)?.revision !== chat.historyRevision(peerKey);
+  }
+
+  function schedulePrefetch() {
+    if (timer !== undefined || !queue.length) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      const peerKey = queue.shift();
+      if (peerKey !== undefined && needsPage(peerKey))
+        void loadRecent(peerKey).catch(() => undefined);
+      schedulePrefetch();
+    }, prefetchDelay);
   }
 
   function prefetch(keys: readonly string[]) {
     if (disposed) return;
-    cancelPrefetch();
-    const queue = [
-      ...new Set([...Array.from(visited.keys()).reverse(), ...keys]),
-    ]
-      .filter((key) => warm.get(key)?.revision !== chat.historyRevision(key))
-      .slice(0, prefetchLimit);
-    function schedule() {
-      if (!queue.length) return;
-      timer = setTimeout(() => {
-        const peerKey = queue.shift();
-        if (peerKey === undefined) return;
-        void loadRecent(peerKey).catch(() => undefined);
-        schedule();
-      }, prefetchDelay);
-    }
-    schedule();
+    queue = [...new Set([...Array.from(visited.keys()).reverse(), ...keys])]
+      .slice(0, prefetchLimit)
+      .filter(needsPage);
+    schedulePrefetch();
   }
 
   const unsubscribe = chat.subscribe(({ history }) => {

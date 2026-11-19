@@ -1,6 +1,6 @@
 import { ChatList } from "@kesha-antonov/react-native-chat";
-import { router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { router } from "expo-router";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { useChatAppearance } from "@/components/messages/appearance";
@@ -59,12 +59,6 @@ export default function Messages() {
         : status === "online"
           ? undefined
           : t(`messages:${status}`);
-  useFocusEffect(
-    useCallback(() => {
-      conversations.prefetch();
-    }, [conversations]),
-  );
-
   function change(write: () => void) {
     try {
       write();

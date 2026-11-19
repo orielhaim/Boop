@@ -28,6 +28,11 @@ type NativeSystemCalling = {
     labels: CallLabels,
   ): Promise<boolean>;
   update(id: string, answeredAt: number, privateMode: boolean): Promise<void>;
+  updateGroup?(
+    id: string,
+    title: string | null,
+    participants: string | null,
+  ): Promise<void>;
   setAvatar(id: string, cachedFile: string): Promise<void>;
   setRemoteVideo(id: string, url: string | null): Promise<void>;
   route(id: string, route: AudioRoute): Promise<boolean>;
@@ -125,10 +130,16 @@ export function attachSystemPresentation(
   if (!native) return nativeOpen;
   const system = native;
   let previous:
-    | { id: string; time: number; video: string | null; privateMode: boolean }
+    | {
+        id: string;
+        time: number;
+        video: string | null;
+        privateMode: boolean;
+        count: number;
+      }
     | undefined;
   const sync = () => {
-    const { call, video } = calling.store.getState();
+    const { call, video, participants } = calling.store.getState();
     if (!call || call.phase === "ended" || call.phase === "ending") {
       previous = undefined;
       nativeOpen.setState({ id: null });
@@ -140,6 +151,10 @@ export function attachSystemPresentation(
       time: call.phase === "connected" ? call.answeredAt : 0,
       video: systemRemoteVideo(call, video, privateMode),
       privateMode,
+      count:
+        call.phase === "connected" && video?.conference
+          ? participants.length + 1
+          : 0,
     };
     const old = previous;
     previous = next;
@@ -154,6 +169,16 @@ export function attachSystemPresentation(
     }
     if (old?.id !== next.id || old.video !== next.video) {
       void system.setRemoteVideo(next.id, next.video).catch(() => undefined);
+    }
+    if (system.updateGroup && next.count !== (old?.count ?? 0)) {
+      const t = i18n.getFixedT(null, "calls");
+      void system
+        .updateGroup(
+          next.id,
+          next.count > 0 ? t("groupCall") : null,
+          next.count > 0 ? t("participantCount", { count: next.count }) : null,
+        )
+        .catch(() => undefined);
     }
   };
   calling.store.subscribe(sync);

@@ -31,6 +31,8 @@ export function inboxCatchup(
 }
 
 const processedLimit = 4_096;
+const batchLimit = 16;
+const sliceMs = 6;
 
 export function createInboxIngestion<Event>(
   process: (event: unknown, active: () => boolean) => Promise<Event | null>,
@@ -40,6 +42,7 @@ export function createInboxIngestion<Event>(
   const processed = new Set<string>();
   let queued = 0;
   let batch = 0;
+  let workMs = 0;
 
   return {
     receive(
@@ -53,15 +56,21 @@ export function createInboxIngestion<Event>(
       tail = tail
         .then(async () => {
           if (!active() || processed.has(id)) return;
-          if (batch >= 16) {
+          if (batch >= batchLimit || workMs >= sliceMs) {
             batch = 0;
+            workMs = 0;
             await new Promise((resolve) => setTimeout(resolve, 0));
             if (!active()) return;
           }
           batch++;
-          const value = await process(event, active);
-          if (value === null || !active()) return;
-          persist(value);
+          const started = performance.now();
+          try {
+            const value = await process(event, active);
+            if (value === null || !active()) return;
+            persist(value);
+          } finally {
+            workMs += performance.now() - started;
+          }
           processed.add(id);
           if (processed.size > processedLimit) {
             const oldest = processed.values().next().value;

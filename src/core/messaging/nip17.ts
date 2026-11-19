@@ -18,6 +18,7 @@ export const messageKind = 14;
 export const reactionKind = 7;
 export const giftWrapKind = 1059;
 export const inboxListKind = 10050;
+export const callReplyRelayTag = "boop:reply-relay";
 export const maxMessageLength = 4_000;
 const maxEnvelopeLength = 90_000;
 const eventId = z.string().regex(/^[0-9a-f]{64}$/);
@@ -51,7 +52,7 @@ export type PrivateEvent = {
 } & (
   | { type: "message"; body: string; replyTo: string | null }
   | { type: "reaction"; emoji: string; targetEventId: string }
-  | { type: "call"; signal: CallSignal }
+  | { type: "call"; signal: CallSignal; replyRelays: string[] }
 );
 
 export function createRumor(core: RumorCore): Rumor {
@@ -147,7 +148,16 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
   if (base.sentAt > Date.now() + 5 * 60_000) return null;
   if (rumor.kind === callSignalKind) {
     const signal = parseCallSignal(rumor.content, base, Date.now());
-    return signal ? { ...base, type: "call", signal } : null;
+    if (!signal) return null;
+    const replyRelays =
+      signal.type === "call.invite"
+        ? rumor.tags
+            .flatMap(([key, url]) =>
+              key === callReplyRelayTag && url ? [url] : [],
+            )
+            .slice(0, 3)
+        : [];
+    return { ...base, type: "call", signal, replyRelays };
   }
   if (rumor.kind === reactionKind) {
     const emoji = parseReaction(rumor.content);

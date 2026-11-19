@@ -23,7 +23,6 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import {
   GlassSheet,
@@ -32,6 +31,7 @@ import {
 } from "@/components/glassyui/glass-sheet";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Avatar, Icon, Ink, tapFeedback } from "@/components/ui/kit";
+import { ScreenInsets } from "@/components/ui/screen-insets";
 import type { AudioRoute, CallView } from "@/core/calling/controller";
 import { systemRemoteVideo } from "@/core/calling/system-call-state";
 import { type VideoDecision, videoLayout } from "@/core/calling/video";
@@ -39,6 +39,12 @@ import { namespaces } from "@/i18n";
 import { formatDuration, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { space, spring, useTheme } from "@/theme";
+import {
+  ConferenceSheet,
+  ConferenceTiles,
+  InvitationStatus,
+  useConferencePeers,
+} from "./conference";
 import { VideoStage } from "./video-stage";
 
 type IconName = ComponentProps<typeof Icon>["name"];
@@ -88,6 +94,12 @@ export function CallScreen({
   const { t } = useTranslation(namespaces);
   const { calling, lock } = useLocal();
   const video = useStore(calling.store, (state) => state.video);
+  const invitationCount = useStore(
+    calling.store,
+    (state) => state.invitations.length,
+  );
+  const peers = useConferencePeers(video);
+  const [sheet, setSheet] = useState<"add" | "roster" | null>(null);
   const [showOutput, setShowOutput] = useState(false);
   const [outputError, setOutputError] = useState(false);
   const { height, width } = useWindowDimensions();
@@ -101,6 +113,11 @@ export function CallScreen({
     ),
   );
   const connected = call.phase === "connected";
+  const conference = video?.conference;
+  const group = connected && !!conference;
+  const groupCount = peers.members.length + 1;
+  const label = group ? t("calls:groupCall") : name;
+  const systemVideo = systemRemoteVideo(call, video, lock.getState().enabled);
   const layout = connected && video ? videoLayout(video) : null;
   const consent = video?.remote.phase === "requesting" ? video.remote : null;
   const cameraOn = !!video && video.local.phase !== "off";
@@ -126,6 +143,38 @@ export function CallScreen({
     calling.end();
     close();
   };
+  const participantActions = connected && call.expandable && (
+    <>
+      {(group || invitationCount > 0) && (
+        <Control
+          icon="person"
+          label={t("calls:participants")}
+          compact
+          onPress={() => setSheet("roster")}
+        />
+      )}
+      <Control
+        icon="addPerson"
+        label={t("calls:addParticipant")}
+        compact
+        onPress={() => setSheet("add")}
+      />
+    </>
+  );
+  const tiles = (mode: "audio" | "rail" | "grid") => (
+    <ConferenceTiles
+      members={peers.members}
+      mode={mode}
+      focus={conference?.focus}
+      muted={connected && call.muted}
+      systemVideoUrl={systemVideo}
+      onFocus={(key) => {
+        calling.video()?.focus?.(key);
+        if (mode === "grid") calling.video()?.mode?.("focus");
+      }}
+      onWatch={(key) => void calling.video()?.watch?.(key, true)}
+    />
+  );
   const waiting =
     call.phase === "incoming" ||
     call.phase === "ringing" ||
@@ -169,18 +218,22 @@ export function CallScreen({
       {focused && connected && video && layout?.stageUrl ? (
         <VideoStage
           stageUrl={layout.stageUrl}
-          previewUrl={layout.previewUrl}
-          systemVideoUrl={systemRemoteVideo(
-            call,
-            video,
-            lock.getState().enabled,
-          )}
+          previewUrl={group ? null : layout.previewUrl}
+          systemVideoUrl={systemVideo}
+          scene={
+            group &&
+            conference.mode === "grid" &&
+            video.remote.phase === "receiving"
+              ? tiles("grid")
+              : undefined
+          }
           mirrorStage={layout.source === "local" && layout.mirrorLocal}
           mirrorPreview={layout.source === "remote" && layout.mirrorLocal}
           corner={video.corner}
           blockHiding={
             !!consent ||
             showOutput ||
+            sheet !== null ||
             !!videoError ||
             outputError ||
             call.reconnecting ||
@@ -191,32 +244,39 @@ export function CallScreen({
           onSwap={() => calling.video()?.swap()}
           onCorner={(corner) => calling.video()?.setCorner(corner)}
           header={
-            <GlassSurface
-              preset="control"
-              tint="#1B2335"
-              style={styles.videoHeader}
-            >
-              <Control
-                icon="collapse"
-                label={t("calls:minimize")}
-                compact
-                onPress={close}
-              />
-              <Avatar name={name} uri={avatarUrl} />
-              <View style={styles.videoIdentity}>
-                <Text numberOfLines={1} style={styles.videoName}>
-                  {name}
-                </Text>
-                <Text numberOfLines={1} style={styles.videoCaption}>
-                  {call.reconnecting
-                    ? t("calls:reconnecting")
-                    : layout.source === "local"
-                      ? t("video:local")
-                      : t("video:remote")}
-                </Text>
-              </View>
-              <Elapsed since={call.answeredAt} compact />
-            </GlassSurface>
+            <View style={styles.groupHeader}>
+              <GlassSurface
+                preset="control"
+                tint="#1B2335"
+                style={styles.videoHeader}
+              >
+                <Control
+                  icon="collapse"
+                  label={t("calls:minimize")}
+                  compact
+                  onPress={close}
+                />
+                {!group && <Avatar name={name} uri={avatarUrl} />}
+                <View style={styles.videoIdentity}>
+                  <Text numberOfLines={1} style={styles.videoName}>
+                    {label}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.videoCaption}>
+                    {call.reconnecting
+                      ? t("calls:reconnecting")
+                      : group
+                        ? t("calls:participantCount", { count: groupCount })
+                        : layout.source === "local"
+                          ? t("video:local")
+                          : t("video:remote")}
+                  </Text>
+                </View>
+                <Elapsed since={call.answeredAt} compact />
+                {participantActions}
+              </GlassSurface>
+              {group && conference.mode === "focus" && tiles("rail")}
+              <InvitationStatus onPress={() => setSheet("roster")} />
+            </View>
           }
           notice={
             video.local.phase === "waiting" || videoError || outputError ? (
@@ -267,10 +327,7 @@ export function CallScreen({
           }
         />
       ) : (
-        <SafeAreaView
-          style={styles.screen}
-          edges={["top", "bottom", "left", "right"]}
-        >
+        <ScreenInsets style={styles.screen}>
           <View style={styles.top}>
             <Control
               icon="collapse"
@@ -280,78 +337,109 @@ export function CallScreen({
               compact
               onPress={close}
             />
+            <View style={styles.topSpacer} />
+            {participantActions}
           </View>
           <ScrollView contentContainerStyle={styles.content} bounces={false}>
-            <Animated.View
-              entering={appear}
-              layout={reflow}
-              style={styles.identity}
-            >
-              <View style={styles.portraitRim}>
-                {waiting && <PortraitPulse />}
-                <View
-                  style={[
-                    styles.portrait,
-                    { height: portrait, width: portrait },
-                  ]}
-                >
-                  <LinearGradient
-                    colors={["#6178BC", "#3F4597", "#2F315A"]}
-                    style={StyleSheet.absoluteFill}
-                  />
-                  <Text
-                    accessible={false}
-                    style={[styles.initials, { fontSize: portrait * 0.36 }]}
-                  >
-                    {name.startsWith("npub")
-                      ? "•"
-                      : Array.from(name.trim())[0]?.toLocaleUpperCase()}
-                  </Text>
-                  {avatarUrl ? (
-                    <Image
-                      source={avatarUrl}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="cover"
-                    />
-                  ) : null}
-                </View>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("contacts:openProfile", {
-                  name: isolateText(name),
-                })}
-                onPress={() => {
-                  tapFeedback();
-                  router.push({
-                    pathname: "/contact/[key]",
-                    params: { key: call.peerKey },
-                  });
-                }}
+            {group ? (
+              <Animated.View
+                entering={appear}
+                layout={reflow}
+                style={styles.identity}
               >
-                <Text numberOfLines={2} style={styles.name}>
-                  {name}
-                </Text>
-              </Pressable>
-              {status && (
-                <Animated.View
-                  key={call.phase}
-                  entering={FadeIn.duration(180).reduceMotion(
-                    ReduceMotion.System,
-                  )}
-                  style={styles.statusRow}
+                <Text style={styles.groupName}>{label}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setSheet("roster")}
                 >
-                  <View style={styles.statusDot} />
-                  <Text style={styles.status} accessibilityLiveRegion="polite">
-                    {status}
+                  <Text style={styles.status}>
+                    {t("calls:participantCount", { count: groupCount })}
                   </Text>
-                </Animated.View>
-              )}
-              {connected && <Elapsed since={call.answeredAt} />}
-              {call.phase === "ended" && call.reason && (
-                <Text style={styles.reason}>{t(`calls:${call.reason}`)}</Text>
-              )}
-            </Animated.View>
+                </Pressable>
+                <Elapsed since={call.answeredAt} />
+                {tiles("audio")}
+              </Animated.View>
+            ) : (
+              <Animated.View
+                entering={appear}
+                layout={reflow}
+                style={styles.identity}
+              >
+                <View style={styles.portraitRim}>
+                  {waiting && <PortraitPulse />}
+                  <View
+                    style={[
+                      styles.portrait,
+                      { height: portrait, width: portrait },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={["#6178BC", "#3F4597", "#2F315A"]}
+                      style={StyleSheet.absoluteFill}
+                    />
+                    <Text
+                      accessible={false}
+                      style={[styles.initials, { fontSize: portrait * 0.36 }]}
+                    >
+                      {name.startsWith("npub")
+                        ? "•"
+                        : Array.from(name.trim())[0]?.toLocaleUpperCase()}
+                    </Text>
+                    {avatarUrl ? (
+                      <Image
+                        source={avatarUrl}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="cover"
+                      />
+                    ) : null}
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("contacts:openProfile", {
+                    name: isolateText(name),
+                  })}
+                  onPress={() => {
+                    tapFeedback();
+                    router.push({
+                      pathname: "/contact/[key]",
+                      params: { key: call.peerKey },
+                    });
+                  }}
+                >
+                  <Text numberOfLines={2} style={styles.name}>
+                    {name}
+                  </Text>
+                </Pressable>
+                {status && (
+                  <Animated.View
+                    key={call.phase}
+                    entering={FadeIn.duration(180).reduceMotion(
+                      ReduceMotion.System,
+                    )}
+                    style={styles.statusRow}
+                  >
+                    <View style={styles.statusDot} />
+                    <Text
+                      style={styles.status}
+                      accessibilityLiveRegion="polite"
+                    >
+                      {status}
+                    </Text>
+                  </Animated.View>
+                )}
+                {connected && <Elapsed since={call.answeredAt} />}
+                {call.phase === "incoming" && call.inviteCount && (
+                  <Text style={styles.reason}>
+                    {t("calls:conferenceInvitation")} ·{" "}
+                    {t("calls:participantCount", { count: call.inviteCount })}
+                  </Text>
+                )}
+                {call.phase === "ended" && call.reason && (
+                  <Text style={styles.reason}>{t(`calls:${call.reason}`)}</Text>
+                )}
+              </Animated.View>
+            )}
             <View style={styles.bottom}>
               {connected && (
                 <Animated.View entering={appear} style={styles.controls}>
@@ -392,6 +480,9 @@ export function CallScreen({
                 <Text style={styles.reason} accessibilityLiveRegion="polite">
                   {videoError}
                 </Text>
+              )}
+              {connected && (
+                <InvitationStatus onPress={() => setSheet("roster")} />
               )}
               {outputError && connected && (
                 <Text style={styles.reason} accessibilityLiveRegion="polite">
@@ -435,7 +526,18 @@ export function CallScreen({
               </View>
             </View>
           </ScrollView>
-        </SafeAreaView>
+        </ScreenInsets>
+      )}
+      {focused && connected && sheet && (
+        <ConferenceSheet
+          mode={sheet}
+          open
+          setOpen={(open) => {
+            if (!open) setSheet(null);
+          }}
+          peers={peers}
+          activeVideo={video}
+        />
       )}
       {focused && connected && (
         <GlassSheet open={showOutput} onOpenChange={setShowOutput}>
@@ -603,9 +705,19 @@ const styles = StyleSheet.create({
     borderColor: "#B0BFFF13",
   },
   top: {
+    flexDirection: "row",
+    gap: space.xs,
     alignItems: "flex-start",
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
+  },
+  topSpacer: { flex: 1 },
+  groupHeader: { width: "100%", gap: 2 },
+  groupName: {
+    color: "#F5F7FF",
+    fontSize: 31,
+    fontWeight: "700",
+    textAlign: "center",
   },
   content: {
     flexGrow: 1,

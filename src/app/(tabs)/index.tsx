@@ -103,7 +103,9 @@ export default function Calls() {
             return (
               <Row
                 key={entry.id}
-                title={name}
+                title={
+                  entry.participantKeys.length > 1 ? t("calls:groupCall") : name
+                }
                 leading={<Avatar name={name} uri={entry.avatarUrl} />}
                 leadingAction={{
                   label: t("contacts:openProfile", { name: isolateText(name) }),
@@ -113,7 +115,7 @@ export default function Calls() {
                       params: { key: entry.peerKey },
                     }),
                 }}
-                detail={`${t(outcomes[entry.outcome])} · ${isolateText(formatDateTime(entry.startedAt, locale, typeof calendar?.uses24hourClock === "boolean" ? !calendar.uses24hourClock : undefined))}`}
+                detail={`${entry.participantKeys.length > 1 ? `${t("calls:participantCount", { count: entry.participantKeys.length + 1 })} · ` : ""}${t(outcomes[entry.outcome])} · ${isolateText(formatDateTime(entry.startedAt, locale, typeof calendar?.uses24hourClock === "boolean" ? !calendar.uses24hourClock : undefined))}`}
                 accessibilityLabel={t("calls:callPerson", {
                   name: isolateText(name),
                 })}

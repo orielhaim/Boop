@@ -14,6 +14,7 @@ export function createConversationFeed(
   let target: string | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let active = false;
+  let prefetchEnabled = false;
   const listeners = new Set<() => void>();
   const badgeListeners = new Set<() => void>();
 
@@ -61,6 +62,7 @@ export function createConversationFeed(
       snapshot = { rows: snapshot?.rows ?? [], error: true };
     }
     for (const listener of listeners) listener();
+    prefetch();
   }
 
   function invalidate() {
@@ -72,6 +74,7 @@ export function createConversationFeed(
   }
 
   function prefetch() {
+    if (!active || !prefetchEnabled) return;
     const candidates = (snapshot?.rows ?? [])
       .filter((row) => !row.archived && row.lastMessageAt !== null)
       .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
@@ -88,7 +91,6 @@ export function createConversationFeed(
       });
       refreshUnread();
       refresh();
-      prefetch();
       return () => {
         active = false;
         clearTimeout(refreshTimer);
@@ -115,6 +117,11 @@ export function createConversationFeed(
     getUnreadCount: () => unread,
     refresh,
     prefetch,
+    setPrefetchEnabled(enabled: boolean) {
+      prefetchEnabled = enabled;
+      if (enabled) prefetch();
+      else history.cancelPrefetch();
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {

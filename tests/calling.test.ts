@@ -19,6 +19,7 @@ import {
   parseCallSignal,
 } from "../src/core/calling/signals";
 import {
+  callReplyRelayTag,
   createRumor,
   unwrapPrivateEvent,
   wrapRumor,
@@ -47,19 +48,25 @@ function invitation(now: number): InviteSignal {
 
 test("signed NIP-59 call rumor reaches only its intended inbox, expires, and stays outside chat", async () => {
   const invite = invitation(Date.now());
+  const replyRelay = "wss://relay.example/";
   const rumor = createRumor({
     kind: callSignalKind,
     pubkey: invite.senderKey,
     content: JSON.stringify(invite),
-    tags: [["p", invite.recipientKey]],
+    tags: [
+      ["p", invite.recipientKey],
+      [callReplyRelayTag, replyRelay],
+    ],
     created_at: invite.createdAt / 1000,
   });
   const wrapped = await wrapRumor(new NDK(), rumor, callee.pubkey, caller);
   expect(wrapped.rawEvent().kind).toBe(1059);
   expect(wrapped.rawEvent().content).not.toContain(invite.roomSecret);
+  expect(JSON.stringify(wrapped.rawEvent())).not.toContain(replyRelay);
   expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toMatchObject({
     type: "call",
     signal: invite,
+    replyRelays: [replyRelay],
   });
   expect(await unwrapPrivateEvent(wrapped.rawEvent(), third)).toBeNull();
   const envelope = {

@@ -46,7 +46,9 @@ export function CallIndicator() {
 
   if (!call || call.phase === "ended" || pathname === `/call/${call.peerKey}`)
     return null;
-  const name = nameOrAddress(contact?.name, call.peerKey);
+  const name = video?.conference
+    ? t("calls:groupCall")
+    : nameOrAddress(contact?.name, call.peerKey);
   const hasVideo =
     video?.local.phase === "sharing" || video?.remote.phase === "receiving";
   const label =

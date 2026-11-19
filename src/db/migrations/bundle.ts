@@ -53,6 +53,20 @@ export default {
         tag: "0006_tranquil_molly_hayes",
         breakpoints: true,
       },
+      {
+        idx: 7,
+        version: "6",
+        when: 1795055109918,
+        tag: "0007_bizarre_abomination",
+        breakpoints: true,
+      },
+      {
+        idx: 8,
+        version: "6",
+        when: 1795056751463,
+        tag: "0008_cool_jack_power",
+        breakpoints: true,
+      },
     ],
   },
   migrations: {
@@ -70,5 +84,9 @@ export default {
       "CREATE TABLE `message_translations` (\n\t`message_id` text NOT NULL,\n\t`content_hash` text NOT NULL,\n\t`target_language` text NOT NULL,\n\t`source_language` text NOT NULL,\n\t`translated_text` text NOT NULL,\n\t`engine` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`message_id`, `target_language`, `content_hash`),\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE TRIGGER `invalidate_message_translations`\nAFTER UPDATE OF `body`, `deleted_at` ON `messages`\nWHEN OLD.`body` IS NOT NEW.`body` OR NEW.`deleted_at` IS NOT NULL\nBEGIN\n  DELETE FROM `message_translations` WHERE `message_id` = NEW.`id`;\nEND;\r\n",
     m0006:
       'CREATE INDEX `conversations_order` ON `conversations` ("pinned_rank" IS NULL,`pinned_rank`,"updated_at" DESC,`peer_key`) WHERE "conversations"."deleted_at" IS NULL;--> statement-breakpoint\nCREATE INDEX `conversations_unread` ON `conversations` (`unread`) WHERE "conversations"."deleted_at" IS NULL AND "conversations"."unread" > 0;',
+    m0007:
+      "ALTER TABLE `call_history` ADD `participant_keys` text DEFAULT '[]' NOT NULL;",
+    m0008:
+      "ALTER TABLE `call_history` ADD `invitation_ids` text DEFAULT '[]' NOT NULL;",
   },
 };

@@ -29,8 +29,10 @@ class BoopCameraPreviewModule : Module() {
 
 // RTCView uses SurfaceView on Android. The PiP uses the same WebRTC track and EGL
 // context in a TextureView so Android can clip the rendered pixels to the outline.
-class BoopCameraPreviewView(context: Context, appContext: AppContext, rounded: Boolean = true) :
+class BoopCameraPreviewView(context: Context, appContext: AppContext, rounded: Boolean) :
   ExpoView(context, appContext), TextureView.SurfaceTextureListener {
+  constructor(context: Context, appContext: AppContext) : this(context, appContext, true)
+
   override val shouldUseAndroidLayout = true
   private val texture = TextureView(context)
   private var renderer: EglRenderer? = null

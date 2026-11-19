@@ -1,0 +1,1 @@
+ALTER TABLE `call_history` ADD `participant_keys` text DEFAULT '[]' NOT NULL;

@@ -76,9 +76,9 @@ class OngoingCallService : Service() {
   }
 
   private fun notification(call: SystemCallSession.Call): Notification {
-    val name = if (call.privateMode) call.labels.privateCaller else call.name
+    val name = if (call.privateMode) call.labels.privateCaller else call.groupTitle ?: call.name
     val person = Person.Builder().setName(name)
-      .setIcon(if (call.privateMode) null else call.avatar).build()
+      .setIcon(if (call.privateMode || call.groupTitle != null) null else call.avatar).build()
     val content = packageManager.getLaunchIntentForPackage(packageName)?.apply {
       flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
       putExtra(CALL_ID, call.id)
@@ -94,7 +94,11 @@ class OngoingCallService : Service() {
     val builder = NotificationCompat.Builder(this, CHANNEL_ID)
       .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, disconnect))
       .setContentTitle(name)
-      .setContentText(if (call.answeredAt == 0L) call.labels.connecting else call.labels.ongoing)
+      .setContentText(
+        if (call.answeredAt == 0L) call.labels.connecting
+        else if (!call.privateMode) call.participants ?: call.labels.ongoing
+        else call.labels.ongoing
+      )
       .setSmallIcon(R.drawable.boop_call_status)
       .setContentIntent(open)
       .setOngoing(true)

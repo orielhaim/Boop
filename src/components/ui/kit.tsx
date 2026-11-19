@@ -19,7 +19,6 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from "react-native-reanimated";
-import { SafeAreaView } from "react-native-safe-area-context";
 import {
   GlassAvatar,
   type GlassAvatarSize,
@@ -34,6 +33,7 @@ import {
   type GlassInputProps,
 } from "@/components/glassyui/glass-input";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
+import { ScreenInsets } from "@/components/ui/screen-insets";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { useAppPreferences } from "@/stores/preferences";
 import { radius, space, spring, type, useTheme } from "@/theme";
@@ -43,6 +43,7 @@ const icons = {
   chat: { ios: "bubble.left.fill", android: "chat_bubble" },
   person: { ios: "person.crop.circle", android: "account_circle" },
   add: { ios: "plus", android: "add" },
+  addPerson: { ios: "person.badge.plus", android: "person_add" },
   search: { ios: "magnifyingglass", android: "search" },
   back: { ios: "arrow.left", android: "arrow_back" },
   previous: { ios: "chevron.left", android: "chevron_left" },
@@ -256,7 +257,7 @@ export function Screen({
 }) {
   const { colors } = useTheme();
   return (
-    <SafeAreaView
+    <ScreenInsets
       edges={tab ? ["top", "left", "right"] : ["left", "right", "bottom"]}
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
@@ -271,7 +272,7 @@ export function Screen({
       ) : (
         children
       )}
-    </SafeAreaView>
+    </ScreenInsets>
   );
 }
 

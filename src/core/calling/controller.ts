@@ -2,6 +2,13 @@ import { z } from "zod";
 import { createStore } from "zustand/vanilla";
 import { publicKeySchema } from "../identity/keys";
 import {
+  type ConferenceMedia,
+  callCapacity,
+  type InvitationView,
+  type Participant,
+  type ParticipantVolume,
+} from "./conference";
+import {
   type CallResponse,
   type CallSignal,
   type InviteSignal,
@@ -43,13 +50,18 @@ export type CallRecord = {
   endedAt: number;
   durationSeconds: number;
   outcome: Outcome;
+  participantKeys?: string[];
+  invitationIds?: string[];
 };
 export type CallView = Pick<
   CallRecord,
   "id" | "peerKey" | "direction" | "startedAt"
 > &
   (
-    | { phase: "outgoing" | "ringing" | "incoming" | "connecting" | "ending" }
+    | {
+        phase: "outgoing" | "ringing" | "incoming" | "connecting" | "ending";
+        inviteCount?: number;
+      }
     | {
         phase: "connected";
         answeredAt: number;
@@ -57,6 +69,7 @@ export type CallView = Pick<
         remoteMuted: boolean;
         routing: Routing;
         reconnecting: boolean;
+        expandable?: boolean;
       }
     | { phase: "ended"; outcome: Outcome; reason?: CallFailure }
   );
@@ -72,6 +85,8 @@ type Attempt = {
   microphonePrompt: boolean;
   cameraPrompt: boolean;
   direct: boolean;
+  members: Set<string>;
+  invitation?: { signal: InviteSignal; timer: ReturnType<typeof setTimeout> };
 };
 
 export type CallMedia = {
@@ -81,6 +96,7 @@ export type CallMedia = {
   route(value: AudioRoute): Promise<void>;
   notifyHangup?(): Promise<void>;
   video?: VideoControls;
+  conference?: ConferenceMedia;
   inspect?(): Promise<{
     ice: string;
     microphone: boolean;
@@ -102,6 +118,7 @@ export type OpenMedia = (options: {
   onMicrophonePrompt: (open: boolean) => void;
   onCameraPrompt: (open: boolean) => void;
   onAuthenticated: (media: Pick<CallMedia, "notifyHangup">) => void;
+  onParticipants?: (participants: Participant[]) => void;
   onVideo: (video: VideoState | null) => void;
 }) => Promise<CallMedia>;
 
@@ -123,7 +140,7 @@ export function createCallController({
   openMedia: OpenMedia;
   prepareMedia?: () => Promise<unknown>;
   record: (entry: CallRecord) => void;
-  hasRecord?: (callId: string) => boolean;
+  hasRecord?: (callId: string, invitationId?: string) => boolean;
   tone: (mode: "incoming" | "ringing" | "silent") => void;
   now?: () => number;
   connectTimeout?: number;
@@ -131,7 +148,9 @@ export function createCallController({
   const store = createStore<{
     call: CallView | null;
     video: VideoState | null;
-  }>(() => ({ call: null, video: null }));
+    participants: Participant[];
+    invitations: InvitationView[];
+  }>(() => ({ call: null, video: null, participants: [], invitations: [] }));
   const seen = new Map<string, number>();
   let active: Attempt | undefined;
   let available = false;
@@ -144,12 +163,14 @@ export function createCallController({
     peerKey: string,
     callId: string,
     live?: () => boolean,
+    invitationId?: string,
   ) {
     const createdAt = Math.floor(now() / 1_000) * 1_000;
     return publish(
       {
         version: 1,
         type,
+        ...(invitationId ? { invitationId } : {}),
         callId,
         nonce: randomId(),
         senderKey: localKey,
@@ -161,8 +182,46 @@ export function createCallController({
     );
   }
 
+  function updateInvitation(
+    invite: InviteSignal,
+    phase: InvitationView["phase"],
+  ) {
+    if (!invite.conference) return;
+    const entry = { key: invite.recipientKey, id: invite.conference.id, phase };
+    store.setState(({ invitations }) => ({
+      invitations: [
+        ...invitations.filter(({ key }) => key !== entry.key),
+        entry,
+      ].slice(-callCapacity),
+    }));
+  }
+
+  function settleInvitation(
+    attempt: Attempt,
+    phase: InvitationView["phase"],
+    cancel = false,
+  ) {
+    const pending = attempt.invitation;
+    if (!pending) return;
+    const { signal: invite } = pending;
+    clearTimeout(pending.timer);
+    attempt.invitation = undefined;
+    const id = invite.conference?.id;
+    if (id) attempt.media?.conference?.release(id);
+    updateInvitation(invite, phase);
+    if (cancel)
+      void response(
+        "call.cancel",
+        invite.recipientKey,
+        invite.callId,
+        undefined,
+        id,
+      );
+  }
+
   function finish(attempt: Attempt, outcome: Outcome, reason?: CallFailure) {
     if (active !== attempt) return;
+    settleInvitation(attempt, "cancelled", true);
     active = undefined;
     clearTimeout(attempt.timer);
     attempt.abort.abort();
@@ -173,10 +232,16 @@ export function createCallController({
     store.setState({
       call: { ...base, phase: "ended", outcome, reason },
       video: null,
+      participants: [],
+      invitations: [],
     });
     try {
       record({
         ...base,
+        participantKeys: [...attempt.members],
+        invitationIds: attempt.invite.conference
+          ? [attempt.invite.conference.id]
+          : [],
         outcome,
         answeredAt,
         endedAt,
@@ -206,9 +271,18 @@ export function createCallController({
       microphonePrompt: false,
       cameraPrompt: false,
       direct: false,
+      members: new Set([base.peerKey]),
     };
     active = attempt;
-    store.setState({ call: { ...base, phase: direction } });
+    store.setState({
+      call: {
+        ...base,
+        phase: direction,
+        inviteCount: invite.conference?.roster.length,
+      },
+      participants: [],
+      invitations: [],
+    });
     attempt.timer = setTimeout(
       () => {
         finish(attempt, direction === "incoming" ? "missed" : "unanswered");
@@ -226,9 +300,18 @@ export function createCallController({
     clearTimeout(attempt.timer);
     tone("silent");
     store.setState({ call: { ...base, phase: "connecting" } });
+    if (typeof __DEV__ !== "undefined" && __DEV__)
+      console.debug("[call] private setup started", { answering });
     attempt.timer = setTimeout(() => {
       finish(attempt, "failed", "directFailed");
-      if (!attempt.direct) void response("call.end", base.peerKey, base.id);
+      if (!attempt.direct)
+        void response(
+          "call.end",
+          base.peerKey,
+          base.id,
+          undefined,
+          attempt.invite.conference?.id,
+        );
     }, connectTimeout);
     let routing: Routing = { selected: null, available: [] };
     let remoteMuted = false;
@@ -239,6 +322,7 @@ export function createCallController({
             base.peerKey,
             base.id,
             () => available && active === attempt,
+            attempt.invite.conference?.id,
           )
         : Promise.resolve(true);
       void acceptance.then((accepted) => {
@@ -294,6 +378,24 @@ export function createCallController({
           attempt.direct = true;
           attempt.notifyHangup = notifyHangup;
         },
+        onParticipants: (participants) => {
+          if (active !== attempt) return;
+          for (const member of participants) attempt.members.add(member.key);
+          if (
+            participants.some(
+              ({ key }) => key === attempt.invitation?.signal.recipientKey,
+            )
+          ) {
+            clearTimeout(attempt.invitation?.timer);
+            attempt.invitation = undefined;
+          }
+          store.setState(({ invitations }) => ({
+            participants,
+            invitations: invitations.filter(
+              ({ key }) => !participants.some((member) => member.key === key),
+            ),
+          }));
+        },
         onVideo: (video) => {
           if (active === attempt) store.setState({ video });
         },
@@ -324,6 +426,7 @@ export function createCallController({
           remoteMuted,
           routing,
           reconnecting: false,
+          expandable: media.conference !== undefined,
         },
       });
     } catch (error) {
@@ -333,7 +436,14 @@ export function createCallController({
           ? "microphonePermission"
           : "privateAudioFailed";
       finish(attempt, "failed", reason);
-      if (!attempt.direct) void response("call.end", base.peerKey, base.id);
+      if (!attempt.direct)
+        void response(
+          "call.end",
+          base.peerKey,
+          base.id,
+          undefined,
+          attempt.invite.conference?.id,
+        );
     }
   }
 
@@ -348,22 +458,30 @@ export function createCallController({
       return;
     for (const [key, expires] of seen)
       if (expires <= receivedAt) seen.delete(key);
-    const invitationKey = `${signal.senderKey}:${signal.callId}`;
+    const invitationKey = `${signal.senderKey}:${signal.callId}:${signal.type === "call.invite" ? (signal.conference?.id ?? "") : (signal.invitationId ?? "")}`;
     if (signal.type === "call.invite") {
       if (
         seen.has(invitationKey) ||
         seen.size >= 512 ||
-        hasRecord?.(signal.callId)
+        hasRecord?.(signal.callId, signal.conference?.id)
       )
         return;
       seen.set(invitationKey, signal.expiresAt);
       if (active) {
         const { call } = store.getState();
         const glare =
+          !signal.conference &&
+          !active.invite.conference &&
           active.base.peerKey === signal.senderKey &&
           (call?.phase === "outgoing" || call?.phase === "ringing");
         if (!glare || localKey < signal.senderKey) {
-          void response("call.busy", signal.senderKey, signal.callId);
+          void response(
+            "call.busy",
+            signal.senderKey,
+            signal.callId,
+            undefined,
+            signal.conference?.id,
+          );
           return;
         }
         const previous = active;
@@ -377,6 +495,7 @@ export function createCallController({
         incoming.base.peerKey,
         incoming.base.id,
         () => available && active === incoming && !incoming.direct,
+        incoming.invite.conference?.id,
       );
       return;
     }
@@ -389,8 +508,43 @@ export function createCallController({
         Math.max(seen.get(invitationKey) ?? 0, receivedAt + inviteLifetime),
       );
     }
+    const pending = active?.invitation?.signal;
+    if (
+      active &&
+      pending &&
+      pending.callId === signal.callId &&
+      pending.recipientKey === signal.senderKey &&
+      signal.invitationId &&
+      pending.conference?.id === signal.invitationId
+    ) {
+      const phase = store
+        .getState()
+        .invitations.find(({ id }) => id === signal.invitationId)?.phase;
+      if (signal.type === "call.ringing" && phase === "inviting")
+        updateInvitation(pending, "ringing");
+      if (signal.type === "call.accept" && phase !== "connecting") {
+        updateInvitation(pending, "connecting");
+        const attempt = active;
+        void active.media?.conference
+          ?.authorize(signal.invitationId)
+          .catch(() => false)
+          .then((allowed) => {
+            if (
+              !allowed &&
+              active === attempt &&
+              attempt.invitation?.signal === pending
+            )
+              settleInvitation(attempt, "unavailable", true);
+          });
+      }
+      if (signal.type === "call.reject") settleInvitation(active, "declined");
+      if (signal.type === "call.busy") settleInvitation(active, "busy");
+      if (signal.type === "call.end") settleInvitation(active, "unavailable");
+      return;
+    }
     if (
       !active ||
+      active.invite.conference?.id !== signal.invitationId ||
       active.base.id !== signal.callId ||
       active.base.peerKey !== signal.senderKey ||
       active.direct
@@ -481,6 +635,7 @@ export function createCallController({
         expiresAt: createdAt + inviteLifetime,
         roomId: randomId(),
         roomSecret: randomId(),
+        expandable: 2,
       };
       const attempt = begin(invite, "outgoing");
       void publish(invite, () => available && active === attempt).then(
@@ -490,6 +645,75 @@ export function createCallController({
           }
         },
       );
+    },
+    async invite(key: string) {
+      const attempt = active;
+      const media = attempt?.media?.conference;
+      const { call, participants } = store.getState();
+      if (
+        !available ||
+        !attempt ||
+        !media ||
+        call?.phase !== "connected" ||
+        attempt.invitation ||
+        key === localKey ||
+        !publicKeySchema.safeParse(key).success ||
+        participants.some((member) => member.key === key) ||
+        participants.length + 1 >= callCapacity ||
+        !participants.length
+      )
+        return false;
+      const createdAt = Math.floor(now() / 1_000) * 1_000;
+      const invite: InviteSignal = {
+        ...attempt.invite,
+        nonce: randomId(),
+        senderKey: localKey,
+        recipientKey: key,
+        createdAt,
+        expiresAt: createdAt + inviteLifetime,
+        conference: {
+          id: randomId(),
+          capacity: callCapacity,
+          roster: [localKey, ...participants.map((member) => member.key)],
+        },
+      };
+      const pending = {
+        signal: invite,
+        timer: setTimeout(
+          () => settleInvitation(attempt, "timed-out", true),
+          invite.expiresAt - now(),
+        ),
+      };
+      attempt.invitation = pending;
+      updateInvitation(invite, "inviting");
+      const live = () =>
+        available && active === attempt && attempt.invitation === pending;
+      const reserved =
+        invite.conference &&
+        (await media
+          .reserve({
+            version: 1,
+            callId: invite.callId,
+            invitation: invite.conference,
+            recipient: key,
+            expiresAt: invite.expiresAt,
+          })
+          .catch(() => false));
+      if (!live()) return false;
+      if (!reserved || !(await publish(invite, live))) {
+        if (live()) settleInvitation(attempt, "unavailable", true);
+        return false;
+      }
+      return true;
+    },
+    cancelInvitation() {
+      if (active) settleInvitation(active, "cancelled", true);
+    },
+    silence(key: string, muted: boolean) {
+      active?.media?.conference?.silence(key, muted);
+    },
+    volume(key: string, volume: ParticipantVolume) {
+      active?.media?.conference?.volume(key, volume);
     },
     accept() {
       if (active && store.getState().call?.phase === "incoming")
@@ -530,7 +754,13 @@ export function createCallController({
             ? "cancelled"
             : "completed",
       );
-      void response(type, attempt.base.peerKey, attempt.base.id);
+      void response(
+        type,
+        attempt.base.peerKey,
+        attempt.base.id,
+        undefined,
+        attempt.invite.conference?.id,
+      );
     },
     mute() {
       const { call } = store.getState();

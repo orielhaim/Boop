@@ -79,3 +79,50 @@ export function callList<TResult>(db: ReadyDatabase<TResult>) {
     .orderBy(desc(schema.callHistory.startedAt))
     .limit(100);
 }
+
+export function callById<TResult>(db: ReadyDatabase<TResult>, id: string) {
+  return db
+    .select()
+    .from(schema.callHistory)
+    .where(eq(schema.callHistory.id, id))
+    .get();
+}
+
+export function saveCallRecord<TResult>(
+  db: Pick<BaseSQLiteDatabase<"sync", TResult, typeof schema>, "transaction">,
+  entry: typeof schema.callHistory.$inferInsert,
+) {
+  db.transaction((tx) => {
+    const prior = callById(tx, entry.id);
+    if (!prior) {
+      tx.insert(schema.callHistory).values(entry).run();
+      return;
+    }
+    if (
+      !entry.invitationIds?.length ||
+      entry.invitationIds.some((id) => prior.invitationIds.includes(id))
+    )
+      return;
+    tx.update(schema.callHistory)
+      .set({
+        invitationIds: [...prior.invitationIds, ...entry.invitationIds].slice(
+          -32,
+        ),
+        participantKeys: [
+          ...new Set([
+            ...prior.participantKeys,
+            ...(entry.participantKeys ?? []),
+          ]),
+        ],
+        answeredAt: prior.answeredAt ?? entry.answeredAt,
+        endedAt: entry.endedAt,
+        durationSeconds: prior.durationSeconds + (entry.durationSeconds ?? 0),
+        outcome:
+          prior.answeredAt !== null && entry.answeredAt == null
+            ? prior.outcome
+            : entry.outcome,
+      })
+      .where(eq(schema.callHistory.id, entry.id))
+      .run();
+  });
+}

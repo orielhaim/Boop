@@ -47,6 +47,11 @@ also use `bun fmt` to format. instead of prettier/biome etc.
 - Keep presentation copy out of persistence and transport. Use stable error codes and translate at the UI boundary. Reuse the existing Chat Kit adapter and UI components.
 - Run `bun test tests/i18n.test.ts` after changing translation resources.
 
+## Calling
+
+- Read the calling section of `arch.md` before changing invitations, admission, or media. Keep one Call Controller, room, microphone, and native audio lease per logical call.
+- Bind each connection to the admitted Nostr identity before attaching microphone audio. Require explicit Watch before targeting conference video and remove that target when consent ends.
+
 ## Building with EAS
 
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.

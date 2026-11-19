@@ -1,8 +1,8 @@
-import { asc, eq } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
-import { createContext, useContext, useEffect } from "react";
+import { useEffect } from "react";
 import { AppState } from "react-native";
 import { createCallController } from "@/core/calling/controller";
 import { callTone } from "@/core/calling/native-audio";
@@ -33,16 +33,21 @@ import { createTranslationService } from "@/core/translation/service";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
 import {
+  callById,
   contactByKey,
   preference,
+  saveCallRecord,
   setPreference,
   updateContactPreferences,
 } from "@/db/queries";
 import { seedRelays } from "@/db/relays";
-import { callHistory, relaySettings } from "@/db/schema";
+import { relaySettings } from "@/db/schema";
 import { createTranslationCache } from "@/db/translations";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
+import { useLocal } from "./local-context";
+
+export { useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
@@ -55,8 +60,11 @@ async function start() {
         language === "auto" ? getLocales()[0]?.languageCode : undefined,
       ),
     );
-    const fresh = preference(db, "identity.publicKey") === null;
-    const identity = await initializeIdentity(db);
+    const identityStarted = performance.now();
+    const { identity, signer, fresh } = await initializeIdentity(db);
+    messagingMetric("identity ready", {
+      ms: performance.now() - identityStarted,
+    });
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
@@ -65,9 +73,9 @@ async function start() {
       translationPreviewTarget(db),
     );
     const messagingStarted = performance.now();
-    const { messaging, signer } = await createMessagingRuntime({
+    const messaging = createMessagingRuntime({
       db,
-      identity,
+      signer,
       chat,
     });
     messagingMetric("runtime initialized", {
@@ -119,14 +127,13 @@ async function start() {
       prepareMedia: initializeCallingRuntime,
       send: messaging.sendCall,
       tone: callTone,
-      record: (entry) =>
-        db.insert(callHistory).values(entry).onConflictDoNothing().run(),
-      hasRecord: (id) =>
-        !!db
-          .select({ id: callHistory.id })
-          .from(callHistory)
-          .where(eq(callHistory.id, id))
-          .get(),
+      record: (entry) => saveCallRecord(db, entry),
+      hasRecord: (id, invitationId) => {
+        const entry = callById(db, id);
+        return invitationId
+          ? entry?.invitationIds.includes(invitationId) === true
+          : !!entry;
+      },
     });
     messaging.subscribeCalls(calling.receive);
     const nativeOpen = attachSystemPresentation(calling, {
@@ -174,18 +181,8 @@ export function initializeLocal() {
   return initialization;
 }
 
-export const LocalContext = createContext<Awaited<
-  ReturnType<typeof start>
-> | null>(null);
-
-export function useLocal() {
-  const local = useContext(LocalContext);
-  if (!local) throw new Error("Local services are unavailable");
-  return local;
-}
-
 export function MessagingLifecycle() {
-  const { db, messaging, calling, lock, conversations, history } = useLocal();
+  const { db, messaging, calling, lock, conversations } = useLocal();
   useEffect(() => {
     const stopFeed = conversations.start();
     const databasePath =
@@ -225,21 +222,24 @@ export function MessagingLifecycle() {
     );
     function background() {
       calling.setForeground(false);
-      history.cancelPrefetch();
       if (!calling.isRequestingMicrophone()) messaging.stop();
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
+      conversations.setPrefetchEnabled(
+        state === "active" && !lock.getState().locked,
+      );
       if (state === "active") {
         calling.setForeground(true);
         connect();
-        if (!lock.getState().locked) conversations.prefetch();
       } else if (state === "background" && !lock.getState().authenticating) {
         background();
       }
     };
     const unsubscribeLock = lock.subscribe(() => {
-      if (lock.getState().locked) history.cancelPrefetch();
+      conversations.setPrefetchEnabled(
+        AppState.currentState === "active" && !lock.getState().locked,
+      );
       if (
         lock.getState().authenticating ||
         AppState.currentState !== "background"
@@ -265,6 +265,6 @@ export function MessagingLifecycle() {
       stopFeed();
       messaging.stop();
     };
-  }, [db, messaging, calling, lock, conversations, history]);
+  }, [db, messaging, calling, lock, conversations]);
   return null;
 }

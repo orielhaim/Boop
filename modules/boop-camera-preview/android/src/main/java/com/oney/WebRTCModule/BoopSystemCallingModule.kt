@@ -83,6 +83,9 @@ class BoopSystemCallingModule : Module() {
     AsyncFunction("update") { id: String, answeredAt: Double, privateMode: Boolean ->
       SystemCallSession.update(id, answeredAt.toLong(), privateMode)
     }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+    AsyncFunction("updateGroup") { id: String, title: String?, participants: String? ->
+      SystemCallSession.updateGroup(id, title, participants)
+    }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
     AsyncFunction("setRemoteVideo") { id: String, stream: String? ->
       if (SystemCallSession.current?.id == id) {
         SystemCallPip.stream = stream
@@ -129,6 +132,8 @@ internal object SystemCallSession {
     var readyForAudio = false
     var platformDisconnecting = false
     var avatar: IconCompat? = null
+    var groupTitle: String? = null
+    var participants: String? = null
   }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -217,6 +222,14 @@ internal object SystemCallSession {
     if (call.answeredAt == answeredAt && call.privateMode == privateMode) return
     call.answeredAt = answeredAt
     call.privateMode = privateMode
+    refreshNotification(call)
+  }
+
+  fun updateGroup(id: String, title: String?, participants: String?) {
+    val call = current?.takeIf { it.id == id } ?: return
+    if (call.groupTitle == title && call.participants == participants) return
+    call.groupTitle = title
+    call.participants = participants
     refreshNotification(call)
   }
 

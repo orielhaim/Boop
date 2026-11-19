@@ -3,8 +3,8 @@ import * as Authentication from "expo-local-authentication";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BackHandler, Platform, StyleSheet, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, Icon, Ink } from "@/components/ui/kit";
+import { ScreenInsets } from "@/components/ui/screen-insets";
 import type { AppLock } from "@/core/security/app-lock";
 import { namespaces } from "@/i18n";
 import { space, useTheme } from "@/theme";
@@ -41,7 +41,8 @@ export function LockScreen({
   }, [state.locked]);
 
   return (
-    <SafeAreaView
+    <ScreenInsets
+      padding={space.xxl}
       style={[styles.screen, { backgroundColor: colors.background }]}
       accessibilityViewIsModal
     >
@@ -87,12 +88,12 @@ export function LockScreen({
           </Ink>
         ) : null}
       </View>
-    </SafeAreaView>
+    </ScreenInsets>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, justifyContent: "center", padding: space.xxl },
+  screen: { flex: 1, justifyContent: "center" },
   content: { alignItems: "center", gap: space.lg },
   mark: {
     width: 94,

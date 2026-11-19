@@ -55,6 +55,7 @@ export function VideoStage({
   header,
   controls,
   notice,
+  scene,
   onSwap,
   onCorner,
 }: {
@@ -70,6 +71,7 @@ export function VideoStage({
   header: ReactNode;
   controls: ReactNode;
   notice: ReactNode;
+  scene?: ReactNode;
   onSwap: () => void;
   onCorner: (corner: Corner) => void;
 }) {
@@ -131,25 +133,29 @@ export function VideoStage({
       entering={FadeIn.duration(200).reduceMotion(ReduceMotion.System)}
       style={styles.stage}
     >
-      <RTCView
-        streamURL={stageUrl}
-        iosPIP={
-          Platform.OS === "ios" && stageUrl === systemVideoUrl
-            ? iosCallPip
-            : undefined
-        }
-        mirror={mirrorStage}
-        objectFit="cover"
-        zOrder={0}
-        style={StyleSheet.absoluteFill}
-      />
+      {!scene && (
+        <RTCView
+          streamURL={stageUrl}
+          iosPIP={
+            Platform.OS === "ios" && stageUrl === systemVideoUrl
+              ? iosCallPip
+              : undefined
+          }
+          mirror={mirrorStage}
+          objectFit="cover"
+          zOrder={0}
+          style={StyleSheet.absoluteFill}
+        />
+      )}
       <Pressable
         accessible={!keepVisible}
         accessibilityRole="button"
         accessibilityLabel={toggleLabel}
         onPress={toggle}
         style={StyleSheet.absoluteFill}
-      />
+      >
+        {scene}
+      </Pressable>
       <Animated.View
         pointerEvents={visible ? "box-none" : "none"}
         accessibilityElementsHidden={!visible}
@@ -206,6 +212,29 @@ export function VideoStage({
         </View>
       </Animated.View>
     </Animated.View>
+  );
+}
+
+export function VideoTile({
+  url,
+  systemPip,
+}: {
+  url: string;
+  systemPip?: boolean;
+}) {
+  return AndroidPreview ? (
+    <AndroidPreview
+      streamURL={url}
+      mirror={false}
+      style={StyleSheet.absoluteFill}
+    />
+  ) : (
+    <RTCView
+      streamURL={url}
+      iosPIP={systemPip ? iosCallPip : undefined}
+      objectFit="cover"
+      style={StyleSheet.absoluteFill}
+    />
   );
 }
 

@@ -16,7 +16,7 @@ export type VideoError =
 type Feed = { url: string; facing: CameraFacing };
 type LocalVideo =
   | { phase: "off" | "starting" }
-  | ({ phase: "waiting" | "sending" | "sharing" } & Feed);
+  | ({ phase: "waiting" | "sending" | "sharing" | "preview" } & Feed);
 type RemoteVideo =
   | { phase: "off" }
   | { phase: "requesting"; sequence: number; savedContact: boolean }
@@ -29,6 +29,11 @@ export type VideoState = {
   stage: VideoSource;
   corner: { right: boolean; bottom: boolean };
   error: VideoError | null;
+  conference?: {
+    cameras: Record<string, { watching: boolean; url?: string }>;
+    focus: string | null;
+    mode: "focus" | "grid";
+  };
 };
 
 export function videoLayout({ local, remote, stage }: VideoState) {
@@ -80,7 +85,11 @@ export type VideoControls = Pick<
   | "swap"
   | "setCorner"
   | "close"
->;
+> & {
+  watch?(key: string, watching: boolean): Promise<void>;
+  focus?(key: string | null): void;
+  mode?(mode: "focus" | "grid"): void;
+};
 
 export function createVideoSession({
   callId,

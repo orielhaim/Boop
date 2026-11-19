@@ -39,9 +39,10 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
+import { ScreenInsets } from "@/components/ui/screen-insets";
+import { messagingMetric } from "@/core/messaging/diagnostics";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import type { MessageCursor } from "@/db/messaging";
 import { namespaces } from "@/i18n";
@@ -106,6 +107,8 @@ function useStressArrival(peerKey: string) {
 }
 
 export function DetailConversation({ peerKey }: { peerKey: string }) {
+  const [openedAt] = useState(() => (__DEV__ ? performance.now() : 0));
+  const measuredFirstMessages = useRef(false);
   const { t } = useTranslation(namespaces);
   const { chat, identity, messaging, history, conversations, lock } =
     useLocal();
@@ -567,6 +570,13 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       const shown = viewableItems.filter((entry) => entry.isViewable);
       const ids = shown.map(({ item }) => item._id);
       const leading = shown[0]?.item;
+      if (__DEV__ && leading && focused && !measuredFirstMessages.current) {
+        measuredFirstMessages.current = true;
+        messagingMetric("first visible messages", {
+          ms: performance.now() - openedAt,
+          rows: shown.length,
+        });
+      }
       if (leading)
         readingPosition.current = {
           id: leading._id,
@@ -589,7 +599,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       );
       markVisibleRead();
     },
-    [focused, lock, markVisibleRead],
+    [focused, lock, markVisibleRead, openedAt],
   );
 
   const [restoredIndex] = useState(() =>
@@ -830,7 +840,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   );
 
   return (
-    <SafeAreaView
+    <ScreenInsets
       edges={["top", "left", "right"]}
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
@@ -930,6 +940,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           messages={displayed}
           user={participants.self}
           forceRTL={rtl}
+          enableKeyboardProvider={false}
           enableGestureHandlerRootView={false}
           isInverted={false}
           isGroupChat={false}
@@ -963,7 +974,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           emojiKeyboard
         />
       </View>
-    </SafeAreaView>
+    </ScreenInsets>
   );
 }
 

@@ -33,11 +33,8 @@ import {
 } from "@/i18n";
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
-import {
-  initializeLocal,
-  LocalContext,
-  MessagingLifecycle,
-} from "@/services/local";
+import { initializeLocal, MessagingLifecycle } from "@/services/local";
+import { LocalContext } from "@/services/local-context";
 import { themes, useAppPreferences } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 
