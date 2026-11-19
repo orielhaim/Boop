@@ -278,7 +278,11 @@ async function runScenario(tlsDirectory: string) {
       callId: "ab".repeat(32),
       nonce: "01".repeat(32),
       roomId: "02".repeat(32),
-      roomSecret: "03".repeat(32),
+      offer: {
+        peerId: "A".repeat(20),
+        offerId: "O".repeat(20),
+        offer: "opaque",
+      },
       senderKey: alice.key,
       recipientKey: bob.key,
       createdAt: stamp,
@@ -291,9 +295,43 @@ async function runScenario(tlsDirectory: string) {
       callSignals.some(
         (event) =>
           event.type === "call.invite" &&
-          event.roomSecret === signal.roomSecret,
+          event.roomId === signal.roomId &&
+          event.offer.offerId === signal.offer.offerId,
       ),
     );
+    const answers: CallSignal[] = [];
+    const stopAnswers = alice.service.subscribeCalls((message) =>
+      answers.push(message),
+    );
+    const rtcAnswer = "private-rtc-description".repeat(220);
+    const accepted = await bob.service.sendCall(
+      {
+        type: "call.rtc",
+        version: 1,
+        callId: signal.callId,
+        nonce: "03".repeat(32),
+        senderKey: bob.key,
+        recipientKey: alice.key,
+        createdAt: stamp,
+        expiresAt: signal.expiresAt,
+        payload: {
+          peerId: "B".repeat(20),
+          offerId: signal.offer.offerId,
+          answer: rtcAnswer,
+        },
+      },
+      () => true,
+    );
+    if (!accepted) throw new Error("Relay rejected the encrypted RTC answer");
+    await wait("encrypted RTC answer", () =>
+      answers.some(
+        (event) =>
+          event.type === "call.rtc" &&
+          "answer" in event.payload &&
+          event.payload.answer === rtcAnswer,
+      ),
+    );
+    stopAnswers();
     stopCalls();
     if (bob.chat.history(alice.key).messages.length !== 2) {
       throw new Error("Call signaling leaked into chat history");
@@ -301,7 +339,10 @@ async function runScenario(tlsDirectory: string) {
     if (
       [...events.values()].some(
         ({ kind, content }) =>
-          kind !== 10050 && (kind !== 1059 || content.includes(text)),
+          kind !== 10050 &&
+          (kind !== 1059 ||
+            content.includes(text) ||
+            content.includes(rtcAnswer)),
       )
     ) {
       throw new Error("Relay received plaintext or public reactions");

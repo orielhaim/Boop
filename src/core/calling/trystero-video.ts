@@ -1,6 +1,6 @@
+import type { Room } from "@trystero-p2p/core";
 import { AppState } from "react-native";
 import type { MediaStream as NativeStream } from "react-native-webrtc";
-import type { Room } from "trystero";
 import { captureCamera } from "./camera";
 import { createMediaTurns, mediaTurn, mediaTurnTimeout } from "./media-turn";
 import {

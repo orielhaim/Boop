@@ -106,7 +106,10 @@ export function createMessagingService({
       if (event.type === "call") {
         if (event.recipientKey !== publicKey) return;
         const { signal, replyRelays } = event;
-        if (signal.type === "call.invite" && replyRelays.length) {
+        if (
+          (signal.type === "call.invite" || signal.type === "call.rtc") &&
+          replyRelays.length
+        ) {
           const key = `${signal.callId}:${signal.senderKey}`;
           if (!replyRoutes.has(key) && replyRoutes.size >= 32) {
             const oldest = replyRoutes.keys().next().value;
@@ -480,6 +483,7 @@ export function createMessagingService({
       const { since, checkpoint } = catchup;
       const started = Date.now();
       let receiveSucceeded = true;
+      let storedComplete = false;
       reportSync(relay.url, "syncing");
       syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
       closeWatch = transport.watchInbox(
@@ -487,11 +491,18 @@ export function createMessagingService({
         since,
         (id, wrapped) => {
           if (token !== watch || !active()) return;
-          ingestion.receive(id, wrapped, active, () => {
-            receiveSucceeded = false;
-          });
+          ingestion.receive(
+            id,
+            wrapped,
+            active,
+            () => {
+              receiveSucceeded = false;
+            },
+            storedComplete,
+          );
         },
         () => {
+          storedComplete = true;
           void ingestion
             .drained()
             .then(() => {
@@ -629,7 +640,7 @@ export function createMessagingService({
           )
         : [];
     const tags = [["p", signal.recipientKey]];
-    if (signal.type === "call.invite") {
+    if (signal.type === "call.invite" || signal.type === "call.rtc") {
       const listening = [...connections.values()]
         .filter(({ relay, inbox }) => inbox && transport.connected(relay))
         .map(({ relay }) => relay.url);
@@ -835,6 +846,8 @@ export function createMessagingService({
     retry,
     toggleReaction,
     sendCall,
+    prepareCallRoute: (callId: string, recipient: string) =>
+      transport.findCallInbox(callId, recipient, discoveryRelays()),
     subscribeCalls: (listener: (signal: CallSignal) => void) => {
       callListeners.add(listener);
       return () => {

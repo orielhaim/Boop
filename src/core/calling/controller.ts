@@ -8,11 +8,13 @@ import {
   type Participant,
   type ParticipantVolume,
 } from "./conference";
+import { callMetric } from "./diagnostics";
 import {
   type CallResponse,
   type CallSignal,
-  type InviteSignal,
+  type InviteDraft,
   inviteLifetime,
+  type RtcOffer,
 } from "./signals";
 import type { VideoControls, VideoState } from "./video";
 
@@ -75,7 +77,7 @@ export type CallView = Pick<
   );
 type Attempt = {
   base: Pick<CallRecord, "id" | "peerKey" | "direction" | "startedAt">;
-  invite: InviteSignal;
+  invite: InviteDraft;
   abort: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   media?: CallMedia;
@@ -86,7 +88,7 @@ type Attempt = {
   cameraPrompt: boolean;
   direct: boolean;
   members: Set<string>;
-  invitation?: { signal: InviteSignal; timer: ReturnType<typeof setTimeout> };
+  invitation?: { signal: InviteDraft; timer: ReturnType<typeof setTimeout> };
 };
 
 export type CallMedia = {
@@ -106,7 +108,7 @@ export type CallMedia = {
   }>;
 };
 export type OpenMedia = (options: {
-  invite: InviteSignal;
+  invite: InviteDraft;
   peerKey: string;
   signal: AbortSignal;
   acceptance: Promise<boolean>;
@@ -128,6 +130,7 @@ export function createCallController({
   send,
   openMedia,
   prepareMedia,
+  prepareInvite,
   record,
   hasRecord,
   tone,
@@ -139,6 +142,10 @@ export function createCallController({
   send: (signal: CallSignal, active: () => boolean) => Promise<boolean>;
   openMedia: OpenMedia;
   prepareMedia?: () => Promise<unknown>;
+  prepareInvite: (
+    invite: InviteDraft,
+    signal: AbortSignal,
+  ) => Promise<RtcOffer>;
   record: (entry: CallRecord) => void;
   hasRecord?: (callId: string, invitationId?: string) => boolean;
   tone: (mode: "incoming" | "ringing" | "silent") => void;
@@ -183,7 +190,7 @@ export function createCallController({
   }
 
   function updateInvitation(
-    invite: InviteSignal,
+    invite: InviteDraft,
     phase: InvitationView["phase"],
   ) {
     if (!invite.conference) return;
@@ -255,7 +262,7 @@ export function createCallController({
     }
   }
 
-  function begin(invite: InviteSignal, direction: CallRecord["direction"]) {
+  function begin(invite: InviteDraft, direction: CallRecord["direction"]) {
     const base = {
       id: invite.callId,
       peerKey:
@@ -300,8 +307,7 @@ export function createCallController({
     clearTimeout(attempt.timer);
     tone("silent");
     store.setState({ call: { ...base, phase: "connecting" } });
-    if (typeof __DEV__ !== "undefined" && __DEV__)
-      console.debug("[call] private setup started", { answering });
+    callMetric("private_setup_started", { answering });
     attempt.timer = setTimeout(() => {
       finish(attempt, "failed", "directFailed");
       if (!attempt.direct)
@@ -375,6 +381,7 @@ export function createCallController({
         },
         onAuthenticated: ({ notifyHangup }) => {
           if (active !== attempt) return;
+          callMetric("nostr_identity_verified");
           attempt.direct = true;
           attempt.notifyHangup = notifyHangup;
         },
@@ -416,6 +423,7 @@ export function createCallController({
       attempt.notifyHangup = media.notifyHangup;
       if (!(await acceptance) || signal.aborted) return;
       attempt.answeredAt = now();
+      callMetric("call_connected");
       clearTimeout(attempt.timer);
       store.setState({
         call: {
@@ -456,6 +464,7 @@ export function createCallController({
       (signal.type === "call.invite" || !active?.microphonePrompt)
     )
       return;
+    if (signal.type === "call.rtc") return;
     for (const [key, expires] of seen)
       if (expires <= receivedAt) seen.delete(key);
     const invitationKey = `${signal.senderKey}:${signal.callId}:${signal.type === "call.invite" ? (signal.conference?.id ?? "") : (signal.invitationId ?? "")}`;
@@ -489,6 +498,7 @@ export function createCallController({
         void response("call.cancel", previous.base.peerKey, previous.base.id);
       }
       const incoming = begin(signal, "incoming");
+      callMetric("recipient_ringing");
       tone("incoming");
       void response(
         "call.ringing",
@@ -560,7 +570,10 @@ export function createCallController({
         }
         break;
       case "call.accept":
-        if (outgoing) void connect(active, false);
+        if (outgoing) {
+          callMetric("answer_received");
+          void connect(active, false);
+        }
         break;
       case "call.reject":
         if (outgoing) finish(active, "rejected");
@@ -616,7 +629,7 @@ export function createCallController({
       void attempt.notifyHangup?.().catch(() => undefined);
       finish(attempt, "failed", "systemInterrupted");
     },
-    dial(peerKey: string) {
+    async dial(peerKey: string) {
       if (
         active ||
         !publicKeySchema.safeParse(peerKey).success ||
@@ -624,7 +637,7 @@ export function createCallController({
       )
         return;
       const createdAt = Math.floor(now() / 1_000) * 1_000;
-      const invite: InviteSignal = {
+      const invite: InviteDraft = {
         version: 1,
         type: "call.invite",
         callId: randomId(),
@@ -634,17 +647,24 @@ export function createCallController({
         createdAt,
         expiresAt: createdAt + inviteLifetime,
         roomId: randomId(),
-        roomSecret: randomId(),
-        expandable: 2,
       };
+      callMetric("call_started");
       const attempt = begin(invite, "outgoing");
-      void publish(invite, () => available && active === attempt).then(
-        (accepted) => {
-          if (!accepted && store.getState().call?.phase === "outgoing") {
-            finish(attempt, "failed", "inviteFailed");
-          }
-        },
+      const live = () => available && active === attempt;
+      const offer = await prepareInvite(invite, attempt.abort.signal).catch(
+        () => null,
       );
+      if (!live()) return;
+      if (offer) {
+        const message = { ...invite, offer };
+        attempt.invite = message;
+        callMetric("invite_publish_started");
+        const accepted = await publish(message, live);
+        callMetric("invite_publish_finished", { accepted });
+        if (accepted) return;
+      }
+      if (live() && store.getState().call?.phase === "outgoing")
+        finish(attempt, "failed", "inviteFailed");
     },
     async invite(key: string) {
       const attempt = active;
@@ -664,7 +684,7 @@ export function createCallController({
       )
         return false;
       const createdAt = Math.floor(now() / 1_000) * 1_000;
-      const invite: InviteSignal = {
+      const invite: InviteDraft = {
         ...attempt.invite,
         nonce: randomId(),
         senderKey: localKey,
@@ -700,7 +720,11 @@ export function createCallController({
           })
           .catch(() => false));
       if (!live()) return false;
-      if (!reserved || !(await publish(invite, live))) {
+      const offer = reserved
+        ? await prepareInvite(invite, attempt.abort.signal).catch(() => null)
+        : null;
+      if (!live()) return false;
+      if (!offer || !(await publish({ ...invite, offer }, live))) {
         if (live()) settleInvitation(attempt, "unavailable", true);
         return false;
       }
@@ -716,8 +740,10 @@ export function createCallController({
       active?.media?.conference?.volume(key, volume);
     },
     accept() {
-      if (active && store.getState().call?.phase === "incoming")
+      if (active && store.getState().call?.phase === "incoming") {
+        callMetric("answer_pressed");
         void connect(active, true);
+      }
     },
     end() {
       if (!active) return;

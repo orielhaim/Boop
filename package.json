@@ -10,6 +10,7 @@
     "@noble/curves": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@shopify/flash-list": "2.3.2",
+    "@trystero-p2p/core": "0.27.0",
     "dayjs": "^1.11.23",
     "drizzle-orm": "^0.45.4",
     "expo": "~58.0.26",
@@ -39,7 +40,7 @@
     "i18next": "^27.2.1",
     "nostr-tools": "^2.26.1",
     "react": "19.3.0",
-    "react-i18next": "^18.0.2",
+    "react-i18next": "^18.0.3",
     "react-native": "0.88.1",
     "react-native-gesture-handler": "~3.3.0",
     "react-native-incall-manager": "^4.3.0",
@@ -54,7 +55,6 @@
     "react-native-svg": "15.16.0",
     "react-native-webrtc": "^155.0.1",
     "react-native-worklets": "0.13.0",
-    "trystero": "^0.27.0",
     "zod": "^4.6.7",
     "zustand": "^5.1.0"
   },
@@ -76,5 +76,8 @@
     "check": "biome check .",
     "db:generate": "drizzle-kit generate && bun scripts/bundle-migrations.ts"
   },
-  "private": true
+  "private": true,
+  "patchedDependencies": {
+    "@trystero-p2p/core@0.27.0": "patches/@trystero-p2p%2Fcore@0.27.0.patch"
+  }
 }

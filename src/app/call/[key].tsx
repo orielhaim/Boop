@@ -44,7 +44,7 @@ export default function CallRoute() {
     )
       return;
     initiated.current = true;
-    calling.dial(peerKey);
+    void calling.dial(peerKey);
   }, [calling, callId, identity.publicKey, peerKey]);
 
   const close = () => {

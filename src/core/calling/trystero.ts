@@ -11,6 +11,8 @@ import { captureCamera } from "./camera";
 import { admission, callCapacity, type ParticipantVolume } from "./conference";
 import { bindConferenceVideo } from "./conference-video";
 import type { OpenMedia } from "./controller";
+import { callMetric, traceAudioPackets } from "./diagnostics";
+import { directSignaling } from "./direct-signaling";
 import { openCallAudio } from "./native-audio";
 import { askForMicrophone, hasMicrophonePermission } from "./permissions";
 import {
@@ -19,6 +21,7 @@ import {
   proofKind,
   verifyPeerProof,
 } from "./protocol";
+import type { InviteDraft, RtcSignal } from "./signals";
 import { bindTrysteroVideo } from "./trystero-video";
 import type { VideoControls } from "./video";
 
@@ -87,8 +90,8 @@ async function initialize() {
     });
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { joinRoom }: typeof import("trystero") = require("trystero");
-  return { ...rtc, joinRoom };
+  const core: typeof import("@trystero-p2p/core") = require("@trystero-p2p/core");
+  return { ...rtc, core };
 }
 
 function pending<T>(
@@ -113,22 +116,6 @@ function pending<T>(
         reject(error);
       },
     );
-  });
-}
-
-function stableSignaling(connection: RTCPeerConnection, signal: AbortSignal) {
-  return pending<void>(signal, (resolve) => {
-    const dispose = () =>
-      connection.removeEventListener("signalingstatechange", check);
-    const check = () => {
-      if (connection.signalingState !== "stable") return;
-      dispose();
-      signal.removeEventListener("abort", dispose);
-      resolve();
-    };
-    connection.addEventListener("signalingstatechange", check);
-    signal.addEventListener("abort", dispose, { once: true });
-    check();
   });
 }
 
@@ -174,9 +161,94 @@ export function trysteroMedia(
       "invite" | "peerKey" | "signal" | "onRouting"
     >,
   ) => Promise<ReturnType<typeof openCallAudio> | null>,
-): OpenMedia {
+  publish: Parameters<typeof directSignaling>[0]["publish"],
+) {
   const localKey = signer.userSync.pubkey;
-  return async ({
+  function setup(invite: InviteDraft, signal: AbortSignal) {
+    return initializeCallingRuntime().then((rtc) => {
+      signal.throwIfAborted();
+      callMetric("room_initialization_started");
+      const signaling = directSignaling({
+        invite,
+        localKey,
+        signal,
+        randomId: randomCallId,
+        publish,
+      });
+      const authorized = new WeakMap<RTCPeerConnection, MediaStreamTrack>();
+      const room = rtc.core.createStrategy(signaling.adapter)(
+        {
+          appId: "app.boop.mobile.voice.direct",
+          identity: "none",
+          maxUsers: callCapacity,
+          passive: true,
+          preparePeerConnection(connection, initiator) {
+            connection.addEventListener("track", ({ track }) => {
+              if (
+                track.kind === "audio" &&
+                authorized.get(connection) !== track
+              )
+                track.enabled = false;
+            });
+            if (initiator)
+              connection.addTransceiver("audio", { direction: "sendrecv" });
+            if (__DEV__) {
+              connection.addEventListener("icegatheringstatechange", () =>
+                callMetric("ice_gathering", {
+                  state: connection.iceGatheringState,
+                }),
+              );
+              connection.addEventListener("iceconnectionstatechange", () =>
+                callMetric("ice_state", {
+                  state: connection.iceConnectionState,
+                }),
+              );
+              connection.addEventListener("connectionstatechange", () =>
+                callMetric("peer_connection_state", {
+                  state: connection.connectionState,
+                }),
+              );
+            }
+          },
+          prepareInitialAnswer(connection) {
+            const audio = connection
+              .getTransceivers()
+              .find(({ receiver }) => receiver.track?.kind === "audio");
+            if (!audio) throw new Error("Offer has no audio transceiver");
+            audio.direction = "sendrecv";
+          },
+        },
+        invite.roomId,
+      );
+      let roomClosed = false;
+      const closeRoom = () => {
+        if (roomClosed) return;
+        roomClosed = true;
+        signal.removeEventListener("abort", closeRoom);
+        signaling.close();
+        void room.leave().catch(() => undefined);
+      };
+      signal.addEventListener("abort", closeRoom, { once: true });
+      return { rtc, room, signaling, authorized, closeRoom };
+    });
+  }
+  let current:
+    | { id: string; signal: AbortSignal; ready: ReturnType<typeof setup> }
+    | undefined;
+  function session(invite: InviteDraft, signal: AbortSignal) {
+    if (current?.signal === signal) return current.ready;
+    const ready = setup(invite, signal);
+    current = { id: invite.callId, signal, ready };
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (current?.signal === signal) current = undefined;
+      },
+      { once: true },
+    );
+    return ready;
+  }
+  const open: OpenMedia = async ({
     invite,
     peerKey,
     signal,
@@ -192,25 +264,17 @@ export function trysteroMedia(
     onParticipants,
     onVideo,
   }) => {
-    const rtc = await initializeCallingRuntime();
-    signal.throwIfAborted();
-    const expandable = invite.expandable === 2;
-    const room = rtc.joinRoom(
-      {
-        appId: "app.boop.mobile.voice.v1",
-        password: invite.roomSecret,
-        identity: "none",
-        maxUsers: expandable ? callCapacity : 2,
-        relayConfig: { warnOnRelayFailure: false },
-      },
-      invite.roomId,
+    const { rtc, room, signaling, authorized, closeRoom } = await session(
+      invite,
+      signal,
     );
+    signal.throwIfAborted();
     type Link = {
       id: string;
       key: string;
       connection: RTCPeerConnection;
       abort: AbortController;
-      audio?: MediaStream;
+      audio: MediaStreamTrack;
       wake?: () => void;
       confirmed: boolean;
       mediaReady: boolean;
@@ -226,7 +290,6 @@ export function trysteroMedia(
     };
     const links = new Map<string, Link>();
     const handshakes = new Map<string, AbortController>();
-    const earlyAudio = new Map<string, MediaStream>();
     const initial = new Set(invite.conference?.roster ?? [peerKey]);
     const members = () => [...links.values()].filter((link) => link.ready);
     const reservations = admission({
@@ -247,6 +310,23 @@ export function trysteroMedia(
     let startMedia: (() => void) | undefined;
     const subscriptions: (() => void)[] = [];
     const videoSubscriptions: (() => void)[] = [];
+    const recovering = new Map<
+      string,
+      {
+        expiresAt: number;
+        deadline: ReturnType<typeof setTimeout>;
+        retries: ReturnType<typeof setTimeout>[];
+        silenced: boolean;
+        volume: ParticipantVolume;
+      }
+    >();
+    function stopRecovery(key: string) {
+      const attempt = recovering.get(key);
+      if (!attempt) return;
+      recovering.delete(key);
+      clearTimeout(attempt.deadline);
+      for (const timer of attempt.retries) clearTimeout(timer);
+    }
     const stopSoloVideo = () => {
       video?.close();
       video = undefined;
@@ -259,21 +339,25 @@ export function trysteroMedia(
       conferenceVideo?.close();
       signal.removeEventListener("abort", close);
       for (const abort of handshakes.values()) abort.abort();
-      for (const link of links.values()) link.abort.abort();
+      for (const key of recovering.keys()) stopRecovery(key);
+      for (const link of links.values()) {
+        link.abort.abort();
+        link.iceListener?.();
+        link.audio.enabled = false;
+      }
       for (const unsubscribe of subscriptions) unsubscribe();
       for (const track of localStream?.getTracks() ?? []) track.stop();
       localStream?.release();
       audio?.close();
-      void room.leave().catch(() => undefined);
+      closeRoom();
     }
     signal.addEventListener("abort", close, { once: true });
     try {
       const { peerId: selfId } = await room.getSelf();
       signal.throwIfAborted();
-      const exchange = room.makeAction<string, string>(
-        expandable ? "boop-proof2" : "boop-proof",
-        { kind: "request" },
-      );
+      const exchange = room.makeAction<string, string>("boop-proof", {
+        kind: "request",
+      });
       const hangup = room.makeAction<string>("boop-end");
       const muteState = room.makeAction<boolean>("boop-mute");
       const confirmMedia = room.makeAction<string>("boop-media");
@@ -283,6 +367,14 @@ export function trysteroMedia(
         kind: "request",
       });
       const release = room.makeAction<string>("boop-unseat");
+      subscriptions.push(
+        room.onError(({ code, cause }) =>
+          callMetric("trystero_room_error", {
+            code,
+            error: cause instanceof Error ? cause.name : "unknown",
+          }),
+        ),
+      );
       const isDirect = (id: string) => {
         const link = links.get(id);
         return (
@@ -295,7 +387,11 @@ export function trysteroMedia(
       const isMember = (id: string) =>
         isDirect(id) && links.get(id)?.ready === true;
       const eligible = (key: string) =>
-        initial.has(key) || reservations.permits(key);
+        initial.has(key) || reservations.permits(key) || recovering.has(key);
+      const initialScope = {
+        invitationId: invite.conference?.id,
+        expiresAt: invite.expiresAt,
+      };
 
       function transcript(
         link: Pick<Link, "id" | "key" | "connection">,
@@ -323,10 +419,13 @@ export function trysteroMedia(
       subscriptions.push(
         exchange.onRequest(async (data, context) => {
           if (typeof data !== "string" || data.length > 256) return "";
-          const request = expandable
-            ? proofRequest.safeParse(JSON.parse(data)).data
-            : { challenge: opaqueId.parse(data), key: peerKey };
-          if (!request || !eligible(request.key)) return "";
+          const request = proofRequest.safeParse(JSON.parse(data)).data;
+          if (
+            !request ||
+            !eligible(request.key) ||
+            !signaling.matches(request.key, context.peerId)
+          )
+            return "";
           const connection = room.getPeers()[context.peerId]?.connection;
           if (!connection) return "";
           const proof = new NDKEvent(undefined);
@@ -377,15 +476,14 @@ export function trysteroMedia(
       function leave(id: string, graceful: boolean) {
         handshakes.get(id)?.abort();
         handshakes.delete(id);
-        earlyAudio.delete(id);
         const link = links.get(id);
         if (!link) return;
         links.delete(id);
+        signaling.remove(link.key);
         link.abort.abort();
         link.iceListener?.();
-        link.audio?.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
+        authorized.delete(link.connection);
+        link.audio.enabled = false;
         conferenceVideo?.remove(id);
         if (id === soloId) stopSoloVideo();
         if (!link.ready) {
@@ -393,20 +491,57 @@ export function trysteroMedia(
           return;
         }
         initial.delete(link.key);
+        if (!graceful && hasAudio && !closed) recover(link);
         showParticipants();
         refreshIce();
         if (!hasAudio || members().length) return;
         if (graceful) onHangup();
-        else onDisconnect();
+        else if (!recovering.size) onDisconnect();
       }
       function refreshIce() {
         const current = members();
         onReconnecting(
-          current.length > 0 &&
-            current.every(
-              (link) => link.connection.iceConnectionState === "disconnected",
-            ),
+          current.length === 0
+            ? recovering.size > 0
+            : current.every(({ connection }) => iceStalled(connection)),
         );
+      }
+      function iceStalled(connection: RTCPeerConnection) {
+        return (
+          connection.iceConnectionState === "disconnected" ||
+          connection.iceConnectionState === "checking"
+        );
+      }
+      function recover({ key, silenced, volume }: Link) {
+        if (recovering.has(key) || !hasAudio || closed) return;
+        const expiresAt = Date.now() + 18_000;
+        const deadline = setTimeout(() => {
+          stopRecovery(key);
+          const replacement = [...links.values()].find(
+            (item) => item.key === key,
+          );
+          if (replacement && !replacement.ready) {
+            leave(replacement.id, false);
+            replacement.connection.close();
+          }
+          signaling.remove(key);
+          refreshIce();
+          if (!members().length && !recovering.size) onDisconnect();
+        }, expiresAt - Date.now());
+        const retries: ReturnType<typeof setTimeout>[] = [];
+        recovering.set(key, { expiresAt, deadline, retries, silenced, volume });
+        callMetric("link_recovery_started");
+        if (localKey < key) {
+          void signaling
+            .offer(key, { recovery: true, expiresAt })
+            .catch(() => undefined);
+          for (const delay of [1_500, 4_000, 8_000])
+            retries.push(
+              setTimeout(() => {
+                void signaling.repeatOffer(key).catch(() => undefined);
+              }, delay),
+            );
+        }
       }
       let soloId: string | undefined;
       function startConferenceVideo() {
@@ -459,14 +594,62 @@ export function trysteroMedia(
         }
       }
       function promote(link: Link) {
+        if (recovering.has(link.key)) {
+          stopRecovery(link.key);
+          callMetric("link_recovered");
+        }
         link.ready = true;
         const { connection } = link;
-        connection.addEventListener("iceconnectionstatechange", refreshIce);
-        link.iceListener = () =>
-          connection.removeEventListener(
-            "iceconnectionstatechange",
-            refreshIce,
-          );
+        let restart: ReturnType<typeof setTimeout> | undefined;
+        let stalled: ReturnType<typeof setTimeout> | undefined;
+        let attempted = false;
+        const changed = () => {
+          refreshIce();
+          const ice = connection.iceConnectionState;
+          if (ice === "connected" || ice === "completed") attempted = false;
+          if (iceStalled(connection)) {
+            stalled ??= setTimeout(() => {
+              stalled = undefined;
+              if (!isMember(link.id) || !iceStalled(connection)) return;
+              callMetric("ice_restart_stalled");
+              leave(link.id, false);
+              connection.close();
+            }, 8_000);
+          } else {
+            clearTimeout(stalled);
+            stalled = undefined;
+          }
+          if (ice !== "disconnected") {
+            clearTimeout(restart);
+            restart = undefined;
+          } else if (!attempted && !restart) {
+            restart = setTimeout(
+              () => {
+                restart = undefined;
+                if (
+                  !isMember(link.id) ||
+                  connection.iceConnectionState !== "disconnected"
+                )
+                  return;
+                attempted = true;
+                callMetric("ice_restart_requested");
+                try {
+                  connection.restartIce();
+                } catch {
+                  callMetric("ice_restart_unavailable");
+                }
+              },
+              localKey < link.key ? 700 : 2_500,
+            );
+          }
+        };
+        connection.addEventListener("iceconnectionstatechange", changed);
+        link.iceListener = () => {
+          clearTimeout(restart);
+          clearTimeout(stalled);
+          connection.removeEventListener("iceconnectionstatechange", changed);
+        };
+        changed();
         configureVideo(link);
         showParticipants();
         if (__DEV__) {
@@ -548,18 +731,6 @@ export function trysteroMedia(
           if (link.key === peerKey) onRemoteMute(value);
           if (link.ready) showParticipants();
         }),
-        room.onPeerStream((stream, { peerId }) => {
-          const tracks = stream.getAudioTracks();
-          if (!tracks.some((track) => track.readyState === "live")) return;
-          const link = links.get(peerId);
-          const authorized = isDirect(peerId);
-          for (const track of tracks)
-            track.enabled = authorized && !link?.silenced;
-          if (link && authorized) {
-            link.audio = stream;
-            link.wake?.();
-          } else if (handshakes.has(peerId)) earlyAudio.set(peerId, stream);
-        }),
         room.onPeerLeave(({ peerId }) => leave(peerId, false)),
       );
 
@@ -580,6 +751,9 @@ export function trysteroMedia(
         if (!connection || handshakes.has(id) || links.has(id)) return;
         const abort = new AbortController();
         const started = performance.now();
+        callMetric("trystero_peer_ready", {
+          ice: connection.iceConnectionState,
+        });
         const operation = abort.signal;
         handshakes.set(id, abort);
         const conferenceSetup =
@@ -590,9 +764,7 @@ export function trysteroMedia(
         );
         try {
           const challenge = randomCallId();
-          const request = expandable
-            ? JSON.stringify({ key: localKey, challenge })
-            : challenge;
+          const request = JSON.stringify({ key: localKey, challenge });
           let key: string | undefined;
           const proofDeadline = Date.now() + 8_000;
           while (!key) {
@@ -621,7 +793,8 @@ export function trysteroMedia(
                 )
               )
                 throw new Error("Invalid peer proof");
-              if (eligible(claimed)) key = claimed;
+              if (eligible(claimed) && signaling.matches(claimed, id))
+                key = claimed;
             }
             if (!key) {
               if (Date.now() >= proofDeadline)
@@ -632,7 +805,7 @@ export function trysteroMedia(
           if (
             closed ||
             room.getPeers()[id]?.connection !== connection ||
-            links.size >= (expandable ? callCapacity - 1 : 1) ||
+            links.size >= callCapacity - 1 ||
             [...links.values()].some((link) => link.key === key)
           )
             throw new Error("Peer connection changed");
@@ -647,6 +820,14 @@ export function trysteroMedia(
             if (![...links.values()].some((link) => link.key === peerKey))
               throw new Error("Inviting member left");
           }
+          const transceiver = connection
+            .getTransceivers()
+            .find(
+              ({ receiver, currentDirection }) =>
+                receiver.track?.kind === "audio" &&
+                currentDirection === "sendrecv",
+            );
+          if (!transceiver) throw new Error("No negotiated audio transceiver");
           const link: Link = {
             id,
             key,
@@ -659,15 +840,15 @@ export function trysteroMedia(
               ? reservations.current()?.request.invitation.id
               : undefined,
             confirmed: false,
-            audio: earlyAudio.get(id),
+            audio: transceiver.receiver.track,
             muted: false,
-            silenced: false,
-            volume: 100,
+            silenced: recovering.get(key)?.silenced ?? false,
+            volume: recovering.get(key)?.volume ?? 100,
             speaking: false,
             speakingUntil: 0,
           };
           links.set(id, link);
-          earlyAudio.delete(id);
+          signaling.connected(key);
           if (key === peerKey) {
             onAuthenticated({ notifyHangup });
             activateAudio?.();
@@ -676,34 +857,22 @@ export function trysteroMedia(
           operation.throwIfAborted();
           if (!localStream || !isDirect(id) || !eligible(key))
             throw new Error("Peer session unavailable");
-          link.audio?.getAudioTracks().forEach((track) => {
-            track.enabled = true;
-          });
-          const remote = () =>
-            waitFor(
-              link,
-              () =>
-                link.audio
-                  ?.getAudioTracks()
-                  .some((track) => track.readyState === "live") === true,
+          const [track] = localStream.getAudioTracks();
+          if (!track) throw new Error("No microphone");
+          await transceiver.sender.replaceTrack(
+            track as unknown as MediaStreamTrack,
+          );
+          operation.throwIfAborted();
+          if (transceiver.sender.track?.id !== track.id)
+            throw new Error("Native microphone attachment failed");
+          callMetric("audio_track_attached");
+          void traceAudioPackets(connection, operation);
+          authorized.set(connection, link.audio);
+          link.audio.enabled = !link.silenced;
+          if (link.volume !== 100 && link.audio instanceof rtc.MediaStreamTrack)
+            (link.audio as unknown as NativeTrack)._setVolume(
+              link.volume / 100,
             );
-          const attach = () => {
-            operation.throwIfAborted();
-            if (!eligible(key)) throw new Error("Peer authorization expired");
-            return room.addStream(localStream as unknown as MediaStream, {
-              target: id,
-            });
-          };
-          const first =
-            !invite.conference && links.size === 1 && initial.has(key)
-              ? invite.senderKey === localKey
-              : localKey < key;
-          if (first) await Promise.all([remote(), attach()]);
-          else {
-            await remote();
-            await stableSignaling(connection, operation);
-            await attach();
-          }
           await Promise.all([
             confirmMedia.send("ready", { target: id, signal: operation }),
             waitFor(link, () => link.confirmed),
@@ -747,11 +916,56 @@ export function trysteroMedia(
       subscriptions.push(
         room.onPeerJoin(({ peerId }) => void join(peerId), { replay: true }),
       );
-      await firstProof;
+      signaling.scopeFor((key, message) => {
+        if (message.recovery) {
+          let recovery = recovering.get(key);
+          if (!recovery && "offer" in message.payload && key < localKey) {
+            const old = members().find((item) => item.key === key);
+            if (
+              old &&
+              (iceStalled(old.connection) ||
+                old.connection.connectionState === "failed" ||
+                old.connection.connectionState === "closed")
+            ) {
+              leave(old.id, false);
+              old.connection.close();
+              recovery = recovering.get(key);
+            }
+          }
+          if (!recovery || ("offer" in message.payload && key >= localKey))
+            return;
+          return { recovery: true, expiresAt: recovery.expiresAt };
+        }
+        if (initial.has(key)) return initialScope;
+        const seat = reservations.current();
+        if (seat?.request.recipient !== key || !reservations.permits(key))
+          return;
+        return {
+          invitationId: seat.request.invitation.id,
+          expiresAt: seat.request.expiresAt,
+        };
+      });
+      if (invite.recipientKey === localKey) {
+        if (!invite.offer) throw new Error("No prepared RTC offer");
+        void signaling
+          .applyOffer(peerKey, initialScope, invite.offer)
+          .catch(() => onDisconnect());
+      } else {
+        signaling.startCandidates(peerKey);
+      }
+      await Promise.all([
+        firstProof,
+        requestMicrophone(signal, onMicrophonePrompt),
+      ]);
+      if (invite.conference) {
+        for (const key of initial)
+          if (key !== peerKey && key !== localKey)
+            void signaling.offer(key, initialScope).catch(() => undefined);
+      }
       // The proof can finish before the relay acknowledges acceptance.
       if (!(await acceptance)) throw new Error("Acceptance was not published");
       signal.throwIfAborted();
-      await requestMicrophone(signal, onMicrophonePrompt);
+      callMetric("native_audio_started");
       const telecom = await openSystemAudio({
         invite,
         peerKey,
@@ -760,8 +974,14 @@ export function trysteroMedia(
       });
       signal.throwIfAborted();
       audio = telecom ?? openCallAudio(onRouting, onDisconnect);
+      const backgroundAudio = telecom !== null || Platform.OS === "ios";
+      callMetric("native_audio_ready", {
+        telecom: telecom !== null,
+        backgroundAudio,
+      });
       let captured: NativeStream;
       try {
+        callMetric("microphone_capture_started");
         captured = await rtc.mediaDevices.getUserMedia({
           audio: true,
           video: false,
@@ -775,11 +995,13 @@ export function trysteroMedia(
         signal.throwIfAborted();
       }
       localStream = captured;
+      callMetric("microphone_capture_ready");
       const tracks = captured.getAudioTracks();
       if (!tracks.length) throw new Error("No microphone");
       for (const track of tracks) track.onended = onDisconnect;
       startMedia?.();
       await firstMedia;
+      callMetric("media_ready");
       signal.throwIfAborted();
       if (invite.conference) {
         try {
@@ -871,94 +1093,83 @@ export function trysteroMedia(
           .catch(() => undefined);
       }
       return {
-        backgroundAudio: telecom !== null || Platform.OS === "ios",
+        backgroundAudio,
         close,
         notifyHangup,
         get video() {
           return conferenceVideo ?? video;
         },
-        conference: expandable
-          ? {
-              async reserve(request) {
-                if (!reservations.reserve(request, localKey)) return false;
-                const targets = members().map((link) => link.id);
-                const results = await reserve.requestMany(request, {
-                  targets,
-                  timeoutMs: 2_500,
-                  signal,
-                });
-                const ok =
-                  results.length === targets.length &&
-                  results.every(
-                    (result) =>
-                      result.status === "fulfilled" && result.value === true,
-                  );
-                if (!ok) revoke(request.invitation.id);
-                return ok;
-              },
-              async authorize(id) {
-                const seat = reservations.current();
-                if (
-                  seat?.inviter !== localKey ||
-                  seat.request.invitation.id !== id
-                )
-                  return false;
-                const targets = members()
-                  .filter((link) =>
-                    seat.request.invitation.roster.includes(link.key),
-                  )
-                  .map(({ id }) => id);
-                if (
-                  targets.length + 1 !==
-                  seat.request.invitation.roster.length
-                ) {
-                  revoke(id);
-                  return false;
-                }
-                const results = await grant.requestMany(id, {
-                  targets,
-                  timeoutMs: 3_500,
-                  signal,
-                });
-                const ok =
-                  results.length === targets.length &&
-                  results.every(
-                    (result) =>
-                      result.status === "fulfilled" && result.value === true,
-                  );
-                if (!ok) {
-                  revoke(id);
-                  return false;
-                }
-                return reservations.authorize(id, localKey);
-              },
-              release: revoke,
-              silence(key, value) {
-                const link = members().find((item) => item.key === key);
-                if (!link) return;
-                link.silenced = value;
-                for (const track of link.audio?.getAudioTracks() ?? [])
-                  track.enabled = !value;
-                showParticipants();
-              },
-              volume(key, value) {
-                const link = members().find((item) => item.key === key);
-                const tracks = link?.audio?.getAudioTracks();
-                if (
-                  !link ||
-                  !tracks?.length ||
-                  !tracks.every(
-                    (track) => track instanceof rtc.MediaStreamTrack,
-                  )
-                )
-                  return;
-                for (const track of tracks)
-                  (track as unknown as NativeTrack)._setVolume(value / 100);
-                link.volume = value;
-                showParticipants();
-              },
+        conference: {
+          async reserve(request) {
+            if (!reservations.reserve(request, localKey)) return false;
+            const targets = members().map((link) => link.id);
+            const results = await reserve.requestMany(request, {
+              targets,
+              timeoutMs: 2_500,
+              signal,
+            });
+            const ok =
+              results.length === targets.length &&
+              results.every(
+                (result) =>
+                  result.status === "fulfilled" && result.value === true,
+              );
+            if (!ok) revoke(request.invitation.id);
+            return ok;
+          },
+          async authorize(id) {
+            const seat = reservations.current();
+            if (seat?.inviter !== localKey || seat.request.invitation.id !== id)
+              return false;
+            const targets = members()
+              .filter((link) =>
+                seat.request.invitation.roster.includes(link.key),
+              )
+              .map(({ id }) => id);
+            if (targets.length + 1 !== seat.request.invitation.roster.length) {
+              revoke(id);
+              return false;
             }
-          : undefined,
+            const results = await grant.requestMany(id, {
+              targets,
+              timeoutMs: 3_500,
+              signal,
+            });
+            const ok =
+              results.length === targets.length &&
+              results.every(
+                (result) =>
+                  result.status === "fulfilled" && result.value === true,
+              );
+            if (!ok) {
+              revoke(id);
+              return false;
+            }
+            if (!reservations.authorize(id, localKey)) return false;
+            signaling.startCandidates(seat.request.recipient);
+            return true;
+          },
+          release(id) {
+            const seat = reservations.current();
+            if (seat?.request.invitation.id === id)
+              signaling.remove(seat.request.recipient);
+            revoke(id);
+          },
+          silence(key, value) {
+            const link = members().find((item) => item.key === key);
+            if (!link) return;
+            link.silenced = value;
+            link.audio.enabled = !value;
+            showParticipants();
+          },
+          volume(key, value) {
+            const link = members().find((item) => item.key === key);
+            if (!link || !(link.audio instanceof rtc.MediaStreamTrack)) return;
+            (link.audio as unknown as NativeTrack)._setVolume(value / 100);
+            link.volume = value;
+            showParticipants();
+          },
+        },
         async inspect() {
           const active = members();
           let sentPackets = 0;
@@ -977,10 +1188,8 @@ export function trysteroMedia(
             microphone: tracks.some(
               (track) => track.enabled && track.readyState === "live",
             ),
-            remoteTrack: active.some((link) =>
-              link.audio
-                ?.getAudioTracks()
-                .some((track) => track.readyState === "live"),
+            remoteTrack: active.some(
+              (link) => link.audio.readyState === "live",
             ),
             sentPackets,
             receivedPackets,
@@ -999,5 +1208,21 @@ export function trysteroMedia(
       close();
       throw error;
     }
+  };
+  return {
+    open,
+    async prepare(invite: InviteDraft, signal: AbortSignal) {
+      const { signaling } = await session(invite, signal);
+      return signaling.prepare(invite.recipientKey, {
+        invitationId: invite.conference?.id,
+        expiresAt: invite.expiresAt,
+      });
+    },
+    receive(message: RtcSignal) {
+      if (current?.id === message.callId)
+        void current.ready
+          .then(({ signaling }) => signaling.receive(message))
+          .catch(() => undefined);
+    },
   };
 }
