@@ -15,6 +15,7 @@ import {
   wrapRumor,
 } from "../src/core/messaging/nip17";
 import { createMessagingService } from "../src/core/messaging/runtime";
+import { createPrivacy } from "../src/core/privacy";
 import { createMessagingRepository } from "../src/db/messaging";
 import migrations from "../src/db/migrations/bundle";
 import * as schema from "../src/db/schema";
@@ -30,7 +31,10 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
   using sqlite = new Database(":memory:");
   for (const migration of Object.values(migrations.migrations))
     sqlite.exec(migration);
-  const repo = createMessagingRepository(drizzle(sqlite, { schema }));
+  const db = drizzle(sqlite, { schema });
+  const repo = createMessagingRepository(db);
+  const privacy = createPrivacy(db, repo, bob.pubkey);
+  privacy.set("requests", true);
   const history = createHistoryLoader(repo);
   const feed = createConversationFeed(repo, history, () => undefined);
   const stopFeed = feed.start();
@@ -38,6 +42,7 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
   const runtime = createMessagingService({
     signer: bob,
     chat: repo,
+    privacy,
     readState: (key) => state.get(key) ?? null,
     writeState: (key, value) => state.set(key, value),
     createId: () => crypto.randomUUID(),
@@ -112,27 +117,40 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
   try {
     const initial = await createWrap("Historical");
     runtime.start(config);
+    await until(() => privacy.pendingCount() === 1 && state.size > 0);
+    expect(feed.getUnreadCount()).toBe(0);
+    expect(repo.conversation(alice.pubkey)).toBeUndefined();
+    const extra = await createWrap("Second message before approval");
+    expect(privacy.accept(alice.pubkey)).toBe(true);
     await until(() => feed.getUnreadCount() === 1 && state.size > 0);
     expect(repo.history(alice.pubkey).messages[0]?.eventId).toBe(
       initial.rumor.id,
+    );
+    runtime.catchupRequest(alice.pubkey);
+    await until(() => feed.getUnreadCount() === 2);
+    expect(repo.message(alice.pubkey, extra.rumor.id)?.body).toBe(
+      "Second message before approval",
     );
     const live = await createWrap("Live after EOSE");
     for (const emit of emitters) {
       emit(live.event);
       emit(live.event);
     }
-    await until(() => feed.getUnreadCount() === 2);
+    await until(() => feed.getUnreadCount() === 3);
     runtime.stop();
     await createWrap("Missed while away");
     runtime.start(config);
     await until(
       () =>
-        feed.getUnreadCount() === 3 &&
+        feed.getUnreadCount() === 4 &&
         runtime.getInboxSync() === "idle" &&
-        feed.getSnapshot()?.rows[0]?.unread === 3,
+        feed.getSnapshot()?.rows[0]?.unread === 4,
     );
-    expect(feed.getSnapshot()?.rows[0]).toMatchObject({ unread: 3 });
-    expect(repo.history(alice.pubkey).messages).toHaveLength(3);
+    expect(feed.getSnapshot()?.rows[0]).toMatchObject({ unread: 4 });
+    expect(repo.history(alice.pubkey).messages).toHaveLength(4);
+    privacy.block(alice.pubkey);
+    await until(() => feed.getUnreadCount() === 0);
+    expect(repo.history(alice.pubkey).messages).toHaveLength(4);
   } finally {
     runtime.stop();
     stopFeed();
@@ -161,6 +179,21 @@ test("recipient and sender decrypt distinct gift wraps to the same unsigned rumo
   expect(received.content.includes(rumor.content)).toBe(false);
   expect(received.pubkey).not.toBe(alice.pubkey);
   expect(await unwrapPrivateEvent(received.rawEvent(), charlie)).toBeNull();
+  const blocked = new NDKPrivateKeySigner("02".repeat(32));
+  const decrypt = blocked.decrypt.bind(blocked);
+  let decryptions = 0;
+  blocked.decrypt = (...args) => {
+    decryptions++;
+    return decrypt(...args);
+  };
+  expect(
+    await unwrapPrivateEvent(
+      received.rawEvent(),
+      blocked,
+      (key) => key === alice.pubkey,
+    ),
+  ).toBeNull();
+  expect(decryptions).toBe(1);
 
   using sqlite = new Database(":memory:");
   sqlite.exec("PRAGMA foreign_keys = ON");

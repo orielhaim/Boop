@@ -2,33 +2,35 @@ import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import type { Database } from "@/db";
-import { preference, setPreference } from "@/db/queries";
-import { loadIdentity } from "./keys";
+import { encryptBackup } from "./backup";
+import { loadPinnedIdentity, stageSwitch, storedSecret } from "./storage";
 
-const key = "boop.identity.v1";
 const options = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
+const storage = {
+  read: (slot: string) => SecureStore.getItemAsync(slot, options),
+  write: (slot: string, value: string) =>
+    SecureStore.setItemAsync(slot, value, options),
+  remove: (slot: string) => SecureStore.deleteItemAsync(slot, options),
+};
+
+export async function exportIdentity(db: Database, password: string) {
+  return encryptBackup(await storedSecret(db, storage), password);
+}
+
+export function stageIdentity(db: Database, secret: string) {
+  return stageSwitch(db, storage, secret);
+}
 
 export async function initializeIdentity(db: Database) {
-  const pinnedKey = preference(db, "identity.publicKey");
-  let secret = await SecureStore.getItemAsync(key, options);
-  const identity = await loadIdentity(
-    {
-      read: async () => secret,
-      write: async (value) => {
-        await SecureStore.setItemAsync(key, value, options);
-        secret = value;
-      },
-    },
-    pinnedKey,
+  const { identity, secret, fresh } = await loadPinnedIdentity(
+    db,
+    storage,
     () => getRandomBytesAsync(32),
   );
-  if (secret === null) throw new Error("Identity missing from secure storage");
   const signer = new NDKPrivateKeySigner(secret);
   if (signer.pubkey !== identity.publicKey)
     throw new Error("Identity mismatch");
-  const fresh = pinnedKey === null;
-  if (fresh) setPreference(db, "identity.publicKey", identity.publicKey);
   return { identity, signer, fresh };
 }

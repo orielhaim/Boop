@@ -1,14 +1,24 @@
 import { router } from "expo-router";
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { Alert } from "react-native";
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsToggle,
+} from "@/components/settings/group";
 import { Screen } from "@/components/ui/kit";
+import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 
 export default function Privacy() {
   const { t } = useTranslation(namespaces);
-  const { lock } = useLocal();
+  const { lock, messaging } = useLocal();
+  const chatsEnabled = useChatsEnabled();
+  const privacy = usePrivacy();
+  const selected = privacy.preferences();
+  const strict = selected.messages === "initiated";
   const { enabled } = useSyncExternalStore(lock.subscribe, lock.getState);
   return (
     <Screen>
@@ -30,6 +40,69 @@ export default function Privacy() {
           title={t("security:incomingVideo")}
           icon="camera"
           onPress={() => router.push("/settings/privacy/incoming-video")}
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t("security:whoCanCall")}>
+        {(
+          [
+            ["everyone", "security:everyone"],
+            ["contacts", "security:contactsOnly"],
+            ["nobody", "security:nobody"],
+          ] as const
+        ).map(([value, label]) => (
+          <SettingsRow
+            key={value}
+            title={t(label)}
+            selected={selected.calls === value}
+            onPress={() => privacy.set("calls", value)}
+          />
+        ))}
+      </SettingsGroup>
+      <SettingsGroup>
+        <SettingsToggle
+          title={t("common:chats")}
+          detail={t("security:chatsHelp")}
+          value={chatsEnabled}
+          onChange={(value) => {
+            try {
+              messaging.setChatsEnabled(value);
+            } catch {
+              Alert.alert(t("security:privacyWriteFailed"));
+            }
+          }}
+        />
+        <SettingsToggle
+          title={t("security:messageRequests")}
+          detail={t(
+            strict ? "security:strictRequests" : "security:requestsHelp",
+          )}
+          disabled={!chatsEnabled || strict}
+          value={selected.requests}
+          onChange={(value) => privacy.set("requests", value)}
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t("security:whoCanMessage")}>
+        {(
+          [
+            ["everyone", "security:everyone"],
+            ["contacts", "security:contactsOnly"],
+            ["initiated", "security:initiatedOnly"],
+          ] as const
+        ).map(([value, label]) => (
+          <SettingsRow
+            key={value}
+            title={t(label)}
+            selected={selected.messages === value}
+            disabled={!chatsEnabled}
+            onPress={() => privacy.set("messages", value)}
+          />
+        ))}
+      </SettingsGroup>
+      <SettingsGroup>
+        <SettingsRow
+          title={t("security:blockedUsers")}
+          icon="lock"
+          onPress={() => router.push("/settings/privacy/blocked")}
         />
       </SettingsGroup>
     </Screen>

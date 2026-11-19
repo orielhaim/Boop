@@ -3,6 +3,7 @@ import * as Authentication from "expo-local-authentication";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BackHandler, Platform, StyleSheet, View } from "react-native";
+import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Icon, Ink } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import type { AppLock } from "@/core/security/app-lock";
@@ -53,14 +54,7 @@ export function LockScreen({
         />
       )}
       <View style={styles.content}>
-        <View
-          style={[
-            styles.mark,
-            { backgroundColor: colors.surface, borderColor: colors.line },
-          ]}
-        >
-          <Icon name={face ? "faceId" : "fingerprint"} size={48} />
-        </View>
+        <BoopLogo size={88} />
         <Ink kind="title" accessibilityRole="header">
           {t("security:locked")}
         </Ink>
@@ -73,6 +67,11 @@ export function LockScreen({
           disabled={!state.active || state.authenticating}
           onPress={() => void lock.change("unlock")}
         >
+          <Icon
+            name={face ? "faceId" : "fingerprint"}
+            size={19}
+            color={colors.outgoingInk}
+          />
           {state.authenticating
             ? t("security:authenticating")
             : t("security:unlock")}
@@ -95,15 +94,6 @@ export function LockScreen({
 const styles = StyleSheet.create({
   screen: { flex: 1, justifyContent: "center" },
   content: { alignItems: "center", gap: space.lg },
-  mark: {
-    width: 94,
-    height: 94,
-    borderRadius: 34,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: space.sm,
-  },
   unlock: { alignSelf: "center", minWidth: 144 },
   center: { textAlign: "center" },
 });

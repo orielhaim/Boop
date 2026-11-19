@@ -1,31 +1,41 @@
 import { ChatList } from "@kesha-antonov/react-native-chat";
-import { router } from "expo-router";
+import { Redirect, router } from "expo-router";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, StyleSheet, View } from "react-native";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { useChatAppearance } from "@/components/messages/appearance";
 import {
   type ConversationListItem,
   createConversationListAdapter,
   matchesConversation,
 } from "@/components/messages/conversation-item";
-import { Action, Empty, IconButton, Screen } from "@/components/ui/kit";
+import { Action, Empty, Icon, Ink, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
+import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime } from "@/i18n/format";
-import { useLocal } from "@/services/local";
-import { space } from "@/theme";
+import { useChatsEnabled, useLocal } from "@/services/local";
+import { space, useTheme } from "@/theme";
 
 function keys(items: ConversationListItem[]) {
   return items.map((item) => item.id);
 }
 
 export default function Messages() {
+  const enabled = useChatsEnabled();
+  return enabled ? <MessageInbox /> : <Redirect href="/" />;
+}
+
+function MessageInbox() {
   const { t } = useTranslation(namespaces);
   const { identity, chat, conversations, messaging } = useLocal();
+  const privacy = usePrivacy();
+  const pending = privacy.pendingCount();
+  const { colors } = useTheme();
   const { appearance, theme, darkTheme, colorScheme, labels, locale, icons } =
     useChatAppearance();
   const [archived, setArchived] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [actions, setActions] = useState(false);
 
   const result = useSyncExternalStore(
@@ -102,17 +112,7 @@ export default function Messages() {
           isArchiveOpen={archived}
           onArchiveOpenChange={setArchived}
           filterChat={matchesConversation}
-          renderHeaderRight={
-            archived
-              ? undefined
-              : () => (
-                  <IconButton
-                    icon="settings"
-                    label={t("navigation:settings")}
-                    onPress={() => router.push("/settings")}
-                  />
-                )
-          }
+          onSearchChange={(query) => setSearching(query !== null)}
           renderEmpty={(searching) => (
             <View style={styles.empty}>
               <Empty
@@ -156,7 +156,43 @@ export default function Messages() {
             change(() => chat.deleteConversations(keys(selection)))
           }
           onReorderPinnedChats={(ids) => change(() => chat.reorderPinned(ids))}
-          listProps={{ keyboardShouldPersistTaps: "handled" }}
+          listProps={{
+            ListHeaderComponent:
+              pending > 0 && !archived && !searching ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("security:requestsCount", {
+                    count: pending,
+                  })}
+                  onPress={() => router.push("/requests")}
+                  style={({ pressed }) => [
+                    styles.requests,
+                    {
+                      backgroundColor: pressed
+                        ? colors.accentSoft
+                        : colors.surface,
+                      borderBottomColor: colors.line,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.requestsIcon,
+                      { backgroundColor: colors.accentSoft },
+                    ]}
+                  >
+                    <Icon name="chat" size={22} color={colors.accent} />
+                  </View>
+                  <Ink kind="label" style={styles.requestsTitle}>
+                    {t("security:pendingRequests")}
+                  </Ink>
+                  <Ink kind="caption" muted>
+                    {new Intl.NumberFormat(locale).format(pending)}
+                  </Ink>
+                  <Icon name="next" size={17} color={colors.muted} />
+                </Pressable>
+              ) : undefined,
+          }}
         />
       )}
     </Screen>
@@ -164,5 +200,21 @@ export default function Messages() {
 }
 
 const styles = StyleSheet.create({
+  requests: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: space.lg,
+    gap: space.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  requestsIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  requestsTitle: { flex: 1 },
   empty: { padding: space.xl },
 });

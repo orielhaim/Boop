@@ -93,6 +93,7 @@ type Attempt = {
 
 export type CallMedia = {
   backgroundAudio?: boolean;
+  involves?(key: string): boolean;
   close(): void;
   mute(value: boolean): void;
   route(value: AudioRoute): Promise<void>;
@@ -134,6 +135,7 @@ export function createCallController({
   record,
   hasRecord,
   tone,
+  isBlocked = () => false,
   now = Date.now,
   connectTimeout = 28_000,
 }: {
@@ -149,6 +151,7 @@ export function createCallController({
   record: (entry: CallRecord) => void;
   hasRecord?: (callId: string, invitationId?: string) => boolean;
   tone: (mode: "incoming" | "ringing" | "silent") => void;
+  isBlocked?: (key: string) => boolean;
   now?: () => number;
   connectTimeout?: number;
 }) {
@@ -457,7 +460,11 @@ export function createCallController({
 
   function receive(signal: CallSignal) {
     const receivedAt = now();
-    if (signal.expiresAt <= receivedAt || signal.recipientKey !== localKey)
+    if (
+      isBlocked(signal.senderKey) ||
+      signal.expiresAt <= receivedAt ||
+      signal.recipientKey !== localKey
+    )
       return;
     if (
       !available &&
@@ -597,6 +604,19 @@ export function createCallController({
   return {
     store,
     receive,
+    peerBlocked(key: string) {
+      if (!active) return;
+      if (
+        active.base.peerKey === key ||
+        active.media?.involves?.(key) ||
+        store.getState().participants.some((member) => member.key === key) ||
+        active.invite.conference?.roster.includes(key)
+      ) {
+        finish(active, active.answeredAt === null ? "cancelled" : "completed");
+      } else if (active.invitation?.signal.recipientKey === key) {
+        settleInvitation(active, "cancelled", true);
+      }
+    },
     isRequestingMicrophone: () => active?.microphonePrompt === true,
     inspect: () => active?.media?.inspect?.(),
     setForeground(value: boolean) {
@@ -632,6 +652,7 @@ export function createCallController({
     async dial(peerKey: string) {
       if (
         active ||
+        isBlocked(peerKey) ||
         !publicKeySchema.safeParse(peerKey).success ||
         peerKey === localKey
       )
@@ -676,6 +697,7 @@ export function createCallController({
         !media ||
         call?.phase !== "connected" ||
         attempt.invitation ||
+        isBlocked(key) ||
         key === localKey ||
         !publicKeySchema.safeParse(key).success ||
         participants.some((member) => member.key === key) ||

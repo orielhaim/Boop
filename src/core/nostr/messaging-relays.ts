@@ -143,12 +143,14 @@ export function createMessagingRelays(signer: NDKSigner) {
     since: number | undefined,
     onEvent: (id: string, event: unknown) => void,
     onEose: () => void,
+    limit?: number,
   ) {
     return subscription(
       [relay],
-      { kinds: [giftWrapKind], "#p": [signer.userSync.pubkey], since },
+      { kinds: [giftWrapKind], "#p": [signer.userSync.pubkey], since, limit },
       (event) => onEvent(event.id, event.rawEvent()),
       onEose,
+      limit !== undefined && limit > 0,
     );
   }
 

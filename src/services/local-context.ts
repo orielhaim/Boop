@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 import type { initializeLocal } from "./local";
 
 type LocalServices = Awaited<ReturnType<typeof initializeLocal>>;
@@ -10,4 +10,12 @@ export function useLocal() {
   const local = useContext(LocalContext);
   if (!local) throw new Error("Local services are unavailable");
   return local;
+}
+
+export function useChatsEnabled() {
+  const { messaging } = useLocal();
+  return useSyncExternalStore(
+    messaging.subscribeStatus,
+    messaging.getChatsEnabled,
+  );
 }

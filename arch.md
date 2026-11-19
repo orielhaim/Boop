@@ -83,16 +83,16 @@ Do not introduce Node.js-only dependencies into the React Native runtime without
 
 ### Navigation and native UI
 
-| Package                | Responsibility                                 |
-| ---------------------- | ---------------------------------------------- |
-| `expo-router`          | File-based navigation, stacks, and native tabs |
-| `@expo/ui`             | Native SwiftUI and Jetpack Compose components  |
-| `expo-glass-effect`    | System Liquid Glass on supported iOS versions  |
-| `expo-blur`            | Cross-platform glass fallbacks                 |
-| `expo-symbols`         | Native platform symbols                        |
-| `expo-linear-gradient` | Backgrounds and subtle visual layers           |
+| Package                | Responsibility                                   |
+| ---------------------- | ------------------------------------------------ |
+| `expo-router`          | File-based navigation, stacks, and headless tabs |
+| `@expo/ui`             | Native SwiftUI and Jetpack Compose components    |
+| `expo-glass-effect`    | System Liquid Glass on supported iOS versions    |
+| `expo-blur`            | Cross-platform glass fallbacks                   |
+| `expo-symbols`         | Native platform symbols                          |
+| `expo-linear-gradient` | Backgrounds and subtle visual layers             |
 
-Use `expo-router/native-tabs` on SDK 58 or later.
+The protected tab layout uses `expo-router/ui` with `expo-glass-tabs` for Calls, Messages, Contacts, and Profile. Inactive screens stay mounted. The dock uses native glass where available and a solid fallback elsewhere. It moves one indicator on the UI thread and navigates on tap or scrub release. In Hebrew the visual order and physical index mapping reverse together. Calls can minimize the dock on scroll. Messages keeps Chat Kit’s reorder scroll handler. App Lock, the shared messaging runtime, and the ongoing-call indicator live above the tab navigator. Chat, request, call, and settings detail routes are outside the dock.
 
 ### Motion and interaction
 
@@ -177,7 +177,7 @@ Use SQLite for durable data and Zustand for transient application state. Do not 
 - `expo-splash-screen` — polished startup experience.
 - `expo-dev-client` — native development builds.
 
-Use Biome for linting and formatting where compatible with the project.
+Use Bun 1.4.4 or later for `bun fmt`. Run `bun run check` to check formatting, Expo lint, and TypeScript.
 
 Avoid NativeWind, custom Skia rendering, and additional animation frameworks unless a demonstrated requirement justifies them.
 
@@ -258,11 +258,24 @@ A new identity can advertise its inbox automatically. Boop first checks for an e
 - Each connected inbox relay sends historical and live events through the same subscription. End of stored events (EOSE) advances that identity and relay's checkpoint after queued writes succeed. A new relay initially requests its retained inbox. Later sessions overlap the previous checkpoint by three days to cover randomized envelope timestamps. On reconnect, a weekly audit looks back at least 30 days. Longer offline gaps retain the older checkpoint. Foreground reconnects back off to one probe per minute after the initial retry burst. Normal navigation keeps subscriptions open. Returning from OS background suspension reopens them and runs catch-up. Relay retention and refusal still limit recovery.
 - Inbound envelopes enter one serial verification and persistence queue across relays. The queue yields between envelopes after a short work budget to leave time for input and rendering during catch-up. A relay marks subsequent envelopes as live after EOSE, and the queue serves up to four live envelopes before one stored envelope. Catch-up checkpoints still wait for all work already queued at EOSE. Call acknowledgments and ordinary live messages get the same priority without an outer call marker. A bounded set skips recently handled outer envelope replays. SQLite deduplicates the inner rumor ID across different envelopes. One transaction inserts a message and updates conversation activity and unread state. The pending outbox preserves optimistic local IDs. Relay acknowledgment indicates acceptance by a relay.
 - SQLite and Drizzle own messages, drafts, reactions, conversation flags, and read state. The root hydrates a compact conversation list with the latest indexed message and optional cached translation. Repository notifications run after commit and target summaries, the unread aggregate, or an affected peer's history. Summary and history refreshes coalesce bursts. SQLite change listeners cover contacts and translation settings and previews.
-- Unread counts include muted and archived conversations and exclude deleted rows, outgoing copies, reactions, and call signals. The NativeTabs Messages badge subscribes to the persisted aggregate and displays up to `99+`. A focused, foreground, unlocked conversation clears only the unread message IDs that Chat Kit presents. Chat Kit opens at the first unread row when one exists and renders the unread separator.
+- Unread counts include muted and archived conversations and exclude deleted rows, outgoing copies, reactions, call signals, blocked peers, and pending requests. The glass dock’s Messages badge subscribes to the persisted aggregate and displays up to `99+`. A focused, foreground, unlocked conversation clears only the unread message IDs that Chat Kit presents. Chat Kit opens at the first unread row when one exists and renders the unread separator.
+
+### Communication privacy and requests
+
+Privacy & Security owns the Chats and Message Requests switches. With Chats off, the protected session stops the conversation feed, outbox, and time-lock scheduler. Chat routes and translation settings are disabled. The shared relay inbox keeps a live-only subscription for call signaling. The encrypted envelope carries no public message type, so the client still opens live envelopes to identify calls and discards other rumors. The chat checkpoint stays at its last successful catch-up. Re-enabling resumes catch-up and pending sends. Recovery depends on relay retention.
+
+The protected session owns one policy service. SQLite stores `blocked_identities`, `communication_grants`, `message_requests`, and privacy preferences. A verified kind 13 Seal gives the first authenticated sender key in NIP-17. The inbox tests its in-memory blocked set at that boundary, before decrypting the Rumor, and rechecks the peer at dispatch to cover queued work and self-authored copies. Relays still deliver the encrypted kind 1059 envelope and can observe transport metadata. This is local enforcement, not relay-level blocking.
+
+Calls default to Everyone. Contacts limits new invitations to saved public keys; Nobody drops all new invitations. Neither setting ends an existing call. Blocking prevents outbound messages and invitations, filters late signaling, rejects conference reservations and peer admission, and closes the local session if a blocked participant is already connected. Boop leaves the entire local room instead of assuming it can safely remove someone from another participant’s mesh. Message grants never authorize calls or video.
+
+Messages default to Everyone with requests off. With requests on, new unknown senders enter Requests; previously received history remains established in Everyone. Contacts allows saved contacts and explicitly approved or locally initiated relationships, with other senders routed to Requests only if enabled. Initiated Only accepts identities with successful local outbound delivery or an answered, completed outbound call; contact membership and request approval alone do not qualify. Migration backfills local `sent` rows and completed or answered outbound call records, not sender-copy `synced` rows or inbound history. SQLite grants delivery authorization in the same statement as the outbox status change.
+
+Each pending peer can retain up to 16 distinct messages and 20,000 JSON characters, with at most 64 pending peers. Existing single-message records remain readable. Messages shows the Pending Requests row only when at least one sender is pending. The separate list opens read-only Chat Kit conversations with Accept and Block. Pending data stays out of regular chat history, unread, translation, and the time-lock scheduler. Accept records approval and promotes the retained original messages and time-lock metadata in one transaction. The shared inbox queue handles one short best-effort replay against connected inboxes. NIP-17 outer events cannot be queried by actual sender, so some discarded events may not be recoverable. Existing decline cutoffs still suppress old replays. Strict mode pauses existing approvals in the request UI and rejects new unauthorized senders. Blocking removes requests, retains previous chat history, and suspends the peer’s contributions to unread and automatic processing until unblocked.
+
 - The session history loader keeps five recent pages of up to 50 messages. While the app is active and unlocked, the root refreshes up to three prefetch candidates as summaries change, with recently visited conversations ahead of recently active ones. Repeated refreshes keep the current timer. The foreground reader can reuse or fulfill a queued load. Relevant commits invalidate cached pages. Opening a chat needs only SQLite or a warm page. A small session cache remembers the previous reading position.
 - History uses creation time and local ID as its cursor. Older rows prepend in 50-message pages. The displayed history caps at 300 rows and slides when the user pages beyond its edge. Chat Kit's AnimatedLegendList owns virtualization, scroll anchoring, and jump-to-message behavior. A quote outside the current window opens a page around its original message.
 - Typed presentation adapters convert persisted rows into Chat Kit users, messages, quotes, reactions and conversation rows. `ChatList` presents conversations. `Chat` provides message rendering, composer, keyboard behavior, menus, and gestures. `ChatHeader` provides the detail header. Share the app's color and typography tokens through the library's appearance and theme APIs. Bubble timestamps use Chat Kit's separate metadata row so bidirectional or wrapped text cannot move into timestamp space.
-- Shared edge-to-edge screens read the router's safe-area context when they render. The chat screen applies its top inset once before laying out ChatHeader and uses the root keyboard provider. Development diagnostics time local startup, recent page reads, and the first visible message rows without logging message content.
+- Shared edge-to-edge screens read the router's safe-area context when they render. The chat screen applies its top inset once before laying out ChatHeader and uses the root keyboard provider. Short histories stay aligned to the top while the keyboard moves the composer. Development diagnostics time local startup, recent page reads, and the first visible message rows without logging message content.
 - The app enables text and emoji. Private reaction additions use encrypted kind 7 rumors when the target and inbox are available. Reaction removal, deletion, read state, pinning, mute, and archive are device-local. Media requires an encrypted transfer and retrieval flow before it can be enabled.
 
 ### Initial messaging features
@@ -525,11 +538,12 @@ Avoid decorative animation that interferes with readability or performance.
 
 ### Navigation
 
-Three primary tabs:
+Four primary tabs:
 
 1. **Calls** — recent calls, favorites, dialer/contact selection.
 2. **Messages** — conversation list and chat detail.
 3. **Contacts** — searchable personal address book.
+4. **Profile** — identity and preferences.
 
 Additional screens:
 
@@ -537,7 +551,7 @@ Additional screens:
 - Active call.
 - Contact details.
 - Add contact, enter an address, or scan an address.
-- Settings with a native nested stack for Identity & keys, Chats, Appearance, Language, Calls & sounds, Privacy & security, Connections, and About. Chats contains Translation. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
+- Profile opens a native settings stack for Identity & keys, Chats, Appearance, Language, Calls & sounds, Privacy & security, Connections, and About. Chats contains Translation. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
 
 The dialer must work with real application identities. A numeric keypad must not imply interoperability with ordinary telephone numbers unless such an addressing system is actually implemented.
 
@@ -571,7 +585,13 @@ The root checks the SQLite App Lock policy before mounting protected routes or s
 
 The lock controller tracks foreground transitions and supports immediate, one-minute, five-minute, and thirty-minute timeouts. A solid lock screen covers the router and hides its accessibility tree while locked or inactive. It opens the system prompt once per lock, with a centered Unlock action for retry after cancellation. Native app-switcher protection adds an iOS privacy blur. Android blocks window capture while App Lock is enabled. Warm deep links are dropped while protected content is obscured. The gate retains the mounted navigation and call controller after first unlock. An ongoing audio call can continue under the gate. App Lock disables system video PiP and uses a generic identity in the Android notification. Opening the notification restores the call screen after unlock.
 
-App Lock controls access through the app interface. SecureStore still owns private key storage under the same key and accessibility policy. Biometric changes do not change the stored key. App Lock leaves the local database encryption policy unchanged. Boop has no private-key viewing or export route.
+App Lock controls access through the app interface. SecureStore owns private key storage under the device-only accessibility policy. Biometric changes do not change the stored key. App Lock leaves the local database encryption policy unchanged.
+
+### Digital SIM portability
+
+Digital SIM exports only the private key as standard NIP-49 `ncryptsec`, with `nostr-tools` and cost 16. Export requests fresh device authentication when configured, requires a confirmed passphrase, and shares only an encrypted temporary document. Import accepts `ncryptsec`, `nsec`, or 32-byte hexadecimal text from paste, file, or QR. The import screen shows the derived `npub` before replacement. The screen requests capture and switcher protection and clears inputs on leaving. The current JS NIP-49 API runs scrypt synchronously; it rejects imports above cost 16 to bound memory, and device responsiveness still needs measurement.
+
+A matching import checks the SecureStore value and leaves local data unchanged. For a different identity, the user must consent to reset local chats, contacts, calls, and privacy data. Boop verifies a separate SecureStore slot before recording the pending switch. At startup, before constructing a signer, Boop checks that slot again. A single SQLite transaction removes identity-owned data, moves the public-key pin and slot pointer together, and records the old slot for retirement. A missing or invalid candidate leaves the old identity in place; a transient read or rolled-back transaction preserves the old identity and can retry on another restart. After commit, failed old-slot cleanup can retry without affecting the new pin. This is a logical local reset, not secure erasure or relay deletion. No mismatch path generates a new identity.
 
 Threat boundaries must be explicit:
 

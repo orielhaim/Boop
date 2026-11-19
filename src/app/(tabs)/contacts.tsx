@@ -23,9 +23,12 @@ import {
   Screen,
   Search,
 } from "@/components/ui/kit";
+import { useBlockAction } from "@/components/ui/privacy-actions";
 import { byNameOrKey, useContacts } from "@/db/contacts";
+import { updateContactPreferences } from "@/db/queries";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { isolateText } from "@/i18n/format";
+import { useChatsEnabled, useLocal } from "@/services/local";
 import { radius, space, useTheme } from "@/theme";
 
 export default function Contacts() {
@@ -136,6 +139,9 @@ function ContactRow({
   const { colors } = useTheme();
   const swipeable = useRef<SwipeableMethods>(null);
   const { name, publicKey, avatarUrl, favorite } = contact;
+  const block = useBlockAction(publicKey);
+  const chatsEnabled = useChatsEnabled();
+  const { db } = useLocal();
   const renderQuickCall = () => (
     <View
       accessible={false}
@@ -173,6 +179,7 @@ function ContactRow({
             })}
         onSwipeableOpen={(direction) => {
           swipeable.current?.reset();
+          if (block.blocked) return;
           if (direction === (rtl ? SwipeDirection.RIGHT : SwipeDirection.LEFT))
             router.push({
               pathname: "/call/[key]",
@@ -192,25 +199,45 @@ function ContactRow({
             }
             expanded={expanded}
             onPress={onToggle}
+            onLongPress={onToggle}
           />
         </View>
       </Swipeable>
       {expanded ? (
         <View style={[styles.actions, { borderTopColor: colors.line }]}>
-          {actions.map(({ label, icon, route }) => (
-            <View key={label} style={styles.action}>
-              <IconButton
-                icon={icon}
-                label={`${t(label)} · ${isolateText(name)}`}
-                onPress={() =>
-                  router.push({ pathname: route, params: { key: publicKey } })
-                }
-              />
-              <Ink kind="caption" muted>
-                {t(label)}
-              </Ink>
-            </View>
-          ))}
+          {actions
+            .filter(({ route }) => chatsEnabled || route !== "/chat/[key]")
+            .map(({ label, icon, route }) => (
+              <View key={label} style={styles.action}>
+                <IconButton
+                  icon={icon}
+                  disabled={route === "/call/[key]" && block.blocked}
+                  label={`${t(label)} · ${isolateText(name)}`}
+                  onPress={() =>
+                    router.push({ pathname: route, params: { key: publicKey } })
+                  }
+                />
+                <Ink kind="caption" muted>
+                  {t(label)}
+                </Ink>
+              </View>
+            ))}
+          <View style={styles.action}>
+            <IconButton
+              icon={favorite ? "favorite" : "star"}
+              label={t(
+                favorite ? "contacts:removeFavorite" : "contacts:addFavorite",
+              )}
+              onPress={() =>
+                updateContactPreferences(db, publicKey, { favorite: !favorite })
+              }
+            />
+            <IconButton
+              icon="lock"
+              label={block.label}
+              onPress={block.onPress}
+            />
+          </View>
         </View>
       ) : null}
     </View>

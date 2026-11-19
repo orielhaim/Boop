@@ -133,6 +133,20 @@ export function createAppLock({
         return;
       void change("unlock");
     },
+    async confirmSensitive(confirm: () => Promise<boolean>) {
+      if (!state.active || state.locked || state.authenticating) return false;
+      update({ authenticating: true });
+      let confirmed = false;
+      try {
+        confirmed = await confirm();
+        if (confirmed && state.enabled && !state.active)
+          returnBy = now() + 2_000;
+        return confirmed;
+      } finally {
+        if (!confirmed && state.enabled && !state.active) awayAt ??= now();
+        update({ authenticating: false });
+      }
+    },
     change,
   };
 }

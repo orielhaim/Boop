@@ -70,6 +70,7 @@ export const en = {
     contacts: "Contacts",
     contact: "Contact",
     settings: "Settings",
+    profile: "Profile",
     connect: "Connect",
     scan: "Scan address",
     addContact: "Add contact",
@@ -408,6 +409,60 @@ export const en = {
     selected_other: "{{count}} selected",
   },
   security: {
+    exportSim: "Export Digital SIM",
+    importSim: "Import Digital SIM",
+    backupScope:
+      "A Digital SIM contains your Nostr private key only. It does not include chats, contacts, calls, or settings. Anyone with the key can act as you.",
+    backupPassword: "Backup password",
+    confirmPassword: "Confirm backup password",
+    passwordHint:
+      "Use a unique passphrase of at least 16 characters. Boop cannot recover it.",
+    backupInput: "Paste ncryptsec, nsec, or a 32-byte hexadecimal key",
+    backupFile: "Choose backup file",
+    checkIdentity: "Check identity",
+    replaceIdentity: "Replace identity and reset local data",
+    replacementWarning:
+      "Boop supports one active identity. On restart, replacing it erases this device’s chats, contacts, call history, and privacy data. Export your current identity first if you want to use it again.",
+    sameIdentity:
+      "This matches your active identity. No local data was changed.",
+    currentIdentity: "Current identity",
+    importedIdentity: "Imported identity",
+    backupFailed:
+      "Couldn’t open or save the Digital SIM. Check the backup and password, then try again.",
+    backupCost:
+      "This backup requires more memory than Boop permits. Use a compatible NIP-49 app to re-export it with cost 16 or less.",
+    passwordsMismatch: "Use matching passwords of at least 16 characters.",
+    shareBackup: "Share encrypted backup",
+    restartForSim: "Replacement is staged. Restart Boop to finish.",
+    whoCanCall: "Who can call me",
+    whoCanMessage: "Who can message me",
+    everyone: "Everyone",
+    contactsOnly: "My contacts",
+    nobody: "Nobody",
+    initiatedOnly: "Only people I’ve contacted first",
+    messageRequests: "Message requests",
+    chatsHelp:
+      "Turn off chat sync, sending, and the Messages tab. Calls remain available.",
+    pendingRequests: "Pending Requests",
+    requestsCount: "Pending Requests ({{count}})",
+    requestsHelp:
+      "Review first messages from people you don’t know before they enter Chats.",
+    strictRequests:
+      "Requests are unavailable when only people you’ve contacted first can message you.",
+    noRequests: "No pending requests",
+    acceptRequest: "Accept",
+    requestLocked: "A scheduled message. Accept to add it to your chat.",
+    blockedUsers: "Blocked users",
+    block: "Block",
+    unblock: "Unblock",
+    blockConfirm: "Block this identity?",
+    blockHelp:
+      "Boop will ignore this identity’s messages and calls on this device. Your chat history stays here.",
+    blockedChat: "Unblock this identity to send messages or call.",
+    noBlocked: "No matching blocked users",
+    searchBlocked: "Search name or public key",
+    privacyWriteFailed: "Couldn’t save this change. Try again.",
+    showIdentityQr: "Show identity QR",
     appLock: "App Lock",
     permissions: "Device permissions",
     incomingVideo: "Incoming video",

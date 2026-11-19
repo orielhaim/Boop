@@ -1,7 +1,9 @@
 import { Host, Switch } from "@expo/ui";
 import { router, useLocalSearchParams } from "expo-router";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
+import QRCode from "react-native-qrcode-svg";
 import {
   Action,
   Avatar,
@@ -15,11 +17,12 @@ import {
   Screen,
   Section,
 } from "@/components/ui/kit";
+import { useBlockAction } from "@/components/ui/privacy-actions";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { useContact } from "@/db/contacts";
 import { updateContactPreferences } from "@/db/queries";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 import { space, useTheme } from "@/theme";
 
 export default function ContactDetail() {
@@ -30,6 +33,9 @@ export default function ContactDetail() {
     typeof params.key === "string" ? parsePublicKey(params.key) : null;
   const contact = useContact(key ?? "");
   const { db } = useLocal();
+  const block = useBlockAction(key ?? "");
+  const chatsEnabled = useChatsEnabled();
+  const [showQr, setShowQr] = useState(false);
   const { colors, theme } = useTheme();
 
   if (!key)
@@ -44,6 +50,23 @@ export default function ContactDetail() {
     );
 
   const address = toNpub(key);
+  const keyActions = (
+    <>
+      <Action onPress={() => setShowQr((shown) => !shown)}>
+        {t("security:showIdentityQr")}
+      </Action>
+      {showQr && (
+        <View
+          style={styles.qr}
+          accessible
+          accessibilityLabel={t("settings:addressQr")}
+        >
+          <QRCode value={`nostr:${address}`} size={180} />
+        </View>
+      )}
+      <Action onPress={block.onPress}>{block.label}</Action>
+    </>
+  );
   if (!contact)
     return (
       <Screen>
@@ -60,6 +83,7 @@ export default function ContactDetail() {
         >
           {t("contacts:saveAs")}
         </Action>
+        {keyActions}
       </Screen>
     );
 
@@ -88,6 +112,7 @@ export default function ContactDetail() {
       </Hero>
       <View style={layout.row}>
         <Action
+          disabled={block.blocked}
           onPress={() =>
             router.push({
               pathname: "/call/[key]",
@@ -98,17 +123,19 @@ export default function ContactDetail() {
           <Icon name="phone" />
           {t("calls:call")}
         </Action>
-        <Action
-          onPress={() =>
-            router.push({
-              pathname: "/chat/[key]",
-              params: { key: contact.publicKey },
-            })
-          }
-        >
-          <Icon name="chat" />
-          {t("contacts:message")}
-        </Action>
+        {chatsEnabled && (
+          <Action
+            onPress={() =>
+              router.push({
+                pathname: "/chat/[key]",
+                params: { key: contact.publicKey },
+              })
+            }
+          >
+            <Icon name="chat" />
+            {t("contacts:message")}
+          </Action>
+        )}
       </View>
       <Section>{t("contacts:callPermissions")}</Section>
       <Card style={styles.key}>
@@ -135,10 +162,12 @@ export default function ContactDetail() {
           {address}
         </Ink>
       </Card>
+      {keyActions}
     </Screen>
   );
 }
 const styles = StyleSheet.create({
+  qr: { backgroundColor: "#fff", padding: space.md, alignSelf: "center" },
   address: { writingDirection: "ltr", textAlign: "left" },
   center: { textAlign: "center" },
   profile: { alignItems: "center", gap: space.md },

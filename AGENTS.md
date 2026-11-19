@@ -27,14 +27,15 @@ bunx expo install --fix      # fix incompatible package versions
 
 Run lint and typecheck before declaring any task done.
 
-also use `bun fmt` to format. instead of prettier/biome etc.
+Use Bun 1.4.4 or later and run `bun fmt` for formatting.
 
 ## Navigation & Routing
 
 - Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
 - For changes to Messages, read the messaging section of `arch.md` and the installed Chat Kit API types. Use `ChatList`, `Chat`, and `ChatHeader` for presentation and keep durable state in SQLite.
 - Keep inbox subscriptions, catch-up, and outbound delivery in the protected app session's messaging runtime. Screens consume the repository, conversation feed, and shared history loader.
-- Derive unread counts from committed SQLite records. Mark only visible IDs in a focused, foreground, unlocked chat. Use the native tab badge and keep prefetch and history windows bounded.
+- Derive unread counts from committed SQLite records. Mark only visible IDs in a focused, foreground, unlocked chat. Keep the glass dock badge separate from pending requests and keep prefetch and history windows bounded.
+- Keep the floating dock on Expo Router headless tabs. Keep App Lock, the runtime, and the call indicator above the tab navigator. Preserve physical highlight and gesture mapping in RTL.
 - Translate only visible incoming chat messages. Keep translations on the device, preserve original Nostr messages byte for byte, and keep translated text out of messaging, networking, and logs.
 - For Special Messages, read the Open Later section of `arch.md`. Keep special sends in the Chat Kit composer and the shared encrypted outbox. Validate the Quicknet schedule and AGE recipient before persistence, and verify beacons with the pinned drand-client before opening. Keep sealed content out of translation, previews, and copy. Commit the unlocked body and opening state together in SQLite.
 - Run `bun test tests/timelock.test.ts` for protocol and persistence changes. Run `bun scripts/test-chat-relay.ts --timelock` when checking the live Quicknet and relay path.
@@ -53,6 +54,13 @@ also use `bun fmt` to format. instead of prettier/biome etc.
 
 - Read the calling section of `arch.md` before changing invitations, admission, or media. Keep one Call Controller, room, microphone, and native audio lease per logical call.
 - Bind each connection to the admitted Nostr identity before attaching microphone audio. Require explicit Watch before targeting conference video and remove that target when consent ends.
+
+## Communication privacy and identity
+
+- Use the protected session’s central privacy service. Test the blocked set after verifying the NIP-59 Seal, then recheck at dispatch. Do not add per-peer relay sockets or treat a temporary outer author as the sender.
+- Keep contacts, blocks, approvals, successful local initiation, and video consent distinct. Do not grant Initiated Only access from an inbound message, synced sender copy, or unanswered call.
+- Keep pending requests out of normal messages and unread, translation, and unlock processing. Promote the original message and grant approval in one SQLite transaction.
+- Use NIP-49 for exports. Never share or write plaintext private-key documents. Stage and verify a new SecureStore slot before changing the SQLite identity pin or resetting identity-owned data. Resolve the switch before constructing signer-bound services, and never generate a replacement key on a mismatch.
 
 ## Building with EAS
 

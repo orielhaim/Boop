@@ -1,5 +1,6 @@
 import { View, type ViewProps } from "react-native";
 import { type Edge, useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTabBarClearance } from "./tab-bar-insets";
 
 const allEdges: readonly Edge[] = ["top", "bottom", "left", "right"];
 
@@ -11,6 +12,7 @@ export function ScreenInsets({
   ...props
 }: ViewProps & { edges?: readonly Edge[]; padding?: number }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   return (
     <View
       {...props}
@@ -19,7 +21,9 @@ export function ScreenInsets({
         {
           paddingTop: padding + (edges.includes("top") ? insets.top : 0),
           paddingBottom:
-            padding + (edges.includes("bottom") ? insets.bottom : 0),
+            padding +
+            (edges.includes("bottom") ? insets.bottom : 0) +
+            tabBarClearance,
           paddingLeft: padding + (edges.includes("left") ? insets.left : 0),
           paddingRight: padding + (edges.includes("right") ? insets.right : 0),
         },

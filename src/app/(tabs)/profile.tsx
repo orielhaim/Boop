@@ -2,20 +2,23 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
-import { Action, Avatar, Hero, Icon, Ink, Screen } from "@/components/ui/kit";
+import { BoopLogo } from "@/components/ui/boop-logo";
+import { Action, Header, Hero, Icon, Ink, Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { isolateText } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 import { space } from "@/theme";
 
-export default function Settings() {
+export default function Profile() {
   const { t } = useTranslation(namespaces);
   const { identity } = useLocal();
+  const chatsEnabled = useChatsEnabled();
   return (
-    <Screen>
+    <Screen tab>
+      <Header title={t("navigation:profile")} />
       <Hero>
         <View style={styles.identity}>
-          <Avatar name="Boop" size="lg" />
+          <BoopLogo />
           <Ink kind="heading">{t("settings:yourAddress")}</Ink>
           <Ink kind="caption" muted>
             {isolateText(
@@ -34,6 +37,7 @@ export default function Settings() {
       <SettingsGroup title={t("settings:preferences")}>
         <SettingsRow
           title={t("common:chats")}
+          disabled={!chatsEnabled}
           icon="chat"
           accent="#347E76"
           onPress={() => router.push("/settings/chats")}

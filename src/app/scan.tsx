@@ -1,12 +1,17 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { router, useIsFocused, useLocalSearchParams } from "expo-router";
+import {
+  Redirect,
+  router,
+  useIsFocused,
+  useLocalSearchParams,
+} from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Linking, StyleSheet, View } from "react-native";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 import { radius, space, useTheme } from "@/theme";
 
 export default function ScanAddress() {
@@ -18,6 +23,8 @@ export default function ScanAddress() {
   const [error, setError] = useState("");
   const locked = useRef(false);
   const { colors } = useTheme();
+  const chatsEnabled = useChatsEnabled();
+  if (mode === "chat" && !chatsEnabled) return <Redirect href="/" />;
 
   if (!permission?.granted)
     return (

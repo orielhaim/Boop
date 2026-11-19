@@ -74,6 +74,13 @@ export default {
         tag: "0009_moaning_hydra",
         breakpoints: true,
       },
+      {
+        idx: 10,
+        version: "6",
+        when: 1795106492286,
+        tag: "0010_young_turbo",
+        breakpoints: true,
+      },
     ],
   },
   migrations: {
@@ -97,5 +104,7 @@ export default {
       "ALTER TABLE `call_history` ADD `invitation_ids` text DEFAULT '[]' NOT NULL;",
     m0009:
       'CREATE TABLE `message_timelocks` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`chain_hash` text NOT NULL,\n\t`unlock_round` integer NOT NULL,\n\t`requested_at` integer NOT NULL,\n\t`round_time` integer NOT NULL,\n\t`opened_at` integer,\n\t`retry_at` integer,\n\t`attempts` integer DEFAULT 0 NOT NULL,\n\t`error` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_timelocks_pending` ON `message_timelocks` (`retry_at`,`unlock_round`,`message_id`) WHERE "message_timelocks"."retry_at" IS NOT NULL;',
+    m0010:
+      "CREATE TABLE `blocked_identities` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`blocked_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `communication_grants` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`initiated` integer DEFAULT false NOT NULL,\n\t`approved` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `message_requests` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`received_at` integer NOT NULL,\n\t`declined_through` integer DEFAULT 0 NOT NULL,\n\t`message` text\n);\n--> statement-breakpoint\nINSERT INTO communication_grants (public_key, initiated)\nSELECT peer_key, 1 FROM messages WHERE direction = 'outgoing' AND status = 'sent'\nUNION SELECT peer_key, 1 FROM call_history WHERE direction = 'outgoing' AND answered_at IS NOT NULL AND outcome IN ('completed', 'answered', 'remote-disconnected');\n--> statement-breakpoint\nCREATE TRIGGER grant_on_message_delivery AFTER UPDATE OF status ON messages\nWHEN NEW.direction = 'outgoing' AND NEW.status = 'sent' AND OLD.status <> 'sent'\nBEGIN\n  INSERT INTO communication_grants (public_key, initiated) VALUES (NEW.peer_key, 1)\n  ON CONFLICT(public_key) DO UPDATE SET initiated = 1;\nEND;\n",
   },
 };

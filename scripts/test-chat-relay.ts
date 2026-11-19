@@ -410,6 +410,18 @@ async function runScenario(tlsDirectory: string) {
       throw new Error("Incorrect unread count");
 
     const callSignals: CallSignal[] = [];
+    bob.service.setChatsEnabled(false);
+    await wait("live-only inbox for calls", () =>
+      [...sockets].some(
+        ({ data }) =>
+          data.authorized === bob.key &&
+          [...data.subscriptions.values()]
+            .flat()
+            .some(
+              (filter) => filter.kinds?.includes(1059) && filter.limit === 0,
+            ),
+      ),
+    );
     const stopCalls = bob.service.subscribeCalls((signal) =>
       callSignals.push(signal),
     );
@@ -478,6 +490,7 @@ async function runScenario(tlsDirectory: string) {
     if (bob.chat.history(alice.key).messages.length !== 2) {
       throw new Error("Call signaling leaked into chat history");
     }
+    bob.service.setChatsEnabled(true);
     if (
       [...events.values()].some(
         ({ kind, content }) =>
@@ -598,11 +611,38 @@ async function runScenario(tlsDirectory: string) {
     if (events.has(signed.id))
       throw new Error("The relay did not replace the old inbox list");
 
+    bob.service.setChatsEnabled(false);
+    const disabledSend = await bob.service
+      .send({ peerKey: alice.key, body: "Disabled send", replyTo: null })
+      .then(
+        () => false,
+        (error) => error instanceof Error && error.message === "chats-disabled",
+      );
+    if (!disabledSend)
+      throw new Error("Disabled chat accepted an outbound send");
+    const body = "Arrived while chats were disabled";
+    const paused = await alice.service.send({
+      peerKey: bob.key,
+      body,
+      replyTo: null,
+    });
+    await wait(
+      "relay delivery while chats are disabled",
+      () => alice.chat.message(bob.key, paused)?.status === "sent",
+    );
+    await Bun.sleep(100);
+    if (bob.chat.history(alice.key).messages.some((row) => row.body === body))
+      throw new Error("The disabled chat inbox persisted an incoming message");
+    bob.service.setChatsEnabled(true);
+    await wait("chat catch-up after enabling", () =>
+      bob.chat.history(alice.key).messages.some((row) => row.body === body),
+    );
+
     if (process.argv.includes("--timelock"))
       await testOpenLater(alice, bob, url, events);
 
     console.log(
-      "TLS relay verified encrypted messaging and call invitations, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, catch-up, reconnect, and stable retries.",
+      "TLS relay verified encrypted messaging, call signaling with chats disabled, chat pause and catch-up, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, reconnect, and stable retries.",
     );
   } finally {
     alice.service.stop();

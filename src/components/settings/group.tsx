@@ -52,6 +52,7 @@ export function SettingsRow({
   onPress,
   selected,
   expanded,
+  disabled = false,
   trailing,
 }: {
   title: string;
@@ -62,6 +63,7 @@ export function SettingsRow({
   onPress?: () => void;
   selected?: boolean;
   expanded?: boolean;
+  disabled?: boolean;
   trailing?: ReactNode;
 }) {
   const { colors } = useTheme();
@@ -99,20 +101,16 @@ export function SettingsRow({
   );
   return onPress ? (
     <Pressable
+      disabled={disabled}
       accessibilityRole={selected === undefined ? "button" : "radio"}
-      accessibilityState={
-        selected === undefined
-          ? expanded === undefined
-            ? undefined
-            : { expanded }
-          : { checked: selected }
-      }
+      accessibilityState={{ disabled, expanded, checked: selected }}
       onPress={() => {
         tapFeedback();
         onPress();
       }}
       style={({ pressed }) => [
         styles.row,
+        disabled && { opacity: 0.5 },
         selected && { backgroundColor: colors.accentSoft },
         pressed && { backgroundColor: colors.background },
       ]}

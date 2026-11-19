@@ -1,4 +1,5 @@
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
+import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { useCalendars } from "expo-localization";
 import { router } from "expo-router";
 import { useState } from "react";
@@ -42,24 +43,20 @@ function call(key: string) {
 }
 
 export default function Calls() {
+  const onScroll = useMinimizeOnScroll();
   const { t, i18n } = useTranslation(namespaces);
   const locale = resolveLanguage(i18n.resolvedLanguage);
   const calendar = useCalendars()[0];
   const [actions, setActions] = useState(false);
   const { db } = useLocal();
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const contacts = useContacts();
   const { data: calls } = useLiveQuery(callList(db), [db, contacts]);
   const favorites = contacts.filter((contact) => contact.favorite);
 
   return (
-    <Screen tab>
+    <Screen tab onScroll={reduceMotion ? undefined : onScroll}>
       <Header title={t("navigation:calls")}>
-        <IconButton
-          icon="settings"
-          label={t("navigation:settings")}
-          onPress={() => router.push("/settings")}
-        />
         <IconButton
           icon="add"
           label={t("calls:newCall")}

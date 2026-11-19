@@ -22,6 +22,7 @@ import { createConversationFeed } from "@/core/messaging/conversations";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { createHistoryLoader } from "@/core/messaging/history";
 import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
+import { createPrivacy } from "@/core/privacy";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { loadTranslationEngine } from "@/core/translation/native";
@@ -45,9 +46,9 @@ import { relaySettings } from "@/db/schema";
 import { createTranslationCache } from "@/db/translations";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
-import { useLocal } from "./local-context";
+import { useChatsEnabled, useLocal } from "./local-context";
 
-export { useLocal } from "./local-context";
+export { useChatsEnabled, useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
@@ -68,6 +69,7 @@ async function start() {
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
+    const privacy = createPrivacy(db, chat, identity.publicKey);
     const history = createHistoryLoader(chat);
     const conversations = createConversationFeed(chat, history, () =>
       translationPreviewTarget(db),
@@ -77,6 +79,7 @@ async function start() {
       db,
       signer,
       chat,
+      privacy,
     });
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
@@ -117,9 +120,11 @@ async function start() {
         });
       },
       messaging.sendCall,
+      privacy.isBlocked,
     );
     const calling = createCallController({
       localKey: identity.publicKey,
+      isBlocked: privacy.isBlocked,
       randomId: randomCallId,
       openMedia: media.open,
       prepareMedia: initializeCallingRuntime,
@@ -131,13 +136,28 @@ async function start() {
       },
       send: messaging.sendCall,
       tone: callTone,
-      record: (entry) => saveCallRecord(db, entry),
+      record: (entry) => {
+        db.transaction(() => {
+          saveCallRecord(db, entry);
+          if (
+            entry.direction === "outgoing" &&
+            entry.answeredAt !== null &&
+            (entry.outcome === "completed" ||
+              entry.outcome === "remote-disconnected")
+          )
+            privacy.noteCompletedCall(entry.peerKey);
+        });
+      },
       hasRecord: (id, invitationId) => {
         const entry = callById(db, id);
         return invitationId
           ? entry?.invitationIds.includes(invitationId) === true
           : !!entry;
       },
+    });
+    privacy.subscribeBlock((key) => {
+      calling.peerBlocked(key);
+      messaging.invalidateBlockedPeer();
     });
     messaging.subscribeCalls((message) => {
       if (message.type === "call.rtc") media.receive(message);
@@ -157,6 +177,7 @@ async function start() {
         (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
       ),
       identity,
+      privacy,
       chat,
       history,
       conversations,
@@ -190,8 +211,17 @@ export function initializeLocal() {
 
 export function MessagingLifecycle() {
   const { db, messaging, calling, lock, conversations } = useLocal();
+  const chatsEnabled = useChatsEnabled();
   useEffect(() => {
-    const stopFeed = conversations.start();
+    if (!chatsEnabled) return;
+    const stop = conversations.start();
+    const active =
+      AppState.currentState === "active" && !lock.getState().locked;
+    conversations.setPrefetchEnabled(active);
+    messaging.setUnlockActive(active);
+    return stop;
+  }, [chatsEnabled, conversations, lock, messaging]);
+  useEffect(() => {
     const databasePath =
       db.$client.getFirstSync<{ file: string }>(
         "SELECT file FROM pragma_database_list WHERE name = 'main'",
@@ -210,7 +240,8 @@ export function MessagingLifecycle() {
     const dbChanges = addDatabaseChangeListener(
       ({ databaseFilePath, tableName }) => {
         if (databaseFilePath !== databasePath) return;
-        conversations.externalChange(tableName);
+        if (messaging.getChatsEnabled())
+          conversations.externalChange(tableName);
         if (tableName !== "relay_settings" && tableName !== "settings") return;
         relaysChanged ||= tableName === "relay_settings";
         if (queued) return;
@@ -240,7 +271,9 @@ export function MessagingLifecycle() {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       messaging.setUnlockActive(state === "active" && !lock.getState().locked);
       conversations.setPrefetchEnabled(
-        state === "active" && !lock.getState().locked,
+        messaging.getChatsEnabled() &&
+          state === "active" &&
+          !lock.getState().locked,
       );
       if (state === "active") {
         calling.setForeground(true);
@@ -252,7 +285,9 @@ export function MessagingLifecycle() {
     const unsubscribeLock = lock.subscribe(() => {
       updateUnlocks();
       conversations.setPrefetchEnabled(
-        AppState.currentState === "active" && !lock.getState().locked,
+        messaging.getChatsEnabled() &&
+          AppState.currentState === "active" &&
+          !lock.getState().locked,
       );
       if (
         lock.getState().authenticating ||
@@ -276,7 +311,6 @@ export function MessagingLifecycle() {
       unsubscribeLock();
       subscription.remove();
       dbChanges.remove();
-      stopFeed();
       messaging.setUnlockActive(false);
       messaging.stop();
     };

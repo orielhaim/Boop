@@ -1,11 +1,11 @@
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { Redirect, router, Stack, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 
 export default function Connect() {
   const { t } = useTranslation(namespaces);
@@ -14,6 +14,8 @@ export default function Connect() {
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
   const isCall = mode === "call";
+  const chatsEnabled = useChatsEnabled();
+  if (!isCall && !chatsEnabled) return <Redirect href="/" />;
 
   function connect() {
     const key = parsePublicKey(address);

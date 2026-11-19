@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, useWindowDimensions, View } from "react-native";
@@ -56,6 +56,21 @@ export default function Identity() {
         </Action>
       </View>
       {notice && <SettingsDescription>{notice}</SettingsDescription>}
+      <View style={styles.actions}>
+        <Action
+          onPress={() =>
+            router.push({
+              pathname: "./sim",
+              params: { mode: "export" },
+            })
+          }
+        >
+          {t("security:exportSim")}
+        </Action>
+        <Action onPress={() => router.push("./sim")}>
+          {t("security:importSim")}
+        </Action>
+      </View>
       <GlassSheet open={showQR} onOpenChange={setShowQR}>
         <GlassSheetContent>
           <GlassSheetTitle>{t("settings:publicAddress")}</GlassSheetTitle>

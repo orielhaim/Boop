@@ -58,11 +58,13 @@ export function admission({
   localKey,
   callId,
   connected,
+  isBlocked = () => false,
   now = Date.now,
 }: {
   localKey: string;
   callId: string;
   connected: () => readonly string[];
+  isBlocked?: (key: string) => boolean;
   now?: () => number;
 }) {
   let reserved: Seat | undefined;
@@ -78,6 +80,7 @@ export function admission({
       const { expiresAt, recipient, invitation } = request;
       const roster = new Set([localKey, ...connected()]);
       if (
+        isBlocked(recipient) ||
         expiresAt <= now() ||
         expiresAt > now() + 40_000 ||
         !roster.has(inviter) ||
@@ -101,6 +104,7 @@ export function admission({
       const reservation = current();
       if (
         !reservation ||
+        isBlocked(reservation.request.recipient) ||
         reservation.inviter !== inviter ||
         reservation.request.invitation.id !== id
       )
@@ -115,6 +119,7 @@ export function admission({
       const reservation = current();
       return (
         !!reservation?.active &&
+        !isBlocked(key) &&
         reservation.request.recipient === key &&
         (reservation.inviter === localKey ||
           connected().includes(reservation.inviter))

@@ -35,18 +35,19 @@ import {
   AppState,
   BackHandler,
   Dimensions,
-  Keyboard,
   Image,
+  Keyboard,
   Linking,
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
+  type TextInput,
   View,
 } from "react-native";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
+import { useBlockAction } from "@/components/ui/privacy-actions";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { nameOrAddress, useContact } from "@/db/contacts";
@@ -120,6 +121,8 @@ function useStressArrival(peerKey: string) {
 }
 
 export function DetailConversation({ peerKey }: { peerKey: string }) {
+  const blockAction = useBlockAction(peerKey);
+  const { blocked } = blockAction;
   const [openedAt] = useState(() => (__DEV__ ? performance.now() : 0));
   const measuredFirstMessages = useRef(false);
   const { t } = useTranslation(namespaces);
@@ -223,7 +226,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     retry: retryTranslation,
     toggleOriginal,
     refresh,
-  } = useMessageTranslations(items, visibleIds, locale, focused);
+  } = useMessageTranslations(items, visibleIds, locale, focused && !blocked);
   const renderTranslatedBubble = useCallback<
     NonNullable<ChatProps<DetailMessage>["renderBubble"]>
   >(
@@ -1020,13 +1023,14 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         <IconButton
           icon="phone"
           label={t("messages:call")}
+          disabled={blocked}
           onPress={() =>
             router.push({ pathname: "/call/[key]", params: { key: peerKey } })
           }
         />
       </View>
     ),
-    [t, peerKey, schedule, scheduled, stressEnabled],
+    [t, peerKey, schedule, scheduled, stressEnabled, blocked],
   );
 
   return (
@@ -1135,7 +1139,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           enableGestureHandlerRootView={false}
           isInverted={false}
           isGroupChat={false}
-          isAlignedTop="auto"
+          isAlignedTop
           isDayAnimationEnabled={!reducedMotion}
           isScrollToBottomEnabled={!detached || !newer}
           firstUnreadMessageId={firstUnreadMessageId}
@@ -1145,7 +1149,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           text={draft}
           onDraftChange={updateText}
           textInputProps={textInputProps}
-          renderInputToolbar={renderToolbar}
+          renderInputToolbar={
+            blocked
+              ? () => (
+                  <Action onPress={blockAction.onPress}>
+                    {t("security:blockedChat")}
+                  </Action>
+                )
+              : renderToolbar
+          }
           renderComposer={renderComposer}
           renderSend={emptySendSlot}
           isMultiline

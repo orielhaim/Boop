@@ -251,10 +251,12 @@ export function Screen({
   children,
   scroll = true,
   tab = false,
+  onScroll,
 }: {
   children: ReactNode;
   scroll?: boolean;
   tab?: boolean;
+  onScroll?: React.ComponentProps<typeof Animated.ScrollView>["onScroll"];
 }) {
   const { colors } = useTheme();
   return (
@@ -262,7 +264,17 @@ export function Screen({
       edges={tab ? ["top", "left", "right"] : ["left", "right", "bottom"]}
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
-      {scroll ? (
+      {scroll && onScroll ? (
+        <Animated.ScrollView
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={styles.body}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+        >
+          {children}
+        </Animated.ScrollView>
+      ) : scroll ? (
         <ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
@@ -386,6 +398,7 @@ export function Row({
   detail,
   trailing,
   onPress,
+  onLongPress,
   accessibilityLabel,
   expanded,
 }: {
@@ -395,6 +408,7 @@ export function Row({
   detail?: string;
   trailing?: ReactNode;
   onPress?: () => void;
+  onLongPress?: () => void;
   accessibilityLabel?: string;
   expanded?: boolean;
 }) {
@@ -459,6 +473,7 @@ export function Row({
       accessibilityLabel={accessibilityLabel}
       accessibilityState={expanded === undefined ? undefined : { expanded }}
       onPress={onPress}
+      onLongPress={onLongPress}
       style={({ pressed }) => [
         styles.row,
         pressed && { backgroundColor: colors.accentSoft },

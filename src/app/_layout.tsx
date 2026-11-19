@@ -24,6 +24,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { LockScreen } from "@/components/settings/lock-screen";
+import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink } from "@/components/ui/kit";
 import {
   directionFor,
@@ -103,6 +104,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
         <ProtectedApplication data={data} />
       ) : (
         <View style={[styles.boot, { backgroundColor: colors.background }]}>
+          <BoopLogo />
           <Ink kind="title">Boop</Ink>
           {failed ? (
             <>
@@ -131,6 +133,10 @@ function ProtectedApplication({
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors } = useTheme();
   const { db, calling, lock } = data;
+  const chatsEnabled = useSyncExternalStore(
+    data.messaging.subscribeStatus,
+    data.messaging.getChatsEnabled,
+  );
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const obscured = state.enabled && (state.locked || !state.active);
 
@@ -207,7 +213,20 @@ function ProtectedApplication({
               name="call/[key]"
               options={{ headerShown: false, presentation: "card" }}
             />
-            <Stack.Screen name="chat/[key]" options={{ headerShown: false }} />
+            <Stack.Protected guard={chatsEnabled}>
+              <Stack.Screen
+                name="chat/[key]"
+                options={{ headerShown: false }}
+              />
+              <Stack.Screen
+                name="requests"
+                options={{ title: t("security:pendingRequests") }}
+              />
+              <Stack.Screen
+                name="requests/[key]"
+                options={{ headerShown: false }}
+              />
+            </Stack.Protected>
             <Stack.Screen
               name="contact/[key]"
               options={{ title: t("navigation:contact") }}

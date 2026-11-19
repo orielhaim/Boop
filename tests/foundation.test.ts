@@ -86,10 +86,13 @@ test("migration creates the app tables and enforces event and contact uniqueness
       .values()
       .flat(),
   ).toEqual([
+    "blocked_identities",
     "call_history",
+    "communication_grants",
     "contacts",
     "conversations",
     "message_reactions",
+    "message_requests",
     "message_timelocks",
     "message_translations",
     "messages",
@@ -229,7 +232,7 @@ test("requires a secure relay URL", () => {
     expect(relayUrl.safeParse(invalid).success).toBe(false);
   }
 });
-test("Expo Router discovers three primary tabs and the detail routes", () => {
+test("Expo Router discovers four primary tabs and the detail routes", () => {
   const context = Object.assign(() => ({}), {
     keys: () =>
       Array.from(
@@ -249,6 +252,8 @@ test("Expo Router discovers three primary tabs and the detail routes", () => {
     "connect",
     "contact/[key]",
     "contact/new",
+    "requests",
+    "requests/[key]",
     "scan",
     "settings",
   ]);
@@ -267,17 +272,18 @@ test("Expo Router discovers three primary tabs and the detail routes", () => {
     "chats/translation",
     "connections",
     "identity",
-    "index",
     "language",
     "privacy",
     "privacy/app-lock",
+    "privacy/blocked",
     "privacy/incoming-video",
     "privacy/permissions",
+    "sim",
   ]);
   expect(
     root?.children
       .find((route) => route.route === "(tabs)")
       ?.children.map((route) => route.route)
       .sort(),
-  ).toEqual(["contacts", "index", "messages"]);
+  ).toEqual(["contacts", "index", "messages", "profile"]);
 });

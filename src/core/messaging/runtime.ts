@@ -65,12 +65,17 @@ export function createMessagingService({
   readState,
   writeState,
   createId,
+  privacy,
 }: {
   signer: NDKSigner;
   chat: MessagingRepository;
   readState: (key: string) => string | null;
   writeState: (key: string, value: string) => void;
   createId: () => string;
+  privacy?: Pick<
+    import("@/core/privacy").Privacy,
+    "isBlocked" | "canReceiveCall" | "messagePermission" | "queue"
+  >;
 }) {
   const publicKey = signer.userSync.pubkey;
   const beaconKey = "chat.timelock.quicknet.beacons";
@@ -109,9 +114,19 @@ export function createMessagingService({
     }),
   );
   let unlockActive = false;
+  let unlockAllowed = false;
   let unlockGeneration = 0;
+  const chatsEnabledKey = "chat.enabled";
+  let chatsEnabled = readState(chatsEnabledKey) !== "false";
+  let chatGeneration = 0;
 
   function setUnlockActive(active: boolean) {
+    unlockAllowed = active;
+    updateUnlocks();
+  }
+
+  function updateUnlocks() {
+    const active = unlockAllowed && chatsEnabled;
     if (active === unlockActive) return;
     unlockActive = active;
     unlockGeneration++;
@@ -124,6 +139,7 @@ export function createMessagingService({
     string,
     { expiresAt: number; relays: string[] }
   >();
+  let requestCatchup: (() => void) | undefined;
   let status: MessagingStatus = "disabled";
   let generation = 0;
   let configured: NDKRelay[] = [];
@@ -141,6 +157,7 @@ export function createMessagingService({
       inbox: boolean;
       close: () => void;
       reconnect: () => void;
+      refreshInbox: () => void;
     }
   >();
   const diagnostics = new Map<string, RelayState>();
@@ -159,11 +176,21 @@ export function createMessagingService({
   const previousTargets = new Set<string>();
   let running = false;
   const ingestion = createInboxIngestion(
-    (wrapped) => unwrapPrivateEvent(wrapped, signer),
+    (wrapped) =>
+      unwrapPrivateEvent(wrapped, signer, privacy?.isBlocked, !chatsEnabled),
     (event) => {
+      if (privacy?.isBlocked(event.peerKey)) return;
+      if (event.type !== "call" && !chatsEnabled) return;
       if (event.type === "call") {
         if (event.recipientKey !== publicKey) return;
         const { signal, replyRelays } = event;
+        if (
+          signal.type === "call.invite" &&
+          privacy &&
+          (!privacy.canReceiveCall(signal.senderKey) ||
+            signal.conference?.roster.some(privacy.isBlocked))
+        )
+          return;
         if (
           (signal.type === "call.invite" || signal.type === "call.rtc") &&
           replyRelays.length
@@ -180,6 +207,12 @@ export function createMessagingService({
         }
         for (const listener of callListeners) listener(signal);
       } else if (event.type === "reaction") {
+        if (
+          event.senderKey !== publicKey &&
+          privacy &&
+          privacy.messagePermission(event.peerKey) !== "allow"
+        )
+          return;
         chat.receiveReaction({
           peerKey: event.peerKey,
           eventId: event.id,
@@ -188,7 +221,7 @@ export function createMessagingService({
           targetEventId: event.targetEventId,
         });
       } else {
-        chat.receive({
+        const input = {
           id: event.id,
           eventId: event.id,
           peerKey: event.peerKey,
@@ -198,8 +231,18 @@ export function createMessagingService({
           body: event.type === "message" ? event.body : "",
           timeLock: event.type === "timelock" ? event.special : undefined,
           replyTo: event.replyTo,
-          direction: event.senderKey === publicKey ? "outgoing" : "incoming",
-        });
+          direction:
+            event.senderKey === publicKey
+              ? ("outgoing" as const)
+              : ("incoming" as const),
+        };
+        const policy =
+          input.direction === "incoming"
+            ? privacy?.messagePermission(event.peerKey)
+            : "allow";
+        if (policy === "request") privacy?.queue(input);
+        else if (policy === undefined || policy === "allow")
+          chat.receive(input);
       }
     },
   );
@@ -472,6 +515,7 @@ export function createMessagingService({
   }
 
   function stop() {
+    requestCatchup?.();
     setUnlockActive(false);
     generation++;
     replyRoutes.clear();
@@ -507,7 +551,6 @@ export function createMessagingService({
     let syncTimeout: ReturnType<typeof setTimeout> | undefined;
     let closeWatch: (() => void) | undefined;
     let watch = 0;
-    let catchup: ReturnType<typeof inboxCatchup> | undefined;
     let live = true;
     const active = () => live && session === generation;
     const syncKey = `chat.sync.v2.${publicKey}.${relay.url}`;
@@ -536,25 +579,34 @@ export function createMessagingService({
     }
 
     function watchInbox() {
-      if (!active() || !inbox || !catchup) return;
+      if (!active() || !inbox || !transport.connected(relay)) return;
       closeWatch?.();
       clearTimeout(syncTimeout);
       const token = ++watch;
-      const { since, checkpoint } = catchup;
+      const syncingChats = chatsEnabled;
+      const current = () => active() && token === watch;
+      const catchup = syncingChats
+        ? inboxCatchup(
+            Math.floor(Date.now() / 1_000),
+            readState(syncKey),
+            readState(`chat.sync.${relay.url}`),
+          )
+        : undefined;
       const started = Date.now();
       let receiveSucceeded = true;
       let storedComplete = false;
-      reportSync(relay.url, "syncing");
-      syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
+      reportSync(relay.url, syncingChats ? "syncing" : undefined);
+      if (syncingChats)
+        syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
       closeWatch = transport.watchInbox(
         relay,
-        since,
+        catchup?.since,
         (id, wrapped) => {
-          if (token !== watch || !active()) return;
+          if (!current() || (!syncingChats && !storedComplete)) return;
           ingestion.receive(
             id,
             wrapped,
-            active,
+            current,
             () => {
               receiveSucceeded = false;
             },
@@ -563,6 +615,7 @@ export function createMessagingService({
         },
         () => {
           storedComplete = true;
+          if (!catchup) return;
           void ingestion
             .drained()
             .then(() => {
@@ -572,7 +625,7 @@ export function createMessagingService({
                 reportSync(relay.url, "failed");
                 return;
               }
-              writeState(syncKey, checkpoint);
+              writeState(syncKey, catchup.checkpoint);
               reportSync(relay.url, "synced");
               messagingMetric("catch-up", {
                 ms: Date.now() - started,
@@ -583,6 +636,7 @@ export function createMessagingService({
               if (active() && token === watch) reportSync(relay.url, "failed");
             });
         },
+        syncingChats ? undefined : 0,
       );
     }
 
@@ -590,14 +644,7 @@ export function createMessagingService({
       if (!active()) return;
       if (retryTimer) clearTimeout(retryTimer);
       attempts = 0;
-      if (inbox) {
-        catchup = inboxCatchup(
-          Math.floor(Date.now() / 1_000),
-          readState(syncKey),
-          readState(`chat.sync.${relay.url}`),
-        );
-        watchInbox();
-      }
+      if (inbox) watchInbox();
       report(relay.url, { status: "connected", lastConnected: Date.now() });
       const wasOnline = status === "online";
       updateStatus("online");
@@ -643,6 +690,7 @@ export function createMessagingService({
     if (transport.connected(relay)) onConnect();
     else attemptConnection();
     return {
+      refreshInbox: watchInbox,
       reconnect() {
         attempts = 0;
         if (retryTimer) clearTimeout(retryTimer);
@@ -667,26 +715,28 @@ export function createMessagingService({
     };
   }
 
-  async function publishRumor(rumor: Rumor, peerKey: string, session: number) {
-    const relays = await transport.findInbox(
-      peerKey,
-      discoveryRelays(),
-      () => session === generation,
-    );
-    if (session !== generation || connectedRelays().length === 0)
-      return "interrupted";
+  async function publishRumor(
+    rumor: Rumor,
+    peerKey: string,
+    active: () => boolean,
+  ) {
+    const live = () => active() && !privacy?.isBlocked(peerKey);
+    if (privacy?.isBlocked(peerKey)) return "blocked";
+    const relays = await transport.findInbox(peerKey, discoveryRelays(), live);
+    if (!active() || connectedRelays().length === 0) return "interrupted";
     if (relays.length === 0) return "no-inbox";
     const envelope = await transport.wrap(rumor, peerKey);
-    if (session !== generation) return "interrupted";
+    if (privacy?.isBlocked(peerKey)) return "blocked";
+    if (!active()) return "interrupted";
     if (rumor.kind === timeLockKind) {
       const envelopeBytes = JSON.stringify(envelope.rawEvent()).length;
       if (envelopeBytes > maxTimeLockEnvelope) return "relay-rejected";
       messagingMetric("timelock gift wrap", { envelopeBytes });
     }
-    if (
-      !(await transport.publish(envelope, relays, () => session === generation))
-    ) {
-      return connectedRelays().length === 0 ? "interrupted" : "relay-rejected";
+    if (!(await transport.publish(envelope, relays, live))) {
+      return !active() || connectedRelays().length === 0
+        ? "interrupted"
+        : "relay-rejected";
     }
     return "accepted";
   }
@@ -694,7 +744,10 @@ export function createMessagingService({
   async function sendCall(signal: CallSignal, active: () => boolean) {
     const session = generation;
     const live = () =>
-      active() && session === generation && Date.now() < signal.expiresAt;
+      active() &&
+      session === generation &&
+      Date.now() < signal.expiresAt &&
+      !privacy?.isBlocked(signal.recipientKey);
     if (!live() || connectedRelays().length === 0) return false;
     const replyRoute = replyRoutes.get(
       `${signal.callId}:${signal.recipientKey}`,
@@ -743,32 +796,32 @@ export function createMessagingService({
     return live() && transport.publish(envelope, urls, live);
   }
 
-  async function storeSenderCopy(rumor: Rumor, session: number) {
+  async function storeSenderCopy(rumor: Rumor, active: () => boolean) {
     try {
+      if (!active()) return;
       const copy = await transport.wrap(rumor, publicKey);
-      if (session !== generation) return;
+      if (!active()) return;
       const inbox = publication?.urls ?? configuration.inbox.slice(0, 3);
-      await transport.publish(copy, inbox, () => session === generation);
+      await transport.publish(copy, inbox, active);
     } catch {
       // Acceptance on the recipient's inbox remains valid if our copy fails.
     }
   }
 
   async function flush() {
-    if (running || !connectedRelays().length) return;
+    if (!chatsEnabled || running || !connectedRelays().length) return;
     running = true;
     const session = generation;
+    const chatSession = chatGeneration;
+    const active = () =>
+      session === generation && chatSession === chatGeneration;
     let interrupted = false;
     try {
-      while (
-        session === generation &&
-        connectedRelays().length &&
-        !interrupted
-      ) {
+      while (active() && connectedRelays().length && !interrupted) {
         const pending = chat.pending(16);
         if (!pending.length) break;
         for (const message of pending) {
-          if (session !== generation || !connectedRelays().length) break;
+          if (!active() || !connectedRelays().length) break;
           if (!chat.message(message.peerKey, message.id)) continue;
           try {
             const rumor = message.rumorJson
@@ -782,19 +835,19 @@ export function createMessagingService({
               chat.setStatus(message.id, "failed", "invalid-message");
               continue;
             }
-            const result = await publishRumor(rumor, message.peerKey, session);
+            const result = await publishRumor(rumor, message.peerKey, active);
             if (result === "interrupted") {
               interrupted = true;
               break;
             }
             if (result === "accepted") {
               chat.setStatus(message.id, "sent");
-              await storeSenderCopy(rumor, session);
-            } else if (session === generation) {
+              await storeSenderCopy(rumor, active);
+            } else if (active()) {
               chat.setStatus(message.id, "failed", result);
             }
           } catch {
-            if (session === generation)
+            if (active())
               chat.setStatus(message.id, "failed", "relay-rejected");
           }
         }
@@ -803,11 +856,13 @@ export function createMessagingService({
       // A persistence failure leaves rows pending for the next flush.
     } finally {
       running = false;
-      if (session !== generation && connectedRelays().length) void flush();
+      if (!active()) void flush();
     }
   }
 
   async function send({ peerKey, body, replyTo, unlockAt }: SendInput) {
+    if (!chatsEnabled) throw new Error("chats-disabled");
+    if (privacy?.isBlocked(peerKey)) throw new Error("blocked");
     if (!publicKeySchema.safeParse(peerKey).success || peerKey === publicKey)
       throw new Error("invalid-recipient");
     if (!body.trim() || body.length > maxMessageLength)
@@ -857,6 +912,7 @@ export function createMessagingService({
       created_at,
     });
     const writeStarted = performance.now();
+    if (privacy?.isBlocked(peerKey)) throw new Error("blocked");
     const enqueued = chat.enqueue({
       id,
       eventId: rumor.id,
@@ -882,6 +938,8 @@ export function createMessagingService({
   }
 
   function retry(peerKey: string, id: string) {
+    if (!chatsEnabled) return;
+    if (privacy?.isBlocked(peerKey)) return;
     const message = chat.message(peerKey, id);
     if (message?.status !== "failed" || !message.rumorJson || message.deletedAt)
       return;
@@ -896,6 +954,53 @@ export function createMessagingService({
     schedulePublication();
   }
 
+  function catchupRequest(peerKey: string) {
+    if (!chatsEnabled) return;
+    requestCatchup?.();
+    const session = generation;
+    const chatSession = chatGeneration;
+    const live = () =>
+      session === generation &&
+      chatSession === chatGeneration &&
+      !privacy?.isBlocked(peerKey);
+    const inboxes = [...connections.values()]
+      .filter(({ relay, inbox }) => inbox && transport.connected(relay))
+      .slice(0, 3);
+    if (!inboxes.length || !live()) return;
+    const close: (() => void)[] = [];
+    function stopCatchup() {
+      clearTimeout(timer);
+      for (const dispose of close) dispose();
+      if (requestCatchup === stopCatchup) requestCatchup = undefined;
+    }
+    const timer = setTimeout(stopCatchup, 5_000);
+    requestCatchup = stopCatchup;
+    const since = Math.floor(Date.now() / 1_000) - 3 * 86_400;
+    for (const { relay } of inboxes) {
+      let remaining = 96;
+      close.push(
+        transport.watchInbox(
+          relay,
+          since,
+          (id, event) => {
+            if (remaining-- <= 0 || !live()) return;
+            ingestion.receive(
+              id,
+              event,
+              live,
+              () => undefined,
+              false,
+              (opened) =>
+                opened.senderKey === peerKey && opened.type !== "call",
+            );
+          },
+          () => undefined,
+          96,
+        ),
+      );
+    }
+  }
+
   function toggleReaction({
     peerKey,
     messageId,
@@ -905,6 +1010,8 @@ export function createMessagingService({
     messageId: string;
     emoji: string;
   }) {
+    if (!chatsEnabled) return;
+    if (privacy?.isBlocked(peerKey)) return;
     const reaction = parseReaction(emoji);
     if (!reaction) return;
     const message = chat.message(peerKey, messageId);
@@ -933,18 +1040,39 @@ export function createMessagingService({
       ],
     });
     const session = generation;
-    void publishRumor(rumor, peerKey, session)
+    const chatSession = chatGeneration;
+    const activeSession = () =>
+      session === generation && chatSession === chatGeneration;
+    void publishRumor(rumor, peerKey, activeSession)
       .then((result) => {
-        if (result === "accepted") return storeSenderCopy(rumor, session);
+        if (result === "accepted") return storeSenderCopy(rumor, activeSession);
       })
       .catch(() => undefined);
   }
 
   return {
+    getChatsEnabled: () => chatsEnabled,
+    setChatsEnabled(enabled: boolean) {
+      if (enabled === chatsEnabled) return;
+      writeState(chatsEnabledKey, String(enabled));
+      chatsEnabled = enabled;
+      chatGeneration++;
+      requestCatchup?.();
+      updateUnlocks();
+      for (const connection of connections.values()) connection.refreshInbox();
+      if (enabled) void flush();
+      for (const listener of listeners) listener();
+    },
     start,
     stop,
     reconnect: startAgain,
+    catchupRequest,
     setUnlockActive,
+    invalidateBlockedPeer() {
+      if (!unlockActive) return;
+      setUnlockActive(false);
+      setUnlockActive(true);
+    },
     getRelayStates: () => snapshot,
     getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,

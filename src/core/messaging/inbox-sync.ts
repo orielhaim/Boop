@@ -87,8 +87,9 @@ export function createInboxIngestion<Event>(
       active: () => boolean,
       onError: () => void,
       realtime = false,
+      replay?: (event: Event) => boolean,
     ) {
-      if (processed.has(id)) return;
+      if (!replay && processed.has(id)) return;
       let done: () => void = () => undefined;
       const completion = new Promise<void>((resolve) => {
         done = resolve;
@@ -97,12 +98,13 @@ export function createInboxIngestion<Event>(
       const queue = realtime ? live : stored;
       queue.push(async () => {
         try {
-          if (!active() || processed.has(id)) return;
+          if (!active() || (!replay && processed.has(id))) return;
           batch++;
           const started = performance.now();
           try {
             const value = await process(event, active);
-            if (value === null || !active()) return;
+            if (value === null || !active() || (replay && !replay(value)))
+              return;
             persist(value);
           } finally {
             workMs += performance.now() - started;

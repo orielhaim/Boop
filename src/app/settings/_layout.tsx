@@ -1,17 +1,13 @@
 import { Stack } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { namespaces } from "@/i18n";
-
-export const unstable_settings = { anchor: "index" };
+import { useChatsEnabled } from "@/services/local";
 
 export default function SettingsLayout() {
   const { t } = useTranslation(namespaces);
+  const chatsEnabled = useChatsEnabled();
   return (
     <Stack screenOptions={{ headerBackButtonDisplayMode: "minimal" }}>
-      <Stack.Screen
-        name="index"
-        options={{ title: t("navigation:settings") }}
-      />
       <Stack.Screen
         name="identity"
         options={{ title: t("settings:identity") }}
@@ -26,20 +22,26 @@ export default function SettingsLayout() {
         options={{ title: t("settings:language") }}
       />
       <Stack.Screen name="calls" options={{ title: t("settings:calls") }} />
-      <Stack.Screen name="chats" options={{ title: t("common:chats") }} />
-      <Stack.Screen
-        name="chats/translation"
-        options={{ title: t("translation:title") }}
-      />
-      <Stack.Screen
-        name="chats/target"
-        options={{ title: t("translation:target") }}
-      />
-      <Stack.Screen
-        name="chats/models"
-        options={{ title: t("translation:manageModels") }}
-      />
+      <Stack.Protected guard={chatsEnabled}>
+        <Stack.Screen name="chats" options={{ title: t("common:chats") }} />
+        <Stack.Screen
+          name="chats/translation"
+          options={{ title: t("translation:title") }}
+        />
+        <Stack.Screen
+          name="chats/target"
+          options={{ title: t("translation:target") }}
+        />
+        <Stack.Screen
+          name="chats/models"
+          options={{ title: t("translation:manageModels") }}
+        />
+      </Stack.Protected>
       <Stack.Screen name="privacy" options={{ title: t("settings:privacy") }} />
+      <Stack.Screen
+        name="privacy/blocked"
+        options={{ title: t("security:blockedUsers") }}
+      />
       <Stack.Screen
         name="privacy/app-lock"
         options={{ title: t("security:appLock") }}

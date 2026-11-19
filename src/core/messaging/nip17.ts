@@ -107,6 +107,8 @@ export async function wrapRumor(
 export async function unwrapPrivateEvent(
   input: unknown,
   signer: NDKSigner,
+  isBlocked?: (sender: string) => boolean,
+  callsOnly = false,
 ): Promise<PrivateEvent | null> {
   const myKey = signer.userSync.pubkey;
   const wrap = verifiedEvent(input);
@@ -124,6 +126,7 @@ export async function unwrapPrivateEvent(
     );
     const seal = verifiedEvent(JSON.parse(payload));
     if (seal?.kind !== 13 || seal.tags.length > 0) return null;
+    if (isBlocked?.(seal.pubkey)) return null;
 
     const plaintext = await signer.decrypt(
       new NDKUser({ pubkey: seal.pubkey }),
@@ -132,6 +135,7 @@ export async function unwrapPrivateEvent(
     );
     const rumor = parseRumor(JSON.parse(plaintext));
     if (!rumor || rumor.pubkey !== seal.pubkey) return null;
+    if (callsOnly && rumor.kind !== callSignalKind) return null;
 
     if (
       rumor.kind === timeLockKind &&

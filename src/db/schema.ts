@@ -200,3 +200,23 @@ export const settings = sqliteTable("settings", {
   key: text().primaryKey().notNull(),
   value: text().notNull(),
 });
+
+export const blockedIdentities = sqliteTable("blocked_identities", {
+  publicKey: text("public_key").primaryKey().notNull(),
+  blockedAt: integer("blocked_at").notNull(),
+});
+
+export const communicationGrants = sqliteTable("communication_grants", {
+  publicKey: text("public_key").primaryKey().notNull(),
+  initiated: integer({ mode: "boolean" }).notNull().default(false),
+  approved: integer({ mode: "boolean" }).notNull().default(false),
+});
+
+export const messageRequests = sqliteTable("message_requests", {
+  publicKey: text("public_key").primaryKey().notNull(),
+  receivedAt: integer("received_at").notNull(),
+  declinedThrough: integer("declined_through").notNull().default(0),
+  message: text({ mode: "json" }).$type<
+    import("./messaging").MessageInput | import("./messaging").MessageInput[]
+  >(),
+});

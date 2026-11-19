@@ -4,19 +4,22 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink, Screen, Section } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local";
 
 export default function About() {
   const { t } = useTranslation(namespaces);
   const { db, identity, chat, calling, messaging } = useLocal();
+  const chatsEnabled = useChatsEnabled();
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const config = Constants.expoConfig;
   return (
     <Screen>
+      <BoopLogo size={56} />
       <SettingsGroup title="Boop">
         <SettingsRow
           title={t("settings:version")}
@@ -36,11 +39,12 @@ export default function About() {
         <>
           <Section>{t("settings:development")}</Section>
           <Action
-            disabled={seeding}
+            disabled={seeding || !chatsEnabled}
             onPress={async () => {
               setSeeding(true);
               try {
                 const fixture = await import("@/db/chat-stress");
+                if (!messaging.getChatsEnabled()) return;
                 const { peerKey } = fixture.seedStressConversations(
                   db,
                   identity.publicKey,
@@ -60,6 +64,7 @@ export default function About() {
             {seeding ? t("settings:prepareStress") : t("settings:openStress")}
           </Action>
           <Action
+            disabled={!chatsEnabled}
             onPress={async () => {
               const kit = await import("@kesha-antonov/react-native-chat");
               const capabilities = kit.getChatCapabilities();

@@ -162,6 +162,7 @@ export function trysteroMedia(
     >,
   ) => Promise<ReturnType<typeof openCallAudio> | null>,
   publish: Parameters<typeof directSignaling>[0]["publish"],
+  isBlocked = (_key: string) => false,
 ) {
   const localKey = signer.userSync.pubkey;
   function setup(invite: InviteDraft, signal: AbortSignal) {
@@ -296,6 +297,7 @@ export function trysteroMedia(
       localKey,
       callId: invite.callId,
       connected: () => members().map(({ key }) => key),
+      isBlocked,
     });
     let localStream: NativeStream | undefined;
     let audio: ReturnType<typeof openCallAudio> | undefined;
@@ -387,7 +389,8 @@ export function trysteroMedia(
       const isMember = (id: string) =>
         isDirect(id) && links.get(id)?.ready === true;
       const eligible = (key: string) =>
-        initial.has(key) || reservations.permits(key) || recovering.has(key);
+        !isBlocked(key) &&
+        (initial.has(key) || reservations.permits(key) || recovering.has(key));
       const initialScope = {
         invitationId: invite.conference?.id,
         expiresAt: invite.expiresAt,
@@ -804,6 +807,7 @@ export function trysteroMedia(
           }
           if (
             closed ||
+            isBlocked(key) ||
             room.getPeers()[id]?.connection !== connection ||
             links.size >= callCapacity - 1 ||
             [...links.values()].some((link) => link.key === key)
@@ -863,6 +867,7 @@ export function trysteroMedia(
             track as unknown as MediaStreamTrack,
           );
           operation.throwIfAborted();
+          if (isBlocked(key)) throw new Error("Peer authorization expired");
           if (transceiver.sender.track?.id !== track.id)
             throw new Error("Native microphone attachment failed");
           callMetric("audio_track_attached");
@@ -1094,6 +1099,9 @@ export function trysteroMedia(
       }
       return {
         backgroundAudio,
+        involves: (key) =>
+          recovering.has(key) ||
+          [...links.values()].some((link) => link.key === key),
         close,
         notifyHangup,
         get video() {

@@ -25,7 +25,14 @@ const {
   contacts,
   messageReactions,
   messageTimeLocks,
+  blockedIdentities,
+  communicationGrants,
+  messageRequests,
 } = schema;
+const notBlocked = (
+  key: typeof messages.peerKey | typeof conversations.peerKey,
+) =>
+  sql`NOT EXISTS (SELECT 1 FROM ${blockedIdentities} WHERE ${blockedIdentities.publicKey} = ${key})`;
 type MessageRow = typeof messages.$inferSelect;
 type ReadDatabase<TResult> = Pick<
   BaseSQLiteDatabase<"sync", TResult, typeof schema>,
@@ -96,6 +103,7 @@ function conversationQuery<TResult>(
   return db
     .select({
       ...getTableColumns(conversations),
+      unread: sql<number>`CASE WHEN ${notBlocked(conversations.peerKey)} THEN ${conversations.unread} ELSE 0 END`,
       name: contacts.name,
       avatarUrl: contacts.avatarUrl,
       preview: latest.body,
@@ -251,61 +259,70 @@ export function createMessagingRepository<TResult>(
       .get();
   }
 
-  function storeMessage(
+  function insertMessage(
+    tx: WriteDatabase<TResult>,
     input: MessageInput,
     outgoing: boolean,
     clearDraft: boolean,
   ) {
     const { timeLock, ...record } = input;
-    const inserted = db.transaction((tx) => {
-      ensureRoom(tx, input.peerKey, input.sentAt);
-      const isUnread = input.direction === "incoming";
-      const stored = tx
-        .insert(messages)
+    ensureRoom(tx, input.peerKey, input.sentAt);
+    const isUnread = input.direction === "incoming";
+    const stored = tx
+      .insert(messages)
+      .values({
+        ...record,
+        contentType: timeLock ? "timelock" : "text",
+        body: timeLock ? "" : record.body,
+        status: outgoing ? "pending" : isUnread ? "received" : "synced",
+        isUnread,
+      })
+      .onConflictDoNothing()
+      .returning({ id: messages.id })
+      .get();
+    // A duplicate sender copy says nothing about acceptance by the recipient's relays.
+    if (!stored) return false;
+    if (timeLock) {
+      const { ciphertext, chainHash, unlockRound, requestedAt, roundTime } =
+        timeLock;
+      tx.insert(messageTimeLocks)
         .values({
-          ...record,
-          contentType: timeLock ? "timelock" : "text",
-          body: timeLock ? "" : record.body,
-          status: outgoing ? "pending" : isUnread ? "received" : "synced",
-          isUnread,
+          messageId: stored.id,
+          ciphertext,
+          chainHash,
+          unlockRound,
+          requestedAt,
+          roundTime,
+          retryAt: roundTime,
         })
-        .onConflictDoNothing()
-        .returning({ id: messages.id })
-        .get();
-      // A duplicate sender copy says nothing about acceptance by the recipient's relays.
-      if (!stored) return false;
-      if (timeLock) {
-        const { ciphertext, chainHash, unlockRound, requestedAt, roundTime } =
-          timeLock;
-        tx.insert(messageTimeLocks)
-          .values({
-            messageId: stored.id,
-            ciphertext,
-            chainHash,
-            unlockRound,
-            requestedAt,
-            roundTime,
-            retryAt: roundTime,
-          })
-          .run();
-      }
-      tx.update(conversations)
-        .set({
-          updatedAt: sql`max(${conversations.updatedAt}, ${input.sentAt})`,
-          unread: sql`${conversations.unread} + ${Number(isUnread)}`,
-          deletedAt: null,
-          ...(clearDraft ? { draft: "", draftReplyTo: null } : {}),
-        })
-        .where(eq(conversations.peerKey, input.peerKey))
         .run();
-      return true;
-    });
+    }
+    tx.update(conversations)
+      .set({
+        updatedAt: sql`max(${conversations.updatedAt}, ${input.sentAt})`,
+        unread: sql`${conversations.unread} + ${Number(isUnread)}`,
+        deletedAt: null,
+        ...(clearDraft ? { draft: "", draftReplyTo: null } : {}),
+      })
+      .where(eq(conversations.peerKey, input.peerKey))
+      .run();
+    return true;
+  }
+
+  function storeMessage(
+    input: MessageInput,
+    outgoing: boolean,
+    clearDraft: boolean,
+  ) {
+    const inserted = db.transaction((tx) =>
+      insertMessage(tx, input, outgoing, clearDraft),
+    );
     if (inserted)
       changed({
         history: [input.peerKey],
         summaries: true,
         unread: input.direction === "incoming",
-        unlockQueue: Boolean(timeLock),
+        unlockQueue: Boolean(input.timeLock),
       });
     return inserted;
   }
@@ -325,8 +342,10 @@ export function createMessagingRepository<TResult>(
         db
           .select({ retryAt: messageTimeLocks.retryAt })
           .from(messageTimeLocks)
+          .innerJoin(messages, eq(messages.id, messageTimeLocks.messageId))
           .where(
             and(
+              notBlocked(messages.peerKey),
               isNotNull(messageTimeLocks.retryAt),
               eq(messageTimeLocks.chainHash, quicknetHash),
             ),
@@ -344,6 +363,7 @@ export function createMessagingRepository<TResult>(
         .innerJoin(messages, eq(messages.id, messageTimeLocks.messageId))
         .where(
           and(
+            notBlocked(messages.peerKey),
             isNotNull(messageTimeLocks.retryAt),
             sql`${messageTimeLocks.retryAt} <= ${now}`,
             isNull(messages.deletedAt),
@@ -374,6 +394,14 @@ export function createMessagingRepository<TResult>(
     },
 
     commitUnlock(item: PendingUnlock, body: string, now: number) {
+      if (
+        db
+          .select({ key: blockedIdentities.publicKey })
+          .from(blockedIdentities)
+          .where(eq(blockedIdentities.publicKey, item.peerKey))
+          .get()
+      )
+        return false;
       const updated = db.transaction((tx) => {
         const lock = tx
           .update(messageTimeLocks)
@@ -454,7 +482,12 @@ export function createMessagingRepository<TResult>(
     historyRevision: (peerKey: string) =>
       historyRevisions.get(peerKey) ?? resetRevision,
     invalidate: () =>
-      changed({ history: "all", summaries: true, unread: true }),
+      changed({
+        history: "all",
+        summaries: true,
+        unread: true,
+        unlockQueue: true,
+      }),
     subscribe(listener: (change: Change) => void) {
       listeners.add(listener);
       return () => {
@@ -471,6 +504,7 @@ export function createMessagingRepository<TResult>(
           .from(conversations)
           .where(
             and(
+              notBlocked(conversations.peerKey),
               isNull(conversations.deletedAt),
               sql`${conversations.unread} > 0`,
             ),
@@ -913,6 +947,29 @@ export function createMessagingRepository<TResult>(
 
     receive(input: MessageInput) {
       return storeMessage(input, false, false);
+    },
+
+    acceptRequest(peerKey: string, inputs: MessageInput[]) {
+      const inserted = db.transaction((tx) => {
+        tx.insert(communicationGrants)
+          .values({ publicKey: peerKey, approved: true })
+          .onConflictDoUpdate({
+            target: communicationGrants.publicKey,
+            set: { approved: true },
+          })
+          .run();
+        tx.delete(messageRequests)
+          .where(eq(messageRequests.publicKey, peerKey))
+          .run();
+        return inputs.filter((input) => insertMessage(tx, input, false, false));
+      });
+      if (inserted.length)
+        changed({
+          history: [peerKey],
+          summaries: true,
+          unread: true,
+          unlockQueue: inserted.some((input) => Boolean(input.timeLock)),
+        });
     },
 
     enqueue(input: MessageInput, options: { clearDraft?: boolean } = {}) {

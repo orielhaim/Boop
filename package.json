@@ -21,8 +21,11 @@
     "expo-constants": "~58.0.16",
     "expo-crypto": "~58.0.8",
     "expo-dev-client": "~58.0.21",
+    "expo-document-picker": "~58.0.5",
+    "expo-file-system": "~58.0.14",
     "expo-font": "~58.0.12",
     "expo-glass-effect": "^58.0.5",
+    "expo-glass-tabs": "^0.1.1",
     "expo-haptics": "^58.0.8",
     "expo-image": "~58.0.18",
     "expo-linear-gradient": "~58.0.4",
@@ -33,6 +36,7 @@
     "expo-router": "~58.0.32",
     "expo-screen-capture": "~58.0.6",
     "expo-secure-store": "~58.0.3",
+    "expo-sharing": "~58.0.23",
     "expo-splash-screen": "~58.0.14",
     "expo-sqlite": "~58.0.18",
     "expo-status-bar": "~58.0.5",
@@ -61,7 +65,6 @@
     "zustand": "^5.1.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.8",
     "@types/bun": "^1.4.4",
     "@types/react": "~19.3.0",
     "drizzle-kit": "^0.31.11",
@@ -75,7 +78,7 @@
     "ios": "expo run:ios",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "check": "biome check .",
+    "check": "bun fmt --check . && bun run lint && bun run typecheck",
     "db:generate": "drizzle-kit generate && bun scripts/bundle-migrations.ts"
   },
   "private": true,
