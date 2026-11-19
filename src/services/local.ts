@@ -88,43 +88,47 @@ async function start() {
       authenticate: authenticateApp,
       protect: protectAppWindow,
     });
+    const media = trysteroMedia(
+      signer,
+      {
+        get(peerKey) {
+          const row = contactByKey(db, peerKey).get();
+          return row ? (row.allowIncomingVideo ? "always" : "ask") : "unknown";
+        },
+        allow(peerKey) {
+          return (
+            updateContactPreferences(db, peerKey, {
+              allowIncomingVideo: true,
+            }).changes === 1
+          );
+        },
+      },
+      ({ invite, peerKey, signal, onRouting }) => {
+        const privateMode = lock.getState().enabled;
+        const contact = contactByKey(db, peerKey).get();
+        return openTelecomAudio({
+          id: invite.callId,
+          name: contact?.name ?? `${toNpub(peerKey).slice(0, 15)}…`,
+          avatarUrl: contact?.avatarUrl,
+          incoming: invite.recipientKey === identity.publicKey,
+          privateMode,
+          signal,
+          onRouting,
+        });
+      },
+      messaging.sendCall,
+    );
     const calling = createCallController({
       localKey: identity.publicKey,
       randomId: randomCallId,
-      openMedia: trysteroMedia(
-        signer,
-        {
-          get(peerKey) {
-            const row = contactByKey(db, peerKey).get();
-            return row
-              ? row.allowIncomingVideo
-                ? "always"
-                : "ask"
-              : "unknown";
-          },
-          allow(peerKey) {
-            return (
-              updateContactPreferences(db, peerKey, {
-                allowIncomingVideo: true,
-              }).changes === 1
-            );
-          },
-        },
-        ({ invite, peerKey, signal, onRouting }) => {
-          const privateMode = lock.getState().enabled;
-          const contact = contactByKey(db, peerKey).get();
-          return openTelecomAudio({
-            id: invite.callId,
-            name: contact?.name ?? `${toNpub(peerKey).slice(0, 15)}…`,
-            avatarUrl: contact?.avatarUrl,
-            incoming: invite.recipientKey === identity.publicKey,
-            privateMode,
-            signal,
-            onRouting,
-          });
-        },
-      ),
+      openMedia: media.open,
       prepareMedia: initializeCallingRuntime,
+      prepareInvite: (invite, signal) => {
+        void messaging
+          .prepareCallRoute(invite.callId, invite.recipientKey)
+          .catch(() => undefined);
+        return media.prepare(invite, signal);
+      },
       send: messaging.sendCall,
       tone: callTone,
       record: (entry) => saveCallRecord(db, entry),
@@ -135,7 +139,10 @@ async function start() {
           : !!entry;
       },
     });
-    messaging.subscribeCalls(calling.receive);
+    messaging.subscribeCalls((message) => {
+      if (message.type === "call.rtc") media.receive(message);
+      else calling.receive(message);
+    });
     const nativeOpen = attachSystemPresentation(calling, {
       privateMode: () => lock.getState().enabled,
       subscribe: lock.subscribe,

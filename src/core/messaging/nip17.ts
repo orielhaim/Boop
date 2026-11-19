@@ -150,7 +150,7 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     const signal = parseCallSignal(rumor.content, base, Date.now());
     if (!signal) return null;
     const replyRelays =
-      signal.type === "call.invite"
+      signal.type === "call.invite" || signal.type === "call.rtc"
         ? rumor.tags
             .flatMap(([key, url]) =>
               key === callReplyRelayTag && url ? [url] : [],

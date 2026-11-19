@@ -169,6 +169,45 @@ test("a costly envelope yields to other work before processing the next envelope
   expect(order).toEqual(["first", "UI timer", "second"]);
 });
 
+test("live envelopes pass queued history while history still makes progress", async () => {
+  const held = Promise.withResolvers<void>();
+  const order: string[] = [];
+  const ingestion = createInboxIngestion(
+    async (value) => {
+      if (value === "running") await held.promise;
+      return String(value);
+    },
+    (value) => order.push(value),
+  );
+  const send = (id: string, live = false) =>
+    ingestion.receive(
+      id,
+      id,
+      () => true,
+      () => undefined,
+      live,
+    );
+  send("running");
+  send("stored-first");
+  send("stored-second");
+  await Promise.resolve();
+  const checkpoint = ingestion.drained();
+  for (let i = 0; i < 5; i++) send(`live-${i}`, true);
+  held.resolve();
+  await checkpoint;
+  await ingestion.drained();
+  expect(order).toEqual([
+    "running",
+    "live-0",
+    "live-1",
+    "live-2",
+    "live-3",
+    "stored-first",
+    "live-4",
+    "stored-second",
+  ]);
+});
+
 test("relay checkpoints use overlap, retain longer offline gaps, and audit delayed older wraps", () => {
   const now = 1_800_000_000;
   const day = 86_400;

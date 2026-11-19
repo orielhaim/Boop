@@ -126,14 +126,13 @@ test("six-seat conference setup is encrypted to the invitee, and the roster bind
   const now = Math.floor(Date.now() / 1000) * 1000;
   const invite: InviteSignal = {
     version: 1,
-    expandable: 2,
     type: "call.invite",
     senderKey: alice,
     recipientKey: frank,
     callId,
     nonce: id(3),
     roomId: id(10),
-    roomSecret: id(11),
+    offer: { peerId: "A".repeat(20), offerId: "O".repeat(20), offer: "opaque" },
     createdAt: now,
     expiresAt: now + 35_000,
     conference: reservation(frank, [alice, bob, charlie, dana, eve]).invitation,
@@ -146,7 +145,7 @@ test("six-seat conference setup is encrypted to the invitee, and the roster bind
     created_at: now / 1000,
   });
   const wrapped = await wrapRumor(new NDK(), rumor, frank, signers[0]);
-  expect(wrapped.rawEvent().content).not.toContain(invite.roomSecret);
+  expect(wrapped.rawEvent().content).not.toContain(invite.roomId);
   const parseAsInvitee = (content: string) =>
     parseCallSignal(
       content,
@@ -182,6 +181,11 @@ test("connected controller handles invitation ringing, busy, cancellation, subse
   const controller = createCallController({
     localKey: alice,
     randomId: () => id(counter++),
+    prepareInvite: async () => ({
+      peerId: "A".repeat(20),
+      offerId: "O".repeat(20),
+      offer: "opaque",
+    }),
     now: () => start,
     send: async (signal) => {
       sent.push(signal);
@@ -241,7 +245,7 @@ test("connected controller handles invitation ringing, busy, cancellation, subse
   };
   try {
     controller.setForeground(true);
-    controller.dial(bob);
+    await controller.dial(bob);
     const initial = lastInvite();
     answer(initial, "call.accept");
     await Bun.sleep(0);
@@ -252,7 +256,6 @@ test("connected controller handles invitation ringing, busy, cancellation, subse
     if (!first.conference) throw new Error("No conference");
     expect(first.callId).toBe(initial.callId);
     expect(first.roomId).toBe(initial.roomId);
-    expect(first.roomSecret).toBe(initial.roomSecret);
     answer(first, "call.ringing");
     expect(controller.store.getState().invitations[0]?.phase).toBe("ringing");
     answer(first, "call.busy");

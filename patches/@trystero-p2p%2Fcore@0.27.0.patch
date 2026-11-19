@@ -1,0 +1,138 @@
+diff --git a/dist/crypto.mjs b/dist/crypto.mjs
+index 4ee85b8c1c06170ad8b188aff4a7ff1f9bdb8c08..284f5ae4dff3e8f6f30faff29f47680cf8a2705e 100644
+--- a/dist/crypto.mjs
++++ b/dist/crypto.mjs
+@@ -152,7 +152,6 @@ const derivePasswordRoomKeys = (secret, appId, roomId) => {
+ 	return deriveP;
+ };
+ const genKey = async (secret, appId, roomId) => {
+-const started = performance.now();
+ 	if (!secret) {
+ 		const aesRaw = await sha256(toJson([
+ 			domainTag("room-aes", 3),
+@@ -161,7 +160,7 @@ const started = performance.now();
+ 		]));
+ 		return crypto.subtle.importKey("raw", aesRaw, { name: algo }, false, ["encrypt", "decrypt"]);
+ 	}
+-	const key = (await derivePasswordRoomKeys(secret, appId, roomId)).aesKey; console.info("[room key timing]", { password: true, ms: performance.now() - started }); return key;
++	return (await derivePasswordRoomKeys(secret, appId, roomId)).aesKey;
+ };
+ const roomAuthPayload = (appId, roomId, peerId, seq) => encodeBytes(toJson([
+ 	domainTag("ov-auth", 3),
+diff --git a/dist/internal-types.d.mts b/dist/internal-types.d.mts
+index a9a860f8ebb71f9e00e8037b7ebd752c05bf311b..d4f7d4600c6ca03f8decc0f7e8082c2b3d2afdd4 100644
+--- a/dist/internal-types.d.mts
++++ b/dist/internal-types.d.mts
+@@ -18,6 +18,8 @@ export interface BaseRoomConfig {
+   trickleIce?: boolean;
+   rtcConfig?: RTCConfiguration;
+   rtcPolyfill?: typeof RTCPeerConnection;
++  preparePeerConnection?: (connection: RTCPeerConnection, initiator: boolean) => void;
++  prepareInitialAnswer?: (connection: RTCPeerConnection) => void;
+   turnConfig?: TurnServerConfig[];
+ }
+ export type SessionSignal = {
+@@ -97,7 +99,7 @@ export type AnnounceResult = number | {
+ export type StrategyAdapter<TRelay, TConfig extends BaseRoomConfig = JoinRoomConfig> = {
+   defaultConfig?: Partial<TConfig>;
+   init: (config: TConfig) => MaybePromise<TRelay> | Array<MaybePromise<TRelay>>;
+-  subscribe: (relay: TRelay, rootTopic: string, selfTopic: string, onMessage: StrategyOnMessage, getOffers: (n: number) => Promise<OfferRecord[]>, context: StrategyContext<TConfig>) => MaybePromise<() => void>;
++  subscribe: (relay: TRelay, rootTopic: string, selfTopic: string, onMessage: StrategyOnMessage, getOffers: (n: number, onCandidate?: (offerId: string, candidate: string) => void) => Promise<OfferRecord[]>, context: StrategyContext<TConfig>) => MaybePromise<() => void>;
+   announce: (relay: TRelay, rootTopic: string, selfTopic: string, context: StrategyContext<TConfig>) => MaybePromise<AnnounceResult | void>;
+ };
+ export type TopicStrategyAdapter<TRelay, TConfig extends BaseRoomConfig = JoinRoomConfig> = {
+diff --git a/dist/peer.mjs b/dist/peer.mjs
+index 8379663ffc246894a2d7ebabef500cff119aa7df..11b49750100b843bed0de02be71b07c10269c2b3 100644
+--- a/dist/peer.mjs
++++ b/dist/peer.mjs
+@@ -21,7 +21,14 @@ var peer_default = (initiator, config) => {
+ 		...rtcConfig,
+ 		iceServers
+ 	});
++	try {
++		config.preparePeerConnection?.(pc, initiator);
++	} catch (error) {
++		pc.close();
++		throw error;
++	}
+ 	let connectHandler;
++	let didConnect = false;
+ 	let closeHandler;
+ 	let errorHandler;
+ 	const pendingIceGathering = /* @__PURE__ */ new Set();
+@@ -89,6 +96,13 @@ var peer_default = (initiator, config) => {
+ 		if (lifecycle.phase !== "closed" && pc.connectionState === "closed") emitClose();
+ 		return lifecycle.phase === "closed";
+ 	};
++	// Native bridges can deliver the channel-open event before the JS
++	// descriptions are populated. The identity handshake needs both.
++	const maybeConnect = () => {
++		if (didConnect || !connectHandler || isClosed() || dataChannel?.readyState !== "open" || !pc.localDescription || !pc.remoteDescription) return;
++		didConnect = true;
++		connectHandler();
++	};
+ 	const emitSignal = (signal) => {
+ 		if (isClosed()) return;
+ 		if (signal.type === offerType) {
+@@ -219,7 +233,7 @@ var peer_default = (initiator, config) => {
+ 			}
+ 		};
+ 		channel.onopen = () => {
+-			if (dataChannel === channel && !isClosed()) connectHandler?.();
++			if (dataChannel === channel) maybeConnect();
+ 		};
+ 		channel.onclose = () => {
+ 			if (dataChannel === channel) emitClose();
+@@ -278,6 +292,7 @@ var peer_default = (initiator, config) => {
+ 		const signal = await readLocalDescription();
+ 		if (isClosed() || expectedGen !== void 0 && offerGeneration !== expectedGen) return;
+ 		emitSignal(signal);
++		maybeConnect();
+ 		return signal;
+ 	};
+ 	if (initiator) {
+@@ -403,6 +418,7 @@ var peer_default = (initiator, config) => {
+ 					if (negotiation.phase === "making-offer") negotiation = { phase: "idle" };
+ 					if (isCollision && pc.signalingState !== "stable") await all([pc.setLocalDescription({ type: "rollback" }), pc.setRemoteDescription(rtcSdp)]);
+ 					else await pc.setRemoteDescription(rtcSdp);
++					if (!pc.localDescription) config.prepareInitialAnswer?.(pc);
+ 					await flushPendingRemoteCandidates();
+ 					await pc.setLocalDescription();
+ 					return await emitLocalDescriptionSignal();
+@@ -412,6 +428,7 @@ var peer_default = (initiator, config) => {
+ 					try {
+ 						await pc.setRemoteDescription(rtcSdp);
+ 						await flushPendingRemoteCandidates();
++						maybeConnect();
+ 					} finally {
+ 						if (negotiation.phase === "applying-remote-answer") negotiation = { phase: "idle" };
+ 					}
+@@ -464,6 +481,7 @@ var peer_default = (initiator, config) => {
+ 					streamHandler(stream);
+ 				}
+ 			}
++			if ("connect" in newHandlers) maybeConnect();
+ 		},
+ 		addStream: (stream) => {
+ 			stream.getTracks().forEach((track) => {
+diff --git a/dist/strategy.mjs b/dist/strategy.mjs
+index 308cd9b4eac2282af09f32dfd4a4aa86cd36f58e..6d4af355e8be91f34e380a614b2ed924cff0e18b 100644
+--- a/dist/strategy.mjs
++++ b/dist/strategy.mjs
+@@ -356,7 +356,15 @@ var strategy_default = ({ defaultConfig, init, subscribe, announce }) => {
+ 				}
+ 				slot.subscription = { phase: "subscribing" };
+ 				try {
+-					const unsub = await subscribe(relay, rootTopic, selfTopic, handleMessage(i), (n) => selfIdP.then((sid) => getOffers(n, (peer, offerId) => encryptOffer(peer, sid, offerId))), strategyContext);
++					const unsub = await subscribe(relay, rootTopic, selfTopic, handleMessage(i), (n, onCandidate) => selfIdP.then((sid) => getOffers(n, (peer, offerId) => {
++						if (onCandidate) peer.setHandlers({ signal: (signal) => {
++							if (signal.type !== "candidate" || peer.channel?.readyState === "open" || isRoomInactive()) return;
++							toCipher(signal, sid, offerId).then(({ sdp }) => {
++								if (!peer.isDead && !isRoomInactive()) onCandidate(offerId, sdp);
++							}, noOp);
++						} });
++						return encryptOffer(peer, sid, offerId);
++					})), strategyContext);
+ 					const isClosedAfterAwait = (s) => s.subscription.phase === "closed";
+ 					if (isRoomInactive() || isClosedAfterAwait(slot)) {
+ 						unsub();

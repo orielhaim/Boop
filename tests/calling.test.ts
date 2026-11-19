@@ -38,7 +38,7 @@ function invitation(now: number): InviteSignal {
     callId: id(1),
     nonce: id(2),
     roomId: id(3),
-    roomSecret: id(4),
+    offer: { peerId: "A".repeat(20), offerId: "O".repeat(20), offer: "opaque" },
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,
     createdAt,
@@ -61,7 +61,7 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
   });
   const wrapped = await wrapRumor(new NDK(), rumor, callee.pubkey, caller);
   expect(wrapped.rawEvent().kind).toBe(1059);
-  expect(wrapped.rawEvent().content).not.toContain(invite.roomSecret);
+  expect(wrapped.rawEvent().content).not.toContain(invite.roomId);
   expect(JSON.stringify(wrapped.rawEvent())).not.toContain(replyRelay);
   expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toMatchObject({
     type: "call",
@@ -139,6 +139,7 @@ function pair(
     createCallController({
       localKey,
       randomId: () => id(nonce++),
+      prepareInvite: async () => invitation(clock).offer,
       send: async (signal) => {
         events.push(signal);
         if (signal.type === "call.accept" && acceptAcknowledgment)
@@ -208,7 +209,7 @@ test("answer starts transport while waiting for relay acknowledgment and closes 
     acknowledgment.promise,
   );
   try {
-    a.dial(callee.pubkey);
+    await a.dial(callee.pubkey);
     deliver();
     b.accept();
     expect(started).toBe(true);
@@ -229,7 +230,7 @@ test("answer starts transport while waiting for relay acknowledgment and closes 
 
 test("ringing waits for recipient, connected waits for media, and remote hangup records once", async () => {
   const { a, b, deliver, advance, records, closed, events } = pair();
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   const initial = events[0];
   if (initial?.type !== "call.invite") throw new Error("No invitation");
   expect(a.store.getState().call?.phase).toBe("outgoing");
@@ -244,7 +245,7 @@ test("ringing waits for recipient, connected waits for media, and remote hangup 
   await Bun.sleep(0);
   expect(a.store.getState().call?.phase).toBe("connected");
   expect(b.store.getState().call?.phase).toBe("connected");
-  const { roomId: _id, roomSecret: _secret, ...relaySignal } = initial;
+  const { roomId: _id, offer: _offer, ...relaySignal } = initial;
   b.receive({ ...relaySignal, type: "call.end" });
   expect(b.store.getState().call?.phase).toBe("connected");
   advance(5100);
@@ -272,7 +273,7 @@ test("hangup uses the direct channel as soon as identity is verified, even befor
     });
     return pending.promise;
   });
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();
@@ -293,16 +294,16 @@ test("hangup uses the direct channel as soon as identity is verified, even befor
   pending.resolve({ close() {}, mute() {}, async route() {} });
 });
 
-test("late acceptance and reordered invitations do not restart cancelled calls", () => {
+test("late acceptance and reordered invitations do not restart cancelled calls", async () => {
   const { a, b, events, deliver, records } = pair();
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   const invite = events.shift();
   if (invite?.type !== "call.invite") throw new Error("No invitation");
   a.end();
   deliver();
   b.receive(invite);
   b.receive(invite);
-  const { roomId: _room, roomSecret: _secret, ...details } = invite;
+  const { roomId: _room, offer: _offer, ...details } = invite;
   a.receive({
     ...details,
     type: "call.accept",
@@ -317,9 +318,9 @@ test("late acceptance and reordered invitations do not restart cancelled calls",
   expect(records).toHaveLength(1);
 });
 
-test("duplicates, Busy, and Decline preserve the first incoming call", () => {
+test("duplicates, Busy, and Decline preserve the first incoming call", async () => {
   const { a, b, deliver, events, records } = pair();
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   const invite = events.at(0);
   if (invite?.type !== "call.invite") throw new Error("No invitation");
   deliver();
@@ -339,10 +340,10 @@ test("duplicates, Busy, and Decline preserve the first incoming call", () => {
   ]);
 });
 
-test("crossed calls choose one room deterministically", () => {
+test("crossed calls choose one room deterministically", async () => {
   const { a, b, deliver } = pair();
-  a.dial(callee.pubkey);
-  b.dial(caller.pubkey);
+  await a.dial(callee.pubkey);
+  await b.dial(caller.pubkey);
   deliver();
   deliver();
   expect(a.store.getState().call?.id).toBe(b.store.getState().call?.id);
@@ -358,7 +359,7 @@ test("cancel during media permission and close resources returned after teardown
   const { a, b, deliver, records } = pair(
     () => new Promise((resolve) => pending.push(resolve)),
   );
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();
@@ -378,7 +379,7 @@ test("microphone denial ends the attempt and reports a permission failure", asyn
   const { a, b, deliver, records } = pair(async () => {
     throw new Error("microphone-permission");
   });
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();
@@ -397,7 +398,7 @@ test("negotiation times out and aborts both pending transports", async () => {
     signals.push(signal);
     return new Promise(() => {});
   }, 5);
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();
@@ -411,7 +412,7 @@ test("the OS microphone prompt keeps the attempt pending without accepting new f
     onMicrophonePrompt(true);
     return new Promise(() => {});
   });
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();
@@ -434,7 +435,7 @@ test("ongoing background audio keeps the authenticated session and records one s
     undefined,
     true,
   );
-  a.dial(callee.pubkey);
+  await a.dial(callee.pubkey);
   deliver();
   b.accept();
   deliver();

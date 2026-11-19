@@ -1,5 +1,5 @@
+import type { Room } from "@trystero-p2p/core";
 import type { MediaStream as NativeStream } from "react-native-webrtc";
-import type { Room } from "trystero";
 import { z } from "zod";
 import type { captureCamera } from "./camera";
 import { watchedVideoLimit } from "./conference";
