@@ -9,8 +9,10 @@ import type { MessageRecord } from "@/db/messaging";
 export interface DetailMessage extends IMessage {
   _id: string;
   createdAt: number;
+  direction: MessageRecord["direction"];
   unread: boolean;
   failure: string | null;
+  originalText?: string;
 }
 
 export type Participants = { self: User; peer: User };
@@ -51,6 +53,7 @@ export function toDetailMessage(
 
   return {
     _id: row.id,
+    direction: row.direction,
     text: row.body,
     user: author(row, participants),
     createdAt: row.sentAt,
@@ -72,6 +75,7 @@ export function toDetailMessage(
 export function equalDetailMessage(a: DetailMessage, b: DetailMessage) {
   return (
     a._id === b._id &&
+    a.direction === b.direction &&
     a.text === b.text &&
     a.user === b.user &&
     a.createdAt === b.createdAt &&

@@ -12,7 +12,8 @@ import {
 } from "@/components/messages/conversation-item";
 import { Action, Empty, IconButton, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
-import { namespaces } from "@/i18n";
+import { useTranslationPreferences } from "@/core/translation/preferences";
+import { namespaces, resolveLanguage } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { space } from "@/theme";
 
@@ -21,8 +22,12 @@ function keys(items: ConversationListItem[]) {
 }
 
 export default function Messages() {
-  const { t } = useTranslation(namespaces);
-  const { identity, chat } = useLocal();
+  const { t, i18n } = useTranslation(namespaces);
+  const { identity, chat, db } = useLocal();
+  const { automatic, target } = useTranslationPreferences(
+    db,
+    resolveLanguage(i18n.resolvedLanguage),
+  );
   const { appearance, theme, darkTheme, colorScheme, labels, locale, icons } =
     useChatAppearance();
   const [archived, setArchived] = useState(false);
@@ -35,14 +40,18 @@ export default function Messages() {
     try {
       setResult({
         chats: chat
-          .conversations()
-          .map((row) => toConversationListItem(row, identity.publicKey)),
+          .conversations({ translationTarget: automatic ? target : undefined })
+          .map((row) =>
+            toConversationListItem(row, identity.publicKey, (text) =>
+              t("translation:preview", { text }),
+            ),
+          ),
         error: false,
       });
     } catch {
       setResult({ chats: [], error: true });
     }
-  }, [chat, identity.publicKey]);
+  }, [chat, identity.publicKey, automatic, target, t]);
 
   useEffect(() => {
     let frame: number | undefined;
@@ -54,7 +63,11 @@ export default function Messages() {
     };
     const unsubscribe = chat.subscribe(scheduleRead);
     const contactChanges = addDatabaseChangeListener(({ tableName }) => {
-      if (tableName === "contacts") scheduleRead();
+      if (
+        tableName === "contacts" ||
+        (automatic && tableName === "message_translations")
+      )
+        scheduleRead();
     });
     scheduleRead();
     return () => {
@@ -62,7 +75,7 @@ export default function Messages() {
       contactChanges.remove();
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
-  }, [chat, read]);
+  }, [chat, read, automatic]);
 
   function change(write: () => void) {
     try {

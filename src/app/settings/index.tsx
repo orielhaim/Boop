@@ -33,6 +33,12 @@ export default function Settings() {
       </Hero>
       <SettingsGroup title={t("settings:preferences")}>
         <SettingsRow
+          title={t("common:chats")}
+          icon="chat"
+          accent="#347E76"
+          onPress={() => router.push("/settings/chats")}
+        />
+        <SettingsRow
           title={t("settings:appearance")}
           icon="palette"
           accent="#5B50C7"

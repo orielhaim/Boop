@@ -26,6 +26,19 @@ export default function SettingsLayout() {
         options={{ title: t("settings:language") }}
       />
       <Stack.Screen name="calls" options={{ title: t("settings:calls") }} />
+      <Stack.Screen name="chats" options={{ title: t("common:chats") }} />
+      <Stack.Screen
+        name="chats/translation"
+        options={{ title: t("translation:title") }}
+      />
+      <Stack.Screen
+        name="chats/target"
+        options={{ title: t("translation:target") }}
+      />
+      <Stack.Screen
+        name="chats/models"
+        options={{ title: t("translation:manageModels") }}
+      />
       <Stack.Screen name="privacy" options={{ title: t("settings:privacy") }} />
       <Stack.Screen
         name="privacy/app-lock"

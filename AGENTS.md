@@ -33,6 +33,7 @@ also use `bun fmt` to format. instead of prettier/biome etc.
 
 - Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
 - For changes to Messages, read the messaging section of `arch.md` and the installed Chat Kit API types. Use `ChatList`, `Chat`, and `ChatHeader` for presentation and keep durable state in SQLite.
+- Translate only visible incoming chat messages. Keep translations on the device, preserve original Nostr messages byte for byte, and keep translated text out of messaging, networking, and logs.
 - Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
 - Docs: https://docs.expo.dev/router/introduction.md
 

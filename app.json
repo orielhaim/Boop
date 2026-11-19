@@ -9,7 +9,9 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "app.boop.mobile",
-      "infoPlist": { "CFBundleAllowMixedLocalizations": true }
+      "infoPlist": {
+        "CFBundleAllowMixedLocalizations": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -81,7 +83,8 @@
       "expo-font",
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
-      "./plugins/with-system-calling.js"
+      "./plugins/with-system-calling.js",
+      ["@hzblj/expo-translation", { "ios": { "mlkit": true } }]
     ],
     "experiments": {
       "typedRoutes": true,

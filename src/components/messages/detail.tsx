@@ -1,4 +1,5 @@
 import {
+  Bubble,
   Chat,
   type ChatHandle,
   ChatHeader,
@@ -7,10 +8,13 @@ import {
   InputToolbar,
   type MessageActionKey,
   type MessageMenuItem,
+  MessageText,
   type ReplyMessage,
   Send,
   type SendProps,
+  Time,
 } from "@kesha-antonov/react-native-chat";
+import { setStringAsync } from "expo-clipboard";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import {
@@ -30,7 +34,9 @@ import {
   AppState,
   Image,
   Linking,
+  Pressable,
   StyleSheet,
+  Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -44,6 +50,7 @@ import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
 import { type DetailMessage, toQuote } from "./detail-adapter";
 import { useDetailHistory } from "./detail-history";
+import { useMessageTranslations } from "./use-message-translations";
 
 const messageActions: MessageActionKey[] = [
   "reply",
@@ -58,6 +65,9 @@ const viewabilityConfig = {
 };
 const autoText = { textAlign: "auto", writingDirection: "auto" } as const;
 const emptySendSlot = () => null;
+const renderTranslatedText: NonNullable<
+  ChatProps<DetailMessage>["renderMessageText"]
+> = (props) => <MessageText {...props} url={false} />;
 
 function useStressArrival(peerKey: string) {
   const { t } = useTranslation(namespaces);
@@ -181,6 +191,61 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const [loadingPage, startPage] = useTransition();
   const [jump, setJump] = useState<{ id: string; highlight: boolean }>();
   const [notice, setNotice] = useState<string>();
+  const [visibleIds, setVisibleIds] = useState<string[]>([]);
+  const {
+    displayed,
+    missing,
+    failed,
+    retry: retryTranslation,
+    toggleOriginal,
+    refresh,
+  } = useMessageTranslations(items, visibleIds, locale, focused);
+  const renderTranslatedBubble = useCallback<
+    NonNullable<ChatProps<DetailMessage>["renderBubble"]>
+  >(
+    (props) => {
+      const message = props.currentMessage;
+      if (message?.originalText === undefined) return <Bubble {...props} />;
+      const original = message.text === message.originalText;
+      return (
+        <Bubble
+          {...props}
+          renderMessageText={original ? undefined : renderTranslatedText}
+          renderTime={(timeProps) => (
+            <View
+              style={[styles.translationMeta, rtl && styles.translationMetaRtl]}
+            >
+              <Pressable
+                accessibilityRole="link"
+                hitSlop={6}
+                onPress={() => toggleOriginal(message._id)}
+              >
+                <Text
+                  style={[
+                    styles.translationLink,
+                    {
+                      color:
+                        props.position === "right"
+                          ? colors.outgoingInk
+                          : colors.accent,
+                    },
+                  ]}
+                >
+                  {t(
+                    original
+                      ? "translation:showTranslation"
+                      : "translation:showOriginal",
+                  )}
+                </Text>
+              </Pressable>
+              <Time {...timeProps} />
+            </View>
+          )}
+        />
+      );
+    },
+    [colors.accent, colors.outgoingInk, rtl, t, toggleOriginal],
+  );
   const chatRef = useRef<ChatHandle>(null);
 
   const [initialDraft] = useState(() => {
@@ -458,6 +523,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   >(
     ({ viewableItems }) => {
       if (!focused || AppState.currentState !== "active") return;
+      const ids = viewableItems
+        .filter((entry) => entry.isViewable)
+        .map(({ item }) => item._id);
+      setVisibleIds((previous) =>
+        previous.length === ids.length &&
+        previous.every((id, index) => id === ids[index])
+          ? previous
+          : ids,
+      );
       let newest: MessageCursor | undefined;
       for (const { item, isViewable } of viewableItems) {
         if (!isViewable || !item.unread) continue;
@@ -552,7 +626,34 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 
   const actionsForMessage = useCallback(
     (message: DetailMessage, defaults: MessageMenuItem[]) => {
-      if (!message.isFailed) return defaults;
+      const original = message.originalText;
+      const actions =
+        original === undefined
+          ? defaults
+          : [
+              ...defaults,
+              {
+                key: "translation-copy-original",
+                label: t("translation:copyOriginal"),
+                onPress: () => {
+                  void setStringAsync(original).catch(() =>
+                    setNotice(t("messages:updateError")),
+                  );
+                },
+              },
+              {
+                key: "translation-refresh",
+                label: t("translation:refresh"),
+                onPress: () => {
+                  try {
+                    refresh(message._id);
+                  } catch {
+                    setNotice(t("messages:updateError"));
+                  }
+                },
+              },
+            ];
+      if (!message.isFailed) return actions;
       const detail =
         message.failure === "no-inbox"
           ? t("messages:noInbox")
@@ -560,7 +661,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             ? t("messages:invalidMessage")
             : t("messages:relayRejected");
       return [
-        ...defaults,
+        ...actions,
         {
           key: "send-failure-detail",
           label: t("messages:sendFailureDetail"),
@@ -568,7 +669,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         },
       ];
     },
-    [t],
+    [t, refresh],
   );
 
   const reactions = useMemo<ChatProps<DetailMessage>["reactions"]>(
@@ -594,7 +695,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         updateQuote({
           _id: message._id,
           user: message.user,
-          text: message.text,
+          text: message.originalText ?? message.text,
         }),
       onClear: () => updateQuote(null),
       onPress: jumpToQuote,
@@ -740,11 +841,39 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           </Action>
         </View>
       ) : null}
+      {missing.length > 0 ? (
+        <View style={[styles.notice, { backgroundColor: colors.surface }]}>
+          <Ink kind="caption" style={styles.noticeText}>
+            {t("translation:downloadRequired")}
+          </Ink>
+          <Action
+            size="sm"
+            variant="ghost"
+            onPress={() =>
+              router.push({
+                pathname: "/settings/chats/models",
+                params: { needed: missing.join(",") },
+              })
+            }
+          >
+            {t("translation:manageModels")}
+          </Action>
+        </View>
+      ) : failed ? (
+        <View style={[styles.notice, { backgroundColor: colors.surface }]}>
+          <Ink kind="caption" style={styles.noticeText}>
+            {t("translation:loadFailed")}
+          </Ink>
+          <Action size="sm" variant="ghost" onPress={retryTranslation}>
+            {t("common:retry")}
+          </Action>
+        </View>
+      ) : null}
       <View style={styles.chat}>
         <Chat<DetailMessage>
           {...kit}
           chatRef={chatRef}
-          messages={items}
+          messages={displayed}
           user={participants.self}
           forceRTL={rtl}
           enableGestureHandlerRootView={false}
@@ -773,6 +902,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           reactions={reactions}
           reply={reply}
           messageTextProps={messageTextProps}
+          renderBubble={renderTranslatedBubble}
           attachments={false}
           audioRecording={false}
           videoRecording={false}
@@ -784,6 +914,17 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 }
 
 const styles = StyleSheet.create({
+  translationMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  translationMetaRtl: { flexDirection: "row-reverse" },
+  translationLink: {
+    fontSize: 11,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
   screen: { flex: 1 },
   // Chat Kit mirrors bubble rows itself. Keep their base flex axis physical.
   chat: { flex: 1, direction: "ltr" },

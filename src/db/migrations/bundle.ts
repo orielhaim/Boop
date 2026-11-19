@@ -39,6 +39,13 @@ export default {
         tag: "0004_cloudy_inertia",
         breakpoints: true,
       },
+      {
+        idx: 5,
+        version: "6",
+        when: 1795049214901,
+        tag: "0005_outgoing_wonder_man",
+        breakpoints: true,
+      },
     ],
   },
   migrations: {
@@ -52,5 +59,7 @@ export default {
       "ALTER TABLE `contacts` ADD `allow_incoming_video` integer DEFAULT false NOT NULL;",
     m0004:
       "ALTER TABLE `relay_settings` ADD `general` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `inbox` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `discovery` integer DEFAULT false NOT NULL;",
+    m0005:
+      "CREATE TABLE `message_translations` (\n\t`message_id` text NOT NULL,\n\t`content_hash` text NOT NULL,\n\t`target_language` text NOT NULL,\n\t`source_language` text NOT NULL,\n\t`translated_text` text NOT NULL,\n\t`engine` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`message_id`, `target_language`, `content_hash`),\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE TRIGGER `invalidate_message_translations`\nAFTER UPDATE OF `body`, `deleted_at` ON `messages`\nWHEN OLD.`body` IS NOT NEW.`body` OR NEW.`deleted_at` IS NOT NULL\nBEGIN\n  DELETE FROM `message_translations` WHERE `message_id` = NEW.`id`;\nEND;\r\n",
   },
 };

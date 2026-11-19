@@ -12,6 +12,7 @@ import {
 } from "drizzle-orm";
 import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import * as schema from "./schema";
+import { translationEngine } from "./translations";
 
 const { messages, conversations, contacts, messageReactions } = schema;
 type MessageRow = typeof messages.$inferSelect;
@@ -44,8 +45,20 @@ type HistoryOptions = {
   limit?: number;
 };
 
-function conversationQuery<TResult>(db: ReadDatabase<TResult>) {
+function conversationQuery<TResult>(
+  db: ReadDatabase<TResult>,
+  target?: string,
+) {
   const latest = alias(messages, "latest_message");
+  const cached = schema.messageTranslations;
+  const translatedPreview = target
+    ? sql<string | null>`(SELECT ${cached.translatedText} FROM ${cached}
+        WHERE ${cached.messageId} = ${latest.id} AND ${cached.targetLanguage} = ${target}
+          AND ${latest.direction} = 'incoming'
+          AND ${cached.engine} = ${translationEngine}
+          AND ${cached.sourceLanguage} <> ${target} AND trim(${cached.translatedText}) <> ''
+        ORDER BY ${cached.createdAt} DESC LIMIT 1)`
+    : sql<string | null>`NULL`;
   const lastId = sql`(
     SELECT ${messages.id} FROM ${messages}
     WHERE ${messages.peerKey} = ${conversations.peerKey} AND ${messages.deletedAt} IS NULL
@@ -57,6 +70,7 @@ function conversationQuery<TResult>(db: ReadDatabase<TResult>) {
       name: contacts.name,
       avatarUrl: contacts.avatarUrl,
       preview: latest.body,
+      translatedPreview,
       lastMessageAt: latest.sentAt,
       lastMessageId: latest.id,
       lastMessageDirection: latest.direction,
@@ -214,8 +228,10 @@ export function createMessagingRepository<TResult>(
       };
     },
 
-    conversations(options: { archived?: boolean } = {}): ConversationSummary[] {
-      return conversationQuery(db)
+    conversations(
+      options: { archived?: boolean; translationTarget?: string } = {},
+    ): ConversationSummary[] {
+      return conversationQuery(db, options.translationTarget)
         .where(
           and(
             isNull(conversations.deletedAt),

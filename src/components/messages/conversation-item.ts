@@ -5,17 +5,22 @@ import type { ConversationSummary } from "@/db/messaging";
 export type ConversationListItem = ChatListItem & {
   id: string;
   address: string;
+  originalPreview?: string;
 };
 
 export function toConversationListItem(
   row: ConversationSummary,
   ownKey: string,
+  translationLabel?: (text: string) => string,
 ): ConversationListItem {
   const address = toNpub(row.peerKey);
   const author = row.lastMessageDirection === "outgoing" ? ownKey : row.peerKey;
   return {
     id: row.peerKey,
     address,
+    originalPreview: row.translatedPreview
+      ? (row.preview ?? undefined)
+      : undefined,
     title: row.name ?? `${address.slice(0, 15)}…`,
     avatar: row.avatarUrl ?? undefined,
     kind: "private",
@@ -23,7 +28,10 @@ export function toConversationListItem(
       row.lastMessageId && row.lastMessageAt !== null
         ? {
             _id: row.lastMessageId,
-            text: row.preview ?? "",
+            text: row.translatedPreview
+              ? (translationLabel?.(row.translatedPreview) ??
+                row.translatedPreview)
+              : (row.preview ?? ""),
             createdAt: row.lastMessageAt,
             user: { _id: author },
             pending: row.lastMessageStatus === "pending",
@@ -46,6 +54,7 @@ export function matchesConversation(chat: ConversationListItem, query: string) {
     chat.address.includes(needle) ||
     chat.id.includes(needle) ||
     Boolean(chat.draft?.toLowerCase().includes(needle)) ||
+    Boolean(chat.originalPreview?.toLowerCase().includes(needle)) ||
     Boolean(chat.lastMessage?.text.toLowerCase().includes(needle))
   );
 }

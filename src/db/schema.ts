@@ -69,6 +69,26 @@ export const messages = sqliteTable(
   ],
 );
 
+export const messageTranslations = sqliteTable(
+  "message_translations",
+  {
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    contentHash: text("content_hash").notNull(),
+    targetLanguage: text("target_language").notNull(),
+    sourceLanguage: text("source_language").notNull(),
+    translatedText: text("translated_text").notNull(),
+    engine: text().notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.messageId, table.targetLanguage, table.contentHash],
+    }),
+  ],
+);
+
 export const messageReactions = sqliteTable(
   "message_reactions",
   {

@@ -1,5 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
+import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
 import { getLocales } from "expo-localization";
 import { createContext, useContext, useEffect, useMemo } from "react";
 import { AppState } from "react-native";
@@ -9,6 +10,9 @@ import { createMessagingRuntime } from "@/core/messaging";
 import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
+import { loadTranslationEngine } from "@/core/translation/native";
+import { initializeTranslationPreferences } from "@/core/translation/preferences";
+import { createTranslationService } from "@/core/translation/service";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
 import {
@@ -19,7 +23,8 @@ import {
 } from "@/db/queries";
 import { seedRelays } from "@/db/relays";
 import { callHistory, relaySettings, settings } from "@/db/schema";
-import { i18n, preferredLanguage } from "@/i18n";
+import { createTranslationCache } from "@/db/translations";
+import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
 
 async function start() {
@@ -34,6 +39,7 @@ async function start() {
     );
     const fresh = preference(db, "identity.publicKey") === null;
     const identity = await initializeIdentity(db);
+    initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
     const { messaging, signer } = await createMessagingRuntime({
@@ -115,6 +121,11 @@ async function start() {
     appLock = lock;
     return {
       db,
+      translation: createTranslationService(
+        createTranslationCache(db),
+        loadTranslationEngine,
+        (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
+      ),
       identity,
       chat,
       messaging,

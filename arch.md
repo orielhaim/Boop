@@ -274,6 +274,20 @@ Do not falsely display delivery or read receipts. Relay acknowledgment is not re
 
 Group chats, media attachments, voice messages, and advanced synchronization are future features.
 
+### On-device chat translation
+
+Settings → Chats → Translation controls automatic translation, the target language, downloaded models, and the translation cache. SQLite saves the initial target from the resolved app language and keeps subsequent target choices independent. Automatic translation starts off. The translation catalog comes from the available native engine and extends beyond the two interface languages.
+
+The typed bridge in `src/core/translation` uses `@hzblj/expo-translation` 0.1.4. Android uses ML Kit for language identification and translation. iOS uses Apple Natural Language for identification and explicitly selects ML Kit for translation. The Expo plugin bundles ML Kit on iOS for consistent language support, including Hebrew. A native development build is required. The optional ML Kit pods lack an arm64 Simulator slice. An iPhone build and runtime check still need verification.
+
+Only explicit model requests can initiate downloads. The download dialog defaults to Wi-Fi and offers per-download cellular permission. The native SDK reports availability, completion, and failure. Users can remove downloaded models. English is built in. Translation works with installed models offline. Uncertain or unsupported language, mixed Hebrew and Latin text, technical identifiers, and missing models keep the original visible.
+
+`message_translations` stores an ML Kit result keyed by canonical local message ID, SHA-256 of the original body, and target language. Each row also stores source language, engine revision, and creation time. A migration trigger removes translations when a message changes or is locally deleted. A foreign key cascades physical deletes. Writes compare the source body and live-message status in the same transaction. Clear Cache removes derived text and preserves downloaded models. The message and outbox tables retain the original.
+
+Chat Kit's existing Legend List viewability callback schedules only visible incoming messages, capped at 32 rows per window. A single worker verifies the stored direction and original body in SQLite and runs native translation sequentially. Scrolling, backgrounding, App Lock, target changes, and navigation cancel stale work. The native package retains up to three model pairs. Chat Kit keeps stable message IDs and shows an original/translation toggle alongside the timestamp. Replies use the original and the composer sends the typed text. Conversation previews read the same cache for incoming messages and never schedule translation.
+
+Message content and translated results stay on-device. Boop uses no translation endpoint, API key, or fallback proxy. Google's ML Kit SDK can contact Google for models, updates, and usage or performance metrics. Settings discloses the SDK behavior and includes the translation attribution. See [ML Kit privacy terms](https://developers.google.com/ml-kit/terms) and [on-device translation usage guidelines](https://developers.google.com/ml-kit/language/translation/translation-terms).
+
 ## 7. Calling architecture
 
 Boop supports one call per device. Call setup requires an active app. A connected call can continue in the background on supported devices. Every call starts with audio. Both participants can share or stop their own camera independently during that call. The controller in `src/core/calling/controller.ts` owns the session and publishes a Zustand snapshot. Contacts, Recents, direct addresses, and Chat open the same call screen. The call indicator can reopen it after navigation.
@@ -334,15 +348,16 @@ The config plugin enables the `audio` background mode for the existing AVAudioSe
 
 The initial schema should include:
 
-| Table               | Responsibility                                   |
-| ------------------- | ------------------------------------------------ |
-| `contacts`          | Local address book and metadata                  |
-| `conversations`     | Conversation summaries and local state           |
-| `messages`          | Persisted messages and Nostr event IDs           |
-| `message_reactions` | Private reaction records and local removal state |
-| `call_history`      | Local call records                               |
-| `relay_settings`    | Relay configuration                              |
-| `settings`          | Application preferences                          |
+| Table                  | Responsibility                                                       |
+| ---------------------- | -------------------------------------------------------------------- |
+| `contacts`             | Local address book and metadata                                      |
+| `conversations`        | Conversation summaries and local state                               |
+| `messages`             | Persisted messages and Nostr event IDs                               |
+| `message_reactions`    | Private reaction records and local removal state                     |
+| `message_translations` | Device-local translations keyed by message, content hash, and target |
+| `call_history`         | Local call records                                                   |
+| `relay_settings`       | Relay configuration                                                  |
+| `settings`             | Application preferences                                              |
 
 Use typed migrations.
 
@@ -482,7 +497,7 @@ Additional screens:
 - Active call.
 - Contact details.
 - Add contact, enter an address, or scan an address.
-- Settings with a native nested stack for Identity & keys, Appearance, Language, Calls & sounds, Privacy & security, Connections, and About. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
+- Settings with a native nested stack for Identity & keys, Chats, Appearance, Language, Calls & sounds, Privacy & security, Connections, and About. Chats contains Translation. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
 
 The dialer must work with real application identities. A numeric keypad must not imply interoperability with ordinary telephone numbers unless such an addressing system is actually implemented.
 
