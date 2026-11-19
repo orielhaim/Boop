@@ -1,4 +1,4 @@
-import { and, eq, getTableColumns, inArray, isNull } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNull, ne } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import * as schema from "./schema";
 
@@ -8,6 +8,7 @@ export const translationEngine = "mlkit-v1";
 const liveIncoming = and(
   eq(messages.direction, "incoming"),
   isNull(messages.deletedAt),
+  ne(messages.body, ""),
 );
 
 export function createTranslationCache<TResult>(

@@ -68,7 +68,7 @@ export const messages = sqliteTable(
       .notNull()
       .default(false),
     rumorJson: text("rumor_json"),
-    contentType: text("content_type", { enum: ["text"] })
+    contentType: text("content_type", { enum: ["text", "timelock"] })
       .notNull()
       .default("text"),
   },
@@ -82,6 +82,40 @@ export const messages = sqliteTable(
     index("messages_outbox")
       .on(table.sentAt, table.id)
       .where(sql`${table.status} = 'pending' AND ${table.deletedAt} IS NULL`),
+  ],
+);
+
+export const messageTimeLocks = sqliteTable(
+  "message_timelocks",
+  {
+    messageId: text("message_id")
+      .primaryKey()
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    ciphertext: text().notNull(),
+    chainHash: text("chain_hash").notNull(),
+    unlockRound: integer("unlock_round").notNull(),
+    requestedAt: integer("requested_at").notNull(),
+    roundTime: integer("round_time").notNull(),
+    openedAt: integer("opened_at"),
+    retryAt: integer("retry_at"),
+    attempts: integer().notNull().default(0),
+    error: text({
+      enum: [
+        "not-ready",
+        "network",
+        "endpoint",
+        "verification",
+        "ciphertext",
+        "decryption",
+        "plaintext",
+      ],
+    }),
+  },
+  (table) => [
+    index("message_timelocks_pending")
+      .on(table.retryAt, table.unlockRound, table.messageId)
+      .where(sql`${table.retryAt} IS NOT NULL`),
   ],
 );
 

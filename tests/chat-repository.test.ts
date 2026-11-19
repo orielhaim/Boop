@@ -236,7 +236,8 @@ test("migrates a foundation database without losing identity, drafts or message 
     "INSERT INTO messages (id, event_id, peer_key, direction, body, sent_at) VALUES ('incoming', 'inbound-rumor', ?, 'incoming', 'Original', 50), ('outgoing', null, ?, 'outgoing', 'Older queued message', 30)",
     [alice, alice],
   );
-  sqlite.exec(migrations.migrations.m0001);
+  for (const migration of Object.values(migrations.migrations).slice(1))
+    sqlite.exec(migration);
   const repo = createMessagingRepository(drizzle(sqlite, { schema }));
   expect(repo.conversation(alice)).toMatchObject({
     draft: "Draft",

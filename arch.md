@@ -281,6 +281,28 @@ Do not falsely display delivery or read receipts. Relay acknowledgment is not re
 
 Group chats, media attachments, and voice messages are future features.
 
+### Special messages and Open Later
+
+Open Later is the first Special Message. Long-press the existing Chat Kit Send button to open an anchored Glassy UI menu. The Glass Sheet shows the selected local time and the exact Quicknet round time when they differ. Android uses consecutive date and time dialogs. iOS uses an inline date and time picker. The composer retains the draft and quote until the outgoing SQLite transaction succeeds.
+
+Boop encrypts the UTF-8 text on the device with the `tlock-js` 1.0.0 implementation from upstream PR #52 of AGE and drand identity-based encryption. The app sends the resulting ciphertext immediately through the existing outbox. It sends a kind `24881` unsigned rumor inside the same kind `13` NIP-44 seal and kind `1059` NIP-59 gift wrap used for private chat. Recipient and sender copies independently wrap the same rumor ID. The usual inner `p` and optional reply `e` tags apply. The version 1 JSON content has `type: "timelock"`, `v: 1`, `ciphertext`, `chainHash`, `unlockRound`, `requestedAt`, and `roundTime`. The ciphertext is one armored AGE file with a single `tlock` recipient. Zod and the AGE header parser check the field bounds, schedule, and embedded chain and round before the inbox accepts it. Boop accepts up to 4,000 UTF-16 code units, 17,000 characters of armor, 18,000 characters of encoded content, and 48,000 bytes per serialized gift wrap for this kind.
+
+The production Quicknet chain uses hash `52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971`, scheme `bls-unchained-g1-rfc9380`, 3-second periods, and genesis `1692803367` Unix seconds. Its pinned public key is `83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a`. Schedule fields use UTC epoch milliseconds. The client starts at `roundAt(requestedAt)` and advances one round if its publication time precedes the requested time. The round ID determines the cryptographic release.
+
+`drand-client` 1.4.2 verifies the exact round and signature against the pinned chain. The HTTP adapter uses Quicknet's v1 `/{chainHash}/public/{round}` endpoint with deadlines and fallbacks across `api.drand.sh`, `api2.drand.sh`, `api3.drand.sh`, and `drand.cloudflare.com`. Encryption uses the pinned info without an HTTP request. The ESM tlock-js build uses Boop's existing secure WebCrypto randomness and the same drand-client version. Boop checks the AGE stanza before persistence and passes a beacon that drand-client has verified to tlock-js. The library independently verifies the prefetched signature against the pinned chain and round before decrypting.
+
+The Bun lockfile pins `vendor/tlock-js-1.0.0-pr52-b311ee2.tgz`. The package was built from commit `b311ee25c26dcf86f347049e37d05fed0394889e` in the PR author's fork. To build that package, check out the commit and run `bun install --frozen-lockfile`, `bun run build`, and `bun pm pack --ignore-scripts`. The checked-in archive has SHA-256 `25fd6819942da96832adc8c6470e2c253783e7c6d8b1c0bd96e5082adf0b159d`. [tlock-js PR #52](https://github.com/drand/tlock-js/pull/52)
+
+SQLite keeps one canonical `messages` row and one related `message_timelocks` row. The related row holds ciphertext, metadata, retry time, failure, and opening state. A successful unlock writes the plaintext to `messages.body` and marks the matching ciphertext opened in one transaction. The row keeps its ID and original position. The scheduler excludes opened rows and later reads use the persisted body. Local deletion removes the ciphertext and plaintext and retains the usual deduplication tombstone.
+
+One scheduler runs in the protected, foreground messaging session. It reads an index for the next pending retry and processes bounded batches. It shares verified beacons across messages and keeps up to 32 in memory and 32 in SQLite. It verifies a stored beacon again on cold read. Foreground resume and relay reconnection reconcile pending work. Temporary failures use backoff and can be retried from the message menu. Permanently invalid payloads retain their ciphertext for local deletion. After the scheduled time, a device without internet can open a message if its verified beacon is cached. Otherwise the message waits for network access. Suspended and terminated apps reconcile on the next foreground session.
+
+Chat Kit displays a locked bubble in the same history row. Conversation and reply previews use localized locked labels. A locked incoming message remains unread until it has opened and its row is visible in a focused, foreground, unlocked chat. Link previews, copy, and on-device translation receive no sealed text or ciphertext. After unlock, the stored body can enter the existing visible-message translation pipeline. Both sender and recipient display the sealed state until the beacon is verified. The sender already knows the original text, and a restored sender copy follows the same unlock rule.
+
+The drand threshold operators can undermine delayed opening if they collude or disclose future beacon material. Delayed publication or network shutdown can prevent timely decryption. The scheme has no post-quantum guarantee. Anyone holding the AGE ciphertext can open it after release. The existing Nostr encryption limits access to that ciphertext to the recipient and the sender's copy. Cached plaintext follows Boop's local message storage protections.
+
+The deterministic tests in `tests/timelock.test.ts` verify a Go-generated Quicknet fixture and invalid beacon cases. `bun scripts/test-chat-relay.ts --timelock` exercises delivery and catch-up through an authenticated loopback relay with a live Quicknet round. [drand timelock documentation](https://docs.drand.love/docs/timelock-encryption/) · [tlock-js](https://github.com/drand/tlock-js) · [tlock Go](https://github.com/drand/tlock) · [drand-client](https://github.com/drand/drand-client)
+
 ### On-device chat translation
 
 Settings → Chats → Translation controls automatic translation, the target language, downloaded models, and the translation cache. SQLite saves the initial target from the resolved app language and keeps subsequent target choices independent. Automatic translation starts off. The translation catalog comes from the available native engine and extends beyond the two interface languages.
@@ -371,6 +393,7 @@ The initial schema should include:
 | `conversations`        | Conversation summaries and local state                               |
 | `messages`             | Persisted messages and Nostr event IDs                               |
 | `message_reactions`    | Private reaction records and local removal state                     |
+| `message_timelocks`    | Ciphertext, Quicknet schedule, retry state, and opening status       |
 | `message_translations` | Device-local translations keyed by message, content hash, and target |
 | `call_history`         | Local call records                                                   |
 | `relay_settings`       | Relay configuration                                                  |

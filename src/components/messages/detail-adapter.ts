@@ -13,12 +13,14 @@ export interface DetailMessage extends IMessage {
   unread: boolean;
   failure: string | null;
   originalText?: string;
+  locked?: MessageRecord["locked"];
+  timeLock?: true;
 }
 
 export type Participants = { self: User; peer: User };
 type QuoteSource = Pick<
   MessageRecord,
-  "id" | "direction" | "body" | "deletedAt"
+  "id" | "direction" | "body" | "deletedAt" | "contentType"
 >;
 
 function author(row: QuoteSource, participants: Participants) {
@@ -28,8 +30,11 @@ function author(row: QuoteSource, participants: Participants) {
 export function toQuote(
   row: QuoteSource,
   participants: Participants,
+  lockedLabel = "",
 ): ReplyMessage {
-  return { _id: row.id, text: row.body, user: author(row, participants) };
+  const text =
+    row.contentType === "timelock" && !row.body ? lockedLabel : row.body;
+  return { _id: row.id, text, user: author(row, participants) };
 }
 
 export function toDetailMessage(
@@ -37,6 +42,7 @@ export function toDetailMessage(
   source: QuoteSource | undefined,
   participants: Participants,
   unavailable: string,
+  lockedLabel = "",
 ): DetailMessage {
   const groups = new Map<string, string[]>();
   for (const reaction of row.reactions) {
@@ -55,6 +61,8 @@ export function toDetailMessage(
     _id: row.id,
     direction: row.direction,
     text: row.body,
+    locked: row.locked,
+    timeLock: row.contentType === "timelock" ? true : undefined,
     user: author(row, participants),
     createdAt: row.sentAt,
     unread: row.isUnread,
@@ -64,7 +72,7 @@ export function toDetailMessage(
     isFailed: row.status === "failed",
     replyMessage: row.replyTo
       ? source && source.deletedAt === null
-        ? toQuote(source, participants)
+        ? toQuote(source, participants, lockedLabel)
         : { _id: row.replyTo, text: unavailable, user: { _id: "" } }
       : undefined,
     reactions: reactions.length ? reactions : undefined,
@@ -77,6 +85,10 @@ export function equalDetailMessage(a: DetailMessage, b: DetailMessage) {
     a._id === b._id &&
     a.direction === b.direction &&
     a.text === b.text &&
+    a.timeLock === b.timeLock &&
+    a.locked?.requestedAt === b.locked?.requestedAt &&
+    a.locked?.roundTime === b.locked?.roundTime &&
+    a.locked?.error === b.locked?.error &&
     a.user === b.user &&
     a.createdAt === b.createdAt &&
     a.unread === b.unread &&

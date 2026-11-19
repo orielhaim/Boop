@@ -55,8 +55,8 @@ export function useMessageTranslations(
   const viewport = useMemo(() => {
     if (!settings.automatic || !focused || !active || locked) return [];
     const visible = new Set(visibleIds);
-    const indexes = items.flatMap(({ _id }, index) =>
-      visible.has(_id) ? [index] : [],
+    const indexes = items.flatMap(({ _id, locked }, index) =>
+      !locked && visible.has(_id) ? [index] : [],
     );
     return viewportMessages(items, indexes).map(({ _id, text, direction }) => ({
       id: _id,

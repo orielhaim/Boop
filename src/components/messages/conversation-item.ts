@@ -11,12 +11,18 @@ export type ConversationListItem = ChatListItem & {
 export function createConversationListAdapter(
   ownKey: string,
   translationLabel: (text: string) => string,
+  lockedLabel?: (time: number) => string,
 ) {
   const items = new WeakMap<ConversationSummary, ConversationListItem>();
   return (row: ConversationSummary) => {
     const cached = items.get(row);
     if (cached) return cached;
-    const next = toConversationListItem(row, ownKey, translationLabel);
+    const next = toConversationListItem(
+      row,
+      ownKey,
+      translationLabel,
+      lockedLabel,
+    );
     items.set(row, next);
     return next;
   };
@@ -26,6 +32,7 @@ export function toConversationListItem(
   row: ConversationSummary,
   ownKey: string,
   translationLabel?: (text: string) => string,
+  lockedLabel?: (time: number) => string,
 ): ConversationListItem {
   const address = toNpub(row.peerKey);
   const author = row.lastMessageDirection === "outgoing" ? ownKey : row.peerKey;
@@ -42,10 +49,13 @@ export function toConversationListItem(
       row.lastMessageId && row.lastMessageAt !== null
         ? {
             _id: row.lastMessageId,
-            text: row.translatedPreview
-              ? (translationLabel?.(row.translatedPreview) ??
-                row.translatedPreview)
-              : (row.preview ?? ""),
+            text:
+              row.lockedUntil != null
+                ? (lockedLabel?.(row.lockedUntil) ?? "")
+                : row.translatedPreview
+                  ? (translationLabel?.(row.translatedPreview) ??
+                    row.translatedPreview)
+                  : (row.preview ?? ""),
             createdAt: row.lastMessageAt,
             user: { _id: author },
             pending: row.lastMessageStatus === "pending",

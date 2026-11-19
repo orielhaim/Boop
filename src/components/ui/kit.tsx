@@ -73,6 +73,7 @@ const icons = {
   cameraSwitch: { ios: "camera.rotate.fill", android: "flip_camera_ios" },
   speaker: { ios: "speaker.wave.2", android: "volume_up" },
   history: { ios: "clock", android: "history" },
+  timedLock: { ios: "lock.fill", android: "lock" },
   fingerprint: { ios: "touchid", android: "fingerprint" },
   faceId: { ios: "faceid", android: "face" },
   lock: { ios: "lock.shield.fill", android: "shield" },

@@ -11,10 +11,21 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias, type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
+import {
+  quicknetHash,
+  type TimeLockContent,
+  type UnlockFailure,
+} from "@/core/messaging/special-messages/timelock";
 import * as schema from "./schema";
 import { translationEngine } from "./translations";
 
-const { messages, conversations, contacts, messageReactions } = schema;
+const {
+  messages,
+  conversations,
+  contacts,
+  messageReactions,
+  messageTimeLocks,
+} = schema;
 type MessageRow = typeof messages.$inferSelect;
 type ReadDatabase<TResult> = Pick<
   BaseSQLiteDatabase<"sync", TResult, typeof schema>,
@@ -27,11 +38,29 @@ type WriteDatabase<TResult> = Pick<
 
 export type MessageCursor = Pick<MessageRow, "id" | "sentAt">;
 export type Reaction = { author: string; emoji: string };
-export type MessageRecord = MessageRow & { reactions: Reaction[] };
+type LockedPresentation = Pick<
+  typeof messageTimeLocks.$inferSelect,
+  "requestedAt" | "roundTime" | "error"
+>;
+export type MessageRecord = MessageRow & {
+  reactions: Reaction[];
+  locked?: LockedPresentation;
+};
+type PendingUnlock = {
+  messageId: string;
+  peerKey: string;
+  content: TimeLockContent;
+  attempts: number;
+};
 export type MessageInput = Pick<
   MessageRow,
   "id" | "eventId" | "peerKey" | "direction" | "body" | "sentAt" | "replyTo"
-> & { senderKey: string; recipientKey: string; rumorJson?: string };
+> & {
+  senderKey: string;
+  recipientKey: string;
+  rumorJson?: string;
+  timeLock?: TimeLockContent;
+};
 type ReactionInput = Reaction & {
   eventId: string;
   peerKey: string;
@@ -70,6 +99,7 @@ function conversationQuery<TResult>(
       name: contacts.name,
       avatarUrl: contacts.avatarUrl,
       preview: latest.body,
+      lockedUntil: messageTimeLocks.requestedAt,
       translatedPreview,
       lastMessageAt: latest.sentAt,
       lastMessageId: latest.id,
@@ -78,7 +108,14 @@ function conversationQuery<TResult>(
     })
     .from(conversations)
     .leftJoin(contacts, eq(conversations.peerKey, contacts.publicKey))
-    .leftJoin(latest, eq(latest.id, lastId));
+    .leftJoin(latest, eq(latest.id, lastId))
+    .leftJoin(
+      messageTimeLocks,
+      and(
+        eq(messageTimeLocks.messageId, latest.id),
+        isNull(messageTimeLocks.openedAt),
+      ),
+    );
 }
 
 export type ConversationSummary = ReturnType<
@@ -130,6 +167,7 @@ type Change = {
   history?: readonly string[] | "all";
   summaries?: boolean;
   unread?: boolean;
+  unlockQueue?: boolean;
 };
 
 export function createMessagingRepository<TResult>(
@@ -177,7 +215,24 @@ export function createMessagingRepository<TResult>(
       if (group) group.push(reaction);
       else grouped.set(targetId, [reaction]);
     }
+    const lockedIds = rows
+      .filter(({ contentType, body }) => contentType === "timelock" && !body)
+      .map(({ id }) => id);
+    const locked = lockedIds.length
+      ? db
+          .select({
+            id: messageTimeLocks.messageId,
+            requestedAt: messageTimeLocks.requestedAt,
+            roundTime: messageTimeLocks.roundTime,
+            error: messageTimeLocks.error,
+          })
+          .from(messageTimeLocks)
+          .where(inArray(messageTimeLocks.messageId, lockedIds))
+          .all()
+      : [];
+    const locks = new Map(locked.map(({ id, ...row }) => [id, row]));
     return rows.map((row) => ({
+      locked: locks.get(row.id),
       ...row,
       reactions: grouped.get(row.eventId ?? row.id) ?? [],
     }));
@@ -201,13 +256,16 @@ export function createMessagingRepository<TResult>(
     outgoing: boolean,
     clearDraft: boolean,
   ) {
+    const { timeLock, ...record } = input;
     const inserted = db.transaction((tx) => {
       ensureRoom(tx, input.peerKey, input.sentAt);
       const isUnread = input.direction === "incoming";
       const stored = tx
         .insert(messages)
         .values({
-          ...input,
+          ...record,
+          contentType: timeLock ? "timelock" : "text",
+          body: timeLock ? "" : record.body,
           status: outgoing ? "pending" : isUnread ? "received" : "synced",
           isUnread,
         })
@@ -216,6 +274,21 @@ export function createMessagingRepository<TResult>(
         .get();
       // A duplicate sender copy says nothing about acceptance by the recipient's relays.
       if (!stored) return false;
+      if (timeLock) {
+        const { ciphertext, chainHash, unlockRound, requestedAt, roundTime } =
+          timeLock;
+        tx.insert(messageTimeLocks)
+          .values({
+            messageId: stored.id,
+            ciphertext,
+            chainHash,
+            unlockRound,
+            requestedAt,
+            roundTime,
+            retryAt: roundTime,
+          })
+          .run();
+      }
       tx.update(conversations)
         .set({
           updatedAt: sql`max(${conversations.updatedAt}, ${input.sentAt})`,
@@ -232,11 +305,152 @@ export function createMessagingRepository<TResult>(
         history: [input.peerKey],
         summaries: true,
         unread: input.direction === "incoming",
+        unlockQueue: Boolean(timeLock),
       });
     return inserted;
   }
 
+  const stillSealed = (item: PendingUnlock) =>
+    and(
+      eq(messageTimeLocks.messageId, item.messageId),
+      eq(messageTimeLocks.ciphertext, item.content.ciphertext),
+      eq(messageTimeLocks.unlockRound, item.content.unlockRound),
+      eq(messageTimeLocks.chainHash, item.content.chainHash),
+      isNull(messageTimeLocks.openedAt),
+    );
+
   return {
+    nextUnlock() {
+      return (
+        db
+          .select({ retryAt: messageTimeLocks.retryAt })
+          .from(messageTimeLocks)
+          .where(
+            and(
+              isNotNull(messageTimeLocks.retryAt),
+              eq(messageTimeLocks.chainHash, quicknetHash),
+            ),
+          )
+          .orderBy(asc(messageTimeLocks.retryAt))
+          .limit(1)
+          .get()?.retryAt ?? null
+      );
+    },
+
+    dueUnlocks(now: number): PendingUnlock[] {
+      return db
+        .select({ lock: messageTimeLocks, peerKey: messages.peerKey })
+        .from(messageTimeLocks)
+        .innerJoin(messages, eq(messages.id, messageTimeLocks.messageId))
+        .where(
+          and(
+            isNotNull(messageTimeLocks.retryAt),
+            sql`${messageTimeLocks.retryAt} <= ${now}`,
+            isNull(messages.deletedAt),
+            eq(messageTimeLocks.chainHash, quicknetHash),
+          ),
+        )
+        .orderBy(
+          asc(messageTimeLocks.retryAt),
+          asc(messageTimeLocks.unlockRound),
+          asc(messageTimeLocks.messageId),
+        )
+        .limit(12)
+        .all()
+        .map(({ lock, peerKey }) => ({
+          peerKey,
+          messageId: lock.messageId,
+          attempts: lock.attempts,
+          content: {
+            type: "timelock",
+            v: 1,
+            chainHash: quicknetHash,
+            ciphertext: lock.ciphertext,
+            unlockRound: lock.unlockRound,
+            requestedAt: lock.requestedAt,
+            roundTime: lock.roundTime,
+          },
+        }));
+    },
+
+    commitUnlock(item: PendingUnlock, body: string, now: number) {
+      const updated = db.transaction((tx) => {
+        const lock = tx
+          .update(messageTimeLocks)
+          .set({ openedAt: now, retryAt: null, error: null })
+          .where(stillSealed(item))
+          .returning({ id: messageTimeLocks.messageId })
+          .get();
+        if (!lock) return false;
+        const row = tx
+          .update(messages)
+          .set({ body })
+          .where(
+            and(
+              liveMessage(item.peerKey),
+              eq(messages.id, lock.id),
+              eq(messages.body, ""),
+            ),
+          )
+          .returning({ id: messages.id })
+          .get();
+        if (!row) tx.rollback();
+        return true;
+      });
+      if (updated) changed({ history: [item.peerKey], summaries: true });
+    },
+
+    deferUnlock(
+      item: PendingUnlock,
+      error: UnlockFailure,
+      retryAt: number | null,
+    ) {
+      const row = db
+        .update(messageTimeLocks)
+        .set({ error, retryAt, attempts: Math.min(item.attempts + 1, 16) })
+        .where(stillSealed(item))
+        .returning({ id: messageTimeLocks.messageId })
+        .get();
+      if (row) changed({ history: [item.peerKey] });
+    },
+
+    resumeUnlocks(now: number) {
+      db.update(messageTimeLocks)
+        .set({ retryAt: now })
+        .where(
+          and(
+            eq(messageTimeLocks.error, "network"),
+            sql`${messageTimeLocks.roundTime} <= ${now}`,
+            sql`${messageTimeLocks.retryAt} > ${now}`,
+          ),
+        )
+        .run();
+    },
+
+    retryUnlock(peerKey: string, id: string, now: number) {
+      const row = db
+        .update(messageTimeLocks)
+        .set({
+          retryAt: sql`max(${messageTimeLocks.roundTime}, ${now})`,
+        })
+        .where(
+          and(
+            eq(messageTimeLocks.messageId, id),
+            isNotNull(messageTimeLocks.retryAt),
+            inArray(
+              messageTimeLocks.messageId,
+              db
+                .select({ id: messages.id })
+                .from(messages)
+                .where(liveMessage(peerKey)),
+            ),
+          ),
+        )
+        .returning({ id: messageTimeLocks.messageId })
+        .get();
+      if (row) changed({ unlockQueue: true });
+    },
+
     historyRevision: (peerKey: string) =>
       historyRevisions.get(peerKey) ?? resetRevision,
     invalidate: () =>
@@ -439,6 +653,10 @@ export function createMessagingRepository<TResult>(
               and(
                 liveMessage(peerKey),
                 sql`${messages.isUnread} = 1`,
+                or(
+                  eq(messages.contentType, "text"),
+                  sql`${messages.body} <> ''`,
+                ),
                 inArray(messages.id, unique.slice(start, start + 200)),
               ),
             )
@@ -538,6 +756,17 @@ export function createMessagingRepository<TResult>(
       const peers = [...new Set(keys)];
       const deletedAt = Date.now();
       db.transaction((tx) => {
+        tx.delete(messageTimeLocks)
+          .where(
+            inArray(
+              messageTimeLocks.messageId,
+              tx
+                .select({ id: messages.id })
+                .from(messages)
+                .where(inArray(messages.peerKey, peers)),
+            ),
+          )
+          .run();
         tx.update(messages)
           .set({
             deletedAt,
@@ -565,7 +794,12 @@ export function createMessagingRepository<TResult>(
           .where(inArray(conversations.peerKey, peers))
           .run();
       });
-      changed({ history: peers, summaries: true, unread: true });
+      changed({
+        history: peers,
+        summaries: true,
+        unread: true,
+        unlockQueue: true,
+      });
     },
 
     deleteMessages(peerKey: string, ids: readonly string[]) {
@@ -587,6 +821,14 @@ export function createMessagingRepository<TResult>(
           .returning({ id: messages.id, eventId: messages.eventId })
           .all();
         if (removed.length === 0) return;
+        tx.delete(messageTimeLocks)
+          .where(
+            inArray(
+              messageTimeLocks.messageId,
+              removed.map(({ id }) => id),
+            ),
+          )
+          .run();
         tx.delete(messageReactions)
           .where(
             and(
@@ -600,7 +842,12 @@ export function createMessagingRepository<TResult>(
           .run();
         recountUnread(tx, peerKey);
       });
-      changed({ history: [peerKey], summaries: true, unread: true });
+      changed({
+        history: [peerKey],
+        summaries: true,
+        unread: true,
+        unlockQueue: true,
+      });
     },
 
     toggleReaction(

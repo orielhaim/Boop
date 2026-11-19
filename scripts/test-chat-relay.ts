@@ -8,8 +8,14 @@ import { type Filter, matchFilters } from "nostr-tools/filter";
 import type { Event } from "nostr-tools/pure";
 import { z } from "zod";
 import type { CallSignal } from "../src/core/calling/signals";
-import { verifiedEvent } from "../src/core/messaging/nip17";
+import { unwrapPrivateEvent, verifiedEvent } from "../src/core/messaging/nip17";
 import { createMessagingService } from "../src/core/messaging/runtime";
+import {
+  createTimeLockOpener,
+  quicknetHash,
+  scheduleUnlock,
+  TimeLockError,
+} from "../src/core/messaging/special-messages/timelock";
 import { createMessagingRepository } from "../src/db/messaging";
 import migrations from "../src/db/migrations/bundle";
 import { preference, setPreference } from "../src/db/queries";
@@ -67,13 +73,142 @@ function client(seed: string) {
   };
 }
 
-async function wait(label: string, condition: () => boolean) {
+async function wait(
+  label: string,
+  condition: () => boolean | Promise<boolean>,
+) {
   const expires = Date.now() + 12_000;
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() >= expires)
       throw new Error(`Timed out waiting for ${label}`);
     await Bun.sleep(20);
   }
+}
+
+async function testOpenLater(
+  alice: ReturnType<typeof client>,
+  bob: ReturnType<typeof client>,
+  url: string,
+  events: Map<string, Event>,
+) {
+  const text = "Boop Open Later שלום 🔒";
+  const requestedAt = Date.now() + 16_000;
+  alice.service.stop();
+  alice.service.setUnlockActive(true);
+  const started = performance.now();
+  const localId = await alice.service.send({
+    peerKey: bob.key,
+    body: text,
+    replyTo: null,
+    unlockAt: requestedAt,
+  });
+  const queuedMs = performance.now() - started;
+  const pending = alice.chat.message(bob.key, localId);
+  if (
+    !pending?.eventId ||
+    pending.status !== "pending" ||
+    pending.body ||
+    pending.rumorJson?.includes(text)
+  )
+    throw Error("Open Later was not sealed in the offline outbox");
+  const id = pending.eventId;
+  alice.service.start([url]);
+  await wait("recipient's locked bubble record", () =>
+    Boolean(bob.chat.message(alice.key, id)?.locked),
+  );
+  await wait(
+    "Open Later outbox acknowledgment",
+    () => alice.chat.message(bob.key, localId)?.status === "sent",
+  );
+  if (bob.chat.message(alice.key, id)?.body || Date.now() >= requestedAt)
+    throw Error("The message did not arrive sealed before the requested time");
+
+  const verifiedCopies = new Map<string, number>();
+  const inspected = new Set<string>();
+  await wait("sealed recipient and sender copy", async () => {
+    for (const event of events.values()) {
+      if (event.kind !== 1059 || inspected.has(event.id)) continue;
+      inspected.add(event.id);
+      const receiver = [alice, bob].find(({ key }) =>
+        event.tags.some(([tag, value]) => tag === "p" && value === key),
+      );
+      if (!receiver) continue;
+      const inner = await unwrapPrivateEvent(event, receiver.signer);
+      if (inner?.id !== id || inner.type !== "timelock") continue;
+      if (JSON.stringify(inner).includes(text))
+        throw Error("Plaintext leaked into the rumor");
+      verifiedCopies.set(receiver.key, JSON.stringify(event).length);
+    }
+    return verifiedCopies.size === 2;
+  });
+  const queued = bob.chat
+    .dueUnlocks(requestedAt + 3_000)
+    .find(({ messageId }) => messageId === id);
+  if (!queued) throw Error("Missing durable unlock job");
+  await createTimeLockOpener()(queued.content).then(
+    () => {
+      throw Error("Opened before Quicknet released the round");
+    },
+    (error) => {
+      if (!(error instanceof TimeLockError) || error.code !== "not-ready")
+        throw error;
+    },
+  );
+  const { unlockRound, roundTime } = scheduleUnlock(requestedAt);
+  const beaconUrl = `https://api.drand.sh/${quicknetHash}/public/${unlockRound}`;
+  const early = await fetch(beaconUrl);
+  if (early.status !== 404 && early.status !== 425)
+    throw Error(
+      `Expected an unavailable future Quicknet beacon, got HTTP ${early.status}`,
+    );
+
+  bob.service.stop();
+  const lateText = "Arrived after release";
+  const lateLocalId = await alice.service.send({
+    peerKey: bob.key,
+    body: lateText,
+    replyTo: localId,
+    unlockAt: requestedAt,
+  });
+  const lateId = alice.chat.message(bob.key, lateLocalId)?.eventId;
+  if (!lateId) throw Error("Missing offline message");
+  await wait(
+    "late recipient relay acceptance",
+    () => alice.chat.message(bob.key, lateLocalId)?.status === "sent",
+  );
+  alice.service.stop();
+  if (bob.chat.message(alice.key, lateId))
+    throw Error("Offline recipient received a live event");
+  await Bun.sleep(Math.max(0, roundTime - Date.now() + 2_500));
+  if (bob.chat.message(alice.key, id)?.body)
+    throw Error("A stopped runtime committed an unlock");
+
+  const opening = performance.now();
+  bob.service.setUnlockActive(true);
+  bob.service.start([url]);
+  await wait(
+    "Quicknet unlock after resume",
+    () => bob.chat.message(alice.key, id)?.body === text,
+  );
+  await wait("catch-up unlock and quote", () => {
+    const late = bob.chat.message(alice.key, lateId);
+    return late?.body === lateText && late.replyTo === id;
+  });
+  if (
+    bob.chat.history(alice.key).messages.filter((row) => row.eventId === id)
+      .length !== 1
+  )
+    throw Error("Unlock duplicated the existing chat row");
+  if (!bob.chat.message(alice.key, id)?.isUnread)
+    throw Error("Unlock marked an unseen message read");
+  console.log({
+    quicknetRound: unlockRound,
+    enqueueMs: Math.round(queuedMs),
+    resumeAndUnlockMs: Math.round(performance.now() - opening),
+    cipherBytes: queued.content.ciphertext.length,
+    recipientWrapBytes: verifiedCopies.get(bob.key),
+    senderWrapBytes: verifiedCopies.get(alice.key),
+  });
 }
 
 async function runScenario(tlsDirectory: string) {
@@ -109,7 +244,14 @@ async function runScenario(tlsDirectory: string) {
         sockets.delete(socket);
       },
       message(socket, payload) {
-        const message = relayRequest.parse(JSON.parse(payload.toString()));
+        let frame: unknown;
+        try {
+          frame = JSON.parse(payload.toString());
+        } catch {
+          socket.send(encode(["NOTICE", "invalid JSON"]));
+          return;
+        }
+        const message = relayRequest.parse(frame);
         if (message[0] === "REQ") {
           const [, id, ...filters] = message;
           if (
@@ -456,6 +598,9 @@ async function runScenario(tlsDirectory: string) {
     if (events.has(signed.id))
       throw new Error("The relay did not replace the old inbox list");
 
+    if (process.argv.includes("--timelock"))
+      await testOpenLater(alice, bob, url, events);
+
     console.log(
       "TLS relay verified encrypted messaging and call invitations, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, catch-up, reconnect, and stable retries.",
     );
@@ -497,11 +642,15 @@ async function runWithTemporaryCertificate() {
     );
     if (!success)
       throw new Error("OpenSSL could not create the loopback TLS certificate");
-    const check = Bun.spawnSync([process.execPath, import.meta.path, dir], {
-      env: { ...process.env, NODE_EXTRA_CA_CERTS: cert },
-      stdout: "inherit",
-      stderr: "inherit",
-    });
+    const flags = process.argv.slice(2).filter((arg) => arg.startsWith("--"));
+    const check = Bun.spawnSync(
+      [process.execPath, import.meta.path, dir, ...flags],
+      {
+        env: { ...process.env, NODE_EXTRA_CA_CERTS: cert },
+        stdout: "inherit",
+        stderr: "inherit",
+      },
+    );
     if (!check.success) process.exitCode = check.exitCode || 1;
   } finally {
     await Promise.all(
@@ -513,7 +662,7 @@ async function runWithTemporaryCertificate() {
   }
 }
 
-const tlsDirectory = process.argv[2];
+const tlsDirectory = process.argv.slice(2).find((arg) => !arg.startsWith("--"));
 if (tlsDirectory) {
   await runScenario(tlsDirectory);
   // NDK 3.0.3 keeps its relay validation timers alive after disconnect.

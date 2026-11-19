@@ -11,7 +11,8 @@ import {
 } from "@/components/messages/conversation-item";
 import { Action, Empty, IconButton, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
-import { namespaces } from "@/i18n";
+import { namespaces, resolveLanguage } from "@/i18n";
+import { formatDateTime } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { space } from "@/theme";
 
@@ -45,10 +46,15 @@ export default function Messages() {
   );
   const adapt = useMemo(
     () =>
-      createConversationListAdapter(identity.publicKey, (text) =>
-        t("translation:preview", { text }),
+      createConversationListAdapter(
+        identity.publicKey,
+        (text) => t("translation:preview", { text }),
+        (time) =>
+          t("messages:lockedPreview", {
+            time: formatDateTime(time, resolveLanguage(locale)),
+          }),
       ),
-    [identity.publicKey, t],
+    [identity.publicKey, locale, t],
   );
   const chats = useMemo(() => (rows ?? []).map(adapt), [rows, adapt]);
   const emptyStatus =

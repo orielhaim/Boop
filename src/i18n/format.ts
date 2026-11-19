@@ -6,13 +6,14 @@ export function formatDateTime(
   value: number | Date,
   language: AppLanguage,
   hour12?: boolean,
+  seconds = false,
 ) {
-  const key = `${language}:${hour12}`;
+  const key = `${language}:${hour12}:${seconds}`;
   let formatter = dateTimes.get(key);
   if (!formatter) {
     formatter = new Intl.DateTimeFormat(language, {
       dateStyle: "medium",
-      timeStyle: "short",
+      timeStyle: seconds ? "medium" : "short",
       hour12,
     });
     dateTimes.set(key, formatter);

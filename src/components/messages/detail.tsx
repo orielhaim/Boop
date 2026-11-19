@@ -19,6 +19,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import {
   type ComponentProps,
+  type ComponentRef,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -32,25 +33,37 @@ import { useTranslation } from "react-i18next";
 import {
   Alert,
   AppState,
+  BackHandler,
+  Dimensions,
+  Keyboard,
   Image,
   Linking,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
+import Animated, { FadeIn } from "react-native-reanimated";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import type { MessageCursor } from "@/db/messaging";
-import { namespaces } from "@/i18n";
+import { namespaces, resolveLanguage } from "@/i18n";
+import { formatDateTime } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
 import { type DetailMessage, toQuote } from "./detail-adapter";
 import { useDetailHistory } from "./detail-history";
+import {
+  OpenLaterSheet,
+  type SendMenuAnchor,
+  SpecialSendMenu,
+} from "./send-options";
+import { canRetryUnlock, LockedMessageBubble } from "./timelock-message";
 import { useMessageTranslations } from "./use-message-translations";
 
 const messageActions: MessageActionKey[] = [
@@ -190,6 +203,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     peerKey,
     participants,
     t("messages:unavailableQuote"),
+    t("messages:lockedMessage"),
   );
   const [detached, setDetached] = useState(initiallyDetached);
   const positioned =
@@ -215,7 +229,36 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   >(
     (props) => {
       const message = props.currentMessage;
-      if (message?.originalText === undefined) return <Bubble {...props} />;
+      if (message?.locked) {
+        const sealed = message.locked;
+        return (
+          <Bubble
+            {...props}
+            renderCustomView={() => (
+              <LockedMessageBubble
+                lock={sealed}
+                color={
+                  props.position === "right" ? colors.outgoingInk : colors.text
+                }
+                rtl={rtl}
+              />
+            )}
+          />
+        );
+      }
+      if (message?.originalText === undefined) {
+        if (!message?.timeLock || reducedMotion) return <Bubble {...props} />;
+        return (
+          <Bubble
+            {...props}
+            renderMessageText={(textProps) => (
+              <Animated.View entering={FadeIn.duration(180)}>
+                <MessageText {...textProps} />
+              </Animated.View>
+            )}
+          />
+        );
+      }
       const original = message.text === message.originalText;
       return (
         <Bubble
@@ -254,17 +297,25 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         />
       );
     },
-    [colors.accent, colors.outgoingInk, rtl, t, toggleOriginal],
+    [
+      colors.accent,
+      colors.outgoingInk,
+      colors.text,
+      reducedMotion,
+      rtl,
+      t,
+      toggleOriginal,
+    ],
   );
-  const chatRef = useRef<ChatHandle>(null);
-
   const [initialDraft] = useState(() => {
     try {
       const saved = chat.draft(peerKey);
       const target = saved?.draftReplyTo
         ? chat.message(peerKey, saved.draftReplyTo)
         : undefined;
-      const quote = target ? toQuote(target, participants) : null;
+      const quote = target
+        ? toQuote(target, participants, t("messages:lockedMessage"))
+        : null;
       return { text: saved?.draft ?? "", quote };
     } catch {
       return { text: "", quote: null };
@@ -275,6 +326,76 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const composition = useRef(initialDraft);
   const [sending, setSending] = useState(false);
   const sendBusy = useRef(false);
+  const chatRef = useRef<ChatHandle>(null);
+  const textInputRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const menuHost = useRef<ComponentRef<typeof View>>(null);
+  const sendAnchor = useRef<ComponentRef<typeof View>>(null);
+  const [menu, setMenu] = useState<SendMenuAnchor>();
+  const [openLater, setOpenLater] = useState(false);
+  const [pickerSession, setPickerSession] = useState(0);
+  const clearSpecialInput = useRef<() => void>(undefined);
+  const [openError, setOpenError] = useState<string>();
+  const restoreInput = useRef(false);
+  const focusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+
+  const closeMenu = useCallback(() => setMenu(undefined), []);
+  useEffect(() => {
+    if (!menu) return;
+    const back = BackHandler.addEventListener("hardwareBackPress", () => {
+      closeMenu();
+      return true;
+    });
+    const keyboardHidden = Keyboard.addListener("keyboardDidHide", closeMenu);
+    const keyboardShown = Keyboard.addListener("keyboardDidShow", closeMenu);
+    const layout = Dimensions.addEventListener("change", closeMenu);
+    return () => {
+      back.remove();
+      keyboardHidden.remove();
+      keyboardShown.remove();
+      layout.remove();
+    };
+  }, [menu, closeMenu]);
+  useFocusEffect(useCallback(() => closeMenu, [closeMenu]));
+  useEffect(() => () => clearTimeout(focusTimer.current), []);
+
+  const showMenu = useCallback((reset: () => void) => {
+    const host = menuHost.current;
+    if (!host || !composition.current.text.trim() || sendBusy.current) return;
+    host.measureInWindow((rootX, rootY, available, rootHeight) => {
+      sendAnchor.current?.measureInWindow((x, y, width) => {
+        if (available > 32 && rootHeight > 0 && width > 0) {
+          clearSpecialInput.current = reset;
+          setMenu({
+            x: x - rootX,
+            y: Math.max(0, rootY + rootHeight - y),
+            width,
+            available,
+          });
+        }
+      });
+    });
+  }, []);
+
+  const showOpenLater = useCallback(() => {
+    closeMenu();
+    restoreInput.current = Boolean(textInputRef.current?.isFocused());
+    Keyboard.dismiss();
+    setOpenError(undefined);
+    setPickerSession((session) => session + 1);
+    setOpenLater(true);
+  }, [closeMenu]);
+
+  const cancelOpenLater = useCallback(() => {
+    setOpenLater(false);
+    if (restoreInput.current) {
+      clearTimeout(focusTimer.current);
+      focusTimer.current = setTimeout(() => textInputRef.current?.focus(), 360);
+    }
+    restoreInput.current = false;
+  }, []);
+
   const pendingDraft = useRef<{ text: string; reply: string | null } | null>(
     null,
   );
@@ -338,7 +459,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   );
 
   const sendText = useCallback(
-    async (text: string, clearInput: () => void) => {
+    async (text: string, clearInput: () => void, unlockAt?: number) => {
       if (sendBusy.current || !text.trim()) return;
       sendBusy.current = true;
       flushDraft();
@@ -349,6 +470,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         await messaging.send({
           peerKey,
           body: text,
+          unlockAt,
           replyTo: reply ? String(reply._id) : null,
         });
         // The service clears the persisted draft in the message insert transaction.
@@ -359,16 +481,25 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         setQuote(null);
         setDetached(false);
       } catch (error) {
-        setNotice(
-          error instanceof Error && error.message === "unavailable-reply"
+        const code = error instanceof Error ? error.message : undefined;
+        const message =
+          code === "unavailable-reply"
             ? t("messages:sendReplyError")
-            : t("messages:sendError"),
-        );
+            : unlockAt === undefined
+              ? t("messages:sendError")
+              : code === "unlock-time"
+                ? t("messages:openTimeError")
+                : code === "invalid-message"
+                  ? t("messages:invalidMessage")
+                  : t("messages:openSendError");
+        if (unlockAt === undefined) setNotice(message);
+        else setOpenError(message);
         return;
       } finally {
         sendBusy.current = false;
         setSending(false);
       }
+      if (unlockAt !== undefined) setOpenLater(false);
       try {
         const id = loadLatest();
         if (id) setJump({ id, highlight: false });
@@ -382,46 +513,58 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   // Keep the built-in button, and clear the controlled composer only after SQLite commits.
   const renderSend = useCallback(
     (props: SendProps<DetailMessage>) => {
-      const enabled = !sending && Boolean(props.text?.trim());
+      const enabled = !sending && !openLater && Boolean(props.text?.trim());
+      const clear = () => props.onSend?.([], true);
+      const show = () => showMenu(clear);
       return (
-        <Send
-          {...props}
-          isSendButtonAlwaysVisible
-          containerStyle={rtl ? styles.rtlSend : styles.send}
-          sendButtonProps={{
-            ...props.sendButtonProps,
-            hitSlop: 6,
-            accessibilityLabel: t("messages:send"),
-            accessibilityState: { disabled: !enabled, busy: sending },
-            enabled,
-          }}
-          onSend={(value) => {
-            const message = Array.isArray(value) ? value[0] : value;
-            if (message?.text) {
-              void sendText(message.text, () => props.onSend?.([], true));
-            }
-          }}
-        >
-          <View
-            style={[
-              styles.sendGlyph,
-              {
-                backgroundColor: enabled
-                  ? material.outgoing[0]
-                  : colors.accentSoft,
+        <View ref={sendAnchor} collapsable={false}>
+          <Send
+            {...props}
+            isSendButtonAlwaysVisible
+            containerStyle={rtl ? styles.rtlSend : styles.send}
+            sendButtonProps={{
+              ...props.sendButtonProps,
+              hitSlop: 6,
+              accessibilityLabel: t("messages:send"),
+              onLongPress: enabled ? show : undefined,
+              accessibilityActions: enabled
+                ? [{ name: "special-send", label: t("messages:openLater") }]
+                : undefined,
+              onAccessibilityAction: (event) => {
+                if (enabled && event.nativeEvent.actionName === "special-send")
+                  show();
               },
-            ]}
+              accessibilityState: { disabled: !enabled, busy: sending },
+              enabled,
+            }}
+            onSend={(value) => {
+              const message = Array.isArray(value) ? value[0] : value;
+              if (enabled && message?.text) {
+                void sendText(message.text, clear);
+              }
+            }}
           >
-            <Icon
-              name="send"
-              size={19}
-              color={enabled ? colors.outgoingInk : colors.muted}
-            />
-          </View>
-        </Send>
+            <View
+              style={[
+                styles.sendGlyph,
+                {
+                  backgroundColor: enabled
+                    ? material.outgoing[0]
+                    : colors.accentSoft,
+                },
+              ]}
+            >
+              <Icon
+                name="send"
+                size={19}
+                color={enabled ? colors.outgoingInk : colors.muted}
+              />
+            </View>
+          </Send>
+        </View>
       );
     },
-    [colors, t, material.outgoing, rtl, sendText, sending],
+    [colors, t, material.outgoing, rtl, sendText, sending, showMenu, openLater],
   );
 
   const renderComposer = useCallback(
@@ -602,6 +745,20 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     [focused, lock, markVisibleRead, openedAt],
   );
 
+  useEffect(() => {
+    const visible = new Set(visibleIds);
+    visibleUnread.current = items.flatMap((item) =>
+      item.unread && !item.locked && visible.has(item._id) ? [item._id] : [],
+    );
+    let current = true;
+    queueMicrotask(() => {
+      if (current) markVisibleRead();
+    });
+    return () => {
+      current = false;
+    };
+  }, [items, visibleIds, markVisibleRead]);
+
   const [restoredIndex] = useState(() =>
     restoredMessageId
       ? items.findIndex(({ _id }) => _id === restoredMessageId)
@@ -691,32 +848,63 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const actionsForMessage = useCallback(
     (message: DetailMessage, defaults: MessageMenuItem[]) => {
       const original = message.originalText;
-      const actions =
-        original === undefined
-          ? defaults
-          : [
-              ...defaults,
-              {
-                key: "translation-copy-original",
-                label: t("translation:copyOriginal"),
-                onPress: () => {
-                  void setStringAsync(original).catch(() =>
-                    setNotice(t("messages:updateError")),
-                  );
-                },
-              },
-              {
-                key: "translation-refresh",
-                label: t("translation:refresh"),
-                onPress: () => {
-                  try {
-                    refresh(message._id);
-                  } catch {
-                    setNotice(t("messages:updateError"));
-                  }
-                },
-              },
-            ];
+      const actions = message.locked
+        ? defaults.filter(({ key }) => key !== "copy")
+        : [...defaults];
+      if (original !== undefined)
+        actions.push(
+          {
+            key: "translation-copy-original",
+            label: t("translation:copyOriginal"),
+            onPress: () => {
+              void setStringAsync(original).catch(() =>
+                setNotice(t("messages:updateError")),
+              );
+            },
+          },
+          {
+            key: "translation-refresh",
+            label: t("translation:refresh"),
+            onPress: () => {
+              try {
+                refresh(message._id);
+              } catch {
+                setNotice(t("messages:updateError"));
+              }
+            },
+          },
+        );
+      if (message.locked) {
+        const sealed = message.locked;
+        const date = (time: number) =>
+          formatDateTime(time, resolveLanguage(locale), undefined, true);
+        actions.push({
+          key: "unlock-details",
+          label: t("messages:lockedDetails"),
+          onPress: () =>
+            Alert.alert(
+              t("messages:lockedDetails"),
+              [
+                t("messages:openSelectedTime", {
+                  time: date(sealed.requestedAt),
+                }),
+                t("messages:openRoundTime", { time: date(sealed.roundTime) }),
+              ].join("\n"),
+            ),
+        });
+        if (canRetryUnlock(sealed.error))
+          actions.push({
+            key: "unlock-retry",
+            label: t("messages:lockedRetry"),
+            onPress: () => {
+              try {
+                chat.retryUnlock(peerKey, message._id, Date.now());
+              } catch {
+                setNotice(t("messages:updateError"));
+              }
+            },
+          });
+      }
       if (!message.isFailed) return actions;
       const detail =
         message.failure === "no-inbox"
@@ -733,7 +921,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         },
       ];
     },
-    [t, refresh],
+    [t, chat, locale, peerKey, refresh],
   );
 
   const reactions = useMemo<ChatProps<DetailMessage>["reactions"]>(
@@ -759,12 +947,14 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         updateQuote({
           _id: message._id,
           user: message.user,
-          text: message.originalText ?? message.text,
+          text: message.locked
+            ? t("messages:lockedMessage")
+            : (message.originalText ?? message.text),
         }),
       onClear: () => updateQuote(null),
       onPress: jumpToQuote,
     }),
-    [jumpToQuote, quote, rtl, updateQuote],
+    [jumpToQuote, quote, rtl, t, updateQuote],
   );
 
   const messageTextProps = useMemo<
@@ -933,10 +1123,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           </Action>
         </View>
       ) : null}
-      <View style={styles.chat}>
+      <View style={styles.chat} ref={menuHost} collapsable={false}>
         <Chat<DetailMessage>
           {...kit}
           chatRef={chatRef}
+          textInputRef={textInputRef}
           messages={displayed}
           user={participants.self}
           forceRTL={rtl}
@@ -973,7 +1164,35 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           videoRecording={false}
           emojiKeyboard
         />
+        {menu ? (
+          <SpecialSendMenu
+            anchor={menu}
+            rtl={rtl}
+            reducedMotion={reducedMotion}
+            onClose={closeMenu}
+            onOpenLater={showOpenLater}
+          />
+        ) : null}
       </View>
+      {pickerSession > 0 ? (
+        <OpenLaterSheet
+          key={pickerSession}
+          open={openLater}
+          busy={sending}
+          error={openError}
+          colorScheme={colorScheme}
+          rtl={rtl}
+          onCancel={cancelOpenLater}
+          onSend={(time) => {
+            setOpenError(undefined);
+            void sendText(
+              composition.current.text,
+              () => clearSpecialInput.current?.(),
+              time,
+            );
+          }}
+        />
+      ) : null}
     </ScreenInsets>
   );
 }

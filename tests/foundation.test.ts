@@ -90,6 +90,7 @@ test("migration creates the app tables and enforces event and contact uniqueness
     "contacts",
     "conversations",
     "message_reactions",
+    "message_timelocks",
     "message_translations",
     "messages",
     "relay_settings",

@@ -36,6 +36,8 @@ also use `bun fmt` to format. instead of prettier/biome etc.
 - Keep inbox subscriptions, catch-up, and outbound delivery in the protected app session's messaging runtime. Screens consume the repository, conversation feed, and shared history loader.
 - Derive unread counts from committed SQLite records. Mark only visible IDs in a focused, foreground, unlocked chat. Use the native tab badge and keep prefetch and history windows bounded.
 - Translate only visible incoming chat messages. Keep translations on the device, preserve original Nostr messages byte for byte, and keep translated text out of messaging, networking, and logs.
+- For Special Messages, read the Open Later section of `arch.md`. Keep special sends in the Chat Kit composer and the shared encrypted outbox. Validate the Quicknet schedule and AGE recipient before persistence, and verify beacons with the pinned drand-client before opening. Keep sealed content out of translation, previews, and copy. Commit the unlocked body and opening state together in SQLite.
+- Run `bun test tests/timelock.test.ts` for protocol and persistence changes. Run `bun scripts/test-chat-relay.ts --timelock` when checking the live Quicknet and relay path.
 - Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
 - Docs: https://docs.expo.dev/router/introduction.md
 

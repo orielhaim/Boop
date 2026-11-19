@@ -14,6 +14,14 @@ import {
 } from "../calling/signals";
 import { publicKeySchema } from "../identity/keys";
 
+import {
+  type MessageContent,
+  maxTimeLockEnvelope,
+  maxTimeLockPayload,
+  parseTimeLock,
+  timeLockKind,
+} from "./special-messages/timelock";
+
 export const messageKind = 14;
 export const reactionKind = 7;
 export const giftWrapKind = 1059;
@@ -34,6 +42,7 @@ const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
 const rumorSchema = event.extend({
   kind: z.union([
     z.literal(messageKind),
+    z.literal(timeLockKind),
     z.literal(reactionKind),
     z.literal(callSignalKind),
   ]),
@@ -51,6 +60,11 @@ export type PrivateEvent = {
   sentAt: number;
 } & (
   | { type: "message"; body: string; replyTo: string | null }
+  | {
+      type: "timelock";
+      special: Extract<MessageContent, { type: "timelock" }>;
+      replyTo: string | null;
+    }
   | { type: "reaction"; emoji: string; targetEventId: string }
   | { type: "call"; signal: CallSignal; replyRelays: string[] }
 );
@@ -119,6 +133,12 @@ export async function unwrapPrivateEvent(
     const rumor = parseRumor(JSON.parse(plaintext));
     if (!rumor || rumor.pubkey !== seal.pubkey) return null;
 
+    if (
+      rumor.kind === timeLockKind &&
+      (JSON.stringify(wrap).length > maxTimeLockEnvelope ||
+        plaintext.length > maxTimeLockPayload + 1_024)
+    )
+      return null;
     return privateEvent(rumor, myKey);
   } catch {
     return null;
@@ -164,6 +184,12 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     return target && emoji
       ? { ...base, type: "reaction", targetEventId: target, emoji }
       : null;
+  }
+  if (rumor.kind === timeLockKind) {
+    if (rumor.content.length > maxTimeLockPayload) return null;
+    const special = parseTimeLock(JSON.parse(rumor.content));
+    if (!special || special.requestedAt <= base.sentAt) return null;
+    return { ...base, type: "timelock", special, replyTo: target ?? null };
   }
   if (!rumor.content.trim() || rumor.content.length > 16_000) return null;
   return {

@@ -227,12 +227,18 @@ export function MessagingLifecycle() {
         });
       },
     );
+    function updateUnlocks() {
+      messaging.setUnlockActive(
+        AppState.currentState === "active" && !lock.getState().locked,
+      );
+    }
     function background() {
       calling.setForeground(false);
       if (!calling.isRequestingMicrophone()) messaging.stop();
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
+      messaging.setUnlockActive(state === "active" && !lock.getState().locked);
       conversations.setPrefetchEnabled(
         state === "active" && !lock.getState().locked,
       );
@@ -244,6 +250,7 @@ export function MessagingLifecycle() {
       }
     };
     const unsubscribeLock = lock.subscribe(() => {
+      updateUnlocks();
       conversations.setPrefetchEnabled(
         AppState.currentState === "active" && !lock.getState().locked,
       );
@@ -270,6 +277,7 @@ export function MessagingLifecycle() {
       subscription.remove();
       dbChanges.remove();
       stopFeed();
+      messaging.setUnlockActive(false);
       messaging.stop();
     };
   }, [db, messaging, calling, lock, conversations]);

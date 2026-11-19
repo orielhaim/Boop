@@ -26,6 +26,15 @@ import {
   unwrapPrivateEvent,
 } from "./nip17";
 
+import {
+  createTimeLockOpener,
+  encryptTimeLock,
+  maxTimeLockEnvelope,
+  maxTimeLockPayload,
+  timeLockKind,
+} from "./special-messages/timelock";
+import { createUnlockScheduler } from "./special-messages/unlock-scheduler";
+
 export type MessagingStatus = "disabled" | "connecting" | "online" | "offline";
 export type RelayState = {
   status:
@@ -41,7 +50,12 @@ export type RelayState = {
 };
 export type InboxStatus =
   "idle" | "validating" | "published" | "conflict" | "unverified" | "pending";
-type SendInput = { peerKey: string; body: string; replyTo: string | null };
+type SendInput = {
+  peerKey: string;
+  body: string;
+  replyTo: string | null;
+  unlockAt?: number;
+};
 const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 const offlineProbeDelay = 60_000;
 
@@ -59,6 +73,50 @@ export function createMessagingService({
   createId: () => string;
 }) {
   const publicKey = signer.userSync.pubkey;
+  const beaconKey = "chat.timelock.quicknet.beacons";
+  function storedBeacons(): unknown[] {
+    const value = readState(beaconKey);
+    if (!value || value.length > 16_384) return [];
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.slice(-32) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  const unlocks = createUnlockScheduler(
+    chat,
+    createTimeLockOpener({
+      read: (round) =>
+        storedBeacons().find(
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "round" in value &&
+            value.round === round,
+        ),
+      store(beacon) {
+        const retained = storedBeacons().filter(
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "round" in value &&
+            value.round !== beacon.round,
+        );
+        writeState(beaconKey, JSON.stringify([...retained, beacon].slice(-32)));
+      },
+    }),
+  );
+  let unlockActive = false;
+  let unlockGeneration = 0;
+
+  function setUnlockActive(active: boolean) {
+    if (active === unlockActive) return;
+    unlockActive = active;
+    unlockGeneration++;
+    unlocks.setActive(active);
+  }
   const transport = createMessagingRelays(signer);
   const listeners = new Set<() => void>();
   const callListeners = new Set<(signal: CallSignal) => void>();
@@ -137,7 +195,8 @@ export function createMessagingService({
           senderKey: event.senderKey,
           recipientKey: event.recipientKey,
           sentAt: event.sentAt,
-          body: event.body,
+          body: event.type === "message" ? event.body : "",
+          timeLock: event.type === "timelock" ? event.special : undefined,
           replyTo: event.replyTo,
           direction: event.senderKey === publicKey ? "outgoing" : "incoming",
         });
@@ -413,6 +472,7 @@ export function createMessagingService({
   }
 
   function stop() {
+    setUnlockActive(false);
     generation++;
     replyRoutes.clear();
     revision++;
@@ -539,7 +599,9 @@ export function createMessagingService({
         watchInbox();
       }
       report(relay.url, { status: "connected", lastConnected: Date.now() });
+      const wasOnline = status === "online";
       updateStatus("online");
+      if (!wasOnline) unlocks.reconnect();
       schedulePublication();
       // Retry discovered/queued sends only when a relay is actually reachable.
       void flush();
@@ -616,6 +678,11 @@ export function createMessagingService({
     if (relays.length === 0) return "no-inbox";
     const envelope = await transport.wrap(rumor, peerKey);
     if (session !== generation) return "interrupted";
+    if (rumor.kind === timeLockKind) {
+      const envelopeBytes = JSON.stringify(envelope.rawEvent()).length;
+      if (envelopeBytes > maxTimeLockEnvelope) return "relay-rejected";
+      messagingMetric("timelock gift wrap", { envelopeBytes });
+    }
     if (
       !(await transport.publish(envelope, relays, () => session === generation))
     ) {
@@ -740,7 +807,7 @@ export function createMessagingService({
     }
   }
 
-  async function send({ peerKey, body, replyTo }: SendInput) {
+  async function send({ peerKey, body, replyTo, unlockAt }: SendInput) {
     if (!publicKeySchema.safeParse(peerKey).success || peerKey === publicKey)
       throw new Error("invalid-recipient");
     if (!body.trim() || body.length > maxMessageLength)
@@ -757,25 +824,58 @@ export function createMessagingService({
         throw new Error("unavailable-reply");
       tags.push(["e", quoted.eventId]);
     }
+    const session = generation;
+    const unlockSession = unlockGeneration;
+    let special: Awaited<ReturnType<typeof encryptTimeLock>> | undefined;
+    if (unlockAt !== undefined) {
+      const active = () =>
+        unlockActive &&
+        session === generation &&
+        unlockSession === unlockGeneration;
+      // Let the composer paint its busy state before the pairing operation.
+      await new Promise((resolve) => setTimeout(resolve, 16));
+      if (!active()) throw new Error("unlock-time");
+      const started = performance.now();
+      special = await encryptTimeLock(body, unlockAt);
+      messagingMetric("timelock encrypt", {
+        ms: performance.now() - started,
+        cipherBytes: special.ciphertext.length,
+      });
+      if (!active() || special.requestedAt <= Date.now())
+        throw new Error("unlock-time");
+    }
+    if (special && replyTo && !chat.message(peerKey, replyTo))
+      throw new Error("unavailable-reply");
+    const content = special ? JSON.stringify(special) : body;
+    if (special && content.length > maxTimeLockPayload)
+      throw new Error("invalid-message");
     const rumor = createRumor({
-      kind: messageKind,
+      kind: special ? timeLockKind : messageKind,
       pubkey: publicKey,
-      content: body,
+      content,
       tags,
       created_at,
     });
-    chat.enqueue({
+    const writeStarted = performance.now();
+    const enqueued = chat.enqueue({
       id,
       eventId: rumor.id,
       peerKey,
       senderKey: publicKey,
       recipientKey: peerKey,
       direction: "outgoing",
-      body,
+      body: special ? "" : body,
+      timeLock: special,
       sentAt: created_at * 1_000,
       replyTo,
       rumorJson: JSON.stringify(rumor),
     });
+    if (!enqueued) throw new Error("invalid-message");
+    if (special)
+      messagingMetric("timelock enqueued", {
+        writeMs: performance.now() - writeStarted,
+        contentBytes: content.length,
+      });
     if (status === "offline" && configured.length) startAgain();
     void flush();
     return id;
@@ -824,7 +924,12 @@ export function createMessagingService({
       tags: [
         ["p", peerKey],
         ["e", message.eventId],
-        ["k", String(messageKind)],
+        [
+          "k",
+          String(
+            message.contentType === "timelock" ? timeLockKind : messageKind,
+          ),
+        ],
       ],
     });
     const session = generation;
@@ -839,6 +944,7 @@ export function createMessagingService({
     start,
     stop,
     reconnect: startAgain,
+    setUnlockActive,
     getRelayStates: () => snapshot,
     getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,
