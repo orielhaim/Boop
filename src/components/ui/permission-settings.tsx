@@ -1,6 +1,7 @@
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { AppState, Linking, Platform, StyleSheet } from "react-native";
 import {
   SettingsDescription,
@@ -12,9 +13,10 @@ import {
   allowBluetoothOutput,
   hasBluetoothOutputPermission,
 } from "@/core/calling/permissions";
+import { namespaces } from "@/i18n";
 
 const showsBluetooth = Platform.OS === "android" && Platform.Version >= 31;
-type Status = "Allowed" | "Not allowed" | "Not requested" | "Unavailable";
+type Status = "granted" | "denied" | "undetermined" | "unavailable";
 
 async function permissionStatus(
   check: () => Promise<{ status: string }>,
@@ -22,28 +24,35 @@ async function permissionStatus(
   try {
     switch ((await check()).status) {
       case "granted":
-        return "Allowed";
+        return "granted";
       case "denied":
-        return "Not allowed";
+        return "denied";
       case "undetermined":
-        return "Not requested";
+        return "undetermined";
       default:
-        return "Unavailable";
+        return "unavailable";
     }
   } catch {
-    return "Unavailable";
+    return "unavailable";
   }
 }
 
 async function bluetoothStatus(): Promise<Status> {
   try {
-    return (await hasBluetoothOutputPermission()) ? "Allowed" : "Not allowed";
+    return (await hasBluetoothOutputPermission()) ? "granted" : "denied";
   } catch {
-    return "Unavailable";
+    return "unavailable";
   }
 }
 
 export function PermissionSettings() {
+  const { t } = useTranslation(namespaces);
+  const label = (status?: Status) =>
+    !status
+      ? t("common:checking")
+      : status === "unavailable"
+        ? t("common:unavailable")
+        : t(`security:${status}`);
   const [, , getCameraPermission] = useCameraPermissions({ get: false });
   const [, , getMicPermission] = useMicrophonePermissions({ get: false });
   const [camera, setCamera] = useState<Status>();
@@ -84,49 +93,42 @@ export function PermissionSettings() {
     <>
       <SettingsGroup>
         <SettingsRow
-          title="Camera"
+          title={t("common:camera")}
           icon="camera"
-          value={camera ?? "Checking…"}
+          value={label(camera)}
         />
         <SettingsRow
-          title="Microphone"
+          title={t("common:microphone")}
           icon="microphone"
-          value={microphone ?? "Checking…"}
+          value={label(microphone)}
         />
         {showsBluetooth && (
           <SettingsRow
-            title="Nearby devices"
+            title={t("security:nearby")}
             icon="audio"
-            value={
-              bluetooth === "Not allowed"
-                ? undefined
-                : (bluetooth ?? "Checking…")
-            }
+            value={bluetooth === "denied" ? undefined : label(bluetooth)}
             trailing={
-              bluetooth === "Not allowed" && (
+              bluetooth === "denied" && (
                 <Action
                   size="sm"
                   variant="soft"
                   disabled={requesting}
-                  accessibilityLabel="Allow nearby devices"
+                  accessibilityLabel={t("security:allowNearby")}
                   onPress={async () => {
                     setRequesting(true);
                     setNotice("");
                     try {
                       const allowed = await allowBluetoothOutput();
-                      setBluetooth(allowed ? "Allowed" : "Not allowed");
-                      if (!allowed)
-                        setNotice(
-                          "You can change Nearby devices access in system settings.",
-                        );
+                      setBluetooth(allowed ? "granted" : "denied");
+                      if (!allowed) setNotice(t("security:nearbyHint"));
                     } catch {
-                      setNotice("Could not request Bluetooth access.");
+                      setNotice(t("security:bluetoothError"));
                     } finally {
                       setRequesting(false);
                     }
                   }}
                 >
-                  Allow
+                  {t("security:allow")}
                 </Action>
               )
             }
@@ -141,11 +143,11 @@ export function PermissionSettings() {
             await Linking.openSettings();
             setNotice("");
           } catch {
-            setNotice("Could not open system settings.");
+            setNotice(t("security:openSettingsError"));
           }
         }}
       >
-        Open system settings
+        {t("common:openDeviceSettings")}
       </Action>
       {notice && <SettingsDescription>{notice}</SettingsDescription>}
     </>

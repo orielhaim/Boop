@@ -43,7 +43,7 @@ export const type = {
 } satisfies Record<string, import("react-native").TextStyle>;
 
 export function useTheme() {
-  const { preferences } = usePreferences();
+  const preferences = usePreferences();
   return {
     ...preferences,
     colors: preferences.theme === "dark" ? dark : light,

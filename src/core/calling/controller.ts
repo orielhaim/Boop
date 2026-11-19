@@ -9,6 +9,14 @@ import {
 } from "./signals";
 import type { VideoControls, VideoState } from "./video";
 
+type CallFailure =
+  | "directFailed"
+  | "answerFailed"
+  | "microphonePermission"
+  | "privateAudioFailed"
+  | "systemInterrupted"
+  | "inviteFailed";
+
 export type Outcome =
   | "completed"
   | "rejected"
@@ -50,7 +58,7 @@ export type CallView = Pick<
         routing: Routing;
         reconnecting: boolean;
       }
-    | { phase: "ended"; outcome: Outcome; reason?: string }
+    | { phase: "ended"; outcome: Outcome; reason?: CallFailure }
   );
 type Attempt = {
   base: Pick<CallRecord, "id" | "peerKey" | "direction" | "startedAt">;
@@ -153,7 +161,7 @@ export function createCallController({
     );
   }
 
-  function finish(attempt: Attempt, outcome: Outcome, reason?: string) {
+  function finish(attempt: Attempt, outcome: Outcome, reason?: CallFailure) {
     if (active !== attempt) return;
     active = undefined;
     clearTimeout(attempt.timer);
@@ -219,11 +227,7 @@ export function createCallController({
     tone("silent");
     store.setState({ call: { ...base, phase: "connecting" } });
     attempt.timer = setTimeout(() => {
-      finish(
-        attempt,
-        "failed",
-        "A direct connection could not be established.",
-      );
+      finish(attempt, "failed", "directFailed");
       if (!attempt.direct) void response("call.end", base.peerKey, base.id);
     }, connectTimeout);
     let routing: Routing = { selected: null, available: [] };
@@ -238,8 +242,7 @@ export function createCallController({
           )
         : Promise.resolve(true);
       void acceptance.then((accepted) => {
-        if (!accepted)
-          finish(attempt, "failed", "The answer could not reach the caller.");
+        if (!accepted) finish(attempt, "failed", "answerFailed");
       });
       const media = await openMedia({
         invite: attempt.invite,
@@ -327,8 +330,8 @@ export function createCallController({
       if (active !== attempt) return;
       const reason =
         error instanceof Error && error.message === "microphone-permission"
-          ? "Allow microphone access to make calls."
-          : "The private audio connection could not be opened.";
+          ? "microphonePermission"
+          : "privateAudioFailed";
       finish(attempt, "failed", reason);
       if (!attempt.direct) void response("call.end", base.peerKey, base.id);
     }
@@ -457,7 +460,7 @@ export function createCallController({
       if (active?.base.id !== id) return;
       const attempt = active;
       void attempt.notifyHangup?.().catch(() => undefined);
-      finish(attempt, "failed", "The operating system interrupted the call.");
+      finish(attempt, "failed", "systemInterrupted");
     },
     dial(peerKey: string) {
       if (
@@ -483,11 +486,7 @@ export function createCallController({
       void publish(invite, () => available && active === attempt).then(
         (accepted) => {
           if (!accepted && store.getState().call?.phase === "outgoing") {
-            finish(
-              attempt,
-              "failed",
-              "The invitation could not reach an inbox relay.",
-            );
+            finish(attempt, "failed", "inviteFailed");
           }
         },
       );

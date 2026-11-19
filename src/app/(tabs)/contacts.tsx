@@ -1,6 +1,7 @@
 import { FlashList } from "@shopify/flash-list";
 import { router } from "expo-router";
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import Swipeable, {
   type SwipeableMethods,
@@ -23,9 +24,12 @@ import {
   Search,
 } from "@/components/ui/kit";
 import { byNameOrKey, useContacts } from "@/db/contacts";
+import { directionFor, namespaces, resolveLanguage } from "@/i18n";
+import { isolateText } from "@/i18n/format";
 import { radius, space, useTheme } from "@/theme";
 
 export default function Contacts() {
+  const { t } = useTranslation(namespaces);
   const [query, search] = useState("");
   const [filter, setFilter] = useState("all");
   const [expandedKey, setExpandedKey] = useState<string>();
@@ -39,10 +43,10 @@ export default function Contacts() {
   return (
     <Screen tab scroll={false}>
       <View style={styles.top}>
-        <Header title="Contacts">
+        <Header title={t("navigation:contacts")}>
           <IconButton
             icon="add"
-            label="Add contact"
+            label={t("navigation:addContact")}
             tone="accent"
             onPress={add}
           />
@@ -50,19 +54,19 @@ export default function Contacts() {
         <Search
           value={query}
           onChangeText={search}
-          accessibilityLabel="Search contacts"
-          placeholder="Search contacts"
+          accessibilityLabel={t("contacts:search")}
+          placeholder={t("contacts:search")}
         />
         <GlassSegmentedControl
           value={filter}
           onValueChange={setFilter}
-          accessibilityLabel="Contact filter"
+          accessibilityLabel={t("contacts:filter")}
         >
           <GlassSegmentedControlItem value="all">
-            All contacts
+            {t("contacts:all")}
           </GlassSegmentedControlItem>
           <GlassSegmentedControlItem value="favorites">
-            Favorites
+            {t("contacts:favorites")}
           </GlassSegmentedControlItem>
         </GlassSegmentedControl>
       </View>
@@ -78,21 +82,21 @@ export default function Contacts() {
             icon={filter === "favorites" ? "star" : "person"}
             title={
               query
-                ? "No contacts found"
+                ? t("contacts:noResults")
                 : filter === "favorites"
-                  ? "No favorites yet"
-                  : "Your contacts live here"
+                  ? t("contacts:noFavorites")
+                  : t("contacts:empty")
             }
             detail={
               query
-                ? "Try another name or Boop address."
+                ? t("contacts:searchHint")
                 : filter === "favorites"
-                  ? "Star a contact from their profile."
-                  : "Add someone using their Boop address or QR code."
+                  ? t("contacts:favoriteHint")
+                  : t("contacts:emptyHint")
             }
           >
             {!query && filter === "all" && (
-              <Action onPress={add}>Add contact</Action>
+              <Action onPress={add}>{t("navigation:addContact")}</Action>
             )}
           </Empty>
         }
@@ -113,9 +117,9 @@ export default function Contacts() {
 }
 
 const actions = [
-  { label: "Info", icon: "info", route: "/contact/[key]" },
-  { label: "Call", icon: "phone", route: "/call/[key]" },
-  { label: "Message", icon: "chat", route: "/chat/[key]" },
+  { label: "contacts:info", icon: "info", route: "/contact/[key]" },
+  { label: "calls:call", icon: "phone", route: "/call/[key]" },
+  { label: "contacts:message", icon: "chat", route: "/chat/[key]" },
 ] as const;
 
 function ContactRow({
@@ -127,9 +131,24 @@ function ContactRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { t, i18n } = useTranslation(namespaces);
+  const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
   const { colors } = useTheme();
   const swipeable = useRef<SwipeableMethods>(null);
   const { name, publicKey, avatarUrl, favorite } = contact;
+  const renderQuickCall = () => (
+    <View
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[styles.quickCall, { backgroundColor: colors.outgoing }]}
+    >
+      <Icon name="phone" color={colors.outgoingInk} />
+      <Ink kind="caption" style={{ color: colors.outgoingInk }}>
+        {t("calls:call")}
+      </Ink>
+    </View>
+  );
   return (
     <View
       style={[
@@ -139,25 +158,22 @@ function ContactRow({
     >
       <Swipeable
         ref={swipeable}
-        rightThreshold={64}
-        overshootRight={false}
-        dragOffsetFromRight={-14}
-        renderRightActions={() => (
-          <View
-            accessible={false}
-            accessibilityElementsHidden
-            importantForAccessibility="no-hide-descendants"
-            style={[styles.quickCall, { backgroundColor: colors.outgoing }]}
-          >
-            <Icon name="phone" color={colors.outgoingInk} />
-            <Ink kind="caption" style={{ color: colors.outgoingInk }}>
-              Call
-            </Ink>
-          </View>
-        )}
+        {...(rtl
+          ? {
+              leftThreshold: 64,
+              overshootLeft: false,
+              dragOffsetFromLeft: 14,
+              renderLeftActions: renderQuickCall,
+            }
+          : {
+              rightThreshold: 64,
+              overshootRight: false,
+              dragOffsetFromRight: -14,
+              renderRightActions: renderQuickCall,
+            })}
         onSwipeableOpen={(direction) => {
           swipeable.current?.reset();
-          if (direction === SwipeDirection.LEFT)
+          if (direction === (rtl ? SwipeDirection.RIGHT : SwipeDirection.LEFT))
             router.push({
               pathname: "/call/[key]",
               params: { key: publicKey },
@@ -185,13 +201,13 @@ function ContactRow({
             <View key={label} style={styles.action}>
               <IconButton
                 icon={icon}
-                label={`${label} · ${name}`}
+                label={`${t(label)} · ${isolateText(name)}`}
                 onPress={() =>
                   router.push({ pathname: route, params: { key: publicKey } })
                 }
               />
               <Ink kind="caption" muted>
-                {label}
+                {t(label)}
               </Ink>
             </View>
           ))}

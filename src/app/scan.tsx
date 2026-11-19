@@ -1,13 +1,16 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { router, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Linking, StyleSheet, View } from "react-native";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { radius, space, useTheme } from "@/theme";
 
 export default function ScanAddress() {
+  const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const { identity } = useLocal();
   const focused = useIsFocused();
@@ -21,8 +24,8 @@ export default function ScanAddress() {
       <Screen>
         <Empty
           icon="qr"
-          title="Scan a Boop address"
-          detail="Allow camera access to scan an address."
+          title={t("contacts:scanTitle")}
+          detail={t("contacts:cameraAccess")}
         >
           <Action
             onPress={() => {
@@ -30,13 +33,13 @@ export default function ScanAddress() {
                 void Linking.openSettings();
               else
                 void requestPermission().catch(() =>
-                  setError("Could not request camera access."),
+                  setError(t("contacts:requestCameraError")),
                 );
             }}
           >
             {permission?.canAskAgain === false
-              ? "Open device settings"
-              : "Allow camera"}
+              ? t("common:openDeviceSettings")
+              : t("contacts:allowCamera")}
           </Action>
         </Empty>
         {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
@@ -50,20 +53,16 @@ export default function ScanAddress() {
           <CameraView
             style={StyleSheet.absoluteFill}
             barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-            onMountError={() =>
-              setError(
-                "Could not open the camera. You can enter the address manually.",
-              )
-            }
+            onMountError={() => setError(t("contacts:cameraUnavailable"))}
             onBarcodeScanned={({ data }) => {
               if (locked.current) return;
               const key = parsePublicKey(data);
               if (!key) {
-                setError("This QR code does not contain a Boop address.");
+                setError(t("contacts:invalidQr"));
                 return;
               }
               if (key === identity.publicKey) {
-                setError("Scan someone else’s address.");
+                setError(t("contacts:ownQrError"));
                 return;
               }
               locked.current = true;
@@ -87,7 +86,7 @@ export default function ScanAddress() {
         />
       </View>
       <Ink accessibilityLiveRegion="polite" style={styles.hint} muted>
-        {error || "Position the QR code inside the frame."}
+        {error || t("contacts:scanHint")}
       </Ink>
     </Screen>
   );

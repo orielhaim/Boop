@@ -8,7 +8,8 @@
     "scheme": "boop",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "app.boop.mobile"
+      "bundleIdentifier": "app.boop.mobile",
+      "infoPlist": { "CFBundleAllowMixedLocalizations": true }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,6 +24,10 @@
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WRITE_CONTACTS"
       ]
+    },
+    "locales": {
+      "en": "./src/i18n/locales/native-en.json",
+      "he": "./src/i18n/locales/native-he.json"
     },
     "plugins": [
       "expo-router",
@@ -53,10 +58,9 @@
       [
         "expo-localization",
         {
-          "supportedLocales": {
-            "android": ["en", "he"],
-            "ios": ["en", "he"]
-          }
+          "supportedLocales": ["en", "he"],
+          "supportsRTL": true,
+          "forcesRTL": false
         }
       ],
       [
@@ -82,9 +86,6 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "supportsRTL": true
     },
     "platforms": ["ios", "android"]
   }

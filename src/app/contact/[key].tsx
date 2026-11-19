@@ -1,8 +1,7 @@
 import { Host, Switch } from "@expo/ui";
-import { eq } from "drizzle-orm";
 import { router, useLocalSearchParams } from "expo-router";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
-import { useVideoLabels } from "@/components/calls/video-labels";
 import {
   Action,
   Avatar,
@@ -18,26 +17,28 @@ import {
 } from "@/components/ui/kit";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { useContact } from "@/db/contacts";
-import { contacts } from "@/db/schema";
+import { updateContactPreferences } from "@/db/queries";
+import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { space, useTheme } from "@/theme";
 
 export default function ContactDetail() {
+  const { t, i18n } = useTranslation(namespaces);
+  const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const params = useLocalSearchParams<{ key: string }>();
   const key =
     typeof params.key === "string" ? parsePublicKey(params.key) : null;
   const contact = useContact(key ?? "");
   const { db } = useLocal();
   const { colors, theme } = useTheme();
-  const videoLabels = useVideoLabels();
 
   if (!key)
     return (
       <Screen>
         <Empty
           icon="person"
-          title="Contact unavailable"
-          detail="The address is invalid."
+          title={t("contacts:unavailable")}
+          detail={t("contacts:invalid")}
         />
       </Screen>
     );
@@ -46,9 +47,9 @@ export default function ContactDetail() {
   if (!contact)
     return (
       <Screen>
-        <Section>Boop address</Section>
+        <Section>{t("common:address")}</Section>
         <Card style={styles.key}>
-          <Ink kind="caption" selectable>
+          <Ink kind="caption" selectable style={styles.address}>
             {address}
           </Ink>
         </Card>
@@ -57,7 +58,7 @@ export default function ContactDetail() {
             router.replace({ pathname: "/contact/new", params: { address } })
           }
         >
-          Save as contact
+          {t("contacts:saveAs")}
         </Action>
       </Screen>
     );
@@ -73,14 +74,14 @@ export default function ContactDetail() {
           <IconButton
             icon={contact.favorite ? "favorite" : "star"}
             label={
-              contact.favorite ? "Remove from favorites" : "Add to favorites"
+              contact.favorite
+                ? t("contacts:removeFavorite")
+                : t("contacts:addFavorite")
             }
             onPress={() =>
-              db
-                .update(contacts)
-                .set({ favorite: !contact.favorite })
-                .where(eq(contacts.publicKey, contact.publicKey))
-                .run()
+              updateContactPreferences(db, contact.publicKey, {
+                favorite: !contact.favorite,
+              })
             }
           />
         </View>
@@ -95,7 +96,7 @@ export default function ContactDetail() {
           }
         >
           <Icon name="phone" />
-          Call
+          {t("calls:call")}
         </Action>
         <Action
           onPress={() =>
@@ -106,27 +107,31 @@ export default function ContactDetail() {
           }
         >
           <Icon name="chat" />
-          Message
+          {t("contacts:message")}
         </Action>
       </View>
-      <Section>Call permissions</Section>
+      <Section>{t("contacts:callPermissions")}</Section>
       <Card style={styles.key}>
-        <Host matchContents colorScheme={theme} seedColor={colors.accent}>
+        <Host
+          matchContents
+          colorScheme={theme}
+          seedColor={colors.accent}
+          layoutDirection={direction === "rtl" ? "rightToLeft" : "leftToRight"}
+        >
           <Switch
-            label={videoLabels.automatic}
+            label={t("video:automatic")}
             value={contact.allowIncomingVideo}
             onValueChange={(allowed) => {
-              db.update(contacts)
-                .set({ allowIncomingVideo: allowed })
-                .where(eq(contacts.publicKey, key))
-                .run();
+              updateContactPreferences(db, key, {
+                allowIncomingVideo: allowed,
+              });
             }}
           />
         </Host>
       </Card>
-      <Section>Boop address</Section>
+      <Section>{t("common:address")}</Section>
       <Card style={styles.key}>
-        <Ink kind="caption" selectable>
+        <Ink kind="caption" selectable style={styles.address}>
           {address}
         </Ink>
       </Card>
@@ -134,6 +139,7 @@ export default function ContactDetail() {
   );
 }
 const styles = StyleSheet.create({
+  address: { writingDirection: "ltr", textAlign: "left" },
   center: { textAlign: "center" },
   profile: { alignItems: "center", gap: space.md },
   key: { padding: space.lg },

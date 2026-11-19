@@ -1,27 +1,49 @@
 import { Stack } from "expo-router";
+import { useTranslation } from "react-i18next";
+import { namespaces } from "@/i18n";
 
 export const unstable_settings = { anchor: "index" };
 
 export default function SettingsLayout() {
+  const { t } = useTranslation(namespaces);
   return (
     <Stack screenOptions={{ headerBackButtonDisplayMode: "minimal" }}>
-      <Stack.Screen name="index" options={{ title: "Settings" }} />
-      <Stack.Screen name="identity" options={{ title: "Identity & keys" }} />
+      <Stack.Screen
+        name="index"
+        options={{ title: t("navigation:settings") }}
+      />
+      <Stack.Screen
+        name="identity"
+        options={{ title: t("settings:identity") }}
+      />
 
-      <Stack.Screen name="appearance" options={{ title: "Appearance" }} />
-      <Stack.Screen name="calls" options={{ title: "Calls & sounds" }} />
-      <Stack.Screen name="privacy" options={{ title: "Privacy & security" }} />
-      <Stack.Screen name="privacy/app-lock" options={{ title: "App Lock" }} />
+      <Stack.Screen
+        name="appearance"
+        options={{ title: t("settings:appearance") }}
+      />
+      <Stack.Screen
+        name="language"
+        options={{ title: t("settings:language") }}
+      />
+      <Stack.Screen name="calls" options={{ title: t("settings:calls") }} />
+      <Stack.Screen name="privacy" options={{ title: t("settings:privacy") }} />
+      <Stack.Screen
+        name="privacy/app-lock"
+        options={{ title: t("security:appLock") }}
+      />
       <Stack.Screen
         name="privacy/permissions"
-        options={{ title: "Device permissions" }}
+        options={{ title: t("security:permissions") }}
       />
       <Stack.Screen
         name="privacy/incoming-video"
-        options={{ title: "Incoming video" }}
+        options={{ title: t("security:incomingVideo") }}
       />
-      <Stack.Screen name="connections" options={{ title: "Connections" }} />
-      <Stack.Screen name="about" options={{ title: "About" }} />
+      <Stack.Screen
+        name="connections"
+        options={{ title: t("settings:connections") }}
+      />
+      <Stack.Screen name="about" options={{ title: t("settings:about") }} />
     </Stack>
   );
 }

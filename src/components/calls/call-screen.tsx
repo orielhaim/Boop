@@ -3,6 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { type ComponentProps, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Pressable,
   ScrollView,
@@ -34,37 +35,38 @@ import { Action, Avatar, Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import type { AudioRoute, CallView } from "@/core/calling/controller";
 import { systemRemoteVideo } from "@/core/calling/system-call-state";
 import { type VideoDecision, videoLayout } from "@/core/calling/video";
+import { namespaces } from "@/i18n";
+import { formatDuration, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { space, spring, useTheme } from "@/theme";
-import { useVideoLabels } from "./video-labels";
 import { VideoStage } from "./video-stage";
 
 type IconName = ComponentProps<typeof Icon>["name"];
 
 const outcomes = {
-  completed: "Call ended",
-  rejected: "Call declined",
-  cancelled: "Call cancelled",
-  missed: "Missed call",
-  busy: "The other person is busy",
-  unanswered: "No answer",
-  failed: "Connection failed",
-  "remote-disconnected": "Connection lost",
-};
+  completed: "calls:ended",
+  rejected: "calls:rejected",
+  cancelled: "calls:callCancelled",
+  missed: "calls:missedCall",
+  busy: "calls:peerBusy",
+  unanswered: "calls:unanswered",
+  failed: "calls:failed",
+  "remote-disconnected": "calls:disconnected",
+} as const;
 const phases = {
-  outgoing: "Calling…",
-  ringing: "Ringing…",
-  incoming: "Incoming voice call",
-  connecting: "Connecting privately…",
+  outgoing: "calls:dialing",
+  ringing: "calls:ringing",
+  incoming: "calls:incomingVoice",
+  connecting: "calls:connectingPrivate",
   connected: null,
-  ending: "Ending call…",
-};
-const routeLabels: Record<AudioRoute, string> = {
-  EARPIECE: "Phone or system default",
-  SPEAKER_PHONE: "Speaker",
-  BLUETOOTH: "Bluetooth headset",
-  WIRED_HEADSET: "Wired headset",
-};
+  ending: "calls:ending",
+} as const;
+const routeLabels = {
+  EARPIECE: "calls:earpiece",
+  SPEAKER_PHONE: "calls:speaker",
+  BLUETOOTH: "calls:bluetooth",
+  WIRED_HEADSET: "calls:wiredHeadset",
+} satisfies Record<AudioRoute, `calls:${string}`>;
 const appear = FadeInDown.duration(200).reduceMotion(ReduceMotion.System);
 const reflow = LinearTransition.springify()
   .damping(spring.damping)
@@ -83,9 +85,9 @@ export function CallScreen({
   close: () => void;
   focused: boolean;
 }) {
+  const { t } = useTranslation(namespaces);
   const { calling, lock } = useLocal();
   const video = useStore(calling.store, (state) => state.video);
-  const labels = useVideoLabels();
   const [showOutput, setShowOutput] = useState(false);
   const [outputError, setOutputError] = useState(false);
   const { height, width } = useWindowDimensions();
@@ -102,7 +104,7 @@ export function CallScreen({
   const layout = connected && video ? videoLayout(video) : null;
   const consent = video?.remote.phase === "requesting" ? video.remote : null;
   const cameraOn = !!video && video.local.phase !== "off";
-  const videoError = video?.error ? labels.errors[video.error] : null;
+  const videoError = video?.error ? t(`video:error_${video.error}`) : null;
   const respond = (decision: VideoDecision) => {
     if (consent) calling.video()?.respond(consent.sequence, decision);
   };
@@ -114,7 +116,7 @@ export function CallScreen({
   const cameraControl = (compact = false) => (
     <Control
       icon={cameraOn ? "cameraOff" : "camera"}
-      label={cameraOn ? labels.cameraOff : labels.camera}
+      label={cameraOn ? t("video:cameraOff") : t("video:camera")}
       selected={cameraOn}
       compact={compact}
       onPress={toggleCamera}
@@ -128,12 +130,13 @@ export function CallScreen({
     call.phase === "incoming" ||
     call.phase === "ringing" ||
     call.phase === "outgoing";
+  const phaseLabel = call.phase === "ended" ? null : phases[call.phase];
   const status =
     call.phase === "ended"
-      ? outcomes[call.outcome]
+      ? t(outcomes[call.outcome])
       : call.phase === "connected" && call.reconnecting
-        ? "Reconnecting…"
-        : phases[call.phase];
+        ? t("calls:reconnecting")
+        : phaseLabel && t(phaseLabel);
   const selectRoute = async (route: AudioRoute) => {
     try {
       await calling.route(route);
@@ -183,8 +186,8 @@ export function CallScreen({
             call.reconnecting ||
             video.local.phase === "starting"
           }
-          toggleLabel={labels.toggle}
-          swapLabel={labels.swap}
+          toggleLabel={t("video:toggle")}
+          swapLabel={t("video:swap")}
           onSwap={() => calling.video()?.swap()}
           onCorner={(corner) => calling.video()?.setCorner(corner)}
           header={
@@ -195,7 +198,7 @@ export function CallScreen({
             >
               <Control
                 icon="collapse"
-                label="Minimize"
+                label={t("calls:minimize")}
                 compact
                 onPress={close}
               />
@@ -206,10 +209,10 @@ export function CallScreen({
                 </Text>
                 <Text numberOfLines={1} style={styles.videoCaption}>
                   {call.reconnecting
-                    ? "Reconnecting…"
+                    ? t("calls:reconnecting")
                     : layout.source === "local"
-                      ? labels.local
-                      : labels.remote}
+                      ? t("video:local")
+                      : t("video:remote")}
                 </Text>
               </View>
               <Elapsed since={call.answeredAt} compact />
@@ -219,9 +222,7 @@ export function CallScreen({
             video.local.phase === "waiting" || videoError || outputError ? (
               <Text accessibilityLiveRegion="polite" style={styles.videoNotice}>
                 {videoError ??
-                  (outputError
-                    ? "Could not change audio output."
-                    : labels.waiting)}
+                  (outputError ? t("calls:routeError") : t("video:waiting"))}
               </Text>
             ) : null
           }
@@ -233,7 +234,7 @@ export function CallScreen({
             >
               <Control
                 icon={call.muted ? "mic" : "microphone"}
-                label={call.muted ? "Unmute" : "Mute"}
+                label={call.muted ? t("calls:unmute") : t("calls:mute")}
                 selected={call.muted}
                 compact
                 onPress={calling.mute}
@@ -242,7 +243,7 @@ export function CallScreen({
               {"url" in video.local && (
                 <Control
                   icon="cameraSwitch"
-                  label={labels.switchCamera}
+                  label={t("video:switchCamera")}
                   compact
                   onPress={() => void calling.video()?.switchCamera()}
                 />
@@ -250,14 +251,14 @@ export function CallScreen({
               {!!call.routing.available.length && (
                 <Control
                   icon="audio"
-                  label="Audio output"
+                  label={t("calls:output")}
                   compact
                   onPress={() => setShowOutput(true)}
                 />
               )}
               <Control
                 icon="hangup"
-                label="End call"
+                label={t("calls:end")}
                 compact
                 tint="#BA304B"
                 onPress={end}
@@ -273,7 +274,9 @@ export function CallScreen({
           <View style={styles.top}>
             <Control
               icon="collapse"
-              label={call.phase === "ended" ? "Close" : "Minimize"}
+              label={
+                call.phase === "ended" ? t("common:close") : t("calls:minimize")
+              }
               compact
               onPress={close}
             />
@@ -315,7 +318,9 @@ export function CallScreen({
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Open contact for ${name}`}
+                accessibilityLabel={t("contacts:openProfile", {
+                  name: isolateText(name),
+                })}
                 onPress={() => {
                   tapFeedback();
                   router.push({
@@ -344,7 +349,7 @@ export function CallScreen({
               )}
               {connected && <Elapsed since={call.answeredAt} />}
               {call.phase === "ended" && call.reason && (
-                <Text style={styles.reason}>{call.reason}</Text>
+                <Text style={styles.reason}>{t(`calls:${call.reason}`)}</Text>
               )}
             </Animated.View>
             <View style={styles.bottom}>
@@ -352,7 +357,7 @@ export function CallScreen({
                 <Animated.View entering={appear} style={styles.controls}>
                   <Control
                     icon={call.muted ? "mic" : "microphone"}
-                    label={call.muted ? "Unmute" : "Mute"}
+                    label={call.muted ? t("calls:unmute") : t("calls:mute")}
                     selected={call.muted}
                     onPress={calling.mute}
                   />
@@ -361,7 +366,7 @@ export function CallScreen({
                   call.routing.available.includes("SPEAKER_PHONE") ? (
                     <Control
                       icon="speaker"
-                      label="Speaker"
+                      label={t("calls:speaker")}
                       selected={call.routing.selected === "SPEAKER_PHONE"}
                       onPress={() => {
                         const next =
@@ -377,7 +382,7 @@ export function CallScreen({
                   {!!call.routing.available.length && (
                     <Control
                       icon="audio"
-                      label="Audio output"
+                      label={t("calls:output")}
                       onPress={() => setShowOutput(true)}
                     />
                   )}
@@ -390,7 +395,7 @@ export function CallScreen({
               )}
               {outputError && connected && (
                 <Text style={styles.reason} accessibilityLiveRegion="polite">
-                  Could not change audio output.
+                  {t("calls:routeError")}
                 </Text>
               )}
               <View style={styles.primary}>
@@ -398,7 +403,7 @@ export function CallScreen({
                   <>
                     <Control
                       icon="hangup"
-                      label="Decline"
+                      label={t("calls:decline")}
                       tint="#BA304B"
                       onPress={() => {
                         calling.end();
@@ -407,17 +412,21 @@ export function CallScreen({
                     />
                     <Control
                       icon="phone"
-                      label="Answer"
+                      label={t("calls:answer")}
                       tint="#087959"
                       onPress={calling.accept}
                     />
                   </>
                 ) : call.phase === "ended" ? (
-                  <Control icon="hangup" label="Done" onPress={close} />
+                  <Control
+                    icon="hangup"
+                    label={t("common:done")}
+                    onPress={close}
+                  />
                 ) : call.phase !== "ending" ? (
                   <Control
                     icon="hangup"
-                    label="End call"
+                    label={t("calls:end")}
                     iconOnly
                     tint="#BA304B"
                     onPress={end}
@@ -431,7 +440,7 @@ export function CallScreen({
       {focused && connected && (
         <GlassSheet open={showOutput} onOpenChange={setShowOutput}>
           <GlassSheetContent>
-            <GlassSheetTitle>Audio output</GlassSheetTitle>
+            <GlassSheetTitle>{t("calls:output")}</GlassSheetTitle>
             {call.routing.available.map((route) => (
               <Pressable
                 key={route}
@@ -456,7 +465,7 @@ export function CallScreen({
                     },
                   ]}
                 >
-                  {routeLabels[route]}
+                  {t(routeLabels[route])}
                   {call.routing.selected === route ? " ✓" : ""}
                 </Text>
               </Pressable>
@@ -472,21 +481,21 @@ export function CallScreen({
           }}
         >
           <GlassSheetContent>
-            <GlassSheetTitle>{labels.consent}</GlassSheetTitle>
+            <GlassSheetTitle>{t("video:consent")}</GlassSheetTitle>
             <View style={styles.consent}>
-              <Ink>{labels.wants(name)}</Ink>
+              <Ink>{t("video:wants", { name: isolateText(name) })}</Ink>
               {video?.error === "preference" && (
                 <Ink kind="caption">{videoError}</Ink>
               )}
               <Action variant="prominent" onPress={() => respond("allow-once")}>
-                {labels.once}
+                {t("video:once")}
               </Action>
               {consent.savedContact && (
                 <Action onPress={() => respond("allow-always")}>
-                  {labels.always}
+                  {t("video:always")}
                 </Action>
               )}
-              <Action onPress={() => respond("deny")}>{labels.deny}</Action>
+              <Action onPress={() => respond("deny")}>{t("video:deny")}</Action>
             </View>
           </GlassSheetContent>
         </GlassSheet>
@@ -504,8 +513,7 @@ function Elapsed({ since, compact }: { since: number; compact?: boolean }) {
   const seconds = Math.max(0, Math.floor((now - since) / 1_000));
   return (
     <Text style={[styles.timer, compact && styles.videoTimer]}>
-      {String(Math.floor(seconds / 60)).padStart(2, "0")}:
-      {String(seconds % 60).padStart(2, "0")}
+      {formatDuration(seconds)}
     </Text>
   );
 }

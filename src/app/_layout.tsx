@@ -1,9 +1,19 @@
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
+import { useLocales } from "expo-localization";
+import {
+  DarkTheme,
+  DefaultTheme,
+  LocaleProvider,
+  Stack,
+  ThemeProvider,
+} from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import { addDatabaseChangeListener } from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Modal,
   StyleSheet,
@@ -15,6 +25,14 @@ import { CallIndicator } from "@/components/calls/call-indicator";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { LockScreen } from "@/components/settings/lock-screen";
 import { Action, Ink } from "@/components/ui/kit";
+import {
+  directionFor,
+  namespaces,
+  preferredLanguage,
+  resolveLanguage,
+} from "@/i18n";
+import { applyLanguage, initializeLanguage } from "@/i18n/direction";
+import { readLanguagePreference } from "@/i18n/preference";
 import {
   initializeLocal,
   LocalContext,
@@ -31,9 +49,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <KeyboardProvider>
-        <GlassProvider
-          defaultTheme={selected === "system" ? undefined : selected}
-        >
+        <GlassProvider theme={selected === "system" ? undefined : selected}>
           <Boot key={attempt} onRetry={() => retry((value) => value + 1)} />
         </GlassProvider>
       </KeyboardProvider>
@@ -42,34 +58,33 @@ export default function RootLayout() {
 }
 
 function Boot({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation(namespaces);
   const [data, setData] =
     useState<Awaited<ReturnType<typeof initializeLocal>>>();
-  const [state, setState] = useState<"loading" | "error" | "ready">("loading");
+  const [failed, setFailed] = useState(false);
   const { colors, theme } = useTheme();
   useEffect(() => {
     let live = true;
-    initializeLocal().then(
-      (result) => {
-        if (!live) return;
+    void initializeLocal()
+      .then(async (result) => {
+        if (!live || (await initializeLanguage(result.db)) || !live) return;
         const choice = themes.find((item) => item === result.theme) ?? "system";
         useAppPreferences.setState({
           theme: choice,
           haptics: result.haptics,
         });
         setData(result);
-        setState("ready");
-      },
-      () => {
-        if (live) setState("error");
-      },
-    );
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
     return () => {
       live = false;
     };
   }, []);
   useEffect(() => {
-    if (state !== "loading") void SplashScreen.hideAsync().catch(() => {});
-  }, [state]);
+    if (data || failed) void SplashScreen.hideAsync().catch(() => {});
+  }, [data, failed]);
 
   const base = theme === "dark" ? DarkTheme : DefaultTheme;
   return (
@@ -92,17 +107,14 @@ function Boot({ onRetry }: { onRetry: () => void }) {
       ) : (
         <View style={[styles.boot, { backgroundColor: colors.background }]}>
           <Ink kind="title">Boop</Ink>
-          {state === "error" ? (
+          {failed ? (
             <>
-              <Ink muted>
-                Boop could not open your identity or local data. Unlock your
-                device and try again.
-              </Ink>
-              <Action onPress={onRetry}>Try again</Action>
+              <Ink muted>{t("errors:startup")}</Ink>
+              <Action onPress={onRetry}>{t("common:retry")}</Action>
             </>
           ) : (
             <ActivityIndicator
-              accessibilityLabel="Opening Boop"
+              accessibilityLabel={t("common:opening")}
               color={colors.accent}
             />
           )}
@@ -117,8 +129,11 @@ function ProtectedApplication({
 }: {
   data: Awaited<ReturnType<typeof initializeLocal>>;
 }) {
+  const { t, i18n } = useTranslation(namespaces);
+  const deviceLanguage = useLocales()[0]?.languageCode;
+  const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors } = useTheme();
-  const { lock } = data;
+  const { db, calling, lock } = data;
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const obscured = state.enabled && (state.locked || !state.active);
 
@@ -130,45 +145,99 @@ function ProtectedApplication({
     return () => subscription.remove();
   }, [lock]);
 
+  useEffect(() => {
+    if (!state.hasOpened || obscured) return;
+    let queued = false;
+    let applying = false;
+    let live = true;
+    const schedule = () => {
+      if (queued || applying) return;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        if (!live || AppState.currentState !== "active") return;
+        const call = calling.store.getState().call;
+        if (call && call.phase !== "ended") return;
+        const current = resolveLanguage(i18n.resolvedLanguage);
+        const next = preferredLanguage(
+          readLanguagePreference(db, current),
+          deviceLanguage,
+        );
+        if (next === current) return;
+        applying = true;
+        void applyLanguage(next).catch(() => {
+          applying = false;
+          if (live) Alert.alert(t("settings:languageRestartError"));
+        });
+      });
+    };
+    const unwatch = calling.store.subscribe((next, previous) => {
+      if (next.call?.phase === "ended" && previous.call?.phase !== "ended")
+        schedule();
+    });
+    const settings = addDatabaseChangeListener(({ tableName }) => {
+      if (tableName === "settings") schedule();
+    });
+    const appState = AppState.addEventListener("change", schedule);
+    schedule();
+    return () => {
+      live = false;
+      unwatch();
+      settings.remove();
+      appState.remove();
+    };
+  }, [calling, db, deviceLanguage, i18n, obscured, state.hasOpened, t]);
+
   if (!state.hasOpened) return <LockScreen lock={lock} state={state} />;
   return (
     <LocalContext.Provider value={data}>
       <MessagingLifecycle />
-      <View
-        style={[styles.root, obscured && styles.obscured]}
-        pointerEvents={obscured ? "none" : "auto"}
-        accessibilityElementsHidden={obscured}
-        importantForAccessibility={obscured ? "no-hide-descendants" : "auto"}
-      >
-        <Stack
-          screenOptions={{
-            headerBackButtonDisplayMode: "minimal",
-            contentStyle: { backgroundColor: colors.background },
-          }}
+      <LocaleProvider direction={direction}>
+        <View
+          style={[styles.root, { direction }, obscured && styles.obscured]}
+          pointerEvents={obscured ? "none" : "auto"}
+          accessibilityElementsHidden={obscured}
+          importantForAccessibility={obscured ? "no-hide-descendants" : "auto"}
         >
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen
-            name="call/[key]"
-            options={{ headerShown: false, presentation: "card" }}
-          />
-          <Stack.Screen name="chat/[key]" options={{ headerShown: false }} />
-          <Stack.Screen name="contact/[key]" options={{ title: "Contact" }} />
-          <Stack.Screen
-            name="contact/new"
-            options={{ title: "Add contact", presentation: "modal" }}
-          />
-          <Stack.Screen
-            name="scan"
-            options={{ title: "Scan address", presentation: "modal" }}
-          />
-          <Stack.Screen
-            name="connect"
-            options={{ title: "Connect", presentation: "modal" }}
-          />
-          <Stack.Screen name="settings" options={{ headerShown: false }} />
-        </Stack>
-        {!obscured && <CallIndicator />}
-      </View>
+          <Stack
+            screenOptions={{
+              headerBackButtonDisplayMode: "minimal",
+              contentStyle: { backgroundColor: colors.background },
+            }}
+          >
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen
+              name="call/[key]"
+              options={{ headerShown: false, presentation: "card" }}
+            />
+            <Stack.Screen name="chat/[key]" options={{ headerShown: false }} />
+            <Stack.Screen
+              name="contact/[key]"
+              options={{ title: t("navigation:contact") }}
+            />
+            <Stack.Screen
+              name="contact/new"
+              options={{
+                title: t("navigation:addContact"),
+                presentation: "modal",
+              }}
+            />
+            <Stack.Screen
+              name="scan"
+              options={{ title: t("navigation:scan"), presentation: "modal" }}
+            />
+            <Stack.Screen
+              name="connect"
+              options={{
+                title: t("navigation:connect"),
+                presentation: "modal",
+              }}
+            />
+            <Stack.Screen name="settings" options={{ headerShown: false }} />
+          </Stack>
+          {!obscured && <CallIndicator />}
+        </View>
+      </LocaleProvider>
       <Modal
         visible={obscured}
         onRequestClose={() => undefined}

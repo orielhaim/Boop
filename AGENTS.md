@@ -36,6 +36,14 @@ also use `bun fmt` to format. instead of prettier/biome etc.
 - Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
 - Docs: https://docs.expo.dev/router/introduction.md
 
+## Localization
+
+- Use the existing i18next instance for every app-owned string, including errors, accessibility labels, and native bridge labels. Add typed values in English and Hebrew together in `src/i18n/locales`.
+- Use Auto-detect by default and English when the device language is unsupported. Honor saved manual preferences for translation and layout direction. Check new screens in LTR and Hebrew RTL.
+- Use `src/i18n/format.ts` for shared formatting. Preserve user-generated text and identifiers as entered.
+- Keep presentation copy out of persistence and transport. Use stable error codes and translate at the UI boundary. Reuse the existing Chat Kit adapter and UI components.
+- Run `bun test tests/i18n.test.ts` after changing translation resources.
+
 ## Building with EAS
 
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.

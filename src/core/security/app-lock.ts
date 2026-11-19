@@ -1,3 +1,17 @@
+export type AuthFailure =
+  | "enrollFingerprint"
+  | "enrollDevice"
+  | "authCancelled"
+  | "authLockout"
+  | "authUnavailable"
+  | "authFailed";
+
+export class AppAuthenticationError extends Error {
+  constructor(readonly code: AuthFailure) {
+    super(code);
+  }
+}
+
 export const lockTimeouts = [0, 60_000, 300_000, 1_800_000] as const;
 export type LockTimeout = (typeof lockTimeouts)[number];
 const lockPreference = "security.appLock";
@@ -27,7 +41,7 @@ export function createAppLock({
     hasOpened: !enabled,
     active: startActive,
     authenticating: false,
-    error: "",
+    error: null as AuthFailure | null,
   };
   let awayAt: number | null = startActive ? null : now();
   const listeners = new Set<() => void>();
@@ -46,7 +60,7 @@ export function createAppLock({
     if (operation === "enable" ? state.enabled : !state.enabled) return;
     if ((operation === "unlock") !== state.locked) return;
     if (operation === "unlock") autoPrompted = true;
-    update({ authenticating: true, error: "" });
+    update({ authenticating: true, error: null });
     try {
       await authenticate(operation);
       if (operation !== "disable" && !protectedWindow) {
@@ -69,9 +83,7 @@ export function createAppLock({
       if (state.enabled && !state.active && awayAt === null) awayAt = now();
       update({
         error:
-          error instanceof Error
-            ? error.message
-            : "Authentication could not be completed.",
+          error instanceof AppAuthenticationError ? error.code : "authFailed",
       });
     } finally {
       if (state.active) awayAt = null;

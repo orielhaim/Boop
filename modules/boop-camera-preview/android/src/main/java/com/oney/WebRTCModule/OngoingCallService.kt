@@ -46,7 +46,7 @@ class OngoingCallService : Service() {
     try {
       val manager = getSystemService(NotificationManager::class.java)
       manager.createNotificationChannel(
-        NotificationChannel(CHANNEL_ID, getString(R.string.boop_calls_channel), NotificationManager.IMPORTANCE_DEFAULT)
+        NotificationChannel(CHANNEL_ID, call.labels.channel, NotificationManager.IMPORTANCE_DEFAULT)
           .apply { setSound(null, null) }
       )
       val types = when {
@@ -76,7 +76,7 @@ class OngoingCallService : Service() {
   }
 
   private fun notification(call: SystemCallSession.Call): Notification {
-    val name = if (call.privateMode) getString(R.string.boop_private_caller) else call.name
+    val name = if (call.privateMode) call.labels.privateCaller else call.name
     val person = Person.Builder().setName(name)
       .setIcon(if (call.privateMode) null else call.avatar).build()
     val content = packageManager.getLaunchIntentForPackage(packageName)?.apply {
@@ -94,7 +94,7 @@ class OngoingCallService : Service() {
     val builder = NotificationCompat.Builder(this, CHANNEL_ID)
       .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, disconnect))
       .setContentTitle(name)
-      .setContentText(getString(if (call.answeredAt == 0L) R.string.boop_call_connecting else R.string.boop_call_active))
+      .setContentText(if (call.answeredAt == 0L) call.labels.connecting else call.labels.ongoing)
       .setSmallIcon(R.drawable.boop_call_status)
       .setContentIntent(open)
       .setOngoing(true)

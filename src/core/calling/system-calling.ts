@@ -3,6 +3,7 @@ import { Image } from "expo-image";
 import { Platform } from "react-native";
 import { z } from "zod";
 import { createStore } from "zustand/vanilla";
+import { i18n } from "@/i18n";
 import {
   type AudioRoute,
   audioRoute,
@@ -11,12 +12,20 @@ import {
 } from "./controller";
 import { systemCallCommand, systemRemoteVideo } from "./system-call-state";
 
+type CallLabels = {
+  channel: string;
+  privateCaller: string;
+  connecting: string;
+  ongoing: string;
+};
+
 type NativeSystemCalling = {
   start(
     id: string,
     name: string,
     incoming: boolean,
     privateMode: boolean,
+    labels: CallLabels,
   ): Promise<boolean>;
   update(id: string, answeredAt: number, privateMode: boolean): Promise<void>;
   setAvatar(id: string, cachedFile: string): Promise<void>;
@@ -73,8 +82,14 @@ export async function openTelecomAudio({
     void system.end(id).catch(() => undefined);
   }
   signal.addEventListener("abort", close, { once: true });
+  const t = i18n.getFixedT(null, "calls");
   const started = await system
-    .start(id, name, incoming, privateMode)
+    .start(id, name, incoming, privateMode, {
+      channel: t("ongoingChannel"),
+      privateCaller: t("privateCaller"),
+      connecting: i18n.t("connecting", { ns: "connections" }),
+      ongoing: t("ongoing"),
+    })
     .catch(() => false);
   if (!started || signal.aborted) {
     close();

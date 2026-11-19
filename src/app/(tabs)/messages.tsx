@@ -1,7 +1,8 @@
-import { type ChatIcons, ChatList } from "@kesha-antonov/react-native-chat";
+import { ChatList } from "@kesha-antonov/react-native-chat";
 import { router } from "expo-router";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { useChatAppearance } from "@/components/messages/appearance";
 import {
@@ -9,8 +10,9 @@ import {
   matchesConversation,
   toConversationListItem,
 } from "@/components/messages/conversation-item";
-import { Action, Empty, Icon, IconButton, Screen } from "@/components/ui/kit";
+import { Action, Empty, IconButton, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { space } from "@/theme";
 
@@ -18,17 +20,13 @@ function keys(items: ConversationListItem[]) {
   return items.map((item) => item.id);
 }
 
-const messageIcons: ChatIcons = {
-  pencil: ({ color, size }) => <Icon name="add" color={color} size={size} />,
-};
-
 export default function Messages() {
+  const { t } = useTranslation(namespaces);
   const { identity, chat } = useLocal();
-  const { appearance, theme, darkTheme, colorScheme, labels, locale } =
+  const { appearance, theme, darkTheme, colorScheme, labels, locale, icons } =
     useChatAppearance();
   const [archived, setArchived] = useState(false);
   const [actions, setActions] = useState(false);
-  const he = locale === "he";
 
   const [result, setResult] = useState<
     { chats: ConversationListItem[]; error: boolean } | undefined
@@ -70,33 +68,20 @@ export default function Messages() {
     try {
       write();
     } catch {
-      Alert.alert(
-        he ? "לא ניתן לעדכן שיחות" : "Could not update conversations",
-      );
+      Alert.alert(t("messages:updateConversationsError"));
     }
   }
 
   return (
     <Screen tab scroll={false}>
-      <PeerActions
-        mode="chat"
-        hebrew={he}
-        open={actions}
-        onOpenChange={setActions}
-      />
+      <PeerActions mode="chat" open={actions} onOpenChange={setActions} />
       {result?.error ? (
         <Empty
           icon="chat"
-          title={
-            he ? "לא ניתן לפתוח את השיחות" : "Could not open conversations"
-          }
-          detail={
-            he
-              ? "אירעה שגיאה בקריאת הנתונים המקומיים."
-              : "Boop could not read local chat data."
-          }
+          title={t("messages:openConversationsError")}
+          detail={t("messages:readLocalError")}
         >
-          <Action onPress={read}>{he ? "ניסיון חוזר" : "Try again"}</Action>
+          <Action onPress={read}>{t("common:retry")}</Action>
         </Empty>
       ) : (
         <ChatList
@@ -108,8 +93,9 @@ export default function Messages() {
           darkTheme={darkTheme}
           colorScheme={colorScheme}
           locale={locale}
+          dateFormat={locale === "he" ? "D.M.YY" : undefined}
           labels={labels}
-          icons={messageIcons}
+          icons={icons}
           isTopInsetApplied={false}
           isSortEnabled={false}
           isArchiveOpen={archived}
@@ -121,7 +107,7 @@ export default function Messages() {
               : () => (
                   <IconButton
                     icon="settings"
-                    label={he ? "הגדרות" : "Settings"}
+                    label={t("navigation:settings")}
                     onPress={() => router.push("/settings")}
                   />
                 )
@@ -132,20 +118,12 @@ export default function Messages() {
                 icon="chat"
                 title={
                   searching
-                    ? (labels.chatListNoResults ?? "")
+                    ? labels.chatListNoResults
                     : archived
-                      ? he
-                        ? "אין שיחות בארכיון"
-                        : "No archived conversations"
-                      : (labels.chatListEmpty ?? "No conversations yet")
+                      ? t("messages:noArchived")
+                      : labels.chatListEmpty
                 }
-                detail={
-                  !searching && !archived
-                    ? he
-                      ? "הזינו כתובת או סרקו קוד QR כדי להתחיל שיחה."
-                      : "Enter an address or scan a QR code to start a chat."
-                    : ""
-                }
+                detail={!searching && !archived ? t("messages:startHint") : ""}
               />
             </View>
           )}

@@ -2,7 +2,9 @@ import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -32,6 +34,7 @@ import {
   type GlassInputProps,
 } from "@/components/glassyui/glass-input";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
+import { directionFor, resolveLanguage } from "@/i18n";
 import { useAppPreferences } from "@/stores/preferences";
 import { radius, space, spring, type, useTheme } from "@/theme";
 
@@ -41,7 +44,10 @@ const icons = {
   person: { ios: "person.crop.circle", android: "account_circle" },
   add: { ios: "plus", android: "add" },
   search: { ios: "magnifyingglass", android: "search" },
-  next: { ios: "chevron.forward", android: "chevron_right" },
+  back: { ios: "arrow.left", android: "arrow_back" },
+  previous: { ios: "chevron.left", android: "chevron_left" },
+  language: { ios: "globe", android: "language" },
+  next: { ios: "chevron.right", android: "chevron_right" },
   expand: { ios: "chevron.down", android: "expand_more" },
   collapse: { ios: "chevron.up", android: "expand_less" },
   info: { ios: "info.circle", android: "info" },
@@ -56,6 +62,9 @@ const icons = {
   qr: { ios: "qrcode.viewfinder", android: "qr_code_scanner" },
   copy: { ios: "document.on.document", android: "content_copy" },
   send: { ios: "arrow.up", android: "arrow_upward" },
+  reply: { ios: "arrowshape.turn.up.left", android: "reply" },
+  forward: { ios: "arrowshape.turn.up.right", android: "forward" },
+  erase: { ios: "delete.left", android: "backspace" },
   mic: { ios: "mic.slash", android: "mic_off" },
   microphone: { ios: "mic.fill", android: "mic" },
   camera: { ios: "video.fill", android: "videocam" },
@@ -73,6 +82,16 @@ const icons = {
 } satisfies Record<string, SymbolViewProps["name"]>;
 
 type IconName = keyof typeof icons;
+const directionalIcons = new Set<IconName>([
+  "back",
+  "previous",
+  "next",
+  "outgoing",
+  "incoming",
+  "reply",
+  "forward",
+  "erase",
+]);
 
 export function Icon({
   name,
@@ -84,12 +103,18 @@ export function Icon({
   color?: string;
 }) {
   const { colors } = useTheme();
+  const { i18n } = useTranslation("common");
+  const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
+  const mirror =
+    directionalIcons.has(name) ||
+    (name === "missed" && Platform.OS === "android");
   const symbol = icons[name];
   return (
     <SymbolView
       name={{ ...symbol, web: symbol.android }}
       size={size}
       tintColor={color ?? colors.accent}
+      style={rtl && mirror ? { transform: [{ scaleX: -1 }] } : undefined}
       accessible={false}
     />
   );

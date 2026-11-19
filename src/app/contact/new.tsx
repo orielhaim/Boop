@@ -1,13 +1,15 @@
-import { eq } from "drizzle-orm";
 import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
-import { contacts } from "@/db/schema";
+import { saveContact } from "@/db/queries";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 
 export default function NewContact() {
+  const { t } = useTranslation(namespaces);
   const { address } = useLocalSearchParams<{ address?: string }>();
   const [name, setName] = useState("");
   const [edit, setEdit] = useState<{ address?: string; value: string }>();
@@ -19,51 +21,45 @@ export default function NewContact() {
   function save() {
     const publicKey = parsePublicKey(keyInput);
     if (!name.trim()) {
-      setError("Enter a contact name.");
+      setError(t("contacts:nameRequired"));
       return;
     }
     if (!publicKey) {
-      setError("Enter a valid Boop address.");
+      setError(t("contacts:invalidAddress"));
       return;
     }
     if (publicKey === identity.publicKey) {
-      setError("Enter someone else’s address.");
+      setError(t("contacts:ownAddress"));
       return;
     }
     try {
-      if (
-        db
-          .select()
-          .from(contacts)
-          .where(eq(contacts.publicKey, publicKey))
-          .get()
-      ) {
-        setError("That address is already in your contacts.");
+      if (saveContact(db, publicKey, name.trim()).changes === 0) {
+        setError(t("contacts:duplicate"));
         return;
       }
-      db.insert(contacts).values({ publicKey, name: name.trim() }).run();
       router.replace({
         pathname: "/contact/[key]",
         params: { key: publicKey },
       });
     } catch {
-      setError("Could not save the contact. Try again.");
+      setError(t("contacts:saveError"));
     }
   }
 
   return (
     <Screen>
       <GlassInput
-        label="Display name"
-        placeholder="Contact name"
+        label={t("contacts:displayName")}
+        placeholder={t("contacts:name")}
         value={name}
         onChangeText={setName}
         maxLength={100}
       />
       <GlassInput
-        label="Boop address"
-        placeholder="Paste an address"
+        label={t("common:address")}
+        placeholder={t("common:pasteAddress")}
         autoCapitalize="none"
+        style={{ writingDirection: "ltr", textAlign: "left" }}
         autoCorrect={false}
         value={keyInput}
         onChangeText={(value) => setEdit({ address, value })}
@@ -71,11 +67,11 @@ export default function NewContact() {
       />
       <Action onPress={() => router.push("/scan")}>
         <Icon name="qr" />
-        Scan QR code
+        {t("contacts:scanQr")}
       </Action>
       {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
       <Action variant="prominent" onPress={save}>
-        Save contact
+        {t("contacts:save")}
       </Action>
     </Screen>
   );

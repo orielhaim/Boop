@@ -5,15 +5,18 @@ import {
   useRootNavigationState,
 } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ActivityIndicator } from "react-native";
 import { useStore } from "zustand";
 import { CallScreen } from "@/components/calls/call-screen";
 import { Empty, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
 import { nameOrAddress, useContact } from "@/db/contacts";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 
 export default function CallRoute() {
+  const { t } = useTranslation(namespaces);
   const { key, callId } = useLocalSearchParams<{
     key: string;
     callId?: string;
@@ -74,7 +77,7 @@ export default function CallRoute() {
   if (!call && peerKey && peerKey !== identity.publicKey && !callId) {
     return (
       <Screen>
-        <ActivityIndicator accessibilityLabel="Starting call" />
+        <ActivityIndicator accessibilityLabel={t("calls:starting")} />
       </Screen>
     );
   }
@@ -87,11 +90,11 @@ export default function CallRoute() {
       <Screen>
         <Empty
           icon="phone"
-          title="Call unavailable"
+          title={t("calls:unavailable")}
           detail={
             call && call.phase !== "ended"
-              ? "Finish your current call before starting another."
-              : "Open Calls to try again."
+              ? t("calls:anotherCall")
+              : t("calls:tryFromCalls")
           }
         />
       </Screen>

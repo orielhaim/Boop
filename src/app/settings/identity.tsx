@@ -1,6 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams } from "expo-router";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, useWindowDimensions, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import {
@@ -13,10 +14,12 @@ import {
   SettingsGroup,
 } from "@/components/settings/group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { radius, space } from "@/theme";
 
 export default function Identity() {
+  const { t } = useTranslation(namespaces);
   const { qr } = useLocalSearchParams<{ qr?: string }>();
   const { identity } = useLocal();
   const [showQR, setShowQR] = useState(qr === "1");
@@ -26,37 +29,39 @@ export default function Identity() {
   async function copy() {
     try {
       if (await Clipboard.setStringAsync(identity.npub)) {
-        setNotice("Address copied.");
+        setNotice(t("settings:addressCopied"));
         return;
       }
     } catch {
       // Show the same error for an unavailable clipboard.
     }
-    setNotice("Could not copy the address.");
+    setNotice(t("settings:copyAddressError"));
   }
 
   return (
     <Screen>
-      <SettingsGroup title="Public address">
+      <SettingsGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>
           {identity.npub}
         </Ink>
       </SettingsGroup>
       <View style={styles.actions}>
         <Action variant="soft" onPress={() => void copy()}>
-          <Icon name="copy" size={18} /> Copy address
+          <Icon name="copy" size={18} />
+          {t("settings:copyAddress")}
         </Action>
         <Action variant="soft" onPress={() => setShowQR(true)}>
-          <Icon name="qr" size={18} /> QR code
+          <Icon name="qr" size={18} />
+          {t("settings:qr")}
         </Action>
       </View>
       {notice && <SettingsDescription>{notice}</SettingsDescription>}
       <GlassSheet open={showQR} onOpenChange={setShowQR}>
         <GlassSheetContent>
-          <GlassSheetTitle>Public address</GlassSheetTitle>
+          <GlassSheetTitle>{t("settings:publicAddress")}</GlassSheetTitle>
           <View
             accessible
-            accessibilityLabel="QR code for your public address"
+            accessibilityLabel={t("settings:addressQr")}
             style={styles.qr}
           >
             <QRCode
@@ -71,7 +76,7 @@ export default function Identity() {
 }
 
 const styles = StyleSheet.create({
-  key: { padding: space.lg, writingDirection: "ltr" },
+  key: { padding: space.lg, writingDirection: "ltr", textAlign: "left" },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
   qr: {
     backgroundColor: "#fff",

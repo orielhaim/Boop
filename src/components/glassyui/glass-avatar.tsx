@@ -1,12 +1,8 @@
 import { Image } from "expo-image";
 import type { ComponentRef } from "react";
 import {
-  Children,
-  createContext,
   forwardRef,
-  isValidElement,
   useCallback,
-  useContext,
   useMemo,
   useState,
   type ReactNode,
@@ -74,12 +70,6 @@ const RIM = {
     "inset 0px 0px 0px 1px rgba(0, 0, 0, 0.1), inset 0px 1px 0px rgba(255, 255, 255, 0.3)",
 } as const;
 
-// The "+N" counter is a step brighter than a resting control.
-const MORE_FILL = {
-  dark: "rgba(245, 245, 247, 0.14)",
-  light: "rgba(255, 255, 255, 0.95)",
-} as const;
-
 const STATUS_TONE = {
   away: "orange",
   busy: "red",
@@ -87,13 +77,11 @@ const STATUS_TONE = {
   online: "green",
 } as const satisfies Record<GlassAvatarStatus, GlassTone>;
 
-// The web cuts the face away around the dot and under the next avatar. React Native has no masks,
+// The web cuts the face away around the dot. React Native has no masks,
 // so a ring in the surface colour draws that gap instead.
 const GAP = 2;
 
 const EASE_OUT = Easing.bezier(0.32, 0.72, 0, 1);
-
-const GroupSizeContext = createContext<GlassAvatarSize | null>(null);
 
 function initialsOf(name: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
@@ -205,8 +193,7 @@ export const GlassAvatar = forwardRef<
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
-    const groupSize = useContext(GroupSizeContext);
-    const { diameter, dot } = SIZE[groupSize ?? size];
+    const { diameter, dot } = SIZE[size];
     const image = useMemo(
       () => source ?? (src ? { uri: src } : undefined),
       [source, src],
@@ -283,97 +270,10 @@ export const GlassAvatar = forwardRef<
 
 GlassAvatar.displayName = "GlassAvatar";
 
-export type GlassAvatarGroupProps = ViewProps & {
-  /** Shows this many avatars, then a "+N" for the rest. */
-  max?: number;
-  /** Sizes every avatar in the group. */
-  size?: GlassAvatarSize;
-};
-
-/** Avatars stacked edge to edge, each overlapping the one before it, then a "+N" for the rest. */
-export const GlassAvatarGroup = forwardRef<
-  ComponentRef<typeof View>,
-  GlassAvatarGroupProps
->(({ children, max, size = "md", style, ...rest }, ref) => {
-  const { colors, preferences } = useGlassTheme();
-  const items = Children.toArray(children);
-  const shown = max === undefined ? items : items.slice(0, Math.max(0, max));
-  const hidden = items.length - shown.length;
-  const { diameter } = SIZE[size];
-
-  // Each avatar wears the gap ring outside its own outline, so the ring takes no room.
-  const ring = {
-    borderColor: colors.opaqueSurface,
-    borderRadius: diameter / 2 + GAP,
-    borderWidth: GAP,
-    margin: -GAP,
-  };
-
-  const overlap = { marginStart: -diameter * 0.2 - GAP };
-
-  return (
-    <GroupSizeContext.Provider value={size}>
-      <View ref={ref} style={[styles.group, style]} {...rest}>
-        {shown.map((child, index) => (
-          <View
-            key={isValidElement(child) ? child.key : index}
-            style={[ring, index > 0 && overlap]}
-          >
-            {child}
-          </View>
-        ))}
-        {hidden > 0 ? (
-          <View
-            accessible
-            accessibilityLabel={`${hidden} more`}
-            accessibilityRole="image"
-            style={[ring, shown.length > 0 && overlap]}
-          >
-            <View
-              style={[
-                styles.face,
-                styles.center,
-                {
-                  backgroundColor: MORE_FILL[preferences.theme],
-                  borderRadius: diameter / 2,
-                  height: diameter,
-                  width: diameter,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.more,
-                  { color: colors.foreground, fontSize: diameter * 0.32 },
-                ]}
-              >
-                +{hidden}
-              </Text>
-              <View
-                style={[
-                  StyleSheet.absoluteFill,
-                  styles.rim,
-                  {
-                    borderRadius: diameter / 2,
-                    boxShadow: RIM[preferences.theme],
-                  },
-                ]}
-              />
-            </View>
-          </View>
-        ) : null}
-      </View>
-    </GroupSizeContext.Provider>
-  );
-});
-
-GlassAvatarGroup.displayName = "GlassAvatarGroup";
-
 const styles = StyleSheet.create({
   center: { alignItems: "center", justifyContent: "center" },
   dot: { borderWidth: GAP, pointerEvents: "none", position: "absolute" },
   face: { height: "100%", overflow: "hidden", width: "100%" },
-  group: { alignItems: "center", flexDirection: "row" },
   initials: {
     color: "#ffffff",
     fontWeight: "600",
@@ -381,6 +281,5 @@ const styles = StyleSheet.create({
     textShadowOffset: { height: 1, width: 0 },
     textShadowRadius: 1,
   },
-  more: { fontWeight: "600" },
   rim: { pointerEvents: "none" },
 });

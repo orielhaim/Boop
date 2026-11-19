@@ -1,12 +1,12 @@
-import { useLocales } from "expo-localization";
 import { NativeTabs } from "expo-router/native-tabs";
+import { useTranslation } from "react-i18next";
 import { Platform } from "react-native";
+import { namespaces } from "@/i18n";
 import { useTheme } from "@/theme";
 
 export default function TabLayout() {
+  const { t } = useTranslation(namespaces);
   const { colors, reduceTransparency, theme } = useTheme();
-  const language = useLocales()[0]?.languageCode;
-  const hebrew = language === "he" || language === "iw";
   return (
     <NativeTabs
       tintColor={colors.accent}
@@ -31,7 +31,7 @@ export default function TabLayout() {
     >
       <NativeTabs.Trigger name="index">
         <NativeTabs.Trigger.Label>
-          {hebrew ? "שיחות" : "Calls"}
+          {t("navigation:calls")}
         </NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
           sf={{ default: "phone", selected: "phone.fill" }}
@@ -40,7 +40,7 @@ export default function TabLayout() {
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="messages">
         <NativeTabs.Trigger.Label>
-          {hebrew ? "הודעות" : "Messages"}
+          {t("navigation:messages")}
         </NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
           sf={{ default: "bubble.left", selected: "bubble.left.fill" }}
@@ -49,7 +49,7 @@ export default function TabLayout() {
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="contacts">
         <NativeTabs.Trigger.Label>
-          {hebrew ? "אנשי קשר" : "Contacts"}
+          {t("navigation:contacts")}
         </NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
           sf={{

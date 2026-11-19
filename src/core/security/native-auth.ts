@@ -2,6 +2,9 @@ import * as Authentication from "expo-local-authentication";
 import * as ScreenCapture from "expo-screen-capture";
 import { Platform } from "react-native";
 
+import { i18n } from "@/i18n";
+import { AppAuthenticationError } from "./app-lock";
+
 const legacyAndroid =
   Platform.OS === "android" && Number(Platform.Version) < 30;
 
@@ -14,41 +17,36 @@ export async function authenticateApp(
       level === Authentication.SecurityLevel.NONE ||
       (legacyAndroid && level !== Authentication.SecurityLevel.BIOMETRIC_STRONG)
     ) {
-      throw new Error(
-        legacyAndroid
-          ? "Enroll a supported fingerprint in system settings first."
-          : "Set up biometrics or a device screen lock in system settings first.",
+      throw new AppAuthenticationError(
+        legacyAndroid ? "enrollFingerprint" : "enrollDevice",
       );
     }
   }
+  const t = i18n.getFixedT(null, "security");
   const result = await Authentication.authenticateAsync({
     promptMessage: {
-      enable: "Enable App Lock",
-      disable: "Turn off App Lock",
-      unlock: "Unlock Boop",
+      enable: t("enableLockPrompt"),
+      disable: t("disableLockPrompt"),
+      unlock: t("unlockPrompt"),
     }[operation],
     biometricsSecurityLevel: "strong",
     disableDeviceFallback: legacyAndroid,
-    cancelLabel: "Cancel",
+    cancelLabel: i18n.t("cancel"),
   });
   if (result.success) return;
   switch (result.error) {
     case "user_cancel":
     case "app_cancel":
     case "system_cancel":
-      throw new Error("Authentication canceled.");
+      throw new AppAuthenticationError("authCancelled");
     case "lockout":
-      throw new Error(
-        "Authentication is temporarily locked. Try again or use your device credential if offered.",
-      );
+      throw new AppAuthenticationError("authLockout");
     case "not_enrolled":
     case "not_available":
     case "passcode_not_set":
-      throw new Error(
-        "Check biometric and screen lock enrollment in system settings.",
-      );
+      throw new AppAuthenticationError("authUnavailable");
     default:
-      throw new Error("Authentication failed. Try again.");
+      throw new AppAuthenticationError("authFailed");
   }
 }
 

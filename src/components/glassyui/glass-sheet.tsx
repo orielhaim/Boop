@@ -1,4 +1,6 @@
 import type { ComponentRef } from "react";
+import { namespaces } from "@/i18n";
+import { useTranslation } from "react-i18next";
 import {
   forwardRef,
   useCallback,
@@ -125,7 +127,7 @@ type SheetLayerProps = GlassSheetContentProps & {
 // Mounted while the sheet is on screen, so each opening measures the sheet afresh.
 function SheetLayer({
   children,
-  closeLabel = "Close sheet",
+  closeLabel,
   onClose,
   onHidden,
   open,
@@ -134,6 +136,7 @@ function SheetLayer({
   style,
   ...rest
 }: SheetLayerProps) {
+  const { t } = useTranslation(namespaces);
   const { colors, preferences } = useGlassTheme();
   const insets = useSafeInsets();
   const { height, width } = useWindowDimensions();
@@ -317,7 +320,7 @@ function SheetLayer({
             ) : null}
             {children}
             <ModalLayerCloseButton
-              label={closeLabel}
+              label={closeLabel ?? t("common:closeSheet")}
               onPress={onClose}
               style={{
                 end: padding.paddingEnd - EDGE,

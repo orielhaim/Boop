@@ -16,6 +16,9 @@ import androidx.core.telecom.CallsManager
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
+import expo.modules.kotlin.records.Required
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +30,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+
+internal class CallLabels : Record {
+  @Field @Required val channel: String = ""
+  @Field @Required val privateCaller: String = ""
+  @Field @Required val connecting: String = ""
+  @Field @Required val ongoing: String = ""
+}
 
 class BoopSystemCallingModule : Module() {
   private var callToRestore: String? = null
@@ -63,11 +73,11 @@ class BoopSystemCallingModule : Module() {
       SystemCallPip.detach()
     }
 
-    AsyncFunction("start") Coroutine { id: String, name: String, incoming: Boolean, privateMode: Boolean ->
+    AsyncFunction("start") Coroutine { id: String, name: String, incoming: Boolean, privateMode: Boolean, labels: CallLabels ->
       withContext(Dispatchers.Main.immediate) {
         val activity = appContext.currentActivity ?: return@withContext false
         if (activity.isFinishing || Build.VERSION.SDK_INT < 26) return@withContext false
-        SystemCallSession.start(activity.applicationContext, id, name, incoming, privateMode)
+        SystemCallSession.start(activity.applicationContext, id, name, incoming, privateMode, labels)
       }
     }
     AsyncFunction("update") { id: String, answeredAt: Double, privateMode: Boolean ->
@@ -104,7 +114,8 @@ internal object SystemCallSession {
     val context: Context,
     val id: String,
     val name: String,
-    var privateMode: Boolean
+    var privateMode: Boolean,
+    val labels: CallLabels
   ) {
     val ready = CompletableDeferred<Boolean>()
     val foreground = CompletableDeferred<Boolean>()
@@ -130,7 +141,7 @@ internal object SystemCallSession {
 
   fun runOnMain(action: () -> Unit) { scope.launch { action() } }
 
-  suspend fun start(context: Context, id: String, name: String, incoming: Boolean, privateMode: Boolean): Boolean {
+  suspend fun start(context: Context, id: String, name: String, incoming: Boolean, privateMode: Boolean, labels: CallLabels): Boolean {
     pendingStart = id
     try {
       ending?.await()
@@ -139,7 +150,7 @@ internal object SystemCallSession {
       if (pendingStart == id) pendingStart = null
     }
     if (current != null || event == null) return false
-    val call = Call(context, id, name, privateMode)
+    val call = Call(context, id, name, privateMode, labels)
     current = call
     call.job = scope.launch {
       try {
@@ -147,7 +158,7 @@ internal object SystemCallSession {
         telecom.registerAppWithTelecom(CallsManager.CAPABILITY_BASELINE)
         val attributes = CallAttributesCompat(
           // Telecom can share this metadata with connected devices and system surfaces.
-          context.getString(app.boop.camerapreview.R.string.boop_private_caller),
+          labels.privateCaller,
           Uri.fromParts("boop", "call", null),
           if (incoming) CallAttributesCompat.DIRECTION_INCOMING else CallAttributesCompat.DIRECTION_OUTGOING,
           CallAttributesCompat.CALL_TYPE_AUDIO_CALL,

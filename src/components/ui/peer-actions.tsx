@@ -1,24 +1,24 @@
 import { router } from "expo-router";
+import { useTranslation } from "react-i18next";
 import {
   GlassSheet,
   GlassSheetContent,
   GlassSheetTitle,
 } from "@/components/glassyui/glass-sheet";
 import { Icon, Row } from "@/components/ui/kit";
+import { namespaces } from "@/i18n";
 
 export function PeerActions({
   mode,
   open,
   onOpenChange,
-  hebrew = false,
 }: {
   mode: "chat" | "call";
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  hebrew?: boolean;
 }) {
-  const title =
-    mode === "chat" ? (hebrew ? "שיחה חדשה" : "New chat") : "New call";
+  const { t } = useTranslation(namespaces);
+  const title = mode === "chat" ? t("messages:newChat") : t("calls:newCall");
 
   return (
     <GlassSheet open={open} onOpenChange={onOpenChange}>
@@ -26,7 +26,7 @@ export function PeerActions({
         <GlassSheetTitle>{title}</GlassSheetTitle>
         <Row
           leading={<Icon name={mode === "chat" ? "chat" : "phone"} />}
-          title={hebrew ? "הזנת כתובת" : "Enter an address"}
+          title={t("contacts:enterAddress")}
           onPress={() => {
             onOpenChange(false);
             router.push({ pathname: "/connect", params: { mode } });
@@ -34,7 +34,7 @@ export function PeerActions({
         />
         <Row
           leading={<Icon name="qr" />}
-          title={hebrew ? "סריקת קוד QR" : "Scan QR code"}
+          title={t("contacts:scanQr")}
           onPress={() => {
             onOpenChange(false);
             router.push({ pathname: "/scan", params: { mode } });
@@ -42,7 +42,7 @@ export function PeerActions({
         />
         <Row
           leading={<Icon name="person" />}
-          title={hebrew ? "קוד ה־QR שלי" : "Show my QR code"}
+          title={t("contacts:ownQr")}
           onPress={() => {
             onOpenChange(false);
             router.push({ pathname: "/settings", params: { qr: "1" } });

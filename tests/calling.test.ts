@@ -379,7 +379,7 @@ test("microphone denial ends the attempt and reports a permission failure", asyn
   expect(b.store.getState().call).toMatchObject({
     phase: "ended",
     outcome: "failed",
-    reason: "Allow microphone access to make calls.",
+    reason: "microphonePermission",
   });
   expect(records.map((row) => row.durationSeconds)).toEqual([0, 0]);
 });

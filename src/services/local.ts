@@ -1,5 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
+import { getLocales } from "expo-localization";
 import { createContext, useContext, useEffect, useMemo } from "react";
 import { AppState } from "react-native";
 import { initializeIdentity } from "@/core/identity";
@@ -10,13 +11,27 @@ import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
-import { preference, setPreference } from "@/db/queries";
+import {
+  contactByKey,
+  preference,
+  setPreference,
+  updateContactPreferences,
+} from "@/db/queries";
 import { seedRelays } from "@/db/relays";
-import { callHistory, contacts, relaySettings, settings } from "@/db/schema";
+import { callHistory, relaySettings, settings } from "@/db/schema";
+import { i18n, preferredLanguage } from "@/i18n";
+import { readLanguagePreference } from "@/i18n/preference";
 
 async function start() {
   const db = await openDatabase();
   try {
+    const language = readLanguagePreference(db);
+    await i18n.changeLanguage(
+      preferredLanguage(
+        language,
+        language === "auto" ? getLocales()[0]?.languageCode : undefined,
+      ),
+    );
     const fresh = preference(db, "identity.publicKey") === null;
     const identity = await initializeIdentity(db);
     seedRelays(db, fresh);
@@ -51,30 +66,24 @@ async function start() {
         signer,
         {
           get(peerKey) {
-            const row = db
-              .select({ allowed: contacts.allowIncomingVideo })
-              .from(contacts)
-              .where(eq(contacts.publicKey, peerKey))
-              .get();
-            return row ? (row.allowed ? "always" : "ask") : "unknown";
+            const row = contactByKey(db, peerKey).get();
+            return row
+              ? row.allowIncomingVideo
+                ? "always"
+                : "ask"
+              : "unknown";
           },
           allow(peerKey) {
             return (
-              db
-                .update(contacts)
-                .set({ allowIncomingVideo: true })
-                .where(eq(contacts.publicKey, peerKey))
-                .run().changes === 1
+              updateContactPreferences(db, peerKey, {
+                allowIncomingVideo: true,
+              }).changes === 1
             );
           },
         },
         ({ invite, peerKey, signal, onRouting }) => {
           const privateMode = lock.getState().enabled;
-          const contact = db
-            .select({ name: contacts.name, avatarUrl: contacts.avatarUrl })
-            .from(contacts)
-            .where(eq(contacts.publicKey, peerKey))
-            .get();
+          const contact = contactByKey(db, peerKey).get();
           return openTelecomAudio({
             id: invite.callId,
             name: contact?.name ?? `${toNpub(peerKey).slice(0, 15)}…`,

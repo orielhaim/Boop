@@ -1,14 +1,27 @@
 import "dayjs/locale/he";
 import type {
   ChatAppearanceName,
+  ChatIcons,
   ChatLabels,
   PartialChatTheme,
 } from "@kesha-antonov/react-native-chat";
-import { useLocales } from "expo-localization";
-import { I18nManager } from "react-native";
+import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import { Icon } from "@/components/ui/kit";
+import { directionFor, resolveLanguage } from "@/i18n";
 import { dark, light, space, type, useTheme } from "@/theme";
 
 const appearance: ChatAppearanceName = "soft";
+
+const icons: ChatIcons = {
+  arrowLeft: (props) => <Icon name="back" {...props} />,
+  chevronLeft: (props) => <Icon name="previous" {...props} />,
+  pencil: (props) => <Icon name="add" {...props} />,
+  send: (props) => <Icon name="send" {...props} />,
+  reply: (props) => <Icon name="reply" {...props} />,
+  forward: (props) => <Icon name="forward" {...props} />,
+  backspace: (props) => <Icon name="erase" {...props} />,
+};
 
 export const conversationMaterials = {
   light: {
@@ -160,71 +173,15 @@ const darkTheme = chatTheme(dark);
 const detailTheme = chatTheme(light, conversationMaterials.light);
 const detailDarkTheme = chatTheme(dark, conversationMaterials.dark);
 
-const english: Partial<ChatLabels> = {
-  chatListTitle: "Messages",
-  chatListSearch: "Search conversations",
-  chatListNewChat: "New conversation",
-  chatListDeleteTitle: "Delete this conversation on this device?",
-  chatListDeleteManyTitle: "Delete {count} conversations on this device?",
-  chatListDeleteMessage: "Copies on other devices and relays are unaffected.",
-  actionDelete: "Delete locally",
-};
-
-const hebrew: Partial<ChatLabels> = {
-  placeholder: "כתיבת הודעה",
-  send: "שליחה",
-  cancel: "ביטול",
-  ok: "אישור",
-  loadEarlier: "טעינת הודעות קודמות",
-  today: "היום",
-  replyingTo: "תגובה להודעה של {name}",
-  actionReply: "השבה",
-  actionCopy: "העתקה",
-  actionPin: "הצמדה",
-  actionUnpin: "ביטול הצמדה",
-  actionDelete: "מחיקה מהמכשיר",
-  actionRetry: "שליחה מחדש",
-  actionSelect: "בחירה",
-  cancelSelection: "ביטול בחירה",
-  emojiSearch: "חיפוש אימוג׳י",
-  emojiRecent: "אחרונים",
-  emojiSmileys: "סמיילי ואנשים",
-  emojiAnimals: "בעלי חיים וטבע",
-  emojiFood: "אוכל ושתייה",
-  emojiActivities: "פעילויות",
-  emojiTravel: "נסיעות ומקומות",
-  emojiObjects: "חפצים",
-  emojiSymbols: "סמלים",
-  emojiFlags: "דגלים",
-  emojiNoResults: "לא נמצאו אימוג׳י",
-  emojiButton: "מקלדת אימוג׳י",
-  keyboardButton: "מקלדת",
-  backspace: "מחיקה",
-  emptyChatTitle: "עדיין אין הודעות",
-  emptyChatText: "אפשר לשלוח הודעה פרטית ראשונה.",
-  unreadMessages: "הודעות שלא נקראו",
-  chatListTitle: "הודעות",
-  chatListSearch: "חיפוש שיחות",
-  chatListArchived: "שיחות בארכיון",
-  chatListArchive: "העברה לארכיון",
-  chatListUnarchive: "הוצאה מהארכיון",
-  chatListMute: "השתקה",
-  chatListUnmute: "ביטול השתקה",
-  chatListNewChat: "שיחה חדשה",
-  chatListBack: "חזרה",
-  chatListEmpty: "עדיין אין שיחות",
-  chatListNoResults: "לא נמצאו שיחות",
-  chatListDraft: "טיוטה",
-  chatListYou: "אני",
-  chatListDeleteTitle: "למחוק את השיחה מהמכשיר?",
-  chatListDeleteManyTitle: "למחוק {count} שיחות מהמכשיר?",
-  chatListDeleteMessage: "עותקים במכשירים אחרים ובממסרים יישארו כפי שהם.",
-};
-
 export function useChatAppearance(detail = false) {
   const app = useTheme();
-  const language = useLocales()[0]?.languageCode;
-  const locale = language === "he" || language === "iw" ? "he" : "en";
+  const { t, i18n } = useTranslation("chatKit");
+  const locale = resolveLanguage(i18n.resolvedLanguage);
+  const rtl = directionFor(locale) === "rtl";
+  const labels = useMemo(
+    () => t("labels", { returnObjects: true }) satisfies Partial<ChatLabels>,
+    [t],
+  );
   return {
     appearance,
     theme: detail ? detailTheme : theme,
@@ -232,8 +189,9 @@ export function useChatAppearance(detail = false) {
     colorScheme: app.theme,
     colors: app.colors,
     locale,
-    rtl: I18nManager.isRTL || locale === "he",
-    labels: locale === "he" ? hebrew : english,
+    rtl,
+    icons,
+    labels,
     reducedMotion: app.reduceMotion,
     reducedTransparency: app.reduceTransparency,
   };

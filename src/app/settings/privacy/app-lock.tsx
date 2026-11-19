@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import {
   GlassSheet,
   GlassSheetContent,
@@ -12,16 +13,18 @@ import {
 } from "@/components/settings/group";
 import { Screen } from "@/components/ui/kit";
 import { lockTimeouts } from "@/core/security/app-lock";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 
 const labels = {
-  0: "Immediately",
-  60000: "After 1 minute",
-  300000: "After 5 minutes",
-  1800000: "After 30 minutes",
-};
+  0: "security:immediately",
+  60000: "security:afterMinute",
+  300000: "security:afterFive",
+  1800000: "security:afterThirty",
+} as const;
 
 export default function AppLockSettings() {
+  const { t } = useTranslation(namespaces);
   const { lock } = useLocal();
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const [selectTimeout, setSelectTimeout] = useState(false);
@@ -31,8 +34,10 @@ export default function AppLockSettings() {
     <Screen>
       <SettingsGroup>
         <SettingsToggle
-          title="App Lock"
-          detail={state.authenticating ? "Authenticating…" : undefined}
+          title={t("security:appLock")}
+          detail={
+            state.authenticating ? t("security:authenticating") : undefined
+          }
           value={state.enabled}
           disabled={state.authenticating}
           onChange={(value) => {
@@ -42,19 +47,19 @@ export default function AppLockSettings() {
         />
         {state.enabled && (
           <SettingsRow
-            title="Lock after leaving Boop"
-            value={labels[state.timeout]}
+            title={t("security:lockAfter")}
+            value={t(labels[state.timeout])}
             onPress={() => setSelectTimeout(true)}
           />
         )}
       </SettingsGroup>
       {error || state.error ? (
-        <SettingsDescription>{error || state.error}</SettingsDescription>
+        <SettingsDescription>
+          {error || (state.error ? t(`security:${state.error}`) : null)}
+        </SettingsDescription>
       ) : (
         !state.enabled && (
-          <SettingsDescription>
-            Require device authentication when you open Boop.
-          </SettingsDescription>
+          <SettingsDescription>{t("security:lockHint")}</SettingsDescription>
         )
       )}
       <GlassSheet
@@ -62,19 +67,19 @@ export default function AppLockSettings() {
         onOpenChange={setSelectTimeout}
       >
         <GlassSheetContent>
-          <GlassSheetTitle>Lock after leaving Boop</GlassSheetTitle>
+          <GlassSheetTitle>{t("security:lockAfter")}</GlassSheetTitle>
           <SettingsGroup>
             {lockTimeouts.map((timeout) => (
               <SettingsRow
                 key={timeout}
-                title={labels[timeout]}
+                title={t(labels[timeout])}
                 selected={state.timeout === timeout}
                 onPress={() => {
                   try {
                     lock.setTimeout(timeout);
                     setError("");
                   } catch {
-                    setError("Could not save the lock timeout.");
+                    setError(t("security:saveTimeoutError"));
                   }
                   setSelectTimeout(false);
                 }}

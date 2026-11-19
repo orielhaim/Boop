@@ -1,28 +1,24 @@
 import { Stack, useLocalSearchParams } from "expo-router";
-import { useChatAppearance } from "@/components/messages/appearance";
+import { useTranslation } from "react-i18next";
 import { DetailConversation } from "@/components/messages/detail";
 import { Empty, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
+import { namespaces } from "@/i18n";
 
 export default function ChatRoute() {
+  const { t } = useTranslation(namespaces);
   const params = useLocalSearchParams<{ key: string }>();
-  const { locale } = useChatAppearance();
-  const hebrew = /^he(?:-|$)/i.test(locale);
   const peerKey =
     typeof params.key === "string" ? parsePublicKey(params.key) : null;
   if (!peerKey) {
-    const title = hebrew ? "השיחה אינה זמינה" : "Conversation unavailable";
+    const title = t("messages:unavailable");
     return (
       <Screen>
         <Stack.Screen options={{ headerShown: true, title }} />
         <Empty
           icon="chat"
           title={title}
-          detail={
-            hebrew
-              ? "אפשר לפתוח שיחה מתוך הודעות או אנשי קשר."
-              : "Open a conversation from Messages or Contacts."
-          }
+          detail={t("messages:unavailableHint")}
         />
       </Screen>
     );

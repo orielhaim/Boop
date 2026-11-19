@@ -1,12 +1,15 @@
 import Constants from "expo-constants";
 import { router } from "expo-router";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { Action, Ink, Screen, Section } from "@/components/ui/kit";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 
 export default function About() {
+  const { t } = useTranslation(namespaces);
   const { db, identity, chat, calling, messaging } = useLocal();
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState(false);
@@ -16,12 +19,12 @@ export default function About() {
     <Screen>
       <SettingsGroup title="Boop">
         <SettingsRow
-          title="Version"
-          value={config?.version ?? "Unknown"}
+          title={t("settings:version")}
+          value={config?.version ?? t("common:unknown")}
           icon="info"
         />
         <SettingsRow
-          title="Build"
+          title={t("settings:build")}
           value={String(
             config?.ios?.buildNumber ?? config?.android?.versionCode ?? 1,
           )}
@@ -31,7 +34,7 @@ export default function About() {
 
       {__DEV__ ? (
         <>
-          <Section>Development</Section>
+          <Section>{t("settings:development")}</Section>
           <Action
             disabled={seeding}
             onPress={async () => {
@@ -48,15 +51,13 @@ export default function About() {
                   params: { key: peerKey },
                 });
               } catch {
-                setNotice("Could not open the chat stress scenario.");
+                setNotice(t("settings:stressError"));
               } finally {
                 setSeeding(false);
               }
             }}
           >
-            {seeding
-              ? "Preparing test history…"
-              : "Open 10,000-message test chat"}
+            {seeding ? t("settings:prepareStress") : t("settings:openStress")}
           </Action>
           <Action
             onPress={async () => {
@@ -66,41 +67,64 @@ export default function About() {
                 .flatMap(([name, enabled]) => (enabled ? [name] : []))
                 .join(", ");
               setNotice(
-                `Available Chat Kit capabilities: ${available || "none"}.`,
+                t("settings:chatCapabilitiesResult", {
+                  capabilities: available || t("settings:noCapabilities"),
+                }),
               );
             }}
           >
-            Check chat capabilities
+            {t("settings:chatCapabilities")}
           </Action>
           <Action
             disabled={checking}
             onPress={async () => {
               setChecking(true);
               try {
-                const { checkNativeCalling } =
-                  await import("@/core/calling/native-check");
+                const probe = await import("@/core/calling/native-check");
                 const call = calling.store.getState().call;
                 const media = await calling.inspect()?.catch(() => undefined);
                 const status = [
-                  await checkNativeCalling(),
-                  `Call state: ${call?.phase ?? "idle"}. Inbox transport: ${messaging.getStatus()}.`,
+                  t(`settings:${await probe.checkNativeCalling()}`),
+                  t("settings:callDiagnosticState", {
+                    phase: call?.phase ?? "idle",
+                    transport: messaging.getStatus(),
+                  }),
                   call?.phase === "connected"
-                    ? `Audio output: ${call.routing.selected ?? "system managed"}.`
+                    ? t("settings:callDiagnosticOutput", {
+                        output:
+                          call.routing.selected ?? t("settings:systemManaged"),
+                      })
                     : "",
                   media
-                    ? `ICE: ${media.ice}. Microphone: ${media.microphone ? "on" : "off"}. Remote audio track: ${media.remoteTrack ? "present" : "absent"}. Audio RTP packets sent / received: ${media.sentPackets} / ${media.receivedPackets}.`
+                    ? t("settings:callDiagnosticMedia", {
+                        ice: media.ice,
+                        microphone: t(
+                          media.microphone ? "common:on" : "common:off",
+                        ),
+                        remote: t(
+                          media.remoteTrack
+                            ? "settings:present"
+                            : "settings:absent",
+                        ),
+                        sent: media.sentPackets,
+                        received: media.receivedPackets,
+                      })
                     : "",
-                  call?.phase === "ended" ? (call.reason ?? call.outcome) : "",
+                  call?.phase === "ended"
+                    ? call.reason
+                      ? t(`calls:${call.reason}`)
+                      : call.outcome
+                    : "",
                 ]
                   .filter(Boolean)
                   .join("\n\n");
-                Alert.alert("Calling diagnostics", status);
+                Alert.alert(t("settings:callingDiagnostics"), status);
               } finally {
                 setChecking(false);
               }
             }}
           >
-            {checking ? "Checking calling runtime…" : "Check calling runtime"}
+            {checking ? t("settings:checkingCalls") : t("settings:checkCalls")}
           </Action>
         </>
       ) : null}

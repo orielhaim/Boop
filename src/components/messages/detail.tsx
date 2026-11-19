@@ -2,7 +2,6 @@ import {
   Chat,
   type ChatHandle,
   ChatHeader,
-  type ChatIcons,
   type ChatProps,
   Composer,
   InputToolbar,
@@ -25,6 +24,7 @@ import {
   useSyncExternalStore,
   useTransition,
 } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   AppState,
@@ -38,71 +38,12 @@ import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import type { MessageCursor } from "@/db/messaging";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
 import { type DetailMessage, toQuote } from "./detail-adapter";
 import { useDetailHistory } from "./detail-history";
-
-const translations = {
-  en: {
-    self: "You",
-    call: "Call",
-    online: "Relays connected",
-    connecting: "Connecting to relays…",
-    offline: "Offline · messages will queue",
-    disabled: "No relays enabled",
-    unavailableQuote: "Original message unavailable",
-    latest: "Jump to latest",
-    deleteLocal: "Delete on this device",
-    deletePrompt:
-      "This removes the selection from Boop on this device. Copies on relays and other devices can still exist.",
-    historyError: "Chat history could not be loaded.",
-    updateError: "The change could not be saved. Try again.",
-    sendError: "The message could not be queued. Your draft is still here.",
-    sendReplyError:
-      "The original message is unavailable. Remove the quote to send this message.",
-    sendFailureDetail: "Why it failed",
-    noInbox:
-      "Boop could not find an inbox relay for this contact. Try again after they configure an inbox relay.",
-    relayRejected:
-      "A relay did not accept the message. Check your relay connection and try again.",
-    invalidMessage:
-      "The queued message could not be read. Copy its text and compose a new message.",
-    openError: "This link could not be opened.",
-    retry: "Try again",
-    cancel: "Cancel",
-    send: "Send message",
-  },
-  he: {
-    self: "אני",
-    call: "שיחה",
-    online: "שרתים מחוברים",
-    connecting: "מתחבר לשרתים…",
-    offline: "אין חיבור · ההודעות יישלחו בהמשך",
-    disabled: "אין שרתים פעילים",
-    unavailableQuote: "ההודעה המקורית אינה זמינה",
-    latest: "מעבר להודעות האחרונות",
-    deleteLocal: "מחיקה במכשיר הזה",
-    deletePrompt:
-      "ההודעות שסומנו יימחקו מ־Boop במכשיר הזה. עותקים עשויים להישאר בשרתים ובמכשירים אחרים.",
-    historyError: "לא ניתן לטעון את היסטוריית השיחה.",
-    updateError: "לא ניתן לשמור את השינוי. אפשר לנסות שוב.",
-    sendError: "לא ניתן להוסיף את ההודעה לתור. הטיוטה נשמרה.",
-    sendReplyError:
-      "ההודעה המקורית אינה זמינה. אפשר להסיר את הציטוט כדי לשלוח את ההודעה.",
-    sendFailureDetail: "למה השליחה נכשלה",
-    noInbox: "לא נמצא שרת קבלה לאיש הקשר. אפשר לנסות שוב לאחר הגדרת שרת קבלה.",
-    relayRejected:
-      "שרת השליחה לא קיבל את ההודעה. כדאי לבדוק את החיבור ולנסות שוב.",
-    invalidMessage:
-      "לא ניתן לקרוא את ההודעה שבתור. אפשר להעתיק את הטקסט ולכתוב הודעה חדשה.",
-    openError: "לא ניתן לפתוח את הקישור.",
-    retry: "ניסיון נוסף",
-    cancel: "ביטול",
-    send: "שליחת הודעה",
-  },
-};
 
 const messageActions: MessageActionKey[] = [
   "reply",
@@ -115,11 +56,11 @@ const viewabilityConfig = {
   minimumViewTime: 250,
   viewAreaCoveragePercentThreshold: 5,
 };
-const icons: ChatIcons = { send: (props) => <Icon name="send" {...props} /> };
 const autoText = { textAlign: "auto", writingDirection: "auto" } as const;
 const emptySendSlot = () => null;
 
 function useStressArrival(peerKey: string) {
+  const { t } = useTranslation(namespaces);
   const { chat, identity } = useLocal();
   const [factory, setFactory] =
     useState<typeof import("@/db/chat-stress").stressArrival>();
@@ -147,14 +88,15 @@ function useStressArrival(peerKey: string) {
       try {
         chat.receive(factory(identity.publicKey));
       } catch {
-        Alert.alert("Unable to add the test message");
+        Alert.alert(t("messages:testMessageError"));
       }
     }, 4_000);
-  }, [chat, factory, identity.publicKey]);
+  }, [chat, factory, identity.publicKey, t]);
   return { available: Boolean(factory), schedule, scheduled };
 }
 
 export function DetailConversation({ peerKey }: { peerKey: string }) {
+  const { t } = useTranslation(namespaces);
   const { chat, identity, messaging } = useLocal();
   const {
     available: stressEnabled,
@@ -171,13 +113,13 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     colorScheme,
     locale,
     labels,
+    icons,
     rtl,
     colors,
     reducedMotion,
     reducedTransparency,
   } = useChatAppearance(true);
   const material = conversationMaterials[colorScheme];
-  const copy = /^he(?:-|$)/i.test(locale) ? translations.he : translations.en;
   const kit = useMemo(
     () => ({
       theme,
@@ -185,17 +127,21 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       appearance,
       colorScheme,
       locale,
-      labels: { ...labels, actionDelete: copy.deleteLocal, send: copy.send },
+      labels: {
+        ...labels,
+        actionDelete: t("messages:deleteLocal"),
+        send: t("messages:send"),
+      },
       icons,
     }),
-    [theme, darkTheme, appearance, colorScheme, locale, labels, copy],
+    [theme, darkTheme, appearance, colorScheme, locale, labels, icons, t],
   );
   const participants = useMemo(
     () => ({
-      self: { _id: identity.publicKey, name: copy.self },
+      self: { _id: identity.publicKey, name: t("messages:self") },
       peer: { _id: peerKey, name, avatar: contact?.avatarUrl ?? undefined },
     }),
-    [identity.publicKey, peerKey, name, copy.self, contact?.avatarUrl],
+    [identity.publicKey, peerKey, name, t, contact?.avatarUrl],
   );
   const resolveUser = useCallback(
     (id: string | number) =>
@@ -223,7 +169,12 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     retry,
     firstUnreadMessageId,
     initiallyDetached,
-  } = useDetailHistory(chat, peerKey, participants, copy.unavailableQuote);
+  } = useDetailHistory(
+    chat,
+    peerKey,
+    participants,
+    t("messages:unavailableQuote"),
+  );
   const [detached, setDetached] = useState(initiallyDetached);
   const [atLatest, setAtLatest] = useState(firstUnreadMessageId === null);
   const latestPosition = useRef(firstUnreadMessageId === null);
@@ -265,9 +216,9 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       }
       pendingDraft.current = null;
     } catch {
-      setNotice(copy.updateError);
+      setNotice(t("messages:updateError"));
     }
-  }, [chat, peerKey, copy.updateError]);
+  }, [chat, peerKey, t]);
 
   const saveDraft = useCallback(
     (text: string, reply: ReplyMessage | null) => {
@@ -335,8 +286,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       } catch (error) {
         setNotice(
           error instanceof Error && error.message === "unavailable-reply"
-            ? copy.sendReplyError
-            : copy.sendError,
+            ? t("messages:sendReplyError")
+            : t("messages:sendError"),
         );
         return;
       } finally {
@@ -347,10 +298,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         const id = loadLatest();
         if (id) setJump({ id, highlight: false });
       } catch {
-        setNotice(copy.historyError);
+        setNotice(t("messages:historyError"));
       }
     },
-    [messaging, peerKey, flushDraft, loadLatest, copy],
+    [messaging, peerKey, flushDraft, loadLatest, t],
   );
 
   // Keep the built-in button, and clear the controlled composer only after SQLite commits.
@@ -361,9 +312,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         <Send
           {...props}
           isSendButtonAlwaysVisible
+          containerStyle={rtl ? styles.rtlSend : styles.send}
           sendButtonProps={{
             ...props.sendButtonProps,
-            accessibilityLabel: copy.send,
+            hitSlop: 6,
+            accessibilityLabel: t("messages:send"),
             accessibilityState: { disabled: !enabled, busy: sending },
             enabled,
           }}
@@ -393,7 +346,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         </Send>
       );
     },
-    [colors, copy.send, material.outgoing, sendText, sending],
+    [colors, t, material.outgoing, rtl, sendText, sending],
   );
 
   const renderComposer = useCallback(
@@ -411,6 +364,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       <InputToolbar
         {...props}
         containerStyle={rtl ? styles.rtlToolbar : styles.toolbar}
+        replyPreviewContainerStyle={rtl ? styles.rtlReplyPreview : undefined}
+        replyPreviewTextStyle={autoText}
       />
     ),
     [rtl],
@@ -430,17 +385,17 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       try {
         const row = chat.message(peerKey, id);
         if (!row) {
-          setNotice(copy.unavailableQuote);
+          setNotice(t("messages:unavailableQuote"));
           return;
         }
         loadAround(row);
         setDetached(true);
         setJump({ id: row.id, highlight: true });
       } catch {
-        setNotice(copy.historyError);
+        setNotice(t("messages:historyError"));
       }
     },
-    [chat, copy, items, loadAround, peerKey, reducedMotion],
+    [chat, t, items, loadAround, peerKey, reducedMotion],
   );
 
   useLayoutEffect(() => {
@@ -462,9 +417,9 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       setDetached(false);
       if (id) setJump({ id, highlight: false });
     } catch {
-      setNotice(copy.historyError);
+      setNotice(t("messages:historyError"));
     }
-  }, [copy.historyError, loadLatest]);
+  }, [t, loadLatest]);
 
   const loadEarlierMessagesProps = useMemo(
     () => ({
@@ -477,12 +432,12 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           try {
             olderPage();
           } catch {
-            setNotice(copy.historyError);
+            setNotice(t("messages:historyError"));
           }
         });
       },
     }),
-    [copy.historyError, loadingPage, older, olderPage],
+    [t, loadingPage, older, olderPage],
   );
 
   type ListProps = NonNullable<ChatProps<DetailMessage>["listProps"]>;
@@ -519,11 +474,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         try {
           chat.markRead(peerKey, newest);
         } catch {
-          setNotice(copy.updateError);
+          setNotice(t("messages:updateError"));
         }
       }
     },
-    [chat, copy.updateError, focused, peerKey],
+    [chat, t, focused, peerKey],
   );
 
   const listProps = useMemo<ListProps>(
@@ -559,10 +514,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 
   const confirmDelete = useCallback(
     (messages: DetailMessage[]) => {
-      Alert.alert(copy.deleteLocal, copy.deletePrompt, [
-        { text: copy.cancel, style: "cancel" },
+      Alert.alert(t("messages:deleteLocal"), t("messages:deletePrompt"), [
+        { text: t("messages:cancel"), style: "cancel" },
         {
-          text: copy.deleteLocal,
+          text: t("messages:deleteLocal"),
           style: "destructive",
           onPress: () => {
             try {
@@ -571,13 +526,13 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
                 messages.map((message) => message._id),
               );
             } catch {
-              setNotice(copy.updateError);
+              setNotice(t("messages:updateError"));
             }
           },
         },
       ]);
     },
-    [chat, copy, peerKey],
+    [chat, t, peerKey],
   );
 
   const deleteOne = useCallback(
@@ -589,10 +544,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       try {
         messaging.retry(peerKey, message._id);
       } catch {
-        setNotice(copy.updateError);
+        setNotice(t("messages:updateError"));
       }
     },
-    [copy.updateError, messaging, peerKey],
+    [t, messaging, peerKey],
   );
 
   const actionsForMessage = useCallback(
@@ -600,20 +555,20 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       if (!message.isFailed) return defaults;
       const detail =
         message.failure === "no-inbox"
-          ? copy.noInbox
+          ? t("messages:noInbox")
           : message.failure === "invalid-message"
-            ? copy.invalidMessage
-            : copy.relayRejected;
+            ? t("messages:invalidMessage")
+            : t("messages:relayRejected");
       return [
         ...defaults,
         {
           key: "send-failure-detail",
-          label: copy.sendFailureDetail,
-          onPress: () => Alert.alert(copy.sendFailureDetail, detail),
+          label: t("messages:sendFailureDetail"),
+          onPress: () => Alert.alert(t("messages:sendFailureDetail"), detail),
         },
       ];
     },
-    [copy],
+    [t],
   );
 
   const reactions = useMemo<ChatProps<DetailMessage>["reactions"]>(
@@ -624,11 +579,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         try {
           messaging.toggleReaction({ peerKey, messageId: message._id, emoji });
         } catch {
-          setNotice(copy.updateError);
+          setNotice(t("messages:updateError"));
         }
       },
     }),
-    [copy.updateError, messaging, peerKey, resolveUser],
+    [t, messaging, peerKey, resolveUser],
   );
 
   const reply = useMemo<ChatProps<DetailMessage>["reply"]>(
@@ -668,15 +623,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             !url.password
           ) {
             void Linking.openURL(url.href).catch(() =>
-              setNotice(copy.openError),
+              setNotice(t("messages:openError")),
             );
           }
         } catch {
-          setNotice(copy.openError);
+          setNotice(t("messages:openError"));
         }
       },
     }),
-    [copy.openError],
+    [t],
   );
 
   const textInputProps = useMemo(
@@ -702,21 +657,21 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         {stressEnabled ? (
           <IconButton
             icon="add"
-            label="Simulate a test message"
+            label={t("messages:testMessage")}
             disabled={scheduled}
             onPress={schedule}
           />
         ) : null}
         <IconButton
           icon="phone"
-          label={copy.call}
+          label={t("messages:call")}
           onPress={() =>
             router.push({ pathname: "/call/[key]", params: { key: peerKey } })
           }
         />
       </View>
     ),
-    [copy.call, peerKey, schedule, scheduled, stressEnabled],
+    [t, peerKey, schedule, scheduled, stressEnabled],
   );
 
   return (
@@ -752,7 +707,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         <ChatHeader
           {...kit}
           title={name}
-          subtitle={copy[status]}
+          subtitle={t(`messages:${status}`)}
           isSubtitleActive={status === "online"}
           avatar={{ id: peerKey, uri: contact?.avatarUrl ?? undefined }}
           onBack={back}
@@ -769,11 +724,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             accessibilityLiveRegion="polite"
             style={styles.noticeText}
           >
-            {error ? copy.historyError : notice}
+            {error ? t("messages:historyError") : notice}
           </Ink>
           {error ? (
             <Action size="sm" variant="ghost" onPress={retry}>
-              {copy.retry}
+              {t("messages:retry")}
             </Action>
           ) : null}
         </View>
@@ -781,53 +736,57 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       {detached && newer ? (
         <View style={styles.latest}>
           <Action size="sm" variant="soft" onPress={goLatest}>
-            {copy.latest}
+            {t("messages:latest")}
           </Action>
         </View>
       ) : null}
-      <Chat<DetailMessage>
-        {...kit}
-        chatRef={chatRef}
-        messages={items}
-        user={participants.self}
-        forceRTL={rtl}
-        enableGestureHandlerRootView={false}
-        isInverted={false}
-        isGroupChat={false}
-        isAlignedTop="auto"
-        isDayAnimationEnabled={!reducedMotion}
-        isScrollToBottomEnabled={!detached || !newer}
-        firstUnreadMessageId={firstUnreadMessageId}
-        loadEarlierMessagesProps={loadEarlierMessagesProps}
-        listProps={listProps}
-        initialText={initialDraft.text}
-        text={draft}
-        onDraftChange={updateText}
-        textInputProps={textInputProps}
-        renderInputToolbar={renderToolbar}
-        renderComposer={renderComposer}
-        renderSend={emptySendSlot}
-        isMultiline
-        emptyChatGreeting={null}
-        defaultMessageActions={messageActions}
-        messageActions={actionsForMessage}
-        onDeleteMessage={deleteOne}
-        onDeleteMessages={confirmDelete}
-        onRetryMessage={retryMessage}
-        reactions={reactions}
-        reply={reply}
-        messageTextProps={messageTextProps}
-        attachments={false}
-        audioRecording={false}
-        videoRecording={false}
-        emojiKeyboard
-      />
+      <View style={styles.chat}>
+        <Chat<DetailMessage>
+          {...kit}
+          chatRef={chatRef}
+          messages={items}
+          user={participants.self}
+          forceRTL={rtl}
+          enableGestureHandlerRootView={false}
+          isInverted={false}
+          isGroupChat={false}
+          isAlignedTop="auto"
+          isDayAnimationEnabled={!reducedMotion}
+          isScrollToBottomEnabled={!detached || !newer}
+          firstUnreadMessageId={firstUnreadMessageId}
+          loadEarlierMessagesProps={loadEarlierMessagesProps}
+          listProps={listProps}
+          initialText={initialDraft.text}
+          text={draft}
+          onDraftChange={updateText}
+          textInputProps={textInputProps}
+          renderInputToolbar={renderToolbar}
+          renderComposer={renderComposer}
+          renderSend={emptySendSlot}
+          isMultiline
+          emptyChatGreeting={null}
+          defaultMessageActions={messageActions}
+          messageActions={actionsForMessage}
+          onDeleteMessage={deleteOne}
+          onDeleteMessages={confirmDelete}
+          onRetryMessage={retryMessage}
+          reactions={reactions}
+          reply={reply}
+          messageTextProps={messageTextProps}
+          attachments={false}
+          audioRecording={false}
+          videoRecording={false}
+          emojiKeyboard
+        />
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  // Chat Kit mirrors bubble rows itself. Keep their base flex axis physical.
+  chat: { flex: 1, direction: "ltr" },
   contours: { width: "100%", height: "100%", opacity: 0.25 },
   header: {
     borderRadius: radius.card,
@@ -846,6 +805,7 @@ const styles = StyleSheet.create({
   // Chat Kit keeps a 6 pt gap beside its empty Send slot. Absorb it into the gutter.
   toolbar: { direction: "ltr", paddingStart: space.sm, paddingEnd: 2 },
   rtlToolbar: { direction: "ltr", paddingStart: 2, paddingEnd: space.sm },
+  rtlReplyPreview: { direction: "rtl" },
   composerControls: {
     flex: 1,
     minWidth: 0,
@@ -854,6 +814,8 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   rtlControls: { flexDirection: "row-reverse" },
+  send: { alignItems: "flex-end", marginEnd: -6 },
+  rtlSend: { alignItems: "flex-start", marginStart: -6 },
   sendGlyph: {
     width: 34,
     height: 34,

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native";
 import {
   GlassSegmentedControl,
@@ -7,18 +8,20 @@ import {
 import { SettingsDescription } from "@/components/settings/group";
 import { Screen, Section } from "@/components/ui/kit";
 import { setPreference } from "@/db/queries";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { themes, useAppPreferences } from "@/stores/preferences";
 
 export default function Appearance() {
+  const { t } = useTranslation(namespaces);
   const { db } = useLocal();
   const selected = useAppPreferences((state) => state.theme);
   const [error, setError] = useState("");
   return (
     <Screen>
-      <Section>Theme</Section>
+      <Section>{t("settings:theme")}</Section>
       <GlassSegmentedControl
-        accessibilityLabel="Theme"
+        accessibilityLabel={t("settings:theme")}
         value={selected}
         style={styles.theme}
         onValueChange={(value) => {
@@ -29,7 +32,7 @@ export default function Appearance() {
             useAppPreferences.setState({ theme });
             setError("");
           } catch {
-            setError("Could not save the theme.");
+            setError(t("settings:saveThemeError"));
           }
         }}
       >
@@ -39,7 +42,13 @@ export default function Appearance() {
             value={theme}
             style={styles.option}
           >
-            {{ system: "System", light: "Light", dark: "Dark" }[theme]}
+            {
+              {
+                system: t("settings:system"),
+                light: t("settings:light"),
+                dark: t("settings:dark"),
+              }[theme]
+            }
           </GlassSegmentedControlItem>
         ))}
       </GlassSegmentedControl>

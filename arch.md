@@ -170,7 +170,8 @@ Use SQLite for durable data and Zustand for transient application state. Do not 
 - `expo-camera` — scanning public addresses for chats, calls, and contacts.
 - `react-native-qrcode-svg` — displaying identity QR codes.
 - `expo-clipboard` — copying keys, addresses, and messages.
-- `expo-localization` — language and RTL awareness.
+- `i18next` and `react-i18next` — bundled translation resources and typed React bindings.
+- `expo-localization` — native locale configuration, RTL support, and device calendar preferences.
 - `expo-local-authentication` — optional device authentication for App Lock.
 - `expo-screen-capture` — operating-system app-switcher protection.
 - `expo-splash-screen` — polished startup experience.
@@ -481,9 +482,21 @@ Additional screens:
 - Active call.
 - Contact details.
 - Add contact, enter an address, or scan an address.
-- Settings with a native nested stack for Identity & keys, Appearance, Calls & sounds, Privacy & security, Connections, and About. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
+- Settings with a native nested stack for Identity & keys, Appearance, Language, Calls & sounds, Privacy & security, Connections, and About. Privacy & security contains App Lock, Device permissions, and Incoming video. Connections manages Nostr relays.
 
 The dialer must work with real application identities. A numeric keypad must not imply interoperability with ordinary telephone numbers unless such an addressing system is actually implemented.
+
+### Language and layout direction
+
+The app supports English and Hebrew. Settings → Language lists Auto-detect first, then English and Hebrew. SQLite stores the user's choice. Auto-detect is the default when no supported choice is saved. It uses the primary locale reported by Expo Localization and falls back to English for unsupported languages. Startup resolves the language before the router and App Lock content mount.
+
+`src/i18n` owns the single i18next instance, initialized with react-i18next and bundled English and Hebrew resources. Namespaces cover common controls, navigation, contacts, messages, calls, video, settings, security, connections, errors, and Chat Kit. The English bundle defines the TypeScript keys and interpolation parameters. Translation tests check shape, placeholders, and locale-specific plural forms.
+
+The selected language determines content and Expo Router `LocaleProvider` direction. React Native needs a reload when its native layout direction changes. Settings confirms the change before saving. The root defers a requested reload until the app is active, unlocked, and any call has ended. Startup bounds automatic direction repair to one attempt per preference. Expo Localization declares both native locales and enables RTL support. OS-owned UI such as system permission buttons follows the platform's language.
+
+The Chat Kit adapter supplies locale and typed label overrides from the same resources to the list, header, and conversation. The detail view opts into Chat Kit's RTL handling and mirrors its reply gesture. Day.js provides the library's localized calendar labels. App dates and durations use the shared formatting helpers. The call list honors the device's hour-cycle preference. Keep user content, keys, and relay URLs unchanged. Use bidirectional isolation for identifiers interpolated into localized copy and LTR text styles for technical input.
+
+Translate stable service errors at the presentation boundary. Android's system call bridge takes app-owned notification labels from the active i18next language at call start. Expo prebuild supplies English and Hebrew iOS permission descriptions for the native localizations. Glassy UI reads theme and accessibility from its single root provider. The app's saved theme remains the source for that provider.
 
 ## 11. Privacy and Security
 

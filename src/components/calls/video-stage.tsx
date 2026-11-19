@@ -1,6 +1,7 @@
 import { requireNativeView } from "expo";
 import { LinearGradient } from "expo-linear-gradient";
 import { type ReactNode, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   AccessibilityInfo,
   Platform,
@@ -24,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RTCView } from "react-native-webrtc";
 import { scheduleOnRN } from "react-native-worklets";
 import type { VideoState } from "@/core/calling/video";
+import { directionFor, resolveLanguage } from "@/i18n";
 import { spring } from "@/theme";
 
 type Corner = VideoState["corner"];
@@ -226,6 +228,8 @@ function VideoPreview({
 }) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const { i18n } = useTranslation("video");
+  const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
   const tileWidth = Math.min(184, width * 0.29, height * 0.22);
   const tileHeight = tileWidth * 1.3;
   const left = insets.left + 16;
@@ -282,7 +286,11 @@ function VideoPreview({
         }}
         style={[
           styles.preview,
-          { width: tileWidth, height: tileHeight },
+          {
+            width: tileWidth,
+            height: tileHeight,
+            ...(rtl ? { end: 0 } : { start: 0 }),
+          },
           position,
         ]}
       >
@@ -322,7 +330,6 @@ const styles = StyleSheet.create({
   notice: { position: "absolute", left: 16, right: 16, alignItems: "center" },
   preview: {
     position: "absolute",
-    left: 0,
     top: 0,
     borderRadius: 22,
     overflow: "hidden",

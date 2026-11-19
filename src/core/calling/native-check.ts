@@ -12,9 +12,9 @@ export async function checkNativeCalling() {
     const connection = new RTCPeerConnection({ iceServers: [] });
     connection.close();
     return typeof NativeModules.InCallManager?.start === "function"
-      ? "WebCrypto SHA-256, local WebRTC, and InCallManager are available."
-      : "WebCrypto and local WebRTC are available. Native call audio is missing.";
+      ? "nativeCallAvailable"
+      : "nativeCallNoAudio";
   } catch {
-    return "The local WebCrypto or WebRTC runtime could not start.";
+    return "nativeCallUnavailable";
   }
 }

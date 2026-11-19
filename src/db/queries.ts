@@ -7,6 +7,42 @@ type ReadyDatabase<TResult> = Pick<
   "select" | "insert"
 >;
 
+export function contactByKey<TResult>(
+  db: ReadyDatabase<TResult>,
+  publicKey: string,
+) {
+  return db
+    .select()
+    .from(schema.contacts)
+    .where(eq(schema.contacts.publicKey, publicKey));
+}
+
+export function saveContact<TResult>(
+  db: ReadyDatabase<TResult>,
+  publicKey: string,
+  name: string,
+) {
+  return db
+    .insert(schema.contacts)
+    .values({ publicKey, name })
+    .onConflictDoNothing({ target: schema.contacts.publicKey })
+    .run();
+}
+
+export function updateContactPreferences<TResult>(
+  db: Pick<BaseSQLiteDatabase<"sync", TResult, typeof schema>, "update">,
+  publicKey: string,
+  patch: Partial<
+    Pick<typeof schema.contacts.$inferInsert, "favorite" | "allowIncomingVideo">
+  >,
+) {
+  return db
+    .update(schema.contacts)
+    .set(patch)
+    .where(eq(schema.contacts.publicKey, publicKey))
+    .run();
+}
+
 export function preference<TResult>(db: ReadyDatabase<TResult>, key: string) {
   return (
     db.select().from(schema.settings).where(eq(schema.settings.key, key)).get()

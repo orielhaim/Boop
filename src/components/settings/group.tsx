@@ -1,5 +1,5 @@
 import { Children, type ComponentProps, type ReactNode } from "react";
-import { I18nManager, Pressable, StyleSheet, Switch, View } from "react-native";
+import { Pressable, StyleSheet, Switch, View } from "react-native";
 import { Card, Icon, Ink, Section, tapFeedback } from "@/components/ui/kit";
 import { space, useTheme } from "@/theme";
 
@@ -92,9 +92,7 @@ export function SettingsRow({
       ) : (
         (trailing ??
         (onPress && selected === undefined ? (
-          <View style={{ transform: [{ scaleX: I18nManager.isRTL ? -1 : 1 }] }}>
-            <Icon name="next" size={17} color={colors.muted} />
-          </View>
+          <Icon name="next" size={17} color={colors.muted} />
         ) : null))
       )}
     </>

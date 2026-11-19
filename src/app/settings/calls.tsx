@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Platform } from "react-native";
 import {
   SettingsDescription,
@@ -8,10 +9,12 @@ import {
 } from "@/components/settings/group";
 import { Screen } from "@/components/ui/kit";
 import { setPreference } from "@/db/queries";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { useAppPreferences } from "@/stores/preferences";
 
 export default function CallsAndSounds() {
+  const { t } = useTranslation(namespaces);
   const { db } = useLocal();
   const haptics = useAppPreferences((state) => state.haptics);
   const [error, setError] = useState("");
@@ -19,12 +22,14 @@ export default function CallsAndSounds() {
     <Screen>
       <SettingsGroup>
         <SettingsRow
-          title="Incoming ringtone"
-          value={Platform.OS === "android" ? "Device default" : "Boop"}
+          title={t("settings:incomingRingtone")}
+          value={
+            Platform.OS === "android" ? t("settings:deviceDefault") : "Boop"
+          }
           icon="speaker"
         />
         <SettingsToggle
-          title="Haptic feedback"
+          title={t("settings:haptics")}
           value={haptics}
           onChange={(value) => {
             try {
@@ -32,7 +37,7 @@ export default function CallsAndSounds() {
               useAppPreferences.setState({ haptics: value });
               setError("");
             } catch {
-              setError("Could not save haptic feedback.");
+              setError(t("settings:saveHapticsError"));
             }
           }}
         />

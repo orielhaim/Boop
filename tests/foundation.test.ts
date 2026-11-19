@@ -262,6 +262,7 @@ test("Expo Router discovers three primary tabs and the detail routes", () => {
     "connections",
     "identity",
     "index",
+    "language",
     "privacy",
     "privacy/app-lock",
     "privacy/incoming-video",

@@ -2,6 +2,7 @@ import { asc } from "drizzle-orm";
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { randomUUID } from "expo-crypto";
 import { useMemo, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
@@ -21,27 +22,33 @@ import {
 import { relayUrl } from "@/core/nostr/relays";
 import { editRelays } from "@/db/relays";
 import { relaySettings } from "@/db/schema";
+import { namespaces, resolveLanguage } from "@/i18n";
+import { formatDateTime, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { space, useTheme } from "@/theme";
 
-const statusLabels: Record<RelayState["status"], string> = {
-  connected: "Connected",
-  connecting: "Connecting…",
-  disconnected: "Disconnected",
-  "auth-required": "Authentication requested",
-  rejected: "Authentication rejected",
-  unavailable: "Unavailable",
-};
+const statusLabels = {
+  connected: "connections:connected",
+  connecting: "connections:connecting",
+  disconnected: "connections:disconnected",
+  "auth-required": "connections:authRequested",
+  rejected: "connections:authRejected",
+  unavailable: "common:unavailable",
+} satisfies Record<
+  RelayState["status"],
+  `connections:${string}` | "common:unavailable"
+>;
 const inboxLabels = {
-  idle: "Inbox selected",
-  validating: "Checking inbox relays…",
-  published: "Inbox published",
-  conflict: "Published inbox differs from your selection",
-  unverified: "Could not verify every inbox relay",
-  pending: "Waiting to publish inbox",
-};
+  idle: "connections:inboxSelected",
+  validating: "connections:checkingInbox",
+  published: "connections:inboxPublished",
+  conflict: "connections:inboxConflict",
+  unverified: "connections:inboxUnverified",
+  pending: "connections:pendingInbox",
+} as const;
 
 export function RelaySettings() {
+  const { t, i18n } = useTranslation(namespaces);
   const { db, messaging } = useLocal();
   const { colors } = useTheme();
   const states = useSyncExternalStore(
@@ -79,7 +86,7 @@ export function RelaySettings() {
     const next = configuredRelays([...modified.values()], null);
     const inboxChanged = !sameRelays(existing.inbox, next.inbox);
     if (inboxChanged && next.inbox.length > 3) {
-      setError("Choose up to three enabled inbox relays.");
+      setError(t("connections:maxInbox"));
       return;
     }
     function save() {
@@ -92,17 +99,21 @@ export function RelaySettings() {
         setError("");
         return true;
       } catch {
-        setError("Could not save the relay configuration.");
+        setError(t("connections:saveError"));
         return false;
       }
     }
     if (existing.inbox.length && !next.inbox.length) {
       Alert.alert(
-        "Disable the last inbox relay?",
-        "Private messages and call invitations may stop arriving. Your previously published address list can remain visible to other clients.",
+        t("connections:disableLast"),
+        t("connections:disableLastHint"),
         [
-          { text: "Cancel", style: "cancel" },
-          { text: "Disable inbox", style: "destructive", onPress: save },
+          { text: t("common:cancel"), style: "cancel" },
+          {
+            text: t("connections:disableInbox"),
+            style: "destructive",
+            onPress: save,
+          },
         ],
       );
       return false;
@@ -113,12 +124,12 @@ export function RelaySettings() {
   function add() {
     const parsed = relayUrl.safeParse(input.trim());
     if (!parsed.success) {
-      setInputError("Enter a valid wss:// relay address.");
+      setInputError(t("connections:invalidUrl"));
       return;
     }
     const url = parsed.data;
     if (items.some((item) => relayUrl.safeParse(item.url).data === url)) {
-      setInputError("That relay is already saved.");
+      setInputError(t("connections:duplicate"));
       return;
     }
     if (
@@ -143,23 +154,31 @@ export function RelaySettings() {
 
   return (
     <>
-      <SettingsGroup title="Nostr relays">
+      <SettingsGroup title={t("connections:relays")}>
         <SettingsRow
-          title="Relay status"
-          value={`${connected} of ${enabled.length} connected`}
+          title={t("connections:status")}
+          value={t("connections:connectionCount", {
+            connected,
+            total: enabled.length,
+          })}
           icon="connection"
         />
-        <SettingsRow title="Reconnect relays" onPress={messaging.reconnect} />
+        <SettingsRow
+          title={t("connections:reconnect")}
+          onPress={messaging.reconnect}
+        />
       </SettingsGroup>
-      <SettingsGroup title="Private inbox">
+      <SettingsGroup title={t("connections:privateInbox")}>
         <SettingsRow
           title={
-            existing.inbox.length ? inboxLabels[inboxState] : "Inbox disabled"
+            existing.inbox.length
+              ? t(inboxLabels[inboxState])
+              : t("connections:inboxDisabled")
           }
           detail={
             existing.inbox.length
-              ? `${existing.inbox.length} selected`
-              : "Select a relay to receive messages and calls."
+              ? t("connections:selected", { count: existing.inbox.length })
+              : t("connections:selectInbox")
           }
           icon="chat"
         />
@@ -167,14 +186,17 @@ export function RelaySettings() {
           existing.inbox.length <= 3 &&
           inboxState !== "published" && (
             <SettingsRow
-              title="Publish inbox"
+              title={t("connections:publishInbox")}
               onPress={() =>
                 Alert.alert(
-                  "Publish this inbox list?",
-                  "People use this public relay list to reach you.",
+                  t("connections:publishConfirm"),
+                  t("connections:publishHint"),
                   [
-                    { text: "Cancel", style: "cancel" },
-                    { text: "Publish", onPress: () => update([], true) },
+                    { text: t("common:cancel"), style: "cancel" },
+                    {
+                      text: t("connections:publish"),
+                      onPress: () => update([], true),
+                    },
                   ],
                 )
               }
@@ -182,13 +204,13 @@ export function RelaySettings() {
           )}
       </SettingsGroup>
       {error && <SettingsDescription>{error}</SettingsDescription>}
-      <SettingsGroup title="Saved relays">
+      <SettingsGroup title={t("connections:savedRelays")}>
         {items.map((item) => {
           const state = states[item.url];
           const roles = [
-            item.general && "General",
-            item.inbox && "Inbox",
-            item.discovery && "Discovery",
+            item.general && t("connections:general"),
+            item.inbox && t("connections:inbox"),
+            item.discovery && t("connections:discovery"),
           ]
             .filter(Boolean)
             .join(" · ");
@@ -197,7 +219,7 @@ export function RelaySettings() {
             <View key={item.url}>
               <SettingsRow
                 title={new URL(item.url).host}
-                detail={`${item.enabled ? statusLabels[state?.status ?? "disconnected"] : "Disabled"} · ${roles || "No purpose"}`}
+                detail={`${item.enabled ? t(statusLabels[state?.status ?? "disconnected"]) : t("connections:disabled")} · ${roles || t("connections:noPurpose")}`}
                 trailing={
                   <Icon
                     name={show ? "collapse" : "expand"}
@@ -215,22 +237,25 @@ export function RelaySettings() {
                   </Ink>
                   {state?.lastConnected && (
                     <SettingsDescription>
-                      Last connected{" "}
-                      {new Date(state.lastConnected).toLocaleString()}
+                      {t("connections:lastConnected")}{" "}
+                      {formatDateTime(
+                        state.lastConnected,
+                        resolveLanguage(i18n.resolvedLanguage),
+                      )}
                     </SettingsDescription>
                   )}
                   {state?.lastWrite && (
                     <SettingsDescription>
                       {state.lastWrite === "accepted"
-                        ? "Last write accepted"
-                        : "Last write rejected"}
+                        ? t("connections:accepted")
+                        : t("connections:rejected")}
                     </SettingsDescription>
                   )}
                   {state?.inboxVerified !== undefined && (
                     <SettingsDescription>
                       {state.inboxVerified
-                        ? "Inbox verified"
-                        : "Inbox verification failed"}
+                        ? t("connections:verified")
+                        : t("connections:verificationFailed")}
                     </SettingsDescription>
                   )}
                   {(["enabled", "general", "inbox", "discovery"] as const).map(
@@ -239,10 +264,10 @@ export function RelaySettings() {
                         key={field}
                         title={
                           {
-                            enabled: "Enabled",
-                            general: "General",
-                            inbox: "Private inbox",
-                            discovery: "Discovery",
+                            enabled: t("connections:enabled"),
+                            general: t("connections:general"),
+                            inbox: t("connections:privateInbox"),
+                            discovery: t("connections:discovery"),
                           }[field]
                         }
                         value={item[field]}
@@ -262,30 +287,34 @@ export function RelaySettings() {
                     variant="ghost"
                     style={styles.remove}
                     onPress={() =>
-                      Alert.alert("Remove relay?", item.url, [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Remove",
-                          style: "destructive",
-                          onPress: () =>
-                            update([{ url: item.url, next: null }]),
-                        },
-                      ])
+                      Alert.alert(
+                        t("connections:removeRelay"),
+                        isolateText(item.url),
+                        [
+                          { text: t("common:cancel"), style: "cancel" },
+                          {
+                            text: t("common:remove"),
+                            style: "destructive",
+                            onPress: () =>
+                              update([{ url: item.url, next: null }]),
+                          },
+                        ],
+                      )
                     }
                   >
-                    Remove relay
+                    {t("connections:removeAction")}
                   </Action>
                 </View>
               )}
             </View>
           );
         })}
-        {items.length === 0 && <SettingsRow title="No relays added" />}
+        {items.length === 0 && <SettingsRow title={t("connections:empty")} />}
       </SettingsGroup>
-      <SettingsGroup title="Add a relay">
+      <SettingsGroup title={t("connections:add")}>
         <View style={styles.input}>
           <GlassInput
-            label="Relay address"
+            label={t("connections:address")}
             placeholder="wss://relay.example"
             value={input}
             onChangeText={(text) => {
@@ -293,6 +322,7 @@ export function RelaySettings() {
               setInputError("");
             }}
             autoCapitalize="none"
+            style={{ writingDirection: "ltr", textAlign: "left" }}
             autoCorrect={false}
             keyboardType="url"
             onSubmitEditing={add}
@@ -304,7 +334,7 @@ export function RelaySettings() {
             disabled={!input.trim()}
             onPress={add}
           >
-            Add relay
+            {t("connections:addAction")}
           </Action>
           {inputError && (
             <SettingsDescription>{inputError}</SettingsDescription>
@@ -314,15 +344,15 @@ export function RelaySettings() {
 
       <SettingsGroup>
         <SettingsRow
-          title="Restore recommended relays"
+          title={t("connections:restoreDefaults")}
           onPress={() =>
             Alert.alert(
-              "Restore recommended relays?",
-              "This replaces your saved relays and updates your inbox.",
+              t("connections:restoreConfirm"),
+              t("connections:restoreHint"),
               [
-                { text: "Cancel", style: "cancel" },
+                { text: t("common:cancel"), style: "cancel" },
                 {
-                  text: "Restore",
+                  text: t("connections:restore"),
                   style: "destructive",
                   onPress: () =>
                     update(

@@ -1,10 +1,12 @@
 import { LinearGradient } from "expo-linear-gradient";
 import * as Authentication from "expo-local-authentication";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { BackHandler, Platform, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, Icon, Ink } from "@/components/ui/kit";
 import type { AppLock } from "@/core/security/app-lock";
+import { namespaces } from "@/i18n";
 import { space, useTheme } from "@/theme";
 
 export function LockScreen({
@@ -14,6 +16,7 @@ export function LockScreen({
   lock: AppLock;
   state: ReturnType<AppLock["getState"]>;
 }) {
+  const { t } = useTranslation(namespaces);
   const { colors, reduceTransparency } = useTheme();
   const [face, setFace] = useState(false);
   useEffect(() => {
@@ -58,10 +61,10 @@ export function LockScreen({
           <Icon name={face ? "faceId" : "fingerprint"} size={48} />
         </View>
         <Ink kind="title" accessibilityRole="header">
-          Boop is locked
+          {t("security:locked")}
         </Ink>
         <Ink muted style={styles.center}>
-          Unlock with your device to continue.
+          {t("security:unlockHint")}
         </Ink>
         <Action
           variant="prominent"
@@ -69,7 +72,9 @@ export function LockScreen({
           disabled={!state.active || state.authenticating}
           onPress={() => void lock.change("unlock")}
         >
-          {state.authenticating ? "Authenticating…" : "Unlock"}
+          {state.authenticating
+            ? t("security:authenticating")
+            : t("security:unlock")}
         </Action>
         {state.error ? (
           <Ink
@@ -78,7 +83,7 @@ export function LockScreen({
             accessibilityLiveRegion="polite"
             style={styles.center}
           >
-            {state.error}
+            {t(`security:${state.error}`)}
           </Ink>
         ) : null}
       </View>

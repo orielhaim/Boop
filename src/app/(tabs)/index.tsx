@@ -1,7 +1,8 @@
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
-import { getLocales } from "expo-localization";
+import { useCalendars } from "expo-localization";
 import { router } from "expo-router";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, View } from "react-native";
 import {
   Avatar,
@@ -19,31 +20,31 @@ import {
 import { PeerActions } from "@/components/ui/peer-actions";
 import { nameOrAddress, useContacts } from "@/db/contacts";
 import { callList } from "@/db/queries";
+import { namespaces, resolveLanguage } from "@/i18n";
+import { formatDateTime, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local";
 import { radius, space, useTheme } from "@/theme";
 
-const timeFormat = new Intl.DateTimeFormat(getLocales()[0]?.languageTag, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
 const outcomes = {
-  answered: "Answered",
-  completed: "Completed",
-  missed: "Missed",
-  rejected: "Declined",
-  failed: "Connection failed",
-  cancelled: "Cancelled",
-  busy: "Busy",
-  unanswered: "No answer",
-  "remote-disconnected": "Connection lost",
-};
+  answered: "calls:answered",
+  completed: "calls:completed",
+  missed: "calls:missed",
+  rejected: "calls:declined",
+  failed: "calls:failed",
+  cancelled: "calls:cancelled",
+  busy: "calls:busy",
+  unanswered: "calls:unanswered",
+  "remote-disconnected": "calls:disconnected",
+} as const;
 
 function call(key: string) {
   router.push({ pathname: "/call/[key]", params: { key } });
 }
 
 export default function Calls() {
+  const { t, i18n } = useTranslation(namespaces);
+  const locale = resolveLanguage(i18n.resolvedLanguage);
+  const calendar = useCalendars()[0];
   const [actions, setActions] = useState(false);
   const { db } = useLocal();
   const { colors } = useTheme();
@@ -53,28 +54,30 @@ export default function Calls() {
 
   return (
     <Screen tab>
-      <Header title="Calls">
+      <Header title={t("navigation:calls")}>
         <IconButton
           icon="settings"
-          label="Settings"
+          label={t("navigation:settings")}
           onPress={() => router.push("/settings")}
         />
         <IconButton
           icon="add"
-          label="New call"
+          label={t("calls:newCall")}
           onPress={() => setActions(true)}
         />
       </Header>
       <PeerActions mode="call" open={actions} onOpenChange={setActions} />
       {favorites.length ? (
         <>
-          <Section>Favorites</Section>
+          <Section>{t("contacts:favorites")}</Section>
           <View style={layout.row}>
             {favorites.map((contact) => (
               <Pressable
                 key={contact.publicKey}
                 accessibilityRole="button"
-                accessibilityLabel={`Call ${contact.name}`}
+                accessibilityLabel={t("calls:callPerson", {
+                  name: isolateText(contact.name),
+                })}
                 onPress={() => call(contact.publicKey)}
                 style={({ pressed }) => [
                   styles.favorite,
@@ -90,7 +93,7 @@ export default function Calls() {
           </View>
         </>
       ) : null}
-      <Section>Recents</Section>
+      <Section>{t("calls:recents")}</Section>
       {calls.length ? (
         <Card>
           {calls.map((entry) => {
@@ -103,15 +106,17 @@ export default function Calls() {
                 title={name}
                 leading={<Avatar name={name} uri={entry.avatarUrl} />}
                 leadingAction={{
-                  label: `Open profile for ${name}`,
+                  label: t("contacts:openProfile", { name: isolateText(name) }),
                   onPress: () =>
                     router.push({
                       pathname: "/contact/[key]",
                       params: { key: entry.peerKey },
                     }),
                 }}
-                detail={`${outcomes[entry.outcome]} · ${timeFormat.format(entry.startedAt)}`}
-                accessibilityLabel={`Call ${name}`}
+                detail={`${t(outcomes[entry.outcome])} · ${isolateText(formatDateTime(entry.startedAt, locale, typeof calendar?.uses24hourClock === "boolean" ? !calendar.uses24hourClock : undefined))}`}
+                accessibilityLabel={t("calls:callPerson", {
+                  name: isolateText(name),
+                })}
                 onPress={() => call(entry.peerKey)}
                 trailing={
                   <Icon
@@ -126,8 +131,8 @@ export default function Calls() {
       ) : (
         <Empty
           icon="history"
-          title="No recent calls"
-          detail="Your calls will appear here."
+          title={t("calls:noRecents")}
+          detail={t("calls:emptyHistory")}
         />
       )}
     </Screen>

@@ -1,19 +1,21 @@
 import { router, usePathname, useRootNavigationState } from "expo-router";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { Action, Icon } from "@/components/ui/kit";
 import { nameOrAddress, useContact } from "@/db/contacts";
+import { namespaces } from "@/i18n";
+import { isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local";
-import { useVideoLabels } from "./video-labels";
 
 export function CallIndicator() {
+  const { t } = useTranslation(namespaces);
   const { calling, nativeOpen } = useLocal();
   const call = useStore(calling.store, (state) => state.call);
   const video = useStore(calling.store, (state) => state.video);
   const reopen = useStore(nativeOpen, (state) => state.id);
-  const labels = useVideoLabels();
   const pathname = usePathname();
   const navigation = useRootNavigationState();
   const insets = useSafeAreaInsets();
@@ -49,12 +51,12 @@ export function CallIndicator() {
     video?.local.phase === "sharing" || video?.remote.phase === "receiving";
   const label =
     call.phase === "incoming"
-      ? "Incoming call"
+      ? t("calls:incoming")
       : video?.remote.phase === "requesting"
-        ? labels.consent
+        ? t("video:consent")
         : hasVideo
-          ? labels.active
-          : "Return to call";
+          ? t("video:active")
+          : t("calls:return");
   return (
     <View
       pointerEvents="box-none"
@@ -62,7 +64,7 @@ export function CallIndicator() {
     >
       <Action
         variant="prominent"
-        accessibilityLabel={`${label} · ${name}`}
+        accessibilityLabel={`${label} · ${isolateText(name)}`}
         onPress={() =>
           router.navigate({
             pathname: "/call/[key]",
@@ -71,7 +73,7 @@ export function CallIndicator() {
         }
       >
         <Icon name={hasVideo ? "camera" : "phone"} size={16} color="#FFFFFF" />
-        {`${label} · ${name}`}
+        {`${label} · ${isolateText(name)}`}
       </Action>
     </View>
   );

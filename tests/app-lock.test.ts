@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { createAppLock, lockTimeouts } from "../src/core/security/app-lock";
+import {
+  AppAuthenticationError,
+  createAppLock,
+  lockTimeouts,
+} from "../src/core/security/app-lock";
 
 function device() {
   const preferences = new Map<string, string>();
@@ -16,7 +20,10 @@ function device() {
       authenticate: () => {
         promptCount++;
         return new Promise<void>((approve, reject) => {
-          prompt = { approve, cancel: () => reject(new Error("Cancelled")) };
+          prompt = {
+            approve,
+            cancel: () => reject(new AppAuthenticationError("authCancelled")),
+          };
         });
       },
       protect: async (enabled) => {
@@ -47,7 +54,7 @@ test("enable requires successful authentication and the next process starts lock
   expect(lock.getState()).toMatchObject({
     enabled: false,
     locked: false,
-    error: "Cancelled",
+    error: "authCancelled",
   });
   const enabling = lock.change("enable");
   await lock.change("enable");
@@ -131,7 +138,7 @@ test("a failed native screen shield keeps the gate closed", async () => {
   expect(lock.getState()).toMatchObject({
     enabled: true,
     locked: true,
-    error: "No secure window",
+    error: "authFailed",
   });
 });
 

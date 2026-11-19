@@ -1,11 +1,14 @@
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 
 export default function Connect() {
+  const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const { identity } = useLocal();
   const [address, setAddress] = useState("");
@@ -15,11 +18,11 @@ export default function Connect() {
   function connect() {
     const key = parsePublicKey(address);
     if (!key) {
-      setError("Enter a valid Boop address.");
+      setError(t("contacts:invalidAddress"));
       return;
     }
     if (key === identity.publicKey) {
-      setError("Enter someone else’s address.");
+      setError(t("contacts:ownAddress"));
       return;
     }
     router.replace({
@@ -30,23 +33,26 @@ export default function Connect() {
 
   return (
     <Screen>
-      <Stack.Screen options={{ title: isCall ? "New call" : "New chat" }} />
+      <Stack.Screen
+        options={{ title: isCall ? t("calls:newCall") : t("messages:newChat") }}
+      />
       <GlassInput
-        label="Boop address"
-        placeholder="Paste an address"
+        label={t("common:address")}
+        placeholder={t("common:pasteAddress")}
         value={address}
         onChangeText={(value) => {
           setAddress(value);
           setError("");
         }}
         autoCapitalize="none"
+        style={{ writingDirection: "ltr", textAlign: "left" }}
         autoCorrect={false}
         maxLength={128}
         onSubmitEditing={connect}
       />
       {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
       <Action variant="prominent" onPress={connect}>
-        {isCall ? "Start call" : "Start chat"}
+        {isCall ? t("calls:startCall") : t("messages:startChat")}
       </Action>
     </Screen>
   );
