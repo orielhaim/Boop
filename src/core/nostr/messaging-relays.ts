@@ -100,13 +100,13 @@ export function createMessagingRelays(signer: NDKSigner) {
   function watchInbox(
     relay: NDKRelay,
     since: number | undefined,
-    onEvent: (event: unknown) => void,
+    onEvent: (id: string, event: unknown) => void,
     onEose: () => void,
   ) {
     return subscription(
       [relay],
       { kinds: [giftWrapKind], "#p": [signer.userSync.pubkey], since },
-      (event) => onEvent(event.rawEvent()),
+      (event) => onEvent(event.id, event.rawEvent()),
       onEose,
     );
   }

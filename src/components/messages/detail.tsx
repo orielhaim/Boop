@@ -107,7 +107,8 @@ function useStressArrival(peerKey: string) {
 
 export function DetailConversation({ peerKey }: { peerKey: string }) {
   const { t } = useTranslation(namespaces);
-  const { chat, identity, messaging } = useLocal();
+  const { chat, identity, messaging, history, conversations, lock } =
+    useLocal();
   const {
     available: stressEnabled,
     scheduled,
@@ -178,20 +179,26 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     loadLatest,
     retry,
     firstUnreadMessageId,
+    restoredMessageId,
     initiallyDetached,
   } = useDetailHistory(
     chat,
+    history,
     peerKey,
     participants,
     t("messages:unavailableQuote"),
   );
   const [detached, setDetached] = useState(initiallyDetached);
-  const [atLatest, setAtLatest] = useState(firstUnreadMessageId === null);
-  const latestPosition = useRef(firstUnreadMessageId === null);
+  const positioned =
+    firstUnreadMessageId !== null || restoredMessageId !== undefined;
+  const [atLatest, setAtLatest] = useState(!positioned);
+  const latestPosition = useRef(!positioned);
   const [loadingPage, startPage] = useTransition();
   const [jump, setJump] = useState<{ id: string; highlight: boolean }>();
   const [notice, setNotice] = useState<string>();
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
+  const visibleUnread = useRef<string[]>([]);
+  const readingPosition = useRef<MessageCursor>(undefined);
   const {
     displayed,
     missing,
@@ -250,7 +257,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 
   const [initialDraft] = useState(() => {
     try {
-      const saved = chat.conversation(peerKey);
+      const saved = chat.draft(peerKey);
       const target = saved?.draftReplyTo
         ? chat.message(peerKey, saved.draftReplyTo)
         : undefined;
@@ -276,7 +283,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     if (!pendingDraft.current) return;
     try {
       const { text, reply } = pendingDraft.current;
-      if (text || reply || chat.conversation(peerKey)) {
+      if (text || reply || chat.draft(peerKey)) {
         chat.saveDraft(peerKey, text, reply);
       }
       pendingDraft.current = null;
@@ -518,45 +525,91 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     },
     [],
   );
+  const markVisibleRead = useCallback(() => {
+    const gate = lock.getState();
+    if (
+      !focused ||
+      AppState.currentState !== "active" ||
+      !gate.active ||
+      gate.locked
+    )
+      return;
+    try {
+      chat.markRead(peerKey, visibleUnread.current);
+      visibleUnread.current = [];
+    } catch {
+      setNotice(t("messages:updateError"));
+    }
+  }, [chat, focused, lock, peerKey, t]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const state = AppState.addEventListener("change", markVisibleRead);
+      const unlock = lock.subscribe(markVisibleRead);
+      markVisibleRead();
+      return () => {
+        state.remove();
+        unlock();
+        history.remember(
+          peerKey,
+          latestPosition.current ? null : (readingPosition.current ?? null),
+        );
+        if (AppState.currentState === "active" && !lock.getState().locked)
+          conversations.prefetch();
+      };
+    }, [conversations, history, lock, markVisibleRead, peerKey]),
+  );
+
   const onViewableItemsChanged = useCallback<
     NonNullable<ListProps["onViewableItemsChanged"]>
   >(
     ({ viewableItems }) => {
-      if (!focused || AppState.currentState !== "active") return;
-      const ids = viewableItems
-        .filter((entry) => entry.isViewable)
-        .map(({ item }) => item._id);
+      const shown = viewableItems.filter((entry) => entry.isViewable);
+      const ids = shown.map(({ item }) => item._id);
+      const leading = shown[0]?.item;
+      if (leading)
+        readingPosition.current = {
+          id: leading._id,
+          sentAt: leading.createdAt,
+        };
+      visibleUnread.current = shown.flatMap(({ item }) =>
+        item.unread ? [item._id] : [],
+      );
+      if (
+        !focused ||
+        AppState.currentState !== "active" ||
+        lock.getState().locked
+      )
+        return;
       setVisibleIds((previous) =>
         previous.length === ids.length &&
         previous.every((id, index) => id === ids[index])
           ? previous
           : ids,
       );
-      let newest: MessageCursor | undefined;
-      for (const { item, isViewable } of viewableItems) {
-        if (!isViewable || !item.unread) continue;
-        const cursor = { id: item._id, sentAt: item.createdAt };
-        if (
-          !newest ||
-          cursor.sentAt > newest.sentAt ||
-          (cursor.sentAt === newest.sentAt && cursor.id > newest.id)
-        ) {
-          newest = cursor;
-        }
-      }
-      if (newest) {
-        try {
-          chat.markRead(peerKey, newest);
-        } catch {
-          setNotice(t("messages:updateError"));
-        }
-      }
+      markVisibleRead();
     },
-    [chat, t, focused, peerKey],
+    [focused, lock, markVisibleRead],
   );
+
+  const [restoredIndex] = useState(() =>
+    restoredMessageId
+      ? items.findIndex(({ _id }) => _id === restoredMessageId)
+      : -1,
+  );
+  useEffect(() => {
+    if (newer && atLatest && !detached && !loadingPage && !jump)
+      startPage(extend);
+  }, [newer, atLatest, detached, loadingPage, jump, extend]);
 
   const listProps = useMemo<ListProps>(
     () => ({
+      ...(restoredIndex >= 0
+        ? {
+            initialScrollAtEnd: false,
+            initialScrollIndex: { index: restoredIndex, viewPosition: 0 },
+          }
+        : {}),
       viewabilityConfig,
       recycleItems: false,
       onScroll,
@@ -583,6 +636,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       onScroll,
       onViewableItemsChanged,
       reducedMotion,
+      restoredIndex,
     ],
   );
 
@@ -834,7 +888,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           ) : null}
         </View>
       )}
-      {detached && newer ? (
+      {newer ? (
         <View style={styles.latest}>
           <Action size="sm" variant="soft" onPress={goLatest}>
             {t("messages:latest")}

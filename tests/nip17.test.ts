@@ -3,6 +3,8 @@ import { expect, test } from "bun:test";
 import NDK, { NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { finalizeEvent } from "nostr-tools/pure";
+import { createConversationFeed } from "../src/core/messaging/conversations";
+import { createHistoryLoader } from "../src/core/messaging/history";
 import {
   createRumor,
   giftWrapKind,
@@ -12,6 +14,7 @@ import {
   unwrapPrivateEvent,
   wrapRumor,
 } from "../src/core/messaging/nip17";
+import { createMessagingService } from "../src/core/messaging/runtime";
 import { createMessagingRepository } from "../src/db/messaging";
 import migrations from "../src/db/migrations/bundle";
 import * as schema from "../src/db/schema";
@@ -22,6 +25,121 @@ const bob = new NDKPrivateKeySigner("02".repeat(32));
 const charlie = new NDKPrivateKeySigner("03".repeat(32));
 const timestamp = 1_724_000_010;
 const quoteId = "42".repeat(32);
+
+test("NDK keeps a live inbox after EOSE and catches up after restarting the session", async () => {
+  using sqlite = new Database(":memory:");
+  for (const migration of Object.values(migrations.migrations))
+    sqlite.exec(migration);
+  const repo = createMessagingRepository(drizzle(sqlite, { schema }));
+  const history = createHistoryLoader(repo);
+  const feed = createConversationFeed(repo, history, () => undefined);
+  const stopFeed = feed.start();
+  const state = new Map<string, string>();
+  const runtime = createMessagingService({
+    signer: bob,
+    chat: repo,
+    readState: (key) => state.get(key) ?? null,
+    writeState: (key, value) => state.set(key, value),
+    createId: () => crypto.randomUUID(),
+  });
+  const envelopes: Awaited<ReturnType<typeof wrapRumor>>[] = [];
+  const emitters = new Set<
+    (event: Awaited<ReturnType<typeof wrapRumor>>) => void
+  >();
+  const createWrap = async (body: string) => {
+    const rumor = createRumor({
+      kind: messageKind,
+      pubkey: alice.pubkey,
+      created_at: Math.floor(Date.now() / 1_000),
+      content: body,
+      tags: [["p", bob.pubkey]],
+    });
+    const event = await wrapRumor(ndk, rumor, bob.pubkey, alice);
+    envelopes.push(event);
+    return { rumor, event };
+  };
+  const server = Bun.serve<{
+    callbacks: Map<
+      string,
+      (event: Awaited<ReturnType<typeof wrapRumor>>) => void
+    >;
+  }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req, server) {
+      if (server.upgrade(req, { data: { callbacks: new Map() } }))
+        return undefined;
+      return new Response("Expected a relay connection", { status: 400 });
+    },
+    websocket: {
+      message(ws, data) {
+        const input: unknown = JSON.parse(String(data));
+        if (!Array.isArray(input)) return;
+        const [type, id, filter] = input;
+        if (typeof id !== "string") return;
+        if (type === "CLOSE") {
+          const emit = ws.data.callbacks.get(id);
+          if (emit) emitters.delete(emit);
+          ws.data.callbacks.delete(id);
+          return;
+        }
+        if (type !== "REQ") return;
+        const emit = (event: Awaited<ReturnType<typeof wrapRumor>>) => {
+          if (
+            filter?.kinds?.includes(event.kind) &&
+            (!filter.since || (event.created_at ?? -1) >= filter.since)
+          )
+            ws.send(JSON.stringify(["EVENT", id, event.rawEvent()]));
+        };
+        ws.data.callbacks.set(id, emit);
+        emitters.add(emit);
+        for (const event of envelopes) emit(event);
+        ws.send(JSON.stringify(["EOSE", id]));
+      },
+      close(ws) {
+        for (const emit of ws.data.callbacks.values()) emitters.delete(emit);
+      },
+    },
+  });
+  const url = `ws://127.0.0.1:${server.port}/`;
+  const config = { inbox: [url], general: [], discovery: [], intent: null };
+  async function until(condition: () => boolean) {
+    const deadline = Date.now() + 2_000;
+    while (!condition() && Date.now() < deadline) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  }
+
+  try {
+    const initial = await createWrap("Historical");
+    runtime.start(config);
+    await until(() => feed.getUnreadCount() === 1 && state.size > 0);
+    expect(repo.history(alice.pubkey).messages[0]?.eventId).toBe(
+      initial.rumor.id,
+    );
+    const live = await createWrap("Live after EOSE");
+    for (const emit of emitters) {
+      emit(live.event);
+      emit(live.event);
+    }
+    await until(() => feed.getUnreadCount() === 2);
+    runtime.stop();
+    await createWrap("Missed while away");
+    runtime.start(config);
+    await until(
+      () =>
+        feed.getUnreadCount() === 3 &&
+        runtime.getInboxSync() === "idle" &&
+        feed.getSnapshot()?.rows[0]?.unread === 3,
+    );
+    expect(feed.getSnapshot()?.rows[0]).toMatchObject({ unread: 3 });
+    expect(repo.history(alice.pubkey).messages).toHaveLength(3);
+  } finally {
+    runtime.stop();
+    stopFeed();
+    history.dispose();
+    void server.stop(true);
+  }
+});
 
 test("recipient and sender decrypt distinct gift wraps to the same unsigned rumor", async () => {
   const rumor = createRumor({

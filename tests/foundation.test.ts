@@ -164,7 +164,7 @@ test("queries local call history, conversation previews, drafts and preferences"
     name: "Alice",
     outcome: "missed",
   });
-  repo.markRead(peerKey);
+  repo.markRead(peerKey, ["message-1"]);
   expect(repo.conversation(peerKey)?.unread).toBe(0);
   setPreference(db, "theme", "dark");
   expect(preference(db, "theme")).toBe("dark");

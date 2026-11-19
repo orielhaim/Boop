@@ -43,6 +43,13 @@
       "when": 1795049214901,
       "tag": "0005_outgoing_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795052076020,
+      "tag": "0006_tranquil_molly_hayes",
+      "breakpoints": true
     }
   ]
 }

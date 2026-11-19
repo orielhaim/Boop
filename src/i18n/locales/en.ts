@@ -119,6 +119,9 @@ export const en = {
     self: "You",
     call: "Call",
     online: "Relays connected",
+    syncing: "Syncing conversations…",
+    syncFailed:
+      "Could not sync conversations. Try reconnecting in Connections.",
     connecting: "Connecting to relays…",
     offline: "Offline · messages will queue",
     disabled: "No relays enabled",

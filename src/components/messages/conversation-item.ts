@@ -8,6 +8,20 @@ export type ConversationListItem = ChatListItem & {
   originalPreview?: string;
 };
 
+export function createConversationListAdapter(
+  ownKey: string,
+  translationLabel: (text: string) => string,
+) {
+  const items = new WeakMap<ConversationSummary, ConversationListItem>();
+  return (row: ConversationSummary) => {
+    const cached = items.get(row);
+    if (cached) return cached;
+    const next = toConversationListItem(row, ownKey, translationLabel);
+    items.set(row, next);
+    return next;
+  };
+}
+
 export function toConversationListItem(
   row: ConversationSummary,
   ownKey: string,

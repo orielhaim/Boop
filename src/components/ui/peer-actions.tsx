@@ -45,7 +45,10 @@ export function PeerActions({
           title={t("contacts:ownQr")}
           onPress={() => {
             onOpenChange(false);
-            router.push({ pathname: "/settings", params: { qr: "1" } });
+            router.push({
+              pathname: "/settings/identity",
+              params: { qr: "1" },
+            });
           }}
         />
       </GlassSheetContent>

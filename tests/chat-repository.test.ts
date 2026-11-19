@@ -113,21 +113,25 @@ test("keyset history orders equal timestamps by ID and pages in either direction
   ).toEqual(["a", "b"]);
 });
 
-test("counts only unique inbound messages and marks through a visible boundary", () => {
+test("counts unique inbound messages and reads only the presented IDs", () => {
   using sqlite = new Database(":memory:");
   const repo = migrated(sqlite);
   repo.receive(incoming("a", 100));
-  repo.receive(incoming("b", 200));
+  repo.receive(incoming("b", 100));
+  repo.receive(incoming("other", 50, bob));
   repo.receive({ ...incoming("a", 100), id: "different-wrap" });
   const current = createMessagingRepository(drizzle(sqlite, { schema }));
   expect(current.conversation(alice)?.unread).toBe(2);
-  expect(current.history(alice).firstUnreadMessageId).toBe("a");
-  current.markRead(alice, { id: "a", sentAt: 100 });
-  expect(current.conversation(alice)?.unread).toBe(1);
-  expect(current.history(alice).firstUnreadMessageId).toBe("b");
-  current.deleteMessages(alice, ["b"]);
+  expect(current.firstUnread(alice)?.id).toBe("a");
+  current.markRead(alice, ["b", "b", "other"]);
+  current.receive(incoming("late", 10));
+  expect(current.conversation(alice)?.unread).toBe(2);
+  expect(current.firstUnread(alice)?.id).toBe("late");
+  expect(current.unreadCount()).toBe(3);
+  current.deleteMessages(alice, ["a", "late"]);
   expect(current.conversation(alice)?.unread).toBe(0);
-  expect(current.history(alice).firstUnreadMessageId).toBeNull();
+  expect(current.firstUnread(alice)).toBeUndefined();
+  expect(current.unreadCount()).toBe(1);
 });
 
 test("resolves replies by rumor or local ID and remembers local reaction removal", () => {

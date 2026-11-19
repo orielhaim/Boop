@@ -1,19 +1,17 @@
 import { ChatList } from "@kesha-antonov/react-native-chat";
-import { router } from "expo-router";
-import { addDatabaseChangeListener } from "expo-sqlite";
-import { useCallback, useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { useChatAppearance } from "@/components/messages/appearance";
 import {
   type ConversationListItem,
+  createConversationListAdapter,
   matchesConversation,
-  toConversationListItem,
 } from "@/components/messages/conversation-item";
 import { Action, Empty, IconButton, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
-import { useTranslationPreferences } from "@/core/translation/preferences";
-import { namespaces, resolveLanguage } from "@/i18n";
+import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local";
 import { space } from "@/theme";
 
@@ -22,60 +20,50 @@ function keys(items: ConversationListItem[]) {
 }
 
 export default function Messages() {
-  const { t, i18n } = useTranslation(namespaces);
-  const { identity, chat, db } = useLocal();
-  const { automatic, target } = useTranslationPreferences(
-    db,
-    resolveLanguage(i18n.resolvedLanguage),
-  );
+  const { t } = useTranslation(namespaces);
+  const { identity, chat, conversations, messaging } = useLocal();
   const { appearance, theme, darkTheme, colorScheme, labels, locale, icons } =
     useChatAppearance();
   const [archived, setArchived] = useState(false);
   const [actions, setActions] = useState(false);
 
-  const [result, setResult] = useState<
-    { chats: ConversationListItem[]; error: boolean } | undefined
-  >();
-  const read = useCallback(() => {
-    try {
-      setResult({
-        chats: chat
-          .conversations({ translationTarget: automatic ? target : undefined })
-          .map((row) =>
-            toConversationListItem(row, identity.publicKey, (text) =>
-              t("translation:preview", { text }),
-            ),
-          ),
-        error: false,
-      });
-    } catch {
-      setResult({ chats: [], error: true });
-    }
-  }, [chat, identity.publicKey, automatic, target, t]);
-
-  useEffect(() => {
-    let frame: number | undefined;
-    const scheduleRead = () => {
-      frame ??= requestAnimationFrame(() => {
-        frame = undefined;
-        read();
-      });
-    };
-    const unsubscribe = chat.subscribe(scheduleRead);
-    const contactChanges = addDatabaseChangeListener(({ tableName }) => {
-      if (
-        tableName === "contacts" ||
-        (automatic && tableName === "message_translations")
-      )
-        scheduleRead();
-    });
-    scheduleRead();
-    return () => {
-      unsubscribe();
-      contactChanges.remove();
-      if (frame !== undefined) cancelAnimationFrame(frame);
-    };
-  }, [chat, read, automatic]);
+  const result = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.getSnapshot,
+    conversations.getSnapshot,
+  );
+  const rows = result?.rows;
+  const status = useSyncExternalStore(
+    messaging.subscribeStatus,
+    messaging.getStatus,
+    messaging.getStatus,
+  );
+  const sync = useSyncExternalStore(
+    messaging.subscribeStatus,
+    messaging.getInboxSync,
+    messaging.getInboxSync,
+  );
+  const adapt = useMemo(
+    () =>
+      createConversationListAdapter(identity.publicKey, (text) =>
+        t("translation:preview", { text }),
+      ),
+    [identity.publicKey, t],
+  );
+  const chats = useMemo(() => (rows ?? []).map(adapt), [rows, adapt]);
+  const emptyStatus =
+    sync === "syncing"
+      ? t("messages:syncing")
+      : sync === "failed"
+        ? t("messages:syncFailed")
+        : status === "online"
+          ? undefined
+          : t(`messages:${status}`);
+  useFocusEffect(
+    useCallback(() => {
+      conversations.prefetch();
+    }, [conversations]),
+  );
 
   function change(write: () => void) {
     try {
@@ -88,17 +76,17 @@ export default function Messages() {
   return (
     <Screen tab scroll={false}>
       <PeerActions mode="chat" open={actions} onOpenChange={setActions} />
-      {result?.error ? (
+      {result?.error && chats.length === 0 ? (
         <Empty
           icon="chat"
           title={t("messages:openConversationsError")}
           detail={t("messages:readLocalError")}
         >
-          <Action onPress={read}>{t("common:retry")}</Action>
+          <Action onPress={conversations.refresh}>{t("common:retry")}</Action>
         </Empty>
       ) : (
         <ChatList
-          chats={result?.chats ?? []}
+          chats={chats}
           user={{ _id: identity.publicKey }}
           isLoading={result === undefined}
           appearance={appearance}
@@ -134,9 +122,18 @@ export default function Messages() {
                     ? labels.chatListNoResults
                     : archived
                       ? t("messages:noArchived")
-                      : labels.chatListEmpty
+                      : sync === "syncing" || status === "connecting"
+                        ? (emptyStatus ?? labels.chatListEmpty)
+                        : labels.chatListEmpty
                 }
-                detail={!searching && !archived ? t("messages:startHint") : ""}
+                detail={
+                  searching ||
+                  archived ||
+                  sync === "syncing" ||
+                  status === "connecting"
+                    ? ""
+                    : (emptyStatus ?? t("messages:startHint"))
+                }
               />
             </View>
           )}

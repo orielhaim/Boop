@@ -1,5 +1,13 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
-import type { createMessagingRepository, MessageCursor } from "@/db/messaging";
+import {
+  type HistoryLoader,
+  recentPageSize as pageSize,
+} from "@/core/messaging/history";
+import {
+  type MessageCursor,
+  type MessagingRepository,
+  maximumHistoryWindow,
+} from "@/db/messaging";
 import {
   type DetailMessage,
   equalDetailMessage,
@@ -7,29 +15,23 @@ import {
   toDetailMessage,
 } from "./detail-adapter";
 
-const pageSize = 50;
-type Repository = ReturnType<typeof createMessagingRepository>;
+type Repository = MessagingRepository;
 type Scope = { start: MessageCursor | undefined; limit: number };
+type Page = ReturnType<Repository["history"]>;
 
 const latest: Scope = { start: undefined, limit: pageSize * 2 };
 const emptyMessages: DetailMessage[] = [];
 
-function readWindow(chat: Repository, peerKey: string, scope: Scope) {
-  const page = chat.history(peerKey, {
-    limit: Math.min(scope.limit, 200),
+function readWindow(
+  history: HistoryLoader,
+  peerKey: string,
+  scope: Scope,
+): Page {
+  if (!scope.start) return history.recent(peerKey).page;
+  return history.read(peerKey, {
+    limit: scope.limit,
     atOrAfter: scope.start,
   });
-  const messages = [...page.messages];
-  let newer = page.newer;
-  while (newer && messages.length < scope.limit) {
-    const next = chat.history(peerKey, {
-      after: newer,
-      limit: Math.min(scope.limit - messages.length, 200),
-    });
-    messages.push(...next.messages);
-    newer = next.newer;
-  }
-  return { messages, older: page.older, newer };
 }
 
 function createProjector(
@@ -74,11 +76,14 @@ type Snapshot = {
 // Cache one immutable result per repository revision, as useSyncExternalStore requires.
 function createHistorySnapshot(
   chat: Repository,
+  history: HistoryLoader,
   peerKey: string,
   scope: Scope,
   project: ReturnType<typeof createProjector>,
+  initial: { scope: Scope; page?: Page; revision?: number },
 ) {
   let lastRevision: number | undefined;
+  let readScope = scope;
   let snapshot: Snapshot = {
     items: emptyMessages,
     older: null,
@@ -86,11 +91,16 @@ function createHistorySnapshot(
     error: false,
   };
   return () => {
-    const revision = chat.getRevision();
+    const revision = chat.historyRevision(peerKey);
     if (lastRevision === revision) return snapshot;
     lastRevision = revision;
     try {
-      const page = readWindow(chat, peerKey, scope);
+      const page =
+        initial.scope === scope && initial.revision === revision && initial.page
+          ? initial.page
+          : readWindow(history, peerKey, readScope);
+      if (!readScope.start && page.messages[0])
+        readScope = { ...scope, start: page.messages[0] };
       snapshot = {
         items: project(page.messages),
         older: page.older,
@@ -106,25 +116,46 @@ function createHistorySnapshot(
 
 export function useDetailHistory(
   chat: Repository,
+  history: HistoryLoader,
   peerKey: string,
   participants: Participants,
   unavailable: string,
 ) {
   const [initial] = useState(() => {
     try {
-      const page = chat.history(peerKey, { limit: pageSize });
-      const firstUnread = page.firstUnreadMessageId;
-      const unread =
-        firstUnread && !page.messages.some((item) => item.id === firstUnread)
-          ? chat.message(peerKey, firstUnread)
+      const { page: recent, unread } = history.recent(peerKey);
+      const saved = !unread ? history.position(peerKey) : undefined;
+      const restored = saved
+        ? chat.refs(peerKey, [saved.id]).get(saved.id)
+        : undefined;
+      const anchor = unread ?? restored;
+      const outsideRecent =
+        anchor && !recent.messages.some((item) => item.id === anchor.id);
+      let page = recent;
+      if (outsideRecent) {
+        const prefix = restored
+          ? history.read(peerKey, { atOrBefore: restored, limit: pageSize / 2 })
           : null;
+        page = history.read(peerKey, {
+          atOrAfter: prefix?.messages[0] ?? anchor,
+          limit: pageSize,
+        });
+      }
       return {
-        scope: { ...latest, start: unread || page.messages[0] },
-        firstUnread,
-        detached: Boolean(unread),
+        scope: { ...latest, start: page.messages[0] },
+        page,
+        revision: chat.historyRevision(peerKey),
+        firstUnread: unread?.id ?? null,
+        restored: restored?.id,
+        detached: Boolean(outsideRecent),
       };
     } catch {
-      return { scope: latest, firstUnread: null, detached: false };
+      return {
+        scope: latest,
+        firstUnread: null,
+        restored: undefined,
+        detached: false,
+      };
     }
   });
   const [scope, setScope] = useState(initial.scope);
@@ -133,44 +164,81 @@ export function useDetailHistory(
     [chat, peerKey, participants, unavailable],
   );
   const getSnapshot = useMemo(
-    () => createHistorySnapshot(chat, peerKey, scope, rows),
-    [chat, peerKey, scope, rows],
+    () => createHistorySnapshot(chat, history, peerKey, scope, rows, initial),
+    [chat, history, peerKey, scope, rows, initial],
+  );
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stop = chat.subscribe(({ history }) => {
+        if (history === "all" || history?.includes(peerKey)) {
+          timer ??= setTimeout(() => {
+            timer = undefined;
+            listener();
+          }, 16);
+        }
+      });
+      return () => {
+        clearTimeout(timer);
+        stop();
+      };
+    },
+    [chat, peerKey],
   );
   const { items, older, newer, error } = useSyncExternalStore(
-    chat.subscribe,
+    subscribe,
     getSnapshot,
     getSnapshot,
   );
-
-  // A live window reserves one extra page. As it fills, grow the queried range in blocks
-  // without dropping rows that Legend List may be using as its visible scroll anchor.
   const extend = useCallback(() => {
-    setScope((current) => ({ ...current, limit: current.limit + pageSize }));
-  }, []);
+    if (scope.limit < maximumHistoryWindow) {
+      const first = items[0];
+      setScope({
+        start:
+          scope.start ??
+          (first ? { id: first._id, sentAt: first.createdAt } : undefined),
+        limit: Math.min(scope.limit + pageSize, maximumHistoryWindow),
+      });
+    } else {
+      const anchor = items[pageSize];
+      if (anchor)
+        setScope({
+          start: { id: anchor._id, sentAt: anchor.createdAt },
+          limit: maximumHistoryWindow,
+        });
+    }
+  }, [scope, items]);
 
   const olderPage = useCallback(() => {
     if (!older) return;
-    const page = chat.history(peerKey, { before: older, limit: pageSize });
+    const page = history.read(peerKey, { before: older, limit: pageSize });
     const start = page.messages[0];
-    if (start) setScope({ start, limit: scope.limit + page.messages.length });
-  }, [chat, older, peerKey, scope.limit]);
+    if (start)
+      setScope({
+        start,
+        limit: Math.min(
+          maximumHistoryWindow,
+          scope.limit + page.messages.length,
+        ),
+      });
+  }, [history, older, peerKey, scope.limit]);
 
   const loadAround = useCallback(
     (cursor: MessageCursor) => {
-      const page = chat.history(peerKey, {
+      const page = history.read(peerKey, {
         atOrBefore: cursor,
         limit: Math.floor(pageSize / 2),
       });
       setScope({ start: page.messages[0] ?? cursor, limit: pageSize });
     },
-    [chat, peerKey],
+    [history, peerKey],
   );
 
   const loadLatest = useCallback(() => {
-    const page = chat.history(peerKey, { limit: pageSize });
+    const { page } = history.recent(peerKey);
     setScope({ ...latest, start: page.messages[0] });
     return page.messages.at(-1)?.id;
-  }, [chat, peerKey]);
+  }, [history, peerKey]);
 
   return {
     items,
@@ -183,6 +251,7 @@ export function useDetailHistory(
     loadLatest,
     retry: () => setScope((current) => ({ ...current })),
     firstUnreadMessageId: initial.firstUnread,
+    restoredMessageId: initial.restored,
     initiallyDetached: initial.detached,
   };
 }

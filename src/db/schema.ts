@@ -17,17 +17,33 @@ export const contacts = sqliteTable("contacts", {
     .default(false),
 });
 
-export const conversations = sqliteTable("conversations", {
-  peerKey: text("peer_key").primaryKey().notNull(),
-  updatedAt: integer("updated_at").notNull(),
-  unread: integer().notNull().default(0),
-  draft: text().notNull().default(""),
-  draftReplyTo: text("draft_reply_to"),
-  pinnedRank: integer("pinned_rank"),
-  muted: integer({ mode: "boolean" }).notNull().default(false),
-  archived: integer({ mode: "boolean" }).notNull().default(false),
-  deletedAt: integer("deleted_at"),
-});
+export const conversations = sqliteTable(
+  "conversations",
+  {
+    peerKey: text("peer_key").primaryKey().notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    unread: integer().notNull().default(0),
+    draft: text().notNull().default(""),
+    draftReplyTo: text("draft_reply_to"),
+    pinnedRank: integer("pinned_rank"),
+    muted: integer({ mode: "boolean" }).notNull().default(false),
+    archived: integer({ mode: "boolean" }).notNull().default(false),
+    deletedAt: integer("deleted_at"),
+  },
+  (table) => [
+    index("conversations_order")
+      .on(
+        sql`${table.pinnedRank} IS NULL`,
+        table.pinnedRank,
+        sql`${table.updatedAt} DESC`,
+        table.peerKey,
+      )
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("conversations_unread")
+      .on(table.unread)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.unread} > 0`),
+  ],
+);
 
 export const messages = sqliteTable(
   "messages",

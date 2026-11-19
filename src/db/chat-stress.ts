@@ -21,7 +21,10 @@ const history = [
 ];
 
 function fixtureId(peerKey: string, index: number) {
-  return `chat-stress:${peerKey.slice(0, 12)}:${String(index).padStart(5, "0")}`;
+  const key = peerKey.startsWith("ffffffffffff")
+    ? peerKey.slice(-12)
+    : peerKey.slice(0, 12);
+  return `chat-stress:${key}:${String(index).padStart(5, "0")}`;
 }
 
 export function stressArrival(localKey: string, at = Date.now()): MessageInput {
@@ -50,16 +53,27 @@ export function seedStressConversations<TResult>(
       name: "Second test conversation",
       count: 24,
     },
+    ...Array.from({ length: 98 }, (_, index) => ({
+      peerKey: (index + 1).toString(16).padStart(64, "f"),
+      name: `Test conversation ${index + 3}`,
+      count: 18,
+    })),
   ];
 
   db.transaction((tx) => {
-    for (const { peerKey, name, count } of groups) {
+    for (const [group, { peerKey, name, count }] of groups.entries()) {
       tx.insert(contacts)
         .values({ publicKey: peerKey, name })
         .onConflictDoNothing()
         .run();
       tx.insert(conversations)
-        .values({ peerKey, updatedAt: start })
+        .values({
+          peerKey,
+          updatedAt: start,
+          pinnedRank: group > 1 && group % 21 === 0 ? group : null,
+          archived: group > 1 && group % 8 === 0,
+          muted: group > 1 && group % 11 === 0,
+        })
         .onConflictDoNothing()
         .run();
       for (let offset = 0; offset < count; offset += 64) {

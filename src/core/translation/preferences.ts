@@ -43,6 +43,11 @@ export function initializeTranslationPreferences(
   }
 }
 
+export function translationPreviewTarget(db: Database) {
+  const { automatic, target } = parse(preference(db, preferenceKey), "en");
+  return automatic ? target : undefined;
+}
+
 export function useTranslationPreferences(db: Database, language: AppLanguage) {
   const query = useMemo(
     () => db.select().from(settings).where(eq(settings.key, preferenceKey)),

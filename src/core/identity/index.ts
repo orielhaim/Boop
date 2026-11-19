@@ -1,3 +1,4 @@
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import type { Database } from "@/db";
@@ -27,7 +28,6 @@ export async function initializeIdentity(db: Database) {
 export async function loadIdentitySigner(identity: Identity) {
   const secret = await SecureStore.getItemAsync(key, options);
   if (secret === null) throw new Error("Identity missing from secure storage");
-  const { NDKPrivateKeySigner } = await import("@nostr-dev-kit/ndk");
   const signer = new NDKPrivateKeySigner(secret);
   if (signer.pubkey !== identity.publicKey)
     throw new Error("Identity mismatch");

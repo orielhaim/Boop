@@ -11,6 +11,8 @@ import {
   sameRelays,
 } from "../nostr/config";
 import { createMessagingRelays } from "../nostr/messaging-relays";
+import { messagingMetric } from "./diagnostics";
+import { createInboxIngestion, inboxCatchup } from "./inbox-sync";
 import {
   createRumor,
   inboxListKind,
@@ -40,7 +42,7 @@ export type InboxStatus =
   "idle" | "validating" | "published" | "conflict" | "unverified" | "pending";
 type SendInput = { peerKey: string; body: string; replyTo: string | null };
 const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
-const catchupOverlap = 3 * 24 * 60 * 60;
+const offlineProbeDelay = 60_000;
 
 export function createMessagingService({
   signer,
@@ -79,6 +81,8 @@ export function createMessagingService({
     }
   >();
   const diagnostics = new Map<string, RelayState>();
+  const syncing = new Map<string, "syncing" | "synced" | "failed">();
+  let inboxSync: "idle" | "syncing" | "failed" = "idle";
   let snapshot: Readonly<Record<string, RelayState>> = {};
   let publication = readPublication(readState(inboxPublicationKey));
   let publicationStatus: InboxStatus = "idle";
@@ -91,10 +95,53 @@ export function createMessagingService({
   const verified = new Set<string>();
   const previousTargets = new Set<string>();
   let running = false;
+  const ingestion = createInboxIngestion(
+    (wrapped) => unwrapPrivateEvent(wrapped, signer),
+    (event) => {
+      if (event.type === "call") {
+        if (event.recipientKey === publicKey)
+          for (const listener of callListeners) listener(event.signal);
+      } else if (event.type === "reaction") {
+        chat.receiveReaction({
+          peerKey: event.peerKey,
+          eventId: event.id,
+          author: event.senderKey,
+          emoji: event.emoji,
+          targetEventId: event.targetEventId,
+        });
+      } else {
+        chat.receive({
+          id: event.id,
+          eventId: event.id,
+          peerKey: event.peerKey,
+          senderKey: event.senderKey,
+          recipientKey: event.recipientKey,
+          sentAt: event.sentAt,
+          body: event.body,
+          replyTo: event.replyTo,
+          direction: event.senderKey === publicKey ? "outgoing" : "incoming",
+        });
+      }
+    },
+  );
 
   function updateStatus(next: MessagingStatus) {
     if (next === status) return;
     status = next;
+    for (const listener of listeners) listener();
+  }
+
+  function reportSync(url: string, phase?: "syncing" | "synced" | "failed") {
+    if (phase) syncing.set(url, phase);
+    else syncing.delete(url);
+    const states = [...syncing.values()];
+    const next = states.includes("syncing")
+      ? "syncing"
+      : states.length && states.every((value) => value === "failed")
+        ? "failed"
+        : "idle";
+    if (next === inboxSync) return;
+    inboxSync = next;
     for (const listener of listeners) listener();
   }
 
@@ -376,20 +423,23 @@ export function createMessagingService({
   function connectRelay(relay: NDKRelay, session: number, inbox: boolean) {
     let attempts = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let syncTimeout: ReturnType<typeof setTimeout> | undefined;
     let closeWatch: (() => void) | undefined;
-    let receive = Promise.resolve();
+    let watch = 0;
+    let catchup: ReturnType<typeof inboxCatchup> | undefined;
     let live = true;
     const active = () => live && session === generation;
-    const syncKey = `chat.sync.${relay.url}`;
+    const syncKey = `chat.sync.v2.${publicKey}.${relay.url}`;
 
     function attemptConnection() {
       if (!active() || transport.connected(relay)) return;
-      if (attempts >= retryDelays.length) {
-        report(relay.url, { status: "unavailable" });
-        return;
-      }
-      report(relay.url, { status: "connecting" });
-      const delay = retryDelays[attempts++];
+      clearTimeout(retryTimer);
+      const burstDelay = retryDelays[attempts];
+      if (burstDelay !== undefined) attempts++;
+      const delay = burstDelay ?? offlineProbeDelay;
+      report(relay.url, {
+        status: burstDelay === undefined ? "unavailable" : "connecting",
+      });
       retryTimer = setTimeout(() => {
         if (!active() || transport.connected(relay)) return;
         updateStatus(connectedRelays().length ? "online" : "offline");
@@ -404,68 +454,61 @@ export function createMessagingService({
       void transport.connect(relay);
     }
 
+    function watchInbox() {
+      if (!active() || !inbox || !catchup) return;
+      closeWatch?.();
+      clearTimeout(syncTimeout);
+      const token = ++watch;
+      const { since, checkpoint } = catchup;
+      const started = Date.now();
+      let receiveSucceeded = true;
+      reportSync(relay.url, "syncing");
+      syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
+      closeWatch = transport.watchInbox(
+        relay,
+        since,
+        (id, wrapped) => {
+          if (token !== watch || !active()) return;
+          ingestion.receive(id, wrapped, active, () => {
+            receiveSucceeded = false;
+          });
+        },
+        () => {
+          void ingestion
+            .drained()
+            .then(() => {
+              if (!active() || token !== watch) return;
+              clearTimeout(syncTimeout);
+              if (!receiveSucceeded) {
+                reportSync(relay.url, "failed");
+                return;
+              }
+              writeState(syncKey, checkpoint);
+              reportSync(relay.url, "synced");
+              messagingMetric("catch-up", {
+                ms: Date.now() - started,
+                queued: ingestion.queued(),
+              });
+            })
+            .catch(() => {
+              if (active() && token === watch) reportSync(relay.url, "failed");
+            });
+        },
+      );
+    }
+
     function onConnect() {
       if (!active()) return;
       if (retryTimer) clearTimeout(retryTimer);
       attempts = 0;
-      closeWatch?.();
-      let receiveSucceeded = true;
-      const beganAt = Math.floor(Date.now() / 1_000);
-      const previousSync = Number(readState(syncKey) ?? 0);
-      const since =
-        previousSync > 0 && previousSync <= beganAt
-          ? Math.max(0, previousSync - catchupOverlap)
-          : undefined;
-      if (inbox)
-        closeWatch = transport.watchInbox(
-          relay,
-          since,
-          (wrapped) => {
-            receive = receive
-              .then(async () => {
-                if (!active()) return;
-                const event = await unwrapPrivateEvent(wrapped, signer);
-                if (!event || !active()) return;
-                if (event.type === "call") {
-                  if (event.recipientKey === publicKey)
-                    for (const listener of callListeners)
-                      listener(event.signal);
-                } else if (event.type === "reaction") {
-                  chat.receiveReaction({
-                    peerKey: event.peerKey,
-                    eventId: event.id,
-                    author: event.senderKey,
-                    emoji: event.emoji,
-                    targetEventId: event.targetEventId,
-                  });
-                } else {
-                  chat.receive({
-                    id: event.id,
-                    eventId: event.id,
-                    peerKey: event.peerKey,
-                    senderKey: event.senderKey,
-                    recipientKey: event.recipientKey,
-                    sentAt: event.sentAt,
-                    body: event.body,
-                    replyTo: event.replyTo,
-                    direction:
-                      event.senderKey === publicKey ? "outgoing" : "incoming",
-                  });
-                }
-              })
-              .catch(() => {
-                receiveSucceeded = false;
-              });
-          },
-          () => {
-            void receive
-              .then(() => {
-                if (active() && receiveSucceeded)
-                  writeState(syncKey, String(beganAt));
-              })
-              .catch(() => undefined);
-          },
+      if (inbox) {
+        catchup = inboxCatchup(
+          Math.floor(Date.now() / 1_000),
+          readState(syncKey),
+          readState(`chat.sync.${relay.url}`),
         );
+        watchInbox();
+      }
       report(relay.url, { status: "connected", lastConnected: Date.now() });
       updateStatus("online");
       schedulePublication();
@@ -475,6 +518,9 @@ export function createMessagingService({
 
     function onDisconnect() {
       if (!active()) return;
+      watch++;
+      clearTimeout(syncTimeout);
+      reportSync(relay.url);
       report(relay.url, { status: "disconnected" });
       closeWatch?.();
       closeWatch = undefined;
@@ -483,13 +529,14 @@ export function createMessagingService({
       updateStatus(connectedRelays().length ? "online" : "offline");
       retryTimer = setTimeout(
         attemptConnection,
-        retryDelays[Math.min(attempts, retryDelays.length - 1)],
+        retryDelays[attempts] ?? offlineProbeDelay,
       );
     }
 
     const onAuth = () => report(relay.url, { status: "auth-required" });
     const onAuthed = () => {
       report(relay.url, { status: "connected" });
+      watchInbox();
       schedulePublication();
     };
     const onRejected = () => report(relay.url, { status: "rejected" });
@@ -509,10 +556,13 @@ export function createMessagingService({
         attempts = 0;
         if (retryTimer) clearTimeout(retryTimer);
         if (!transport.connected(relay)) attemptConnection();
+        else if (syncing.get(relay.url) === "failed") watchInbox();
       },
       close() {
         live = false;
         if (retryTimer) clearTimeout(retryTimer);
+        clearTimeout(syncTimeout);
+        reportSync(relay.url);
         closeWatch?.();
         relay.off("connect", onConnect);
         relay.off("disconnect", onDisconnect);
@@ -732,6 +782,7 @@ export function createMessagingService({
     reconnect: startAgain,
     getRelayStates: () => snapshot,
     getInboxStatus: () => publicationStatus,
+    getInboxSync: () => inboxSync,
     send,
     retry,
     toggleReaction,

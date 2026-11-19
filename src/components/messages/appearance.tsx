@@ -141,6 +141,7 @@ function chatTheme(
       outgoingGradient: material?.outgoing ?? null,
       outgoingGradientMode: "bubble",
       hasTail: false,
+      isTimeInline: false,
     },
     typography: {
       message: material ? { fontSize: 16, lineHeight: 21 } : type.body,

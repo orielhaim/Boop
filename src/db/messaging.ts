@@ -37,7 +37,7 @@ type ReactionInput = Reaction & {
   peerKey: string;
   targetEventId: string;
 };
-type HistoryOptions = {
+export type HistoryOptions = {
   before?: MessageCursor;
   atOrBefore?: MessageCursor;
   atOrAfter?: MessageCursor;
@@ -97,8 +97,9 @@ function cursor(row: MessageRow | undefined): MessageCursor | null {
   return row ? { id: row.id, sentAt: row.sentAt } : null;
 }
 
+export const maximumHistoryWindow = 300;
 const pageLimit = (limit: number) =>
-  Math.max(1, Math.min(200, Math.floor(limit) || 1));
+  Math.max(1, Math.min(maximumHistoryWindow, Math.floor(limit) || 1));
 
 function ensureRoom<TResult>(
   db: WriteDatabase<TResult>,
@@ -125,16 +126,28 @@ function recountUnread<TResult>(db: WriteDatabase<TResult>, peerKey: string) {
 }
 
 export type MessagingRepository = ReturnType<typeof createMessagingRepository>;
+type Change = {
+  history?: readonly string[] | "all";
+  summaries?: boolean;
+  unread?: boolean;
+};
 
 export function createMessagingRepository<TResult>(
   db: BaseSQLiteDatabase<"sync", TResult, typeof schema>,
 ) {
   let revision = 0;
-  const listeners = new Set<() => void>();
+  let resetRevision = 0;
+  const historyRevisions = new Map<string, number>();
+  const listeners = new Set<(change: Change) => void>();
 
-  function changed() {
-    revision++;
-    for (const listener of listeners) listener();
+  function changed(change: Change) {
+    if (change.history === "all") {
+      resetRevision = ++revision;
+      historyRevisions.clear();
+    } else if (change.history) {
+      for (const key of change.history) historyRevisions.set(key, ++revision);
+    }
+    for (const listener of listeners) listener(change);
   }
 
   function withReactions(peerKey: string, rows: MessageRow[]): MessageRecord[] {
@@ -214,18 +227,42 @@ export function createMessagingRepository<TResult>(
         .run();
       return true;
     });
-    if (inserted) changed();
+    if (inserted)
+      changed({
+        history: [input.peerKey],
+        summaries: true,
+        unread: input.direction === "incoming",
+      });
     return inserted;
   }
 
   return {
-    getRevision: () => revision,
-    invalidate: changed,
-    subscribe(listener: () => void) {
+    historyRevision: (peerKey: string) =>
+      historyRevisions.get(peerKey) ?? resetRevision,
+    invalidate: () =>
+      changed({ history: "all", summaries: true, unread: true }),
+    subscribe(listener: (change: Change) => void) {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
+    },
+
+    unreadCount() {
+      return (
+        db
+          .select({
+            count: sql<number>`coalesce(sum(${conversations.unread}), 0)`,
+          })
+          .from(conversations)
+          .where(
+            and(
+              isNull(conversations.deletedAt),
+              sql`${conversations.unread} > 0`,
+            ),
+          )
+          .get()?.count ?? 0
+      );
     },
 
     conversations(
@@ -260,6 +297,22 @@ export function createMessagingRepository<TResult>(
         .get();
     },
 
+    draft(peerKey: string) {
+      return db
+        .select({
+          draft: conversations.draft,
+          draftReplyTo: conversations.draftReplyTo,
+        })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.peerKey, peerKey),
+            isNull(conversations.deletedAt),
+          ),
+        )
+        .get();
+    },
+
     ensureConversation(peerKey: string) {
       const updated = db
         .insert(conversations)
@@ -271,7 +324,7 @@ export function createMessagingRepository<TResult>(
         })
         .returning({ peerKey: conversations.peerKey })
         .get();
-      if (updated) changed();
+      if (updated) changed({ summaries: true });
     },
 
     saveDraft(peerKey: string, draft: string, draftReplyTo: string | null) {
@@ -286,7 +339,7 @@ export function createMessagingRepository<TResult>(
         })
         .returning({ peerKey: conversations.peerKey })
         .get();
-      if (updated) changed();
+      if (updated) changed({ summaries: true });
     },
 
     history(peerKey: string, options: HistoryOptions = {}) {
@@ -324,13 +377,6 @@ export function createMessagingRepository<TResult>(
       if (!ascending) rows.reverse();
       const first = cursor(rows[0]);
       const last = cursor(rows.at(-1));
-      const firstUnreadMessageId =
-        db
-          .select({ id: messages.id })
-          .from(messages)
-          .where(and(liveMessage(peerKey), sql`${messages.isUnread} = 1`))
-          .orderBy(asc(messages.sentAt), asc(messages.id))
-          .get()?.id ?? null;
       return {
         messages: withReactions(peerKey, rows),
         older:
@@ -340,8 +386,16 @@ export function createMessagingRepository<TResult>(
           (ascending ? more : (before || atOrBefore) && existsPast(last, ">"))
             ? last
             : null,
-        firstUnreadMessageId,
       };
+    },
+
+    firstUnread(peerKey: string): MessageCursor | undefined {
+      return db
+        .select({ id: messages.id, sentAt: messages.sentAt })
+        .from(messages)
+        .where(and(liveMessage(peerKey), sql`${messages.isUnread} = 1`))
+        .orderBy(asc(messages.sentAt), asc(messages.id))
+        .get();
     },
 
     message(peerKey: string, reference: string): MessageRecord | undefined {
@@ -372,20 +426,33 @@ export function createMessagingRepository<TResult>(
       return result;
     },
 
-    markRead(peerKey: string, through?: MessageCursor) {
+    markRead(peerKey: string, ids: readonly string[]) {
+      if (!ids.length) return;
+      const unique = [...new Set(ids)];
       const read = db.transaction((tx) => {
-        const unread = and(
-          liveMessage(peerKey),
-          sql`${messages.isUnread} = 1`,
-          through ? rowKey(through, "<=") : undefined,
-        );
-        if (!tx.select({ id: messages.id }).from(messages).where(unread).get())
-          return false;
-        tx.update(messages).set({ isUnread: false }).where(unread).run();
-        recountUnread(tx, peerKey);
+        let count = 0;
+        for (let start = 0; start < unique.length; start += 200) {
+          count += tx
+            .update(messages)
+            .set({ isUnread: false })
+            .where(
+              and(
+                liveMessage(peerKey),
+                sql`${messages.isUnread} = 1`,
+                inArray(messages.id, unique.slice(start, start + 200)),
+              ),
+            )
+            .returning({ id: messages.id })
+            .all().length;
+        }
+        if (!count) return false;
+        tx.update(conversations)
+          .set({ unread: sql`${conversations.unread} - ${count}` })
+          .where(eq(conversations.peerKey, peerKey))
+          .run();
         return true;
       });
-      if (read) changed();
+      if (read) changed({ history: [peerKey], summaries: true, unread: true });
     },
 
     updateConversations(
@@ -429,7 +496,7 @@ export function createMessagingRepository<TResult>(
             .run();
         }
       });
-      changed();
+      changed({ summaries: true });
     },
 
     reorderPinned(keys: readonly string[]) {
@@ -463,7 +530,7 @@ export function createMessagingRepository<TResult>(
               .run();
           });
       });
-      changed();
+      changed({ summaries: true });
     },
 
     deleteConversations(keys: readonly string[]) {
@@ -498,7 +565,7 @@ export function createMessagingRepository<TResult>(
           .where(inArray(conversations.peerKey, peers))
           .run();
       });
-      changed();
+      changed({ history: peers, summaries: true, unread: true });
     },
 
     deleteMessages(peerKey: string, ids: readonly string[]) {
@@ -533,7 +600,7 @@ export function createMessagingRepository<TResult>(
           .run();
         recountUnread(tx, peerKey);
       });
-      changed();
+      changed({ history: [peerKey], summaries: true, unread: true });
     },
 
     toggleReaction(
@@ -561,7 +628,7 @@ export function createMessagingRepository<TResult>(
           .get();
         return updated ? !updated.removed : undefined;
       });
-      if (active !== undefined) changed();
+      if (active !== undefined) changed({ history: [peerKey] });
       return active ?? false;
     },
 
@@ -593,7 +660,7 @@ export function createMessagingRepository<TResult>(
             .get(),
         );
       });
-      if (inserted) changed();
+      if (inserted) changed({ history: [input.peerKey] });
       return inserted;
     },
 
@@ -639,9 +706,9 @@ export function createMessagingRepository<TResult>(
               : inArray(messages.status, ["pending", "failed"]),
           ),
         )
-        .returning({ id: messages.id })
+        .returning({ peerKey: messages.peerKey })
         .get();
-      if (updated) changed();
+      if (updated) changed({ history: [updated.peerKey], summaries: true });
       return Boolean(updated);
     },
   };

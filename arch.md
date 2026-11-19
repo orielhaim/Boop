@@ -200,6 +200,8 @@ Do not silently replace an existing identity if storage becomes unavailable or c
 
 Do not generate keys using `Math.random()` or other non-cryptographic randomness.
 
+The Expo Router entry installs native secure randomness before NDK loads. The initial bundle includes the local messaging and call-control setup modules, so Boot can open the protected routes after local initialization. Relay subscriptions start after the gate opens. WebRTC, Trystero, and translation model work start when a feature needs them. Settings and the call and chat menus share the Identity & keys route for displaying the public address and QR code.
+
 ### Contacts
 
 Contacts are local application records containing:
@@ -252,10 +254,14 @@ A new identity can advertise its inbox automatically. Boop first checks for an e
 
 ### Chat persistence and presentation
 
-- The messaging service owns NIP-17 inbox discovery, NIP-44 encryption, NIP-59 envelopes, signing, relay acknowledgments, and foreground synchronization. It uses core NDK for relay access and established Nostr cryptography.
-- SQLite and Drizzle own messages, the pending outbox, replies, reactions, unread counts, drafts, and conversation preferences. An outgoing message keeps its local ID when publication is acknowledged. Synchronization deduplicates the inner rumor ID across relays and gift wraps.
-- Message history uses a cursor ordered by creation time and local ID. The latest page loads first, and earlier pages prepend in chronological order. Chat Kit's built-in AnimatedLegendList owns virtualization, scroll anchoring, and jump-to-message behavior.
-- Typed presentation adapters convert persisted rows into Chat Kit users, messages, quotes, reactions and conversation rows. `ChatList` presents conversations. `Chat` provides message rendering, composer, keyboard behavior, menus, and gestures. `ChatHeader` provides the detail header. Share the app's color and typography tokens through the library's appearance and theme APIs.
+- The protected application root starts one messaging lifecycle for its SQLite-pinned identity after migrations and the first App Lock unlock. Calls, Contacts, Settings, and Messages share it. Core NDK handles relay access. The runtime owns NIP-17 discovery, NIP-44 encryption, NIP-59 envelopes, signature verification, and the outbox. The current app supports one identity and refuses a mismatched signer.
+- Each connected inbox relay sends historical and live events through the same subscription. End of stored events (EOSE) advances that identity and relay's checkpoint after queued writes succeed. A new relay initially requests its retained inbox. Later sessions overlap the previous checkpoint by three days to cover randomized envelope timestamps. On reconnect, a weekly audit looks back at least 30 days. Longer offline gaps retain the older checkpoint. Foreground reconnects back off to one probe per minute after the initial retry burst. Normal navigation keeps subscriptions open. Returning from OS background suspension reopens them and runs catch-up. Relay retention and refusal still limit recovery.
+- Inbound envelopes enter one serial verification and persistence queue across relays. A bounded set skips recently handled outer envelope replays. SQLite deduplicates the inner rumor ID across different envelopes. One transaction inserts a message and updates conversation activity and unread state. The pending outbox preserves optimistic local IDs. Relay acknowledgment indicates acceptance by a relay.
+- SQLite and Drizzle own messages, drafts, reactions, conversation flags, and read state. The root hydrates a compact conversation list with the latest indexed message and optional cached translation. Repository notifications run after commit and target summaries, the unread aggregate, or an affected peer's history. Summary and history refreshes coalesce bursts. SQLite change listeners cover contacts and translation settings and previews.
+- Unread counts include muted and archived conversations and exclude deleted rows, outgoing copies, reactions, and call signals. The NativeTabs Messages badge subscribes to the persisted aggregate and displays up to `99+`. A focused, foreground, unlocked conversation clears only the unread message IDs that Chat Kit presents. Chat Kit opens at the first unread row when one exists and renders the unread separator.
+- The session history loader keeps five recent pages of up to 50 messages. It queues up to three candidates, with recently visited conversations ahead of recently active ones, and shares requests by peer. The foreground reader can reuse or fulfill a queued load. Relevant commits invalidate cached pages. Opening a chat needs only SQLite or a warm page. A small session cache remembers the previous reading position.
+- History uses creation time and local ID as its cursor. Older rows prepend in 50-message pages. The displayed history caps at 300 rows and slides when the user pages beyond its edge. Chat Kit's AnimatedLegendList owns virtualization, scroll anchoring, and jump-to-message behavior. A quote outside the current window opens a page around its original message.
+- Typed presentation adapters convert persisted rows into Chat Kit users, messages, quotes, reactions and conversation rows. `ChatList` presents conversations. `Chat` provides message rendering, composer, keyboard behavior, menus, and gestures. `ChatHeader` provides the detail header. Share the app's color and typography tokens through the library's appearance and theme APIs. Bubble timestamps use Chat Kit's separate metadata row so bidirectional or wrapped text cannot move into timestamp space.
 - The app enables text and emoji. Private reaction additions use encrypted kind 7 rumors when the target and inbox are available. Reaction removal, deletion, read state, pinning, mute, and archive are device-local. Media requires an encrypted transfer and retrieval flow before it can be enabled.
 
 ### Initial messaging features
@@ -272,7 +278,7 @@ A new identity can advertise its inbox automatically. Boop first checks for an e
 
 Do not falsely display delivery or read receipts. Relay acknowledgment is not recipient delivery.
 
-Group chats, media attachments, voice messages, and advanced synchronization are future features.
+Group chats, media attachments, and voice messages are future features.
 
 ### On-device chat translation
 

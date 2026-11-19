@@ -1,7 +1,7 @@
 {
   "name": "boop",
   "version": "1.0.0",
-  "main": "expo-router/entry",
+  "main": "./src/entry.ts",
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
     "@expo/ui": "~58.0.29",

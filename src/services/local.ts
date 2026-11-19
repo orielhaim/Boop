@@ -1,17 +1,34 @@
 import { asc, eq } from "drizzle-orm";
-import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
 import { getLocales } from "expo-localization";
-import { createContext, useContext, useEffect, useMemo } from "react";
+import { addDatabaseChangeListener } from "expo-sqlite";
+import { createContext, useContext, useEffect } from "react";
 import { AppState } from "react-native";
+import { createCallController } from "@/core/calling/controller";
+import { callTone } from "@/core/calling/native-audio";
+import {
+  attachSystemPresentation,
+  openTelecomAudio,
+} from "@/core/calling/system-calling";
+import {
+  initializeCallingRuntime,
+  randomCallId,
+  trysteroMedia,
+} from "@/core/calling/trystero";
 import { initializeIdentity } from "@/core/identity";
 import { toNpub } from "@/core/identity/keys";
 import { createMessagingRuntime } from "@/core/messaging";
+import { createConversationFeed } from "@/core/messaging/conversations";
+import { messagingMetric } from "@/core/messaging/diagnostics";
+import { createHistoryLoader } from "@/core/messaging/history";
 import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { loadTranslationEngine } from "@/core/translation/native";
-import { initializeTranslationPreferences } from "@/core/translation/preferences";
+import {
+  initializeTranslationPreferences,
+  translationPreviewTarget,
+} from "@/core/translation/preferences";
 import { createTranslationService } from "@/core/translation/service";
 import { openDatabase } from "@/db";
 import { createMessagingRepository } from "@/db/messaging";
@@ -22,12 +39,13 @@ import {
   updateContactPreferences,
 } from "@/db/queries";
 import { seedRelays } from "@/db/relays";
-import { callHistory, relaySettings, settings } from "@/db/schema";
+import { callHistory, relaySettings } from "@/db/schema";
 import { createTranslationCache } from "@/db/translations";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
 
 async function start() {
+  const started = performance.now();
   const db = await openDatabase();
   try {
     const language = readLanguagePreference(db);
@@ -42,22 +60,19 @@ async function start() {
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
+    const history = createHistoryLoader(chat);
+    const conversations = createConversationFeed(chat, history, () =>
+      translationPreviewTarget(db),
+    );
+    const messagingStarted = performance.now();
     const { messaging, signer } = await createMessagingRuntime({
       db,
       identity,
       chat,
     });
-    const [
-      { createCallController },
-      { initializeCallingRuntime, randomCallId, trysteroMedia },
-      { callTone },
-      { attachSystemPresentation, openTelecomAudio },
-    ] = await Promise.all([
-      import("@/core/calling/controller"),
-      import("@/core/calling/trystero"),
-      import("@/core/calling/native-audio"),
-      import("@/core/calling/system-calling"),
-    ]);
+    messagingMetric("runtime initialized", {
+      ms: performance.now() - messagingStarted,
+    });
     const lock = createAppLock({
       read: (key) => preference(db, key),
       write: (key, value) => setPreference(db, key, value),
@@ -119,6 +134,7 @@ async function start() {
       subscribe: lock.subscribe,
     });
     appLock = lock;
+    messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
       db,
       translation: createTranslationService(
@@ -128,6 +144,8 @@ async function start() {
       ),
       identity,
       chat,
+      history,
+      conversations,
       messaging,
       calling,
       nativeOpen,
@@ -167,37 +185,61 @@ export function useLocal() {
 }
 
 export function MessagingLifecycle() {
-  const { db, messaging, calling, lock } = useLocal();
-  const query = useMemo(
-    () => db.select().from(relaySettings).orderBy(asc(relaySettings.url)),
-    [db],
-  );
-  const { data: relays } = useLiveQuery(query, [query]);
-  const intentQuery = useMemo(
-    () => db.select().from(settings).where(eq(settings.key, inboxIntentKey)),
-    [db],
-  );
-  const { data: intent } = useLiveQuery(intentQuery, [intentQuery]);
-  const configuration = useMemo(
-    () => configuredRelays(relays, intent[0]?.value ?? null),
-    [relays, intent],
-  );
+  const { db, messaging, calling, lock, conversations, history } = useLocal();
   useEffect(() => {
+    const stopFeed = conversations.start();
+    const databasePath =
+      db.$client.getFirstSync<{ file: string }>(
+        "SELECT file FROM pragma_database_list WHERE name = 'main'",
+      )?.file ?? db.$client.databasePath;
     let checkAfterPrompt: ReturnType<typeof setTimeout> | undefined;
+    const readRelays = () =>
+      db.select().from(relaySettings).orderBy(asc(relaySettings.url)).all();
+    let rows = readRelays();
+    let intent = preference(db, inboxIntentKey);
+    let queued = false;
+    let mounted = true;
+    let relaysChanged = false;
+    function connect() {
+      messaging.start(configuredRelays(rows, intent));
+    }
+    const dbChanges = addDatabaseChangeListener(
+      ({ databaseFilePath, tableName }) => {
+        if (databaseFilePath !== databasePath) return;
+        conversations.externalChange(tableName);
+        if (tableName !== "relay_settings" && tableName !== "settings") return;
+        relaysChanged ||= tableName === "relay_settings";
+        if (queued) return;
+        queued = true;
+        queueMicrotask(() => {
+          queued = false;
+          if (!mounted) return;
+          const nextIntent = preference(db, inboxIntentKey);
+          if (!relaysChanged && intent === nextIntent) return;
+          if (relaysChanged) rows = readRelays();
+          relaysChanged = false;
+          intent = nextIntent;
+          if (AppState.currentState === "active") connect();
+        });
+      },
+    );
     function background() {
       calling.setForeground(false);
+      history.cancelPrefetch();
       if (!calling.isRequestingMicrophone()) messaging.stop();
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       if (state === "active") {
         calling.setForeground(true);
-        messaging.start(configuration);
+        connect();
+        if (!lock.getState().locked) conversations.prefetch();
       } else if (state === "background" && !lock.getState().authenticating) {
         background();
       }
     };
     const unsubscribeLock = lock.subscribe(() => {
+      if (lock.getState().locked) history.cancelPrefetch();
       if (
         lock.getState().authenticating ||
         AppState.currentState !== "background"
@@ -215,11 +257,14 @@ export function MessagingLifecycle() {
     update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
     return () => {
+      mounted = false;
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
       subscription.remove();
+      dbChanges.remove();
+      stopFeed();
+      messaging.stop();
     };
-  }, [configuration, messaging, calling, lock]);
-  useEffect(() => () => messaging.stop(), [messaging]);
+  }, [db, messaging, calling, lock, conversations, history]);
   return null;
 }
