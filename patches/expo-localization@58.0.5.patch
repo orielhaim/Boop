@@ -1,0 +1,26 @@
+diff --git a/plugin/build/withExpoLocalization.js b/plugin/build/withExpoLocalization.js
+index 74653eeb5cb69e353a9f921d36ccd9e6f8f92eee..8cd20e3603fdad5f78afcc5f94b0feb288533ecf 100644
+--- a/plugin/build/withExpoLocalization.js
++++ b/plugin/build/withExpoLocalization.js
+@@ -106,7 +106,7 @@ function setResourceConfigurations(appBuildGradle, resourceQualifiers) {
+         comment: '//',
+         tag: 'expo-localization-supported-locales',
+         offset: 1,
+-        anchor: /versionName "[\d.]+"/,
++        anchor: /versionName "[^"\r\n]+"/,
+         newSrc: `        resourceConfigurations += [${list}]`
+     }).contents;
+ }
+diff --git a/plugin/src/withExpoLocalization.ts b/plugin/src/withExpoLocalization.ts
+index b3a9429710f6ffb1cbe2c322f15f3dc4ee201634..9889ab15b7fb45738a9854712bb5100e865e0a51 100644
+--- a/plugin/src/withExpoLocalization.ts
++++ b/plugin/src/withExpoLocalization.ts
+@@ -72,7 +72,7 @@ export function setResourceConfigurations(
+     comment: '//',
+     tag: 'expo-localization-supported-locales',
+     offset: 1,
+-    anchor: /versionName "[\d.]+"/,
++    anchor: /versionName "[^"\r\n]+"/,
+     newSrc: `        resourceConfigurations += [${list}]`,
+   }).contents;
+ }

@@ -489,7 +489,6 @@ export const he = {
     enableLockPrompt: "הפעלת נעילת האפליקציה",
     disableLockPrompt: "כיבוי נעילת האפליקציה",
     unlockPrompt: "ביטול נעילת Boop",
-    enrollFingerprint: "יש להגדיר טביעת אצבע נתמכת בהגדרות המערכת.",
     enrollDevice: "יש להגדיר אימות ביומטרי או נעילת מסך בהגדרות המכשיר.",
     authCancelled: "האימות בוטל.",
     authLockout:

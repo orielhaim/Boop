@@ -1,5 +1,4 @@
 export type AuthFailure =
-  | "enrollFingerprint"
   | "enrollDevice"
   | "authCancelled"
   | "authLockout"

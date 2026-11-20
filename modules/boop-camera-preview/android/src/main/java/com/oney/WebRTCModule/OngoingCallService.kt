@@ -49,12 +49,8 @@ class OngoingCallService : Service() {
         NotificationChannel(CHANNEL_ID, call.labels.channel, NotificationManager.IMPORTANCE_DEFAULT)
           .apply { setSound(null, null) }
       )
-      val types = when {
-        Build.VERSION.SDK_INT >= 30 ->
-          ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        Build.VERSION.SDK_INT >= 29 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-        else -> 0
-      }
+      val types =
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
       ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(call), types)
       SystemCallSession.serviceStarted(call.id, this)
     } catch (_: RuntimeException) {

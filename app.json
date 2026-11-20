@@ -2,7 +2,7 @@
   "expo": {
     "name": "Boop",
     "slug": "boop",
-    "version": "1.0.0",
+    "version": "1.0.1-beta.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "boop",
@@ -14,15 +14,18 @@
       }
     },
     "android": {
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#414DC3",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": true,
-      "package": "app.boop.mobile",
+      "package": "com.orielhaim.boop",
       "permissions": ["android.permission.BLUETOOTH_CONNECT"],
       "blockedPermissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WRITE_CONTACTS"
       ]
@@ -86,7 +89,27 @@
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
       "./plugins/with-system-calling.js",
-      ["@hzblj/expo-translation", { "ios": { "mlkit": true } }]
+      "./plugins/with-optional-portrait.js",
+      [
+        "@hzblj/expo-translation",
+        {
+          "ios": {
+            "mlkit": true
+          }
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 31,
+            "targetSdkVersion": 36,
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "extraProguardRules": "# Jitsi WebRTC 155 ships the unused Dav1d JNI shim without its decoder. Require R8 to discard the shim.\n-dontwarn org.webrtc.Dav1dDecoder$Natives\n-checkdiscard class org.webrtc.Dav1dDecoderJni"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

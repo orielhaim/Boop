@@ -69,7 +69,7 @@ Target:
 - TypeScript with strict type checking.
 - Bun as the package manager and script runner.
 - Expo Router for navigation.
-- Android and iOS.
+- Android 12 (API 31) and later, and iOS.
 
 Use the actual installed SDK and official compatibility documentation when installing packages.
 
@@ -386,11 +386,11 @@ Backgrounding stops inbox subscriptions and cancels unfinished calls, with an ex
 
 #### Android ongoing calls and system PiP
 
-The local Expo module in `modules/boop-camera-preview` shares the existing WebRTC TextureView renderer with the Android system call integration. `plugins/with-system-calling.js` supplies manifest permissions and Activity PiP callbacks through Expo Continuous Native Generation. AndroidX Core-Telecom 1.1 registers a self-managed call after peer authentication and microphone authorization. The app starts a `phoneCall|microphone` foreground service while visible, then starts media capture. Available route and current route changes come from Telecom. Boop supports this integration on Android 8 and later.
+The local Expo module in `modules/boop-camera-preview` shares the existing WebRTC TextureView renderer with the Android system call integration. `plugins/with-system-calling.js` supplies manifest permissions and Activity PiP callbacks through Expo Continuous Native Generation. AndroidX Core-Telecom 1.1 registers a self-managed call after peer authentication and microphone authorization. The app starts a `phoneCall|microphone` foreground service while visible, then starts media capture. Available route and current route changes come from Telecom.
 
 The service posts one AndroidX CallStyle notification for the lifetime of the native registration. It uses an existing cached avatar for a one-to-one call and starts its chronometer at the controller's connected timestamp. A conference updates that notification with the localized group title and count. App Lock keeps its identity and roster private. The Open intent queues the matching call route through App Lock. Hang Up is an immutable broadcast scoped to the current call ID and invokes the normal direct hangup and teardown. Notification and service lifetimes end with the controller's media lease. Android 16 and later may promote the same notification when system and OEM policy allow it. Core 1.17 supplies CallStyle and the promotion API and matches the Expo SDK dependency baseline.
 
-System PiP uses stable Android framework APIs. Core PiP alpha04 can consolidate activity callbacks and add a fallback for some navigation gestures. Automatic entry, the source rectangle, and transition callbacks are available through the platform for Boop's single Activity. The module uses those APIs directly. PiP eligibility requires authenticated, authorized, decoded remote video and a connected native call. The PiP layer draws only that remote track using the existing decoder. On Android 12 and later, eligible calls allow automatic entry. On older PiP-capable devices the user-leave callback requests entry. Closing PiP or losing the last remote frames removes its presentation. Android may finish the Activity when closing PiP. The foreground service and controller preserve audio and the call can be reopened from the notification.
+System PiP uses stable Android framework APIs. Core PiP alpha04 can consolidate activity callbacks and add a fallback for some navigation gestures. Automatic entry, the source rectangle, and transition callbacks are available through the platform for Boop's single Activity. The module uses those APIs directly. PiP eligibility requires authenticated, authorized, decoded remote video and a connected native call. The PiP layer draws only that remote track using the existing decoder. Eligible calls on PiP-capable devices allow automatic entry. Closing PiP or losing the last remote frames removes its presentation. Android may finish the Activity when closing PiP. The foreground service and controller preserve audio and the call can be reopened from the notification.
 
 #### iOS background audio and system PiP
 

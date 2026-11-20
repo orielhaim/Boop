@@ -495,8 +495,6 @@ export const en = {
     enableLockPrompt: "Enable App Lock",
     disableLockPrompt: "Turn off App Lock",
     unlockPrompt: "Unlock Boop",
-    enrollFingerprint:
-      "Enroll a supported fingerprint in system settings first.",
     enrollDevice:
       "Set up biometrics or a device screen lock in system settings first.",
     authCancelled: "Authentication canceled.",

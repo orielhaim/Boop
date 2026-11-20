@@ -1,4 +1,4 @@
-const { copyFile, mkdir } = require("node:fs/promises");
+const { copyFile, mkdir, writeFile } = require("node:fs/promises");
 const { join } = require("node:path");
 const {
   IOSConfig,
@@ -25,17 +25,22 @@ module.exports = function withCallTones(config) {
   config = withDangerousMod(config, [
     "android",
     async (mod) => {
+      const raw = join(
+        mod.modRequest.platformProjectRoot,
+        "app",
+        "src",
+        "main",
+        "res",
+        "raw",
+      );
       await copyTones(
         mod.modRequest,
-        join(
-          mod.modRequest.platformProjectRoot,
-          "app",
-          "src",
-          "main",
-          "res",
-          "raw",
-        ),
+        raw,
         [ringback], // Android resolves the incoming ringtone from system settings.
+      );
+      await writeFile(
+        join(raw, "boop_keep.xml"),
+        '<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@raw/incallmanager_ringback" />\n',
       );
       return mod;
     },

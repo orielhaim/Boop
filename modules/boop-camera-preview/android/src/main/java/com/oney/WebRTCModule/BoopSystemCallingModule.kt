@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Build
 import android.telecom.DisconnectCause
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.telecom.CallAttributesCompat
@@ -65,9 +64,6 @@ class BoopSystemCallingModule : Module() {
         openFromIntent(it.intent)
       }
     }
-    OnUserLeavesActivity {
-      appContext.currentActivity?.let { SystemCallPip.userLeaving(it) }
-    }
     OnActivityDestroys {
       callToRestore = SystemCallSession.current?.id
       SystemCallPip.detach()
@@ -76,7 +72,7 @@ class BoopSystemCallingModule : Module() {
     AsyncFunction("start") Coroutine { id: String, name: String, incoming: Boolean, privateMode: Boolean, labels: CallLabels ->
       withContext(Dispatchers.Main.immediate) {
         val activity = appContext.currentActivity ?: return@withContext false
-        if (activity.isFinishing || Build.VERSION.SDK_INT < 26) return@withContext false
+        if (activity.isFinishing) return@withContext false
         SystemCallSession.start(activity.applicationContext, id, name, incoming, privateMode, labels)
       }
     }

@@ -1,0 +1,11 @@
+diff --git a/android/consumer-rules.pro b/android/consumer-rules.pro
+index 2c912057570762573473241dc6bd9aab89aa4f66..5772247bad461c9a7d10082fcb5cb8733b22d6e1 100644
+--- a/android/consumer-rules.pro
++++ b/android/consumer-rules.pro
+@@ -1,5 +1,5 @@
+ # WebRTC
+--keep class org.webrtc.** { *; }
++-keep class !org.webrtc.Dav1dDecoderJni,org.webrtc.** { *; }
+ -keep class org.jni_zero.** { *; }
+ -keep class J.N { *; }
+ -dontwarn org.jni_zero.**

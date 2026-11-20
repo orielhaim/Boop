@@ -1,0 +1,22 @@
+diff --git a/build/hooks.js b/build/hooks.js
+index 8b08a569ef2c6106a8167e8f13fbd1c709c8311b..316f199483d83d8c778b17c2fc7c0078f06de10f 100644
+--- a/build/hooks.js
++++ b/build/hooks.js
+@@ -1,4 +1,4 @@
+-import { useReleasingSharedObject } from 'expo-modules-core';
++import { useReleasingSharedObject } from 'expo';
+ import { useCallback, useEffect, useState } from 'react';
+ import { translationCache } from './cache';
+ import { onLanguagesChanged } from './downloads';
+diff --git a/package.json b/package.json
+index b71b8d5f776daf9a303aabba8038bc798b28e556..50d76d051026398ec9a46d719c7979c39ed39476 100644
+--- a/package.json
++++ b/package.json
+@@ -70,7 +70,6 @@
+   },
+   "peerDependencies": {
+     "expo": ">=57",
+-    "expo-modules-core": "*",
+     "react": "*",
+     "react-native": "*"
+   },

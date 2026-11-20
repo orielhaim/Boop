@@ -6,7 +6,6 @@ import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Rect
-import android.os.Build
 import android.util.Rational
 import android.view.ViewGroup
 import java.lang.ref.WeakReference
@@ -18,7 +17,7 @@ object SystemCallPip {
   private var view: BoopCameraPreviewView? = null
   private var pipCallId: String? = null
 
-  private fun supported(activity: Activity) = Build.VERSION.SDK_INT >= 26 &&
+  private fun supported(activity: Activity) =
     activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
   private fun eligible() = stream != null &&
@@ -33,10 +32,8 @@ object SystemCallPip {
       .setAspectRatio(ratio)
       .apply {
         if (!bounds.isEmpty) setSourceRectHint(bounds)
-        if (Build.VERSION.SDK_INT >= 31) {
-          setAutoEnterEnabled(eligible())
-          setSeamlessResizeEnabled(true)
-        }
+        setAutoEnterEnabled(eligible())
+        setSeamlessResizeEnabled(true)
       }.build()
   }
 
@@ -48,12 +45,6 @@ object SystemCallPip {
       if (eligible()) show(activity)
       else leave(activity)
     }
-  }
-
-  internal fun userLeaving(activity: Activity) {
-    if (Build.VERSION.SDK_INT >= 31 || !supported(activity) || !eligible()) return
-    if (runCatching { activity.enterPictureInPictureMode(params(activity)) }.getOrDefault(false))
-      show(activity)
   }
 
   fun transitioning(activity: Activity) {
@@ -92,7 +83,7 @@ object SystemCallPip {
     val remote = newView?.invoke(activity) ?: return
     remote.setBackgroundColor(Color.BLACK)
     remote.importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-    if (Build.VERSION.SDK_INT >= 29) remote.isForceDarkAllowed = false
+    remote.isForceDarkAllowed = false
     remote.setStream(url)
     // Keep the React root and the call controller mounted. The opaque native
     // view draws over the entire app and binds only the authorized remote track.

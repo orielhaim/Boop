@@ -15,7 +15,7 @@ import {
 } from "@/core/calling/permissions";
 import { namespaces } from "@/i18n";
 
-const showsBluetooth = Platform.OS === "android" && Platform.Version >= 31;
+const showsBluetooth = Platform.OS === "android";
 type Status = "granted" | "denied" | "undetermined" | "unavailable";
 
 async function permissionStatus(

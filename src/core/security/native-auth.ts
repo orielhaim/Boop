@@ -5,21 +5,13 @@ import { Platform } from "react-native";
 import { i18n } from "@/i18n";
 import { AppAuthenticationError } from "./app-lock";
 
-const legacyAndroid =
-  Platform.OS === "android" && Number(Platform.Version) < 30;
-
 export async function authenticateApp(
   operation: "enable" | "disable" | "unlock",
 ) {
   if (operation === "enable") {
     const level = await Authentication.getEnrolledLevelAsync();
-    if (
-      level === Authentication.SecurityLevel.NONE ||
-      (legacyAndroid && level !== Authentication.SecurityLevel.BIOMETRIC_STRONG)
-    ) {
-      throw new AppAuthenticationError(
-        legacyAndroid ? "enrollFingerprint" : "enrollDevice",
-      );
+    if (level === Authentication.SecurityLevel.NONE) {
+      throw new AppAuthenticationError("enrollDevice");
     }
   }
   const t = i18n.getFixedT(null, "security");
@@ -30,7 +22,7 @@ export async function authenticateApp(
       unlock: t("unlockPrompt"),
     }[operation],
     biometricsSecurityLevel: "strong",
-    disableDeviceFallback: legacyAndroid,
+    disableDeviceFallback: false,
     cancelLabel: i18n.t("cancel"),
   });
   if (result.success) return;
