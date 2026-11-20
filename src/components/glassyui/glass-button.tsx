@@ -142,7 +142,6 @@ export const GlassButton = forwardRef<
 
     const renderLabel = (text: ReactNode) => (
       <Text
-        numberOfLines={1}
         style={[styles.label, { color: label, fontSize: LABEL_SIZE[size] }]}
       >
         {text}
@@ -257,6 +256,7 @@ const styles = StyleSheet.create({
     borderRadius: GLASS_RADIUS.capsule,
     flexDirection: "row",
     justifyContent: "center",
+    paddingVertical: 6,
   },
   clip: {
     borderRadius: GLASS_RADIUS.capsule,
@@ -264,6 +264,6 @@ const styles = StyleSheet.create({
     pointerEvents: "none",
   },
   disabled: { opacity: 0.45 },
-  label: { fontWeight: "600", letterSpacing: -0.1 },
-  root: { alignSelf: "flex-start" },
+  label: { flexShrink: 1, fontWeight: "600", letterSpacing: -0.1, textAlign: "center" },
+  root: { alignSelf: "flex-start", maxWidth: "100%" },
 });

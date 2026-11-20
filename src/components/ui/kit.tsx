@@ -386,7 +386,7 @@ export function Empty({
       <Ink muted style={styles.center}>
         {detail}
       </Ink>
-      {children}
+      {children ? <View style={styles.emptyActions}>{children}</View> : null}
     </Card>
   );
 }
@@ -524,6 +524,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   empty: { padding: space.xl, alignItems: "center", gap: space.md },
+  emptyActions: { alignItems: "center", maxWidth: "100%" },
   center: { textAlign: "center" },
   iconButton: {
     width: 46,
