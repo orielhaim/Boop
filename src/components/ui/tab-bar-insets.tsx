@@ -1,23 +1,60 @@
-import { createContext, type ReactNode, useContext, useMemo } from "react";
+import {
+  EXPANDED_HEIGHT,
+  MINIMIZED_HEIGHT,
+  useTabBarMinimized,
+} from "expo-glass-tabs";
+import { createContext, type ReactNode, useContext } from "react";
+import { Platform } from "react-native";
+import {
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const TabBarInsetContext = createContext(0);
+const DOCK_GAP = 12;
+const TabBarInsetContext = createContext<number | null>(null);
 
-/** Keeps tab screen content clear of the floating glass dock. */
-export function TabBarInsetProvider({ children }: { children: ReactNode }) {
+// The provider measures only the part of the tab viewport inside system bars.
+export function useTabBarBottomOffset() {
   const { bottom } = useSafeAreaInsets();
-  const clearance = useMemo(
-    () => Math.max(bottom - 16, 12) + 58 + 12,
-    [bottom],
-  );
+  return Platform.OS === "android"
+    ? bottom + DOCK_GAP
+    : Math.max(bottom - 16, DOCK_GAP);
+}
 
+export function TabBarInsetProvider({
+  bottomOffset,
+  children,
+}: {
+  bottomOffset: number | null;
+  children: ReactNode;
+}) {
   return (
-    <TabBarInsetContext.Provider value={clearance}>
+    <TabBarInsetContext.Provider value={bottomOffset}>
       {children}
     </TabBarInsetContext.Provider>
   );
 }
 
-export function useTabBarClearance() {
-  return useContext(TabBarInsetContext);
+export function useTabBarClearance(safeBottom: number, padding: number) {
+  const bottomOffset = useContext(TabBarInsetContext);
+  const progress = useTabBarMinimized();
+
+  return useAnimatedStyle(() => {
+    if (bottomOffset === null) {
+      return { paddingBottom: padding + safeBottom };
+    }
+
+    const height = interpolate(
+      progress.value,
+      [0, 1],
+      [EXPANDED_HEIGHT, MINIMIZED_HEIGHT],
+      Extrapolation.CLAMP,
+    );
+    return {
+      paddingBottom:
+        padding + Math.max(safeBottom, bottomOffset + height + DOCK_GAP),
+    };
+  });
 }

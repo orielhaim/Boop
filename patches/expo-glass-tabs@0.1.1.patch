@@ -1,0 +1,291 @@
+diff --git a/build/glass-tab-bar.d.ts b/build/glass-tab-bar.d.ts
+index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..b748aea1024e7537b7afeecb0aef67dda0cba247 100644
+--- a/build/glass-tab-bar.d.ts
++++ b/build/glass-tab-bar.d.ts
+@@ -1,6 +1,8 @@
+ import { SymbolViewProps } from 'expo-symbols';
+ import { type ReactNode } from 'react';
+ import type { TabListProps, TabTriggerSlotProps } from 'expo-router/ui';
++export declare const EXPANDED_HEIGHT = 58;
++export declare const MINIMIZED_HEIGHT = 44;
+ export type GlassTabBarTheme = {
+     activeTint: string;
+     inactiveTint: string;
+@@ -28,6 +30,9 @@ export type GlassTabBarProps = TabListProps & {
+     theme?: Partial<GlassTabBarTheme>;
+     /** Haptic tick while the scrub crosses tab boundaries (iOS). */
+     haptics?: boolean;
++    bottomOffset?: number;
++    hidden?: boolean;
++    edgeFadeColor?: string;
+ };
+ /**
+  * Floating liquid-glass tab bar with Revolut-style minimize-on-scroll,
+diff --git a/build/glass-tab-bar.js b/build/glass-tab-bar.js
+index 420cb04242abe5c71811088fd76bb91090558c5f..731beaf582c5c1f92f329d2b5f64cffc40f711c7 100644
+--- a/build/glass-tab-bar.js
++++ b/build/glass-tab-bar.js
+@@ -3,15 +3,15 @@ import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
+ import * as Haptics from 'expo-haptics';
+ import { SymbolView } from 'expo-symbols';
+ import { Children, createContext, use, useCallback, useEffect, useMemo, } from 'react';
+-import { Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
++import { Platform, Pressable, StyleSheet, View } from 'react-native';
+ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+ import Animated, { Extrapolation, interpolate, interpolateColor, runOnJS, useAnimatedStyle, useSharedValue, withSpring, } from 'react-native-reanimated';
+-import { useSafeAreaInsets } from 'react-native-safe-area-context';
++import { useSafeAreaFrame, useSafeAreaInsets } from 'react-native-safe-area-context';
+ import { setMinimized, useMinimizeState } from './minimize-context';
+ import { ProgressiveBlur } from './progressive-blur';
+ const AnimatedGlassView = Animated.createAnimatedComponent(GlassView);
+-const EXPANDED_HEIGHT = 58;
+-const MINIMIZED_HEIGHT = 44;
++export const EXPANDED_HEIGHT = 58;
++export const MINIMIZED_HEIGHT = 44;
+ /** Extra horizontal inset applied to the pill when minimized (per side). */
+ const MINIMIZED_INSET = 34;
+ /** Outer margin between the pill and the screen edges (per side). */
+@@ -49,9 +49,12 @@ const BarContext = createContext(null);
+  * a sliding highlight, and finger scrubbing. Use via `TabList asChild`
+  * with expo-router's headless tabs.
+  */
+-export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics = true, ...props }) {
++export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics = true, bottomOffset: bottomOffsetOverride, hidden = false, edgeFadeColor, ...props }) {
+     const insets = useSafeAreaInsets();
+-    const { width: windowWidth } = useWindowDimensions();
++    const { width } = useSafeAreaFrame();
++    const leftInset = Platform.OS === 'android' ? insets.left : 0;
++    const rightInset = Platform.OS === 'android' ? insets.right : 0;
++    const windowWidth = width - leftInset - rightInset;
+     const minimized = useMinimizeState();
+     const progress = minimized.progress;
+     const slideIndex = useSharedValue(0);
+@@ -158,15 +161,15 @@ export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides,
+             transform: [{ translateX: ROW_PAD_H + itemWidth * slideIndex.value }],
+         };
+     });
+-    const bottomOffset = Math.max(insets.bottom - 16, 12);
++    const bottomOffset = bottomOffsetOverride ?? Math.max(insets.bottom - 16, 12);
+     const barContext = useMemo(() => ({ slideIndex, isDragging, theme }), [slideIndex, isDragging, theme]);
+-    return (_jsxs(View, { ...props, pointerEvents: "box-none", style: { position: 'absolute', left: 0, right: 0, bottom: 0 }, children: [_jsx(ProgressiveBlur, { direction: "bottom", style: {
++    return (_jsxs(View, { ...props, pointerEvents: "box-none", style: { position: 'absolute', left: 0, right: 0, bottom: 0, display: hidden ? 'none' : 'flex' }, children: [_jsx(ProgressiveBlur, { direction: "bottom", fadeColor: edgeFadeColor, style: {
+                     position: 'absolute',
+                     left: 0,
+                     right: 0,
+                     bottom: 0,
+                     height: bottomOffset + EXPANDED_HEIGHT + BLUR_BLEED,
+-                } }), _jsx(View, { pointerEvents: "box-none", style: { marginHorizontal: BAR_MARGIN, marginBottom: bottomOffset }, children: _jsx(GestureDetector, { gesture: gesture, children: _jsxs(Animated.View, { style: barStyle, children: [isLiquidGlassAvailable() ? (_jsx(AnimatedGlassView, { glassEffectStyle: "regular", style: [
++                } }), _jsx(View, { pointerEvents: "box-none", style: { marginLeft: BAR_MARGIN + leftInset, marginRight: BAR_MARGIN + rightInset, marginBottom: bottomOffset }, children: _jsx(GestureDetector, { gesture: gesture, children: _jsxs(Animated.View, { style: barStyle, children: [isLiquidGlassAvailable() ? (_jsx(AnimatedGlassView, { glassEffectStyle: "regular", style: [
+                                     StyleSheet.absoluteFill,
+                                     { backgroundColor: theme.glassTint, borderCurve: 'continuous' },
+                                     shapeStyle,
+diff --git a/build/index.d.ts b/build/index.d.ts
+index ab4a877c77512c816a8717c1c9ba55e61ad289fd..b5c6d7eb8490f99e14541f97c1736b3797aecdc5 100644
+--- a/build/index.d.ts
++++ b/build/index.d.ts
+@@ -1,4 +1,4 @@
+-export { GlassTabBar, GlassTabButton, type GlassTabBarProps, type GlassTabBarTheme, type GlassTabItem, } from './glass-tab-bar';
++export { EXPANDED_HEIGHT, MINIMIZED_HEIGHT, GlassTabBar, GlassTabButton, type GlassTabBarProps, type GlassTabBarTheme, type GlassTabItem, } from './glass-tab-bar';
+ export { TabBarMinimizeProvider, useMinimizeOnScroll, useTabBarMinimized, MINIMIZE_SPRING, } from './minimize-context';
+ export { ProgressiveBlur } from './progressive-blur';
+ export { renderFadingTabScreen } from './fading-tab-slot';
+diff --git a/build/index.js b/build/index.js
+index eb03d7f4854667052d18e50fc27ffab14da61938..1fa259a6ebd194670fb6623ae116ad9bc533f62c 100644
+--- a/build/index.js
++++ b/build/index.js
+@@ -1,4 +1,4 @@
+-export { GlassTabBar, GlassTabButton, } from './glass-tab-bar';
++export { EXPANDED_HEIGHT, MINIMIZED_HEIGHT, GlassTabBar, GlassTabButton, } from './glass-tab-bar';
+ export { TabBarMinimizeProvider, useMinimizeOnScroll, useTabBarMinimized, MINIMIZE_SPRING, } from './minimize-context';
+ export { ProgressiveBlur } from './progressive-blur';
+ export { renderFadingTabScreen } from './fading-tab-slot';
+diff --git a/build/progressive-blur.d.ts b/build/progressive-blur.d.ts
+index 3613b0c41098b1e337fa3fa8561fc9164ec7d83d..abcc33ce99e42dff33d39ac2fa348ae849197376 100644
+--- a/build/progressive-blur.d.ts
++++ b/build/progressive-blur.d.ts
+@@ -3,6 +3,7 @@ type Props = ViewProps & {
+     intensity?: number;
+     /** Which edge the blur is anchored to (strongest there, fading away). */
+     direction?: 'top' | 'bottom';
++    fadeColor?: string;
+ };
+ /**
+  * Progressive (gradient) blur: strongest at the anchored edge, fading to
+diff --git a/build/progressive-blur.js b/build/progressive-blur.js
+index 50889aeca11be27599dd5e42ef3a7b76125e4f55..f5519a2f4f3c635d100ebe0d8b47d5f22c09cf86 100644
+--- a/build/progressive-blur.js
++++ b/build/progressive-blur.js
+@@ -1,6 +1,6 @@
+ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+ import { BlurView } from 'expo-blur';
+-import { View } from 'react-native';
++import { Platform, View } from 'react-native';
+ /**
+  * Progressive (gradient) blur: strongest at the anchored edge, fading to
+  * none. iOS has no public variable-blur API, so we stack many thin
+@@ -8,15 +8,15 @@ import { View } from 'react-native';
+  * an imperceptible step, so the falloff reads as continuous. A soft black
+  * gradient smooths the tail and keeps overlaid content legible.
+  */
+-export function ProgressiveBlur({ style, intensity = 5, direction = 'top', ...rest }) {
++export function ProgressiveBlur({ style, intensity = 5, direction = 'top', fadeColor, ...rest }) {
+     const heights = ['100%', '88%', '76%', '64%', '54%', '44%', '36%', '28%', '22%', '16%'];
+     const anchor = direction === 'top' ? { top: 0 } : { bottom: 0 };
+-    return (_jsxs(View, { pointerEvents: "none", style: style, ...rest, children: [heights.map((height, index) => (_jsx(BlurView, { tint: "dark", intensity: intensity, style: { position: 'absolute', left: 0, right: 0, height, ...anchor } }, index))), _jsx(View, { style: {
++    return (_jsxs(View, { pointerEvents: "none", style: style, ...rest, children: [Platform.OS !== 'android' && heights.map((height, index) => (_jsx(BlurView, { tint: "dark", intensity: intensity, style: { position: 'absolute', left: 0, right: 0, height, ...anchor } }, index))), _jsx(View, { style: {
+                     position: 'absolute',
+                     top: 0,
+                     left: 0,
+                     right: 0,
+                     bottom: 0,
+-                    experimental_backgroundImage: `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, rgba(0,0,0,0.70) 0%, rgba(0,0,0,0.32) 42%, rgba(0,0,0,0.08) 68%, rgba(0,0,0,0) 88%)`,
++                    experimental_backgroundImage: Platform.OS === 'android' && fadeColor ? `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, ${fadeColor} 0%, transparent 88%)` : `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, rgba(0,0,0,0.70) 0%, rgba(0,0,0,0.32) 42%, rgba(0,0,0,0.08) 68%, rgba(0,0,0,0) 88%)`,
+                 } })] }));
+ }
+diff --git a/src/glass-tab-bar.tsx b/src/glass-tab-bar.tsx
+index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..1d0e7cd730e4c7035f9ca88e558e8bf569d99dbb 100644
+--- a/src/glass-tab-bar.tsx
++++ b/src/glass-tab-bar.tsx
+@@ -10,7 +10,7 @@ import {
+   useMemo,
+   type ReactNode,
+ } from 'react';
+-import { Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
++import { Platform, Pressable, StyleSheet, View } from 'react-native';
+ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+ import Animated, {
+   Extrapolation,
+@@ -22,7 +22,7 @@ import Animated, {
+   withSpring,
+   type SharedValue,
+ } from 'react-native-reanimated';
+-import { useSafeAreaInsets } from 'react-native-safe-area-context';
++import { useSafeAreaFrame, useSafeAreaInsets } from 'react-native-safe-area-context';
+ import type { TabListProps, TabTriggerSlotProps } from 'expo-router/ui';
+ 
+ import { MINIMIZE_SPRING, setMinimized, useMinimizeState } from './minimize-context';
+@@ -30,8 +30,8 @@ import { ProgressiveBlur } from './progressive-blur';
+ 
+ const AnimatedGlassView = Animated.createAnimatedComponent(GlassView);
+ 
+-const EXPANDED_HEIGHT = 58;
+-const MINIMIZED_HEIGHT = 44;
++export const EXPANDED_HEIGHT = 58;
++export const MINIMIZED_HEIGHT = 44;
+ /** Extra horizontal inset applied to the pill when minimized (per side). */
+ const MINIMIZED_INSET = 34;
+ /** Outer margin between the pill and the screen edges (per side). */
+@@ -100,6 +100,11 @@ export type GlassTabBarProps = TabListProps & {
+   theme?: Partial<GlassTabBarTheme>;
+   /** Haptic tick while the scrub crosses tab boundaries (iOS). */
+   haptics?: boolean;
++  /** Bottom offset in the bar container's coordinates. */
++  bottomOffset?: number;
++  hidden?: boolean;
++  /** Android background color for the gradient behind the dock. */
++  edgeFadeColor?: string;
+ };
+ 
+ /**
+@@ -112,10 +117,16 @@ export function GlassTabBar({
+   onIndexSelected,
+   theme: themeOverrides,
+   haptics = true,
++  bottomOffset: bottomOffsetOverride,
++  hidden = false,
++  edgeFadeColor,
+   ...props
+ }: GlassTabBarProps) {
+   const insets = useSafeAreaInsets();
+-  const { width: windowWidth } = useWindowDimensions();
++  const { width } = useSafeAreaFrame();
++  const leftInset = Platform.OS === 'android' ? insets.left : 0;
++  const rightInset = Platform.OS === 'android' ? insets.right : 0;
++  const windowWidth = width - leftInset - rightInset;
+   const minimized = useMinimizeState();
+   const progress = minimized.progress;
+   const slideIndex = useSharedValue(0);
+@@ -258,7 +269,7 @@ export function GlassTabBar({
+     };
+   });
+ 
+-  const bottomOffset = Math.max(insets.bottom - 16, 12);
++  const bottomOffset = bottomOffsetOverride ?? Math.max(insets.bottom - 16, 12);
+   const barContext = useMemo(
+     () => ({ slideIndex, isDragging, theme }),
+     [slideIndex, isDragging, theme],
+@@ -268,10 +279,11 @@ export function GlassTabBar({
+     <View
+       {...props}
+       pointerEvents="box-none"
+-      style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}>
++      style={{ position: 'absolute', left: 0, right: 0, bottom: 0, display: hidden ? 'none' : 'flex' }}>
+       {/* Progressive blur rising from the screen's bottom edge behind the pill. */}
+       <ProgressiveBlur
+         direction="bottom"
++        fadeColor={edgeFadeColor}
+         style={{
+           position: 'absolute',
+           left: 0,
+@@ -282,7 +294,7 @@ export function GlassTabBar({
+       />
+       <View
+         pointerEvents="box-none"
+-        style={{ marginHorizontal: BAR_MARGIN, marginBottom: bottomOffset }}>
++        style={{ marginLeft: BAR_MARGIN + leftInset, marginRight: BAR_MARGIN + rightInset, marginBottom: bottomOffset }}>
+         <GestureDetector gesture={gesture}>
+           <Animated.View style={barStyle}>
+             {isLiquidGlassAvailable() ? (
+diff --git a/src/index.ts b/src/index.ts
+index 4c84b0ae6684158a7d810e142a38a97e770a42bf..daebae211a2f7afe232854ed16a25eb7419c1632 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,5 +1,5 @@
+ export {
+-  GlassTabBar,
++  EXPANDED_HEIGHT, MINIMIZED_HEIGHT, GlassTabBar,
+   GlassTabButton,
+   type GlassTabBarProps,
+   type GlassTabBarTheme,
+diff --git a/src/progressive-blur.tsx b/src/progressive-blur.tsx
+index a3355f5cd110c21a3daabb3c2f342faf82ed6cd3..14848e35e14704d5fb34cef85c3c0cb68b8cb801 100644
+--- a/src/progressive-blur.tsx
++++ b/src/progressive-blur.tsx
+@@ -1,10 +1,11 @@
+ import { BlurView } from 'expo-blur';
+-import { View, ViewProps } from 'react-native';
++import { Platform, View, ViewProps } from 'react-native';
+ 
+ type Props = ViewProps & {
+   intensity?: number;
+   /** Which edge the blur is anchored to (strongest there, fading away). */
+   direction?: 'top' | 'bottom';
++  fadeColor?: string;
+ };
+ 
+ /**
+@@ -14,13 +15,13 @@ type Props = ViewProps & {
+  * an imperceptible step, so the falloff reads as continuous. A soft black
+  * gradient smooths the tail and keeps overlaid content legible.
+  */
+-export function ProgressiveBlur({ style, intensity = 5, direction = 'top', ...rest }: Props) {
++export function ProgressiveBlur({ style, intensity = 5, direction = 'top', fadeColor, ...rest }: Props) {
+   const heights = ['100%', '88%', '76%', '64%', '54%', '44%', '36%', '28%', '22%', '16%'] as const;
+   const anchor = direction === 'top' ? { top: 0 } : { bottom: 0 };
+ 
+   return (
+     <View pointerEvents="none" style={style} {...rest}>
+-      {heights.map((height, index) => (
++      {Platform.OS !== 'android' && heights.map((height, index) => (
+         <BlurView
+           key={index}
+           tint="dark"
+@@ -35,7 +36,7 @@ export function ProgressiveBlur({ style, intensity = 5, direction = 'top', ...re
+           left: 0,
+           right: 0,
+           bottom: 0,
+-          experimental_backgroundImage: `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, rgba(0,0,0,0.70) 0%, rgba(0,0,0,0.32) 42%, rgba(0,0,0,0.08) 68%, rgba(0,0,0,0) 88%)`,
++          experimental_backgroundImage: Platform.OS === 'android' && fadeColor ? `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, ${fadeColor} 0%, transparent 88%)` : `linear-gradient(to ${direction === 'top' ? 'bottom' : 'top'}, rgba(0,0,0,0.70) 0%, rgba(0,0,0,0.32) 42%, rgba(0,0,0,0.08) 68%, rgba(0,0,0,0) 88%)`,
+         }}
+       />
+     </View>

@@ -445,7 +445,7 @@ export function Row({
             onPress={onPress}
             style={({ pressed }) => [
               styles.rowAction,
-              pressed && { backgroundColor: colors.accentSoft },
+              pressed && { opacity: 0.7 },
             ]}
           >
             {copy}

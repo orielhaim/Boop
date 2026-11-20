@@ -10,14 +10,31 @@ import { TabList, TabSlot, Tabs, TabTrigger } from "expo-router/ui";
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
+import { useKeyboardState } from "react-native-keyboard-controller";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Icon, tapFeedback } from "@/components/ui/kit";
-import { TabBarInsetProvider } from "@/components/ui/tab-bar-insets";
+import {
+  TabBarInsetProvider,
+  useTabBarBottomOffset,
+} from "@/components/ui/tab-bar-insets";
 import { unreadBadge } from "@/core/messaging/conversations";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local";
 import { useTheme } from "@/theme";
 
 export default function TabLayout() {
+  return (
+    <SafeAreaProvider>
+      <TabBarMinimizeProvider>
+        <DockNavigator />
+      </TabBarMinimizeProvider>
+    </SafeAreaProvider>
+  );
+}
+
+function DockNavigator() {
+  const bottomOffset = useTabBarBottomOffset();
+  const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const { t, i18n } = useTranslation(namespaces);
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
@@ -77,56 +94,52 @@ export default function TabLayout() {
   const ordered = direction === "rtl" ? visible.reverse() : visible;
 
   return (
-    <TabBarInsetProvider>
-      <TabBarMinimizeProvider>
-        <Tabs style={styles.navigator}>
-          <TabSlot
-            style={[styles.slot, { direction }]}
-            renderFn={reduceMotion ? undefined : renderFadingTabScreen}
-          />
-          <TabList asChild>
-            <GlassTabBar
-              onIndexSelected={(index) => {
-                const selected = ordered[index];
-                if (!selected) return;
-                tapFeedback();
-                router.navigate(selected.href);
-              }}
-              haptics={!reduceMotion}
-              theme={{
-                activeTint: colors.accent,
-                inactiveTint: colors.muted,
-                highlight: colors.accentSoft,
-                glassTint: reduceTransparency
-                  ? colors.surface
-                  : theme === "dark"
-                    ? "rgba(20, 29, 51, 0.58)"
-                    : "rgba(243, 246, 252, 0.66)",
-                solidFallback: colors.surface,
-              }}
-            >
-              {ordered.map(({ item, href }, index) => (
-                <TabTrigger
-                  key={item.name}
-                  name={item.name}
-                  href={href}
-                  asChild
-                >
-                  <GlassTabButton
-                    item={item}
-                    index={index}
-                    accessibilityLabel={
-                      href === "/messages" && badge
-                        ? `${item.label} (${badge})`
-                        : item.label
-                    }
-                  />
-                </TabTrigger>
-              ))}
-            </GlassTabBar>
-          </TabList>
-        </Tabs>
-      </TabBarMinimizeProvider>
+    <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
+      <Tabs style={styles.navigator}>
+        <TabSlot
+          style={[styles.slot, { direction }]}
+          renderFn={reduceMotion ? undefined : renderFadingTabScreen}
+        />
+        <TabList asChild>
+          <GlassTabBar
+            bottomOffset={bottomOffset}
+            hidden={keyboardVisible}
+            edgeFadeColor={colors.background}
+            onIndexSelected={(index) => {
+              const selected = ordered[index];
+              if (!selected) return;
+              tapFeedback();
+              router.navigate(selected.href);
+            }}
+            haptics={!reduceMotion}
+            theme={{
+              activeTint: colors.accent,
+              inactiveTint: colors.muted,
+              highlight: colors.accentSoft,
+              glassTint: reduceTransparency
+                ? colors.surface
+                : theme === "dark"
+                  ? "rgba(20, 29, 51, 0.58)"
+                  : "rgba(243, 246, 252, 0.66)",
+              solidFallback: colors.surface,
+            }}
+          >
+            {ordered.map(({ item, href }, index) => (
+              <TabTrigger key={item.name} name={item.name} href={href} asChild>
+                <GlassTabButton
+                  item={item}
+                  index={index}
+                  accessibilityLabel={
+                    href === "/messages" && badge
+                      ? `${item.label} (${badge})`
+                      : item.label
+                  }
+                />
+              </TabTrigger>
+            ))}
+          </GlassTabBar>
+        </TabList>
+      </Tabs>
     </TabBarInsetProvider>
   );
 }

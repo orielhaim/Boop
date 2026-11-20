@@ -86,6 +86,7 @@
     "@trystero-p2p/core@0.27.0": "patches/@trystero-p2p%2Fcore@0.27.0.patch",
     "expo-localization@58.0.5": "patches/expo-localization@58.0.5.patch",
     "react-native-webrtc@155.0.1": "patches/react-native-webrtc@155.0.1.patch",
-    "@hzblj/expo-translation@0.1.4": "patches/@hzblj%2Fexpo-translation@0.1.4.patch"
+    "@hzblj/expo-translation@0.1.4": "patches/@hzblj%2Fexpo-translation@0.1.4.patch",
+    "expo-glass-tabs@0.1.1": "patches/expo-glass-tabs@0.1.1.patch"
   }
 }
