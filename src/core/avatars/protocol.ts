@@ -43,7 +43,6 @@ export function parseProfile(input: unknown, key: string) {
       fields,
       picture: picture ?? null,
       name: text(fields.display_name, 128) ?? text(fields.name, 128),
-      about: text(fields.about, 2048),
     };
   } catch {
     return null;

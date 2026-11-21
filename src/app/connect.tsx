@@ -5,7 +5,7 @@ import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function Connect() {
   const { t } = useTranslation(namespaces);

@@ -1,7 +1,7 @@
 import { asc } from "drizzle-orm";
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { toNpub } from "@/core/identity/keys";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { contactByKey } from "./queries";
 import { contacts } from "./schema";
 

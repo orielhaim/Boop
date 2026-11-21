@@ -16,7 +16,7 @@ import {
   createMessagingRepository,
   type MessageRecord,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const participants = {
@@ -39,7 +39,7 @@ const pending: MessageRecord = {
   failure: null,
   deletedAt: null,
   isUnread: false,
-  rumorJson: null,
+  pinnedAt: null,
   contentType: "text",
   reactions: [
     { author: "peer-key", emoji: "👍" },
@@ -129,8 +129,7 @@ test("An authenticated wrapped private message reaches Chat with the rumor ident
   if (event?.type !== "message") throw new Error("Expected a private message");
 
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const repo = createMessagingRepository(drizzle(sqlite, { schema }));
   repo.receive({ ...event, eventId: event.id, direction: "incoming" });
   const [row] = repo.history(sender.pubkey).messages;

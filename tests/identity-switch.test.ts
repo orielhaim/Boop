@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { deriveIdentity } from "../src/core/identity/keys";
 import { loadPinnedIdentity, stageSwitch } from "../src/core/identity/storage";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { preference, setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 
@@ -18,9 +18,7 @@ const noRandom = async (): Promise<Uint8Array> => {
 };
 
 function setup(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const keys = new Map([[originalSlot, previousSecret]]);
   const storage = {
@@ -37,7 +35,7 @@ function setup(sqlite: Database) {
   db.insert(schema.contacts)
     .values({ publicKey: nextKey, name: "Old contact" })
     .run();
-  db.insert(schema.blockedIdentities)
+  db.insert(schema.peerPermissions)
     .values({ publicKey: nextKey, blockedAt: 1 })
     .run();
   db.insert(schema.conversations)
@@ -58,7 +56,7 @@ test("same-identity import keeps records and a staged replacement only activates
   expect(active.identity.publicKey).toBe(nextKey);
   expect(keys.has(originalSlot)).toBe(false);
   expect(db.select().from(schema.contacts).all()).toEqual([]);
-  expect(db.select().from(schema.blockedIdentities).all()).toEqual([]);
+  expect(db.select().from(schema.peerPermissions).all()).toEqual([]);
   expect(db.select().from(schema.conversations).all()).toEqual([]);
   expect(preference(db, "security.appLock")).toBe("0");
   expect(

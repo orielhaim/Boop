@@ -7,7 +7,7 @@ import { Action, Card, Icon, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
 import { saveContact } from "@/db/queries";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
 
 type ContactError =

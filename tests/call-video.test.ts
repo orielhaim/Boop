@@ -8,7 +8,7 @@ import {
   type VideoState,
   videoLayout,
 } from "../src/core/calling/video";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { contacts } from "../src/db/schema";
 
 const callId = "a".repeat(64);
@@ -152,9 +152,7 @@ test("denial stops capture, and approval gates transport independently in both d
 
 test("allow always is loaded by contact key on a later call; once stays within its session", async () => {
   using sqlite = new Database(":memory:");
-  for (const sql of Object.values(migrations.migrations))
-    for (const statement of sql.split("--> statement-breakpoint"))
-      sqlite.exec(statement);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite);
   db.insert(contacts)
     .values([

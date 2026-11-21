@@ -11,9 +11,9 @@ import {
   type TranslationEngine,
   viewportMessages,
 } from "../src/core/translation/service";
-import { seedStressConversations, stressPeerKey } from "../src/db/chat-stress";
+import { seedStressConversations, stressPeerKey } from "./chat-fixture";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 import { createTranslationCache } from "../src/db/translations";
 
@@ -33,13 +33,9 @@ const input = {
   senderKey: "peer",
   recipientKey: "self",
 } as const;
-const hash = async (text: string) =>
-  new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
 function database(sqlite: Database, migrate = true) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  if (migrate)
-    for (const sql of Object.values(migrations.migrations)) sqlite.exec(sql);
+  if (migrate) initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   return {
     db,
@@ -95,11 +91,7 @@ test("deduplicates concurrent translation and gift wraps, persists per language 
       using sqlite = new Database(file);
       const { chat, cache } = database(sqlite);
       const mock = engine();
-      const service = createTranslationService(
-        cache,
-        async () => mock.worker,
-        hash,
-      );
+      const service = createTranslationService(cache, async () => mock.worker);
       expect(chat.receive(input)).toBe(true);
       expect(chat.receive({ ...input, id: "different-gift-wrap" })).toBe(false);
       const translated = {
@@ -128,14 +120,10 @@ test("deduplicates concurrent translation and gift wraps, persists per language 
       using sqlite = new Database(file);
       const { chat, cache } = database(sqlite, false);
       let engineLoaded = false;
-      const service = createTranslationService(
-        cache,
-        async () => {
-          engineLoaded = true;
-          throw new Error("offline");
-        },
-        hash,
-      );
+      const service = createTranslationService(cache, async () => {
+        engineLoaded = true;
+        throw new Error("offline");
+      });
       expect(await service.translate(message, "en")).toEqual({
         kind: "translated",
         text: "See you tomorrow morning",
@@ -152,11 +140,7 @@ test("invalidation and deletion remove stale translations and reject stale write
   using sqlite = new Database(":memory:");
   const { chat, cache, db } = database(sqlite);
   const mock = engine();
-  const service = createTranslationService(
-    cache,
-    async () => mock.worker,
-    hash,
-  );
+  const service = createTranslationService(cache, async () => mock.worker);
   chat.receive(input);
   await service.translate(message, "en");
   service.refresh(message.id, "en");
@@ -180,11 +164,7 @@ test("source confidence, unsupported and missing models leave the original", asy
   const { chat, cache } = database(sqlite);
   chat.receive(input);
   const mock = engine({ downloaded: async () => ["en"] });
-  const service = createTranslationService(
-    cache,
-    async () => mock.worker,
-    hash,
-  );
+  const service = createTranslationService(cache, async () => mock.worker);
   expect(await service.translate(message, "he")).toEqual({ kind: "original" });
   expect(await service.translate(message, "eo")).toEqual({ kind: "original" });
   expect(await service.translate(message, "en")).toEqual({
@@ -199,11 +179,10 @@ test("source confidence, unsupported and missing models leave the original", asy
     }),
   });
   expect(
-    await createTranslationService(
-      cache,
-      async () => weak.worker,
-      hash,
-    ).translate(message, "en"),
+    await createTranslationService(cache, async () => weak.worker).translate(
+      message,
+      "en",
+    ),
   ).toEqual({ kind: "original" });
   expect(mock.calls()).toBe(0);
   const failure = engine({
@@ -212,11 +191,10 @@ test("source confidence, unsupported and missing models leave the original", asy
     },
   });
   expect(
-    await createTranslationService(
-      cache,
-      async () => failure.worker,
-      hash,
-    ).translate(message, "en"),
+    await createTranslationService(cache, async () => failure.worker).translate(
+      message,
+      "en",
+    ),
   ).toEqual({ kind: "failed" });
   expect(cache.read([message.id], "en")).toEqual([]);
 });
@@ -233,11 +211,7 @@ test("cancelled and cleared in-flight operations cannot commit a result", async 
       return finish.promise;
     },
   });
-  const service = createTranslationService(
-    cache,
-    async () => mock.worker,
-    hash,
-  );
+  const service = createTranslationService(cache, async () => mock.worker);
   const cancel = new AbortController();
   const work = service.translate(message, "en", cancel.signal);
   await begun.promise;
@@ -251,7 +225,7 @@ test("cancelled and cleared in-flight operations cannot commit a result", async 
   });
 });
 
-test("outgoing messages never reach the translation engine or use legacy cached results", async () => {
+test("outgoing messages never reach the translation engine or use unauthorized cache rows", async () => {
   using sqlite = new Database(":memory:");
   const { chat, db, cache } = database(sqlite);
   const outgoing = { ...message, direction: "outgoing" } as const;
@@ -261,27 +235,20 @@ test("outgoing messages never reach the translation engine or use legacy cached 
     senderKey: "self",
     recipientKey: "peer",
   });
-  const legacy = {
+  const invalidRow = {
     messageId: outgoing.id,
-    contentHash: await hash(outgoing.text),
     sourceLanguage: "he",
     targetLanguage: "en",
     translatedText: "See you tomorrow morning",
-    engine: "mlkit-v1",
-    createdAt: 42,
   };
-  expect(cache.store(legacy, outgoing.text)).toBe(false);
-  db.insert(schema.messageTranslations).values(legacy).run();
+  expect(cache.store(invalidRow, outgoing.text)).toBe(false);
+  db.insert(schema.messageTranslations).values(invalidRow).run();
 
   let engineLoaded = false;
-  const service = createTranslationService(
-    cache,
-    async () => {
-      engineLoaded = true;
-      return engine().worker;
-    },
-    hash,
-  );
+  const service = createTranslationService(cache, async () => {
+    engineLoaded = true;
+    return engine().worker;
+  });
   expect(await service.translate(outgoing, "en")).toEqual({ kind: "original" });
   expect(await service.translate(message, "en")).toEqual({ kind: "original" });
   expect(engineLoaded).toBe(false);

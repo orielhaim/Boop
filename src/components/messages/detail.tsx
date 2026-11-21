@@ -89,7 +89,7 @@ import { nameOrAddress, useContact } from "@/db/contacts";
 import type { MessageCursor } from "@/db/messaging";
 import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
 import { type DetailMessage, toQuote } from "./detail-adapter";
@@ -135,42 +135,6 @@ const renderTranslatedText: NonNullable<
   <MessageText {...props} url={false} email={false} phone={false} />
 );
 
-function useStressArrival(peerKey: string) {
-  const { t } = useTranslation(namespaces);
-  const { chat, identity } = useLocal();
-  const [factory, setFactory] =
-    useState<typeof import("@/db/chat-stress").stressArrival>();
-  const [scheduled, setScheduled] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!__DEV__) return;
-    let mounted = true;
-    void import("@/db/chat-stress").then((module) => {
-      if (mounted && peerKey === module.stressPeerKey) {
-        setFactory(() => module.stressArrival);
-      }
-    });
-    return () => {
-      mounted = false;
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [peerKey]);
-  const schedule = useCallback(() => {
-    if (!factory || timer.current) return;
-    setScheduled(true);
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      setScheduled(false);
-      try {
-        chat.receive(factory(identity.publicKey));
-      } catch {
-        Alert.alert(t("messages:testMessageError"));
-      }
-    }, 4_000);
-  }, [chat, factory, identity.publicKey, t]);
-  return { available: Boolean(factory), schedule, scheduled };
-}
-
 export function DetailConversation({ peerKey }: { peerKey: string }) {
   const blockAction = useBlockAction(peerKey);
   const { blocked } = blockAction;
@@ -189,11 +153,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     privacy,
     previews,
   } = useLocal();
-  const {
-    available: stressEnabled,
-    scheduled,
-    schedule,
-  } = useStressArrival(peerKey);
   const contact = useContact(peerKey);
   const name = nameOrAddress(contact?.name, peerKey);
   const avatar = useAvatar(peerKey);
@@ -1995,14 +1954,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const headerActions = useCallback(
     () => (
       <View style={styles.headerActions}>
-        {stressEnabled ? (
-          <IconButton
-            icon="add"
-            label={t("messages:testMessage")}
-            disabled={scheduled}
-            onPress={schedule}
-          />
-        ) : null}
         <IconButton
           icon="phone"
           label={t("messages:call")}
@@ -2013,7 +1964,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         />
       </View>
     ),
-    [t, peerKey, schedule, scheduled, stressEnabled, blocked],
+    [t, peerKey, blocked],
   );
 
   return (

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -11,7 +12,7 @@ import {
 export const contacts = sqliteTable("contacts", {
   publicKey: text("public_key").primaryKey().notNull(),
   name: text().notNull(),
-  localAvatarFile: text("avatar_url"),
+  localAvatarFile: text("local_avatar_file"),
   favorite: integer({ mode: "boolean" }).notNull().default(false),
   allowIncomingVideo: integer("allow_incoming_video", { mode: "boolean" })
     .notNull()
@@ -23,7 +24,6 @@ export const conversations = sqliteTable(
   {
     peerKey: text("peer_key").primaryKey().notNull(),
     updatedAt: integer("updated_at").notNull(),
-    unread: integer().notNull().default(0),
     draft: text().notNull().default(""),
     draftReplyTo: text("draft_reply_to"),
     pinnedRank: integer("pinned_rank"),
@@ -40,9 +40,6 @@ export const conversations = sqliteTable(
         table.peerKey,
       )
       .where(sql`${table.deletedAt} IS NULL`),
-    index("conversations_unread")
-      .on(table.unread)
-      .where(sql`${table.deletedAt} IS NULL AND ${table.unread} > 0`),
   ],
 );
 
@@ -53,10 +50,11 @@ export const messages = sqliteTable(
     eventId: text("event_id").unique(),
     peerKey: text("peer_key")
       .notNull()
-      .references(() => conversations.peerKey),
+      .references(() => conversations.peerKey, { onDelete: "cascade" }),
     direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
     body: text().notNull(),
     sentAt: integer("sent_at").notNull(),
+    pinnedAt: integer("pinned_at"),
     editedAt: integer("edited_at"),
     revisionId: text("revision_id"),
     replyTo: text("reply_to"),
@@ -84,6 +82,18 @@ export const messages = sqliteTable(
     index("messages_unread")
       .on(table.peerKey, table.sentAt, table.id)
       .where(sql`${table.isUnread} = 1 AND ${table.deletedAt} IS NULL`),
+    index("messages_pinned")
+      .on(table.peerKey, table.pinnedAt, table.id)
+      .where(sql`${table.pinnedAt} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    check(
+      "messages_read_direction",
+      sql`${table.isUnread} = 0 OR ${table.direction} = 'incoming'`,
+    ),
+    index("messages_attachment_copies")
+      .on(table.sentAt, table.id)
+      .where(
+        sql`${table.status} = 'sent' AND ${table.contentType} = 'attachment' AND ${table.deletedAt} IS NULL AND ${table.rumorJson} IS NOT NULL`,
+      ),
     index("messages_outbox")
       .on(table.sentAt, table.id)
       .where(sql`${table.status} = 'pending' AND ${table.deletedAt} IS NULL`),
@@ -157,18 +167,6 @@ export const messageEditOutbox = sqliteTable(
   ],
 );
 
-export const messagePins = sqliteTable(
-  "message_pins",
-  {
-    messageId: text("message_id")
-      .primaryKey()
-      .references(() => messages.id, { onDelete: "cascade" }),
-    peerKey: text("peer_key").notNull(),
-    pinnedAt: integer("pinned_at").notNull(),
-  },
-  (table) => [index("message_pins_peer").on(table.peerKey, table.pinnedAt)],
-);
-
 export const linkPreviewCache = sqliteTable("link_preview_cache", {
   url: text().primaryKey(),
   siteName: text("site_name"),
@@ -213,17 +211,22 @@ export const messageTimeLocks = sqliteTable(
   ],
 );
 
-export const messageAttachments = sqliteTable("message_attachments", {
-  messageId: text("message_id")
-    .primaryKey()
-    .notNull()
-    .references(() => messages.id, { onDelete: "cascade" }),
-  file: text({ mode: "json" })
-    .$type<import("@/core/media/protocol").SealedAttachment>()
-    .notNull(),
-  url: text(),
-  listened: integer({ mode: "boolean" }).notNull().default(false),
-});
+export const messageAttachments = sqliteTable(
+  "message_attachments",
+  {
+    messageId: text("message_id")
+      .primaryKey()
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    hash: text().notNull(),
+    file: text({ mode: "json" })
+      .$type<Omit<import("@/core/media/protocol").SealedAttachment, "hash">>()
+      .notNull(),
+    url: text(),
+    listened: integer({ mode: "boolean" }).notNull().default(false),
+  },
+  (table) => [index("message_attachments_hash").on(table.hash)],
+);
 
 export const attachmentCache = sqliteTable(
   "attachment_cache",
@@ -234,7 +237,7 @@ export const attachmentCache = sqliteTable(
     size: integer().notNull(),
     accessedAt: integer("accessed_at").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.owner, table.hash, table.source] })],
+  (table) => [primaryKey({ columns: [table.owner, table.source, table.hash] })],
 );
 
 export const attachmentUploads = sqliteTable("attachment_uploads", {
@@ -257,16 +260,13 @@ export const messageTranslations = sqliteTable(
     messageId: text("message_id")
       .notNull()
       .references(() => messages.id, { onDelete: "cascade" }),
-    contentHash: text("content_hash").notNull(),
     targetLanguage: text("target_language").notNull(),
     sourceLanguage: text("source_language").notNull(),
     translatedText: text("translated_text").notNull(),
-    engine: text().notNull(),
-    createdAt: integer("created_at").notNull(),
   },
   (table) => [
     primaryKey({
-      columns: [table.messageId, table.targetLanguage, table.contentHash],
+      columns: [table.messageId, table.targetLanguage],
     }),
   ],
 );
@@ -276,7 +276,7 @@ export const messageReactions = sqliteTable(
   {
     peerKey: text("peer_key")
       .notNull()
-      .references(() => conversations.peerKey),
+      .references(() => conversations.peerKey, { onDelete: "cascade" }),
     targetId: text("target_id").notNull(),
     author: text().notNull(),
     emoji: text().notNull(),
@@ -289,36 +289,40 @@ export const messageReactions = sqliteTable(
   ],
 );
 
-export const callHistory = sqliteTable("call_history", {
-  id: text().primaryKey().notNull(),
-  peerKey: text("peer_key").notNull(),
-  participantKeys: text("participant_keys", { mode: "json" })
-    .$type<string[]>()
-    .notNull()
-    .default(sql`'[]'`),
-  invitationIds: text("invitation_ids", { mode: "json" })
-    .$type<string[]>()
-    .notNull()
-    .default(sql`'[]'`),
-  direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
-  outcome: text({
-    enum: [
-      "answered",
-      "completed",
-      "missed",
-      "rejected",
-      "failed",
-      "cancelled",
-      "busy",
-      "unanswered",
-      "remote-disconnected",
-    ],
-  }).notNull(),
-  startedAt: integer("started_at").notNull(),
-  answeredAt: integer("answered_at"),
-  endedAt: integer("ended_at"),
-  durationSeconds: integer("duration_seconds").notNull().default(0),
-});
+export const callHistory = sqliteTable(
+  "call_history",
+  {
+    id: text().primaryKey().notNull(),
+    peerKey: text("peer_key").notNull(),
+    participantKeys: text("participant_keys", { mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'`),
+    invitationIds: text("invitation_ids", { mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'`),
+    direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
+    outcome: text({
+      enum: [
+        "answered",
+        "completed",
+        "missed",
+        "rejected",
+        "failed",
+        "cancelled",
+        "busy",
+        "unanswered",
+        "remote-disconnected",
+      ],
+    }).notNull(),
+    startedAt: integer("started_at").notNull(),
+    answeredAt: integer("answered_at"),
+    endedAt: integer("ended_at"),
+    durationSeconds: integer("duration_seconds").notNull().default(0),
+  },
+  (table) => [index("call_history_recent").on(table.startedAt)],
+);
 
 export const relaySettings = sqliteTable("relay_settings", {
   url: text().primaryKey().notNull(),
@@ -333,13 +337,9 @@ export const settings = sqliteTable("settings", {
   value: text().notNull(),
 });
 
-export const blockedIdentities = sqliteTable("blocked_identities", {
+export const peerPermissions = sqliteTable("peer_permissions", {
   publicKey: text("public_key").primaryKey().notNull(),
-  blockedAt: integer("blocked_at").notNull(),
-});
-
-export const communicationGrants = sqliteTable("communication_grants", {
-  publicKey: text("public_key").primaryKey().notNull(),
+  blockedAt: integer("blocked_at"),
   initiated: integer({ mode: "boolean" }).notNull().default(false),
   approved: integer({ mode: "boolean" }).notNull().default(false),
 });
@@ -347,10 +347,9 @@ export const communicationGrants = sqliteTable("communication_grants", {
 export const messageRequests = sqliteTable("message_requests", {
   publicKey: text("public_key").primaryKey().notNull(),
   receivedAt: integer("received_at").notNull(),
-  declinedThrough: integer("declined_through").notNull().default(0),
-  message: text({ mode: "json" }).$type<
-    import("./messaging").MessageInput | import("./messaging").MessageInput[]
-  >(),
+  messages: text({ mode: "json" })
+    .$type<import("./messaging").MessageInput[]>()
+    .notNull(),
 });
 
 export const nostrProfiles = sqliteTable("nostr_profiles", {
@@ -360,8 +359,6 @@ export const nostrProfiles = sqliteTable("nostr_profiles", {
   fields: text({ mode: "json" }).$type<Record<string, unknown>>().notNull(),
   picture: text(),
   name: text(),
-  about: text(),
-  checkedAt: integer("checked_at").notNull(),
 });
 
 export const avatarCache = sqliteTable("avatar_cache", {

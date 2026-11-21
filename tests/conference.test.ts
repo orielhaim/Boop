@@ -23,7 +23,7 @@ import {
   unwrapPrivateEvent,
   wrapRumor,
 } from "../src/core/messaging/nip17";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { callById, callList, saveCallRecord } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 
@@ -304,39 +304,9 @@ test("connected controller handles invitation ringing, busy, cancellation, subse
   expect(records[0]?.participantKeys).toEqual([bob, charlie]);
 });
 
-test("conference history migration preserves legacy calls and reads all participant identities", () => {
-  using sqlite = new Database(":memory:");
-  const queries = Object.values(migrations.migrations);
-  for (const query of queries.slice(0, -1)) sqlite.exec(query);
-  sqlite.run(
-    "INSERT INTO call_history (id, peer_key, direction, outcome, started_at) VALUES ('legacy', ?, 'incoming', 'completed', 0)",
-    [bob],
-  );
-  sqlite.exec(queries.at(-1) ?? "");
-  const db = drizzle(sqlite, { schema });
-  db.insert(schema.callHistory)
-    .values({
-      id: "group",
-      peerKey: bob,
-      direction: "outgoing",
-      outcome: "completed",
-      startedAt: 1000,
-      participantKeys: [bob, charlie, dana],
-    })
-    .run();
-  expect(
-    callList(db)
-      .all()
-      .map(({ id, participantKeys }) => [id, participantKeys]),
-  ).toEqual([
-    ["group", [bob, charlie, dana]],
-    ["legacy", []],
-  ]);
-});
-
 test("retrying after a rejected invitation keeps one history record and ignores duplicate completion", () => {
   using sqlite = new Database(":memory:");
-  for (const query of Object.values(migrations.migrations)) sqlite.exec(query);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const rejected = {
     id: callId,

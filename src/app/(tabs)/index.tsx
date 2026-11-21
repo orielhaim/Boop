@@ -25,7 +25,7 @@ import { nameOrAddress, useContacts } from "@/db/contacts";
 import { callList } from "@/db/queries";
 import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime, isolateText } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
 
 const outcomes = {

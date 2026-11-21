@@ -166,8 +166,6 @@ export function createAvatars<Result>(
     const values = {
       ...candidate,
       name: candidate.name ?? null,
-      about: candidate.about ?? null,
-      checkedAt: Date.now(),
     };
     db.insert(nostrProfiles)
       .values({ publicKey: key, ...values })

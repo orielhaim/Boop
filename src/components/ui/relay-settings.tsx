@@ -24,7 +24,7 @@ import { editRelays } from "@/db/relays";
 import { relaySettings } from "@/db/schema";
 import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime, isolateText } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 const statusLabels = {

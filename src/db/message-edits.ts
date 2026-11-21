@@ -1,9 +1,9 @@
-import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { isNotNull, and, desc, eq, lte, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import type { PrivateEvent } from "@/core/messaging/nip17";
 import * as schema from "./schema";
 
-const { messages, messageRevisions, pendingMessageEdits, blockedIdentities } =
+const { messages, messageRevisions, pendingMessageEdits, peerPermissions } =
   schema;
 type EditDatabase<TResult> = Pick<
   BaseSQLiteDatabase<"sync", TResult, typeof schema>,
@@ -144,9 +144,14 @@ function showWinner<TResult>(db: EditDatabase<TResult>, original: Original) {
 
 function blocked<TResult>(db: EditDatabase<TResult>, peer: string) {
   return db
-    .select({ key: blockedIdentities.publicKey })
-    .from(blockedIdentities)
-    .where(eq(blockedIdentities.publicKey, peer))
+    .select({ key: peerPermissions.publicKey })
+    .from(peerPermissions)
+    .where(
+      and(
+        eq(peerPermissions.publicKey, peer),
+        isNotNull(peerPermissions.blockedAt),
+      ),
+    )
     .get();
 }
 

@@ -273,8 +273,6 @@ export const en = {
     readLocalError: "Boop could not read local chat data.",
     noArchived: "No archived conversations",
     startHint: "Enter an address or scan a QR code to start a chat.",
-    testMessageError: "Unable to add the test message",
-    testMessage: "Simulate a test message",
   },
   calls: {
     groupCall: "Group call",
@@ -514,9 +512,6 @@ export const en = {
     version: "Version",
     build: "Build",
     development: "Development",
-    stressError: "Could not open the chat stress scenario.",
-    prepareStress: "Preparing test history…",
-    openStress: "Open 10,000-message test chat",
     callingDiagnostics: "Calling diagnostics",
     checkingCalls: "Checking calling runtime…",
     checkCalls: "Check calling runtime",

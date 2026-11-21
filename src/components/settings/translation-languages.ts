@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export function useTranslationLanguages() {
   const { translation } = useLocal();

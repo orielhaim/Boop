@@ -22,7 +22,7 @@ import {
 } from "../src/core/messaging/special-messages/timelock";
 import { createUnlockScheduler } from "../src/core/messaging/special-messages/unlock-scheduler";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 import { createTranslationCache } from "../src/db/translations";
 
@@ -201,7 +201,7 @@ test("rejects wrong rounds and signatures before using the decryption key", asyn
   await expect(wrongRound(historical)).rejects.toMatchObject({
     code: "verification",
   });
-  const signature = "93" + beacon.signature.slice(2);
+  const signature = `93${beacon.signature.slice(2)}`;
   const digest = await crypto.subtle.digest(
     "SHA-256",
     Uint8Array.from(Buffer.from(signature, "hex")),
@@ -228,9 +228,7 @@ const peerKey = bob.pubkey;
 const participants = { self: { _id: alice.pubkey }, peer: { _id: bob.pubkey } };
 
 function database(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   return drizzle(sqlite, { schema });
 }
 

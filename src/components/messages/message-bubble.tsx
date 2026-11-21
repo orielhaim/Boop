@@ -5,7 +5,7 @@ import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Action, Icon, Ink } from "@/components/ui/kit";
 import { firstPreviewUrl } from "@/core/messaging/link-previews";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 import type { DetailMessage } from "./detail-adapter";
 

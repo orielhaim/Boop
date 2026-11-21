@@ -1,12 +1,13 @@
+import type { AttachmentKind } from "@/core/media/protocol";
 import type { ProfilePhotoPolicy } from "@/core/avatars/protocol";
-import { and, count, eq, isNotNull } from "drizzle-orm";
+import { and, count, eq, isNotNull, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import type { MessageInput, MessagingRepository } from "@/db/messaging";
 import { preference, setPreference } from "@/db/queries";
 import type * as schema from "@/db/schema";
 import {
-  blockedIdentities,
-  communicationGrants,
+  peerPermissions,
+  pendingMessageEdits,
   contacts,
   messageRequests,
   messages,
@@ -28,10 +29,6 @@ export type PrivacyPreferences = {
 const maxRequestPeers = 64;
 const maxRequestMessages = 16;
 const maxRequestSize = 20_000;
-
-function requestMessages(message: typeof messageRequests.$inferSelect.message) {
-  return Array.isArray(message) ? message : message ? [message] : [];
-}
 
 export function messagePermission({
   preferences,
@@ -68,7 +65,8 @@ export function createPrivacy<Result>(
   const blocked = new Set(
     db
       .select()
-      .from(blockedIdentities)
+      .from(peerPermissions)
+      .where(isNotNull(peerPermissions.blockedAt))
       .all()
       .map((row) => row.publicKey),
   );
@@ -111,19 +109,8 @@ export function createPrivacy<Result>(
       .from(messageRequests)
       .where(eq(messageRequests.publicKey, key))
       .get();
-  const requestRows = () =>
-    db
-      .select()
-      .from(messageRequests)
-      .where(isNotNull(messageRequests.message))
-      .orderBy(messageRequests.receivedAt)
-      .all();
   const pendingCount = () =>
-    db
-      .select({ total: count() })
-      .from(messageRequests)
-      .where(isNotNull(messageRequests.message))
-      .get()?.total ?? 0;
+    db.select({ total: count() }).from(messageRequests).get()?.total ?? 0;
   return {
     isBlocked,
     isContact,
@@ -166,11 +153,12 @@ export function createPrivacy<Result>(
       if (isBlocked(key)) return "blocked";
       const grant = db
         .select()
-        .from(communicationGrants)
-        .where(eq(communicationGrants.publicKey, key))
+        .from(peerPermissions)
+        .where(eq(peerPermissions.publicKey, key))
         .get();
       const established =
-        !grant &&
+        !grant?.initiated &&
+        !grant?.approved &&
         preferences.messages === "everyone" &&
         preferences.requests &&
         Boolean(
@@ -195,27 +183,37 @@ export function createPrivacy<Result>(
       });
     },
     noteCompletedCall(key: string) {
-      db.insert(communicationGrants)
+      db.insert(peerPermissions)
         .values({ publicKey: key, initiated: true })
         .onConflictDoUpdate({
-          target: communicationGrants.publicKey,
+          target: peerPermissions.publicKey,
           set: { initiated: true },
         })
         .run();
     },
     blockedKeys: () => [...blocked],
-    pending: () =>
-      requestRows().map(({ publicKey, message }) => ({
-        publicKey,
-        messages: requestMessages(message),
-      })),
+    pending() {
+      const last = sql`json_extract(${messageRequests.messages}, '$[#-1]')`;
+      return db
+        .select({
+          publicKey: messageRequests.publicKey,
+          id: sql<string>`json_extract(${last}, '$.id')`,
+          sentAt: sql<number>`json_extract(${last}, '$.sentAt')`,
+          body: sql<string>`json_extract(${last}, '$.body')`,
+          attachmentKind: sql<AttachmentKind | null>`json_extract(${last}, '$.attachment.kind')`,
+          location: sql<number>`json_extract(${last}, '$.location') IS NOT NULL`,
+          locked: sql<number>`json_extract(${last}, '$.timeLock') IS NOT NULL`,
+        })
+        .from(messageRequests)
+        .orderBy(messageRequests.receivedAt)
+        .all();
+    },
     pendingCount,
-    request: (key: string) => requestMessages(requestRow(key)?.message ?? null),
+    request: (key: string) => requestRow(key)?.messages ?? [],
     queue(input: MessageInput) {
       const previous = requestRow(input.peerKey);
-      const messages = requestMessages(previous?.message ?? null);
+      const messages = previous?.messages ?? [];
       if (
-        input.sentAt <= (previous?.declinedThrough ?? 0) ||
         messages.length >= maxRequestMessages ||
         messages.some(
           (message) =>
@@ -225,13 +223,13 @@ export function createPrivacy<Result>(
         (messages.length === 0 && pendingCount() >= maxRequestPeers)
       )
         return;
-      const message = [...messages, input].sort(
+      const queued = [...messages, input].sort(
         (a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id),
       );
-      if (JSON.stringify(message).length > maxRequestSize) return;
+      if (JSON.stringify(queued).length > maxRequestSize) return;
       const values = {
-        receivedAt: previous?.message ? previous.receivedAt : Date.now(),
-        message,
+        receivedAt: previous?.receivedAt ?? Date.now(),
+        messages: queued,
       };
       db.insert(messageRequests)
         .values({ publicKey: input.peerKey, ...values })
@@ -240,7 +238,7 @@ export function createPrivacy<Result>(
       notify();
     },
     accept(key: string) {
-      const inputs = requestMessages(requestRow(key)?.message ?? null);
+      const inputs = requestRow(key)?.messages ?? [];
       if (
         !inputs.length ||
         isBlocked(key) ||
@@ -255,8 +253,16 @@ export function createPrivacy<Result>(
       const key = parsePublicKey(input);
       if (!key || key === localKey || isBlocked(key)) return;
       db.transaction((tx) => {
-        tx.insert(blockedIdentities)
-          .values({ publicKey: key, blockedAt: Date.now() })
+        const blockedAt = Date.now();
+        tx.insert(peerPermissions)
+          .values({ publicKey: key, blockedAt })
+          .onConflictDoUpdate({
+            target: peerPermissions.publicKey,
+            set: { blockedAt },
+          })
+          .run();
+        tx.delete(pendingMessageEdits)
+          .where(eq(pendingMessageEdits.peerKey, key))
           .run();
         tx.delete(messageRequests)
           .where(eq(messageRequests.publicKey, key))
@@ -268,8 +274,9 @@ export function createPrivacy<Result>(
       notify();
     },
     unblock(key: string) {
-      db.delete(blockedIdentities)
-        .where(eq(blockedIdentities.publicKey, key))
+      db.update(peerPermissions)
+        .set({ blockedAt: null })
+        .where(eq(peerPermissions.publicKey, key))
         .run();
       blocked.delete(key);
       chat.invalidate();

@@ -1,1 +1,0 @@
-ALTER TABLE `call_history` ADD `invitation_ids` text DEFAULT '[]' NOT NULL;

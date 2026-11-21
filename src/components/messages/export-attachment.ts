@@ -1,4 +1,3 @@
-import { getContentUriAsync } from "expo-file-system/legacy";
 import { randomUUID } from "expo-crypto";
 import { Directory, File, Paths } from "expo-file-system";
 import { saveToLibraryAsync } from "expo-media-library/legacy";
@@ -76,7 +75,7 @@ export async function exportAttachment(
     if (action === "open" && Platform.OS === "android") {
       const { startActivityAsync } = await import("expo-intent-launcher");
       await startActivityAsync("android.intent.action.VIEW", {
-        data: await getContentUriAsync(output.uri),
+        data: output.contentUri,
         type: file.mime,
         flags: 1,
       });

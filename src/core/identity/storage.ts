@@ -5,16 +5,13 @@ import type * as schema from "@/db/schema";
 import {
   avatarCache,
   nostrProfiles,
-  blockedIdentities,
   callHistory,
-  communicationGrants,
+  peerPermissions,
   contacts,
   conversations,
-  messageReactions,
   messageRequests,
   attachmentCache,
   linkPreviewCache,
-  messages,
   pendingMessageEdits,
   settings,
 } from "@/db/schema";
@@ -107,18 +104,15 @@ async function recoverSwitch<TResult>(
       const oldSlot = currentSlot(db);
       try {
         db.transaction((tx) => {
-          tx.delete(messageReactions).run();
           tx.delete(linkPreviewCache).run();
           tx.delete(pendingMessageEdits).run();
-          tx.delete(messages).run();
           tx.delete(attachmentCache).run();
           tx.delete(conversations).run();
           tx.delete(contacts).run();
           tx.delete(avatarCache).run();
           tx.delete(nostrProfiles).run();
           tx.delete(callHistory).run();
-          tx.delete(blockedIdentities).run();
-          tx.delete(communicationGrants).run();
+          tx.delete(peerPermissions).run();
           tx.delete(messageRequests).run();
           tx.delete(settings)
             .where(

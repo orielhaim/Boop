@@ -38,7 +38,7 @@ import { systemRemoteVideo } from "@/core/calling/system-call-state";
 import { type VideoDecision, videoLayout } from "@/core/calling/video";
 import { namespaces } from "@/i18n";
 import { formatDuration, isolateText } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { space, spring, useTheme } from "@/theme";
 import {
   ConferenceSheet,

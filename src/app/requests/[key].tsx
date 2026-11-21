@@ -15,7 +15,7 @@ import { ScreenInsets } from "@/components/ui/screen-insets";
 import { parsePublicKey } from "@/core/identity/keys";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 
 function back() {

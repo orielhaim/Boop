@@ -16,7 +16,7 @@ import { Ink } from "@/components/ui/kit";
 import type { MessagingRepository } from "@/db/messaging";
 import { namespaces } from "@/i18n";
 import { formatDateTime } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
 import type { Participants } from "./detail-adapter";

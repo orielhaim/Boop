@@ -11,7 +11,7 @@ import { Linking, StyleSheet, View } from "react-native";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
 
 export default function ScanAddress() {

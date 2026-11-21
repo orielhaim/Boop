@@ -5,7 +5,7 @@ import { Alert } from "react-native";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function MediaStorage() {
   const { attachments, mediaSdk } = useLocal();

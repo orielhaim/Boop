@@ -1,7 +1,7 @@
 import { Stack } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled } from "@/services/local";
+import { useChatsEnabled } from "@/services/local-context";
 
 export default function SettingsLayout() {
   const { t } = useTranslation(namespaces);

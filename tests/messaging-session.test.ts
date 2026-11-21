@@ -11,14 +11,13 @@ import {
   giftWrapOverlap,
   inboxCatchup,
 } from "../src/core/messaging/inbox-sync";
-import { seedStressConversations } from "../src/db/chat-stress";
+import { seedStressConversations } from "./chat-fixture";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 function session(sqlite: Database) {
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   return { db, repo: createMessagingRepository(db) };
 }
@@ -211,20 +210,18 @@ test("live envelopes pass queued history while history still makes progress", as
 test("relay checkpoints use overlap, retain longer offline gaps, and audit delayed older wraps", () => {
   const now = 1_800_000_000;
   const day = 86_400;
-  expect(inboxCatchup(now, null, null)).toEqual({
+  expect(inboxCatchup(now, null)).toEqual({
     since: undefined,
     checkpoint: `${now}:${now}`,
   });
-  expect(inboxCatchup(now, null, String(now - 20)).since).toBe(now - 30 * day);
-  expect(inboxCatchup(now, `${now - 60}:${now - day}`, null).since).toBe(
+  expect(inboxCatchup(now, `${now - 20}:0`).since).toBe(now - 30 * day);
+  expect(inboxCatchup(now, `${now - 60}:${now - day}`).since).toBe(
     now - 60 - giftWrapOverlap,
   );
-  expect(
-    inboxCatchup(now, `${now - 40 * day}:${now - 40 * day}`, null).since,
-  ).toBe(now - 43 * day);
-  expect(
-    inboxCatchup(now, `${now + 1}:${now + 1}`, null).since,
-  ).toBeUndefined();
+  expect(inboxCatchup(now, `${now - 40 * day}:${now - 40 * day}`).since).toBe(
+    now - 43 * day,
+  );
+  expect(inboxCatchup(now, `${now + 1}:${now + 1}`).since).toBeUndefined();
 });
 
 test("inbox skips completed envelope replays, retries failed writes and drops cancelled work", async () => {

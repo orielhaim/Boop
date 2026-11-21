@@ -13,7 +13,7 @@ import { Action, Avatar, Screen, Search } from "@/components/ui/kit";
 import { BlossomError } from "@/core/avatars/blossom";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 
 export default function EditProfile() {

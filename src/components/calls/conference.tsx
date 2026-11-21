@@ -23,7 +23,7 @@ import {
 import type { VideoState } from "@/core/calling/video";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { nameOrAddress, useContacts } from "@/db/contacts";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { VideoTile } from "./video-stage";
 
 type Camera = NonNullable<VideoState["conference"]>["cameras"][string];

@@ -18,12 +18,3 @@ export function wrapPlainText(
     isValidElement(part) ? part : render(part),
   );
 }
-
-/** The words in `node` when it is only text, to name a control for assistive technology. */
-export function plainTextOf(node: ReactNode) {
-  const parts = Children.toArray(node);
-
-  return parts.length > 0 && parts.every((part) => !isValidElement(part))
-    ? parts.join("")
-    : undefined;
-}

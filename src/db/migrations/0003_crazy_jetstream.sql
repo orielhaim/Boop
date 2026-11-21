@@ -1,1 +1,0 @@
-ALTER TABLE `contacts` ADD `allow_incoming_video` integer DEFAULT false NOT NULL;

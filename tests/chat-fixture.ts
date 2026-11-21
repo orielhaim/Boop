@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import type { MessageInput } from "./messaging";
-import * as schema from "./schema";
+import type { MessageInput } from "../src/db/messaging";
+import * as schema from "../src/db/schema";
 
 export const stressPeerKey =
   "bb2f67bc599b5adef13a861a8ef48dd32b4be1a7fabd6dfef4398524299d5434";
@@ -126,7 +126,6 @@ export function seedStressConversations<TResult>(
       }
       const summary = tx
         .select({
-          unread: sql<number>`coalesce(sum(${messages.isUnread}), 0)`,
           newest: sql<number>`coalesce(max(${messages.sentAt}), 0)`,
         })
         .from(messages)
@@ -137,7 +136,6 @@ export function seedStressConversations<TResult>(
           .set({
             deletedAt: null,
             updatedAt: summary.newest,
-            unread: summary.unread,
           })
           .where(eq(conversations.peerKey, peerKey))
           .run();

@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { seedStressConversations, stressArrival } from "../src/db/chat-stress";
+import { seedStressConversations, stressArrival } from "./chat-fixture";
 import {
   createMessagingRepository,
   type MessageInput,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const own = "own";
@@ -14,8 +14,7 @@ const alice = "alice";
 const bob = "bob";
 
 function migrated(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const sql of Object.values(migrations.migrations)) sqlite.exec(sql);
+  initializeTestDatabase(sqlite);
   return createMessagingRepository(drizzle(sqlite, { schema }));
 }
 
@@ -77,8 +76,13 @@ test("keeps the optimistic message ID and relay status across a sender-copy sync
   expect(reopened.setStatus(outgoing.id, "sent")).toBe(true);
   expect(reopened.setStatus(outgoing.id, "failed", "late-failure")).toBe(false);
   expect(reopened.history(alice).messages).toMatchObject([
-    { id: outgoing.id, status: "sent", rumorJson: null, failure: null },
+    { id: outgoing.id, status: "sent", failure: null },
   ]);
+  expect(
+    sqlite
+      .query("SELECT rumor_json FROM messages WHERE id = ?")
+      .values(outgoing.id),
+  ).toEqual([[null]]);
   expect(reopened.conversation(alice)?.draft).toBe(savedDraft);
 });
 
@@ -222,38 +226,6 @@ test("keeps pinned and archived conversations stable and deletes history locally
     { peerKey: alice, unread: 1 },
   ]);
   expect(repo.history(alice).messages).toHaveLength(1);
-});
-
-test("migrates a foundation database without losing identity, drafts or message IDs", () => {
-  using sqlite = new Database(":memory:");
-  sqlite.exec(migrations.migrations.m0000);
-  sqlite.run("INSERT INTO settings VALUES ('identity.publicKey', 'own')");
-  sqlite.run(
-    "INSERT INTO conversations (peer_key, updated_at, unread, draft, draft_reply_to) VALUES (?, 50, 1, 'Draft', 'incoming')",
-    [alice],
-  );
-  sqlite.run(
-    "INSERT INTO messages (id, event_id, peer_key, direction, body, sent_at) VALUES ('incoming', 'inbound-rumor', ?, 'incoming', 'Original', 50), ('outgoing', null, ?, 'outgoing', 'Older queued message', 30)",
-    [alice, alice],
-  );
-  for (const migration of Object.values(migrations.migrations).slice(1))
-    sqlite.exec(migration);
-  const repo = createMessagingRepository(drizzle(sqlite, { schema }));
-  expect(repo.conversation(alice)).toMatchObject({
-    draft: "Draft",
-    draftReplyTo: "incoming",
-    unread: 1,
-  });
-  expect(repo.history(alice).messages).toMatchObject([
-    { id: "outgoing", senderKey: own, recipientKey: alice, status: "failed" },
-    {
-      id: "incoming",
-      senderKey: alice,
-      recipientKey: own,
-      status: "received",
-      isUnread: true,
-    },
-  ]);
 });
 
 test("10,000-row fixture loads bounded pages and keeps a newer arrival outside an older cursor", () => {

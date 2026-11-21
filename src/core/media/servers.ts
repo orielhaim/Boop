@@ -59,22 +59,7 @@ export function createMediaSettings(store: Store) {
   const saved = store.read(key);
   let current: MediaConfiguration;
   if (saved === null) {
-    const defaults = recommendedMediaServers();
-    const primary =
-      blossomServer(store.read("media.primary") ?? "") ?? defaultBlossomServer;
-    const backup = blossomServer(store.read("media.backup") ?? "");
-    const servers = [defaultEntry(primary, "profile")];
-    if (backup && backup !== primary)
-      servers.push(defaultEntry(backup, "profile"));
-    const privateServer = servers.find(
-      (server) => server.origin === privateDefault,
-    );
-    if (privateServer) privateServer.roles.push("attachment");
-    else servers.push(defaults.servers[1]);
-    current = {
-      servers,
-      mirror: Boolean(backup && store.read("media.mirror") === "true"),
-    };
+    current = recommendedMediaServers();
     store.write(key, JSON.stringify(current));
   } else {
     try {

@@ -8,7 +8,7 @@ import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-polic
 import { Action, Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function ProfilePhotoPrivacy() {
   const { t } = useTranslation(namespaces);

@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { Icon, IconButton, Ink } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import type { MessagingRepository } from "@/db/messaging";
 import { space } from "@/theme";
 import { toQuote, type Participants } from "./detail-adapter";

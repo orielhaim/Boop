@@ -9,7 +9,7 @@ import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { lockTimeouts } from "@/core/security/app-lock";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 const labels = {
   0: "security:immediately",

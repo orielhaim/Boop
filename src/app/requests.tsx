@@ -9,7 +9,7 @@ import { Empty, Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
 import { nameOrAddress, useContacts } from "@/db/contacts";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function Requests() {
   const { t } = useTranslation(namespaces);
@@ -19,27 +19,30 @@ export default function Requests() {
   const contacts = new Map(
     useContacts().map((contact) => [contact.publicKey, contact]),
   );
-  const chats = privacy.pending().map(({ publicKey, messages }) => {
-    const contact = contacts.get(publicKey);
-    const latest = messages.at(-1);
-    const title = nameOrAddress(contact?.name, publicKey);
-    return {
-      id: publicKey,
-      title,
-      lastMessage: latest && {
-        _id: latest.id,
-        createdAt: latest.sentAt,
-        user: { _id: publicKey, name: title },
-        text: latest.attachment
-          ? t(mediaLabels[latest.attachment.kind])
-          : latest.location
-            ? t(mediaLabels.location)
-            : latest.timeLock
-              ? t("security:requestLocked")
-              : latest.body,
+  const chats = privacy
+    .pending()
+    .map(
+      ({ publicKey, id, sentAt, body, attachmentKind, location, locked }) => {
+        const contact = contacts.get(publicKey);
+        const title = nameOrAddress(contact?.name, publicKey);
+        return {
+          id: publicKey,
+          title,
+          lastMessage: {
+            _id: id,
+            createdAt: sentAt,
+            user: { _id: publicKey, name: title },
+            text: attachmentKind
+              ? t(mediaLabels[attachmentKind])
+              : location
+                ? t(mediaLabels.location)
+                : locked
+                  ? t("security:requestLocked")
+                  : body,
+          },
+        };
       },
-    };
-  });
+    );
   const visibleAvatars = useAvatarVisibility<(typeof chats)[number]>(
     (item) => item.id,
   );

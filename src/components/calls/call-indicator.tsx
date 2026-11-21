@@ -8,7 +8,7 @@ import { Action, Icon } from "@/components/ui/kit";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import { namespaces } from "@/i18n";
 import { isolateText } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export function CallIndicator() {
   const { t } = useTranslation(namespaces);

@@ -29,18 +29,15 @@ import {
   storeVerifiedEdit,
   type VerifiedEdit,
 } from "./message-edits";
-import { translationEngine } from "./translations";
 
 const {
   messages,
   conversations,
   contacts,
   messageReactions,
-  messagePins,
   messageTimeLocks,
   messageAttachments,
-  blockedIdentities,
-  communicationGrants,
+  peerPermissions,
   messageRequests,
   messageRevisions,
   pendingMessageEdits,
@@ -49,8 +46,12 @@ const {
 const notBlocked = (
   key: typeof messages.peerKey | typeof conversations.peerKey,
 ) =>
-  sql`NOT EXISTS (SELECT 1 FROM ${blockedIdentities} WHERE ${blockedIdentities.publicKey} = ${key})`;
+  sql`NOT EXISTS (SELECT 1 FROM ${peerPermissions} WHERE ${peerPermissions.publicKey} = ${key} AND ${peerPermissions.blockedAt} IS NOT NULL)`;
 type MessageRow = typeof messages.$inferSelect;
+const { rumorJson: _outboxPayload, ...visibleMessageColumns } =
+  getTableColumns(messages);
+type VisibleMessage = Omit<MessageRow, "rumorJson">;
+const unreadMessage = sql`${messages.isUnread} = 1 AND ${messages.deletedAt} IS NULL`;
 type ReadDatabase<TResult> = Pick<
   BaseSQLiteDatabase<"sync", TResult, typeof schema>,
   "select"
@@ -66,7 +67,7 @@ type LockedPresentation = Pick<
   typeof messageTimeLocks.$inferSelect,
   "requestedAt" | "roundTime" | "error"
 >;
-export type MessageRecord = MessageRow & {
+export type MessageRecord = VisibleMessage & {
   reactions: Reaction[];
   isPinned?: boolean;
   locked?: LockedPresentation;
@@ -114,9 +115,7 @@ function conversationQuery<TResult>(
     ? sql<string | null>`(SELECT ${cached.translatedText} FROM ${cached}
         WHERE ${cached.messageId} = ${latest.id} AND ${cached.targetLanguage} = ${target}
           AND ${latest.direction} = 'incoming'
-          AND ${cached.engine} = ${translationEngine}
-          AND ${cached.sourceLanguage} <> ${target} AND trim(${cached.translatedText}) <> ''
-        ORDER BY ${cached.createdAt} DESC LIMIT 1)`
+          AND ${cached.sourceLanguage} <> ${target} AND trim(${cached.translatedText}) <> '')`
     : sql<string | null>`NULL`;
   const lastId = sql`(
     SELECT ${messages.id} FROM ${messages}
@@ -126,7 +125,7 @@ function conversationQuery<TResult>(
   return db
     .select({
       ...getTableColumns(conversations),
-      unread: sql<number>`CASE WHEN ${notBlocked(conversations.peerKey)} THEN ${conversations.unread} ELSE 0 END`,
+      unread: sql<number>`CASE WHEN ${notBlocked(conversations.peerKey)} THEN (SELECT count(*) FROM ${messages} WHERE ${messages.peerKey} = ${conversations.peerKey} AND ${unreadMessage}) ELSE 0 END`,
       name: contacts.name,
       preview: latest.body,
       lockedUntil: messageTimeLocks.requestedAt,
@@ -168,7 +167,7 @@ function rowKey(cursor: MessageCursor, comparison: "<" | "<=" | ">" | ">=") {
   return sql`(${messages.sentAt}, ${messages.id}) ${sql.raw(comparison)} (${cursor.sentAt}, ${cursor.id})`;
 }
 
-function cursor(row: MessageRow | undefined): MessageCursor | null {
+function cursor(row: MessageCursor | undefined): MessageCursor | null {
   return row ? { id: row.id, sentAt: row.sentAt } : null;
 }
 
@@ -188,16 +187,6 @@ function ensureRoom<TResult>(
     .onConflictDoNothing()
     .returning({ peerKey: conversations.peerKey })
     .get();
-}
-
-function recountUnread<TResult>(db: WriteDatabase<TResult>, peerKey: string) {
-  db.update(conversations)
-    .set({
-      unread: sql`(SELECT count(*) FROM ${messages} WHERE ${messages.peerKey} = ${peerKey}
-        AND ${messages.isUnread} = 1 AND ${messages.deletedAt} IS NULL)`,
-    })
-    .where(eq(conversations.peerKey, peerKey))
-    .run();
 }
 
 export type MessagingRepository = ReturnType<typeof createMessagingRepository>;
@@ -226,7 +215,10 @@ export function createMessagingRepository<TResult>(
     for (const listener of listeners) listener(change);
   }
 
-  function withReactions(peerKey: string, rows: MessageRow[]): MessageRecord[] {
+  function hydrateMessages(
+    peerKey: string,
+    rows: VisibleMessage[],
+  ): MessageRecord[] {
     if (rows.length === 0) return [];
     const reactions = db
       .select({
@@ -269,19 +261,6 @@ export function createMessagingRepository<TResult>(
           .all()
       : [];
     const locks = new Map(locked.map(({ id, ...row }) => [id, row]));
-    const pins = new Set(
-      db
-        .select({ id: messagePins.messageId })
-        .from(messagePins)
-        .where(
-          inArray(
-            messagePins.messageId,
-            rows.map(({ id }) => id),
-          ),
-        )
-        .all()
-        .map(({ id }) => id),
-    );
     const fileIds = rows
       .filter((row) => row.contentType === "attachment")
       .map((row) => row.id);
@@ -343,7 +322,7 @@ export function createMessagingRepository<TResult>(
         locked: locks.get(row.id),
         ...row,
         editStatus: editStatuses.get(row.id),
-        isPinned: pins.has(row.id),
+        isPinned: row.pinnedAt !== null,
         reactions: grouped.get(row.eventId ?? row.id) ?? [],
       };
     });
@@ -351,7 +330,7 @@ export function createMessagingRepository<TResult>(
 
   function messageRow(peerKey: string, reference: string) {
     return db
-      .select()
+      .select(visibleMessageColumns)
       .from(messages)
       .where(
         and(
@@ -392,9 +371,9 @@ export function createMessagingRepository<TResult>(
     // A duplicate sender copy says nothing about acceptance by the recipient's relays.
     if (!stored) return false;
     if (attachment) {
-      const { url, ...file } = attachment;
+      const { url, hash, ...file } = attachment;
       tx.insert(messageAttachments)
-        .values({ messageId: stored.id, file, url })
+        .values({ messageId: stored.id, hash, file, url })
         .run();
     }
     if (timeLock) {
@@ -416,7 +395,6 @@ export function createMessagingRepository<TResult>(
     tx.update(conversations)
       .set({
         updatedAt: sql`max(${conversations.updatedAt}, ${input.sentAt})`,
-        unread: sql`${conversations.unread} + ${Number(isUnread)}`,
         deletedAt: null,
         ...(clearDraft ? { draft: "", draftReplyTo: null } : {}),
       })
@@ -685,9 +663,14 @@ export function createMessagingRepository<TResult>(
     commitUnlock(item: PendingUnlock, body: string, now: number) {
       if (
         db
-          .select({ key: blockedIdentities.publicKey })
-          .from(blockedIdentities)
-          .where(eq(blockedIdentities.publicKey, item.peerKey))
+          .select({ key: peerPermissions.publicKey })
+          .from(peerPermissions)
+          .where(
+            and(
+              eq(peerPermissions.publicKey, item.peerKey),
+              isNotNull(peerPermissions.blockedAt),
+            ),
+          )
           .get()
       )
         return false;
@@ -788,14 +771,16 @@ export function createMessagingRepository<TResult>(
       return (
         db
           .select({
-            count: sql<number>`coalesce(sum(${conversations.unread}), 0)`,
+            count: sql<number>`count(*)`,
           })
-          .from(conversations)
+          .from(messages)
           .where(
             and(
-              notBlocked(conversations.peerKey),
-              isNull(conversations.deletedAt),
-              sql`${conversations.unread} > 0`,
+              unreadMessage,
+              sql`${messages.peerKey} NOT IN (
+                SELECT ${peerPermissions.publicKey} FROM ${peerPermissions}
+                WHERE ${peerPermissions.blockedAt} IS NOT NULL
+              )`,
             ),
           )
           .get()?.count ?? 0
@@ -892,7 +877,7 @@ export function createMessagingRepository<TResult>(
             .get(),
         );
       const rows = db
-        .select()
+        .select(visibleMessageColumns)
         .from(messages)
         .where(
           and(
@@ -915,7 +900,7 @@ export function createMessagingRepository<TResult>(
       const first = cursor(rows[0]);
       const last = cursor(rows.at(-1));
       return {
-        messages: withReactions(peerKey, rows),
+        messages: hydrateMessages(peerKey, rows),
         older:
           first && (ascending ? existsPast(first, "<") : more) ? first : null,
         newer:
@@ -937,20 +922,20 @@ export function createMessagingRepository<TResult>(
 
     message(peerKey: string, reference: string): MessageRecord | undefined {
       const row = messageRow(peerKey, reference);
-      return row ? withReactions(peerKey, [row])[0] : undefined;
+      return row ? hydrateMessages(peerKey, [row])[0] : undefined;
     },
 
     refs(peerKey: string, references: readonly string[]) {
       const result = new Map<
         string,
-        MessageRow & { quotedKind: AttachmentMetadata["kind"] | null }
+        VisibleMessage & { quotedKind: AttachmentMetadata["kind"] | null }
       >();
       const unique = [...new Set(references)];
       for (let start = 0; start < unique.length; start += 250) {
         const chunk = unique.slice(start, start + 250);
         const rows = db
           .select({
-            ...getTableColumns(messages),
+            ...visibleMessageColumns,
             quotedKind: sql<
               AttachmentMetadata["kind"] | null
             >`json_extract(${messageAttachments.file}, '$.kind')`,
@@ -998,12 +983,7 @@ export function createMessagingRepository<TResult>(
             .returning({ id: messages.id })
             .all().length;
         }
-        if (!count) return false;
-        tx.update(conversations)
-          .set({ unread: sql`${conversations.unread} - ${count}` })
-          .where(eq(conversations.peerKey, peerKey))
-          .run();
-        return true;
+        return count > 0;
       });
       if (read) changed({ history: [peerKey], summaries: true, unread: true });
     },
@@ -1099,31 +1079,23 @@ export function createMessagingRepository<TResult>(
             AttachmentMetadata["kind"] | null
           >`json_extract(${messageAttachments.file}, '$.kind')`,
         })
-        .from(messagePins)
-        .innerJoin(messages, eq(messagePins.messageId, messages.id))
+        .from(messages)
         .leftJoin(
           messageAttachments,
-          eq(messagePins.messageId, messageAttachments.messageId),
+          eq(messages.id, messageAttachments.messageId),
         )
-        .where(and(eq(messagePins.peerKey, peerKey), liveMessage(peerKey)))
-        .orderBy(desc(messagePins.pinnedAt), desc(messagePins.messageId))
+        .where(and(liveMessage(peerKey), isNotNull(messages.pinnedAt)))
+        .orderBy(desc(messages.pinnedAt), desc(messages.id))
         .all();
     },
 
     toggleMessagePin(peerKey: string, reference: string) {
       const row = messageRow(peerKey, reference);
-      if (!row || row.deletedAt !== null) return;
-      db.transaction((tx) => {
-        const removed = tx
-          .delete(messagePins)
-          .where(eq(messagePins.messageId, row.id))
-          .returning({ id: messagePins.messageId })
-          .get();
-        if (!removed)
-          tx.insert(messagePins)
-            .values({ messageId: row.id, peerKey, pinnedAt: Date.now() })
-            .run();
-      });
+      if (!row) return;
+      db.update(messages)
+        .set({ pinnedAt: row.pinnedAt === null ? Date.now() : null })
+        .where(eq(messages.id, row.id))
+        .run();
       changed({ history: [peerKey] });
     },
 
@@ -1161,18 +1133,6 @@ export function createMessagingRepository<TResult>(
         tx.delete(pendingMessageEdits)
           .where(inArray(pendingMessageEdits.peerKey, peers))
           .run();
-        tx.delete(messagePins).where(inArray(messagePins.peerKey, peers)).run();
-        tx.delete(messageTimeLocks)
-          .where(
-            inArray(
-              messageTimeLocks.messageId,
-              tx
-                .select({ id: messages.id })
-                .from(messages)
-                .where(inArray(messages.peerKey, peers)),
-            ),
-          )
-          .run();
         tx.update(messages)
           .set({
             deletedAt,
@@ -1180,6 +1140,7 @@ export function createMessagingRepository<TResult>(
             rumorJson: null,
             failure: null,
             replyTo: null,
+            pinnedAt: null,
             isUnread: false,
           })
           .where(
@@ -1192,7 +1153,6 @@ export function createMessagingRepository<TResult>(
         tx.update(conversations)
           .set({
             deletedAt,
-            unread: 0,
             draft: "",
             draftReplyTo: null,
             pinnedRank: null,
@@ -1219,6 +1179,7 @@ export function createMessagingRepository<TResult>(
             rumorJson: null,
             failure: null,
             replyTo: null,
+            pinnedAt: null,
             isUnread: false,
           })
           .where(
@@ -1227,22 +1188,6 @@ export function createMessagingRepository<TResult>(
           .returning({ id: messages.id, eventId: messages.eventId })
           .all();
         if (removed.length === 0) return;
-        tx.delete(messagePins)
-          .where(
-            inArray(
-              messagePins.messageId,
-              removed.map(({ id }) => id),
-            ),
-          )
-          .run();
-        tx.delete(messageTimeLocks)
-          .where(
-            inArray(
-              messageTimeLocks.messageId,
-              removed.map(({ id }) => id),
-            ),
-          )
-          .run();
         tx.delete(messageReactions)
           .where(
             and(
@@ -1254,7 +1199,6 @@ export function createMessagingRepository<TResult>(
             ),
           )
           .run();
-        recountUnread(tx, peerKey);
       });
       changed({
         history: [peerKey],
@@ -1326,20 +1270,26 @@ export function createMessagingRepository<TResult>(
     },
 
     attachment(peerKey: string, id: string) {
-      const row = messageRow(peerKey, id);
-      if (row?.contentType !== "attachment") return;
       const stored = db
-        .select()
+        .select({
+          ...getTableColumns(messageAttachments),
+          direction: messages.direction,
+          status: messages.status,
+        })
         .from(messageAttachments)
-        .where(eq(messageAttachments.messageId, row.id))
+        .innerJoin(messages, eq(messages.id, messageAttachments.messageId))
+        .where(
+          and(
+            liveMessage(peerKey),
+            eq(messages.contentType, "attachment"),
+            or(eq(messages.id, id), eq(messages.eventId, id)),
+          ),
+        )
         .get();
-      if (stored)
-        return {
-          ...stored,
-          peerKey,
-          direction: row.direction,
-          status: row.status,
-        };
+      if (stored) {
+        const { hash, file, ...attachment } = stored;
+        return { ...attachment, file: { ...file, hash }, peerKey };
+      }
     },
 
     hasAttachment(hash: string, pendingOnly = false) {
@@ -1354,7 +1304,7 @@ export function createMessagingRepository<TResult>(
               pendingOnly
                 ? inArray(messages.status, ["pending", "failed"])
                 : undefined,
-              sql`json_extract(${messageAttachments.file}, '$.hash') = ${hash}`,
+              eq(messageAttachments.hash, hash),
             ),
           )
           .get(),
@@ -1417,10 +1367,10 @@ export function createMessagingRepository<TResult>(
 
     acceptRequest(peerKey: string, inputs: MessageInput[]) {
       const inserted = db.transaction((tx) => {
-        tx.insert(communicationGrants)
+        tx.insert(peerPermissions)
           .values({ publicKey: peerKey, approved: true })
           .onConflictDoUpdate({
-            target: communicationGrants.publicKey,
+            target: peerPermissions.publicKey,
             set: { approved: true },
           })
           .run();
@@ -1448,8 +1398,7 @@ export function createMessagingRepository<TResult>(
         .from(messages)
         .where(
           and(
-            eq(messages.status, "sent"),
-            eq(messages.contentType, "attachment"),
+            sql`${messages.status} = 'sent' AND ${messages.contentType} = 'attachment'`,
             isNotNull(messages.rumorJson),
             isNull(messages.deletedAt),
           ),
@@ -1494,6 +1443,7 @@ export function createMessagingRepository<TResult>(
       id: string,
       status: "pending" | "sent" | "failed",
       failure: string | null = null,
+      peerKey?: string,
     ) {
       const updated = db
         .update(messages)
@@ -1511,8 +1461,15 @@ export function createMessagingRepository<TResult>(
             eq(messages.id, id),
             isNull(messages.deletedAt),
             eq(messages.direction, "outgoing"),
+            peerKey === undefined ? undefined : eq(messages.peerKey, peerKey),
             status === "pending"
-              ? eq(messages.status, "failed")
+              ? and(
+                  eq(messages.status, "failed"),
+                  or(
+                    isNotNull(messages.rumorJson),
+                    eq(messages.contentType, "attachment"),
+                  ),
+                )
               : inArray(messages.status, ["pending", "failed"]),
           ),
         )

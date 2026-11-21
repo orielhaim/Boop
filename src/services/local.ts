@@ -6,7 +6,7 @@ import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
 import { asc } from "drizzle-orm";
-import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
+import { randomUUID } from "expo-crypto";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { useEffect } from "react";
@@ -24,7 +24,7 @@ import {
 } from "@/core/calling/trystero";
 import { initializeIdentity } from "@/core/identity";
 import { toNpub } from "@/core/identity/keys";
-import { createMessagingRuntime } from "@/core/messaging";
+import { createMessagingService } from "@/core/messaging/runtime";
 import { createConversationFeed } from "@/core/messaging/conversations";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { createHistoryLoader } from "@/core/messaging/history";
@@ -54,8 +54,6 @@ import { createTranslationCache } from "@/db/translations";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
 import { useChatsEnabled, useLocal } from "./local-context";
-
-export { useChatsEnabled, useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
@@ -88,8 +86,10 @@ async function start() {
       translationPreviewTarget(db),
     );
     const messagingStarted = performance.now();
-    const messaging = createMessagingRuntime({
-      db,
+    const messaging = createMessagingService({
+      readState: (key) => preference(db, key),
+      writeState: (key, value) => setPreference(db, key, value),
+      createId: randomUUID,
       signer,
       chat,
       privacy,
@@ -234,7 +234,6 @@ async function start() {
       translation: createTranslationService(
         createTranslationCache(db),
         loadTranslationEngine,
-        (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
       ),
       identity,
       avatars,

@@ -7,7 +7,7 @@ import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { Screen } from "@/components/ui/kit";
 import { contacts } from "@/db/schema";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function ContactPreferences() {
   const { t } = useTranslation(namespaces);

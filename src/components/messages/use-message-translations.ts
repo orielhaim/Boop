@@ -13,7 +13,7 @@ import {
   viewportMessages,
 } from "@/core/translation/service";
 import { resolveLanguage } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import type { DetailMessage } from "./detail-adapter";
 
 const maxRemembered = 120;
@@ -98,10 +98,9 @@ export function useMessageTranslations(
     };
     void (async () => {
       const cached = new Map(
-        (await translation.cached(tasks, settings.target)).map((row) => [
-          row.messageId,
-          row.translatedText,
-        ]),
+        translation
+          .cached(tasks, settings.target)
+          .map((row) => [row.messageId, row.translatedText]),
       );
       const hits = new Map<string, TranslationOutcome>();
       for (const { id, text } of tasks) {

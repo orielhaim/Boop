@@ -3,12 +3,8 @@ export const giftWrapOverlap = 3 * day;
 const auditInterval = 7 * day;
 const auditLookback = 30 * day;
 
-export function inboxCatchup(
-  beganAt: number,
-  raw: string | null,
-  legacy: string | null,
-) {
-  const [saved, audited] = (raw ?? legacy ?? "").split(":").map(Number);
+export function inboxCatchup(beganAt: number, raw: string | null) {
+  const [saved, audited] = (raw ?? "").split(":").map(Number);
   const checkpoint =
     Number.isSafeInteger(saved) && saved > 0 && saved <= beganAt ? saved : 0;
   const lastAudit =

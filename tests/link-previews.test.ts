@@ -13,7 +13,7 @@ import { createPrivacy } from "../src/core/privacy";
 import { scheduleUnlock } from "../src/core/messaging/special-messages/timelock";
 import { openLinkPreviewCache } from "../src/db/link-previews";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const page = "https://public.example.com/";
@@ -27,9 +27,7 @@ const peer = "2".repeat(64);
 const target = { peer, id: "visible", url: page };
 
 function database(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   return drizzle(sqlite, { schema });
 }
 

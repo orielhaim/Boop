@@ -7,7 +7,7 @@ import { useBlockAction, usePrivacy } from "@/components/ui/privacy-actions";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 function BlockedRow({
   publicKey,

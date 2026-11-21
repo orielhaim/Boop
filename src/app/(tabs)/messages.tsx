@@ -17,7 +17,7 @@ import { PeerActions } from "@/components/ui/peer-actions";
 import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime, formatDuration } from "@/i18n/format";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 function keys(items: ConversationListItem[]) {

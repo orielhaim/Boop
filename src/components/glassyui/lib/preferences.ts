@@ -40,7 +40,7 @@ function update(next: Partial<SystemAccessibility>) {
   }
 
   snapshot = merged;
-  listeners.forEach((listener) => listener());
+  for (const listener of listeners) listener();
 }
 
 function warnReadFailure(cause: Error) {
@@ -94,7 +94,7 @@ export function subscribeToSystemAccessibility(listener: () => void) {
 
     if (listeners.size > 0) return;
 
-    subscriptions.forEach((subscription) => subscription.remove());
+    for (const subscription of subscriptions) subscription.remove();
     subscriptions = [];
   };
 }

@@ -7,133 +7,13 @@ export default {
       {
         "idx": 0,
         "version": "6",
-        "when": 1795027609099,
-        "tag": "0000_foundation",
-        "breakpoints": true
-      },
-      {
-        "idx": 1,
-        "version": "6",
-        "when": 1795030081643,
-        "tag": "0001_chat",
-        "breakpoints": true
-      },
-      {
-        "idx": 2,
-        "version": "6",
-        "when": 1795037339387,
-        "tag": "0002_handy_iron_man",
-        "breakpoints": true
-      },
-      {
-        "idx": 3,
-        "version": "6",
-        "when": 1795040693995,
-        "tag": "0003_crazy_jetstream",
-        "breakpoints": true
-      },
-      {
-        "idx": 4,
-        "version": "6",
-        "when": 1795042927453,
-        "tag": "0004_cloudy_inertia",
-        "breakpoints": true
-      },
-      {
-        "idx": 5,
-        "version": "6",
-        "when": 1795049214901,
-        "tag": "0005_outgoing_wonder_man",
-        "breakpoints": true
-      },
-      {
-        "idx": 6,
-        "version": "6",
-        "when": 1795052076020,
-        "tag": "0006_tranquil_molly_hayes",
-        "breakpoints": true
-      },
-      {
-        "idx": 7,
-        "version": "6",
-        "when": 1795055109918,
-        "tag": "0007_bizarre_abomination",
-        "breakpoints": true
-      },
-      {
-        "idx": 8,
-        "version": "6",
-        "when": 1795056751463,
-        "tag": "0008_cool_jack_power",
-        "breakpoints": true
-      },
-      {
-        "idx": 9,
-        "version": "6",
-        "when": 1795092808831,
-        "tag": "0009_moaning_hydra",
-        "breakpoints": true
-      },
-      {
-        "idx": 10,
-        "version": "6",
-        "when": 1795106492286,
-        "tag": "0010_young_turbo",
-        "breakpoints": true
-      },
-      {
-        "idx": 11,
-        "version": "6",
-        "when": 1795179766152,
-        "tag": "0011_panoramic_snowbird",
-        "breakpoints": true
-      },
-      {
-        "idx": 12,
-        "version": "6",
-        "when": 1795278735472,
-        "tag": "0012_medical_sphinx",
-        "breakpoints": true
-      },
-      {
-        "idx": 13,
-        "version": "6",
-        "when": 1795288277151,
-        "tag": "0013_lumpy_captain_universe",
-        "breakpoints": true
-      },
-      {
-        "idx": 14,
-        "version": "6",
-        "when": 1795291320784,
-        "tag": "0014_rich_karma",
-        "breakpoints": true
-      },
-      {
-        "idx": 15,
-        "version": "6",
-        "when": 1795293196067,
-        "tag": "0015_deep_boomerang",
+        "when": 1795296413177,
+        "tag": "0000_initial",
         "breakpoints": true
       }
     ]
   },
   "migrations": {
-    "m0000": "CREATE TABLE `call_history` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`peer_key` text NOT NULL,\n\t`direction` text NOT NULL,\n\t`outcome` text NOT NULL,\n\t`started_at` integer NOT NULL,\n\t`duration_seconds` integer DEFAULT 0 NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `contacts` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`avatar_url` text,\n\t`favorite` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `conversations` (\n\t`peer_key` text PRIMARY KEY NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`unread` integer DEFAULT 0 NOT NULL,\n\t`draft` text DEFAULT '' NOT NULL,\n\t`draft_reply_to` text\n);\n--> statement-breakpoint\nCREATE TABLE `messages` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`event_id` text,\n\t`peer_key` text NOT NULL,\n\t`direction` text NOT NULL,\n\t`body` text NOT NULL,\n\t`sent_at` integer NOT NULL,\n\t`reply_to` text,\n\tFOREIGN KEY (`peer_key`) REFERENCES `conversations`(`peer_key`) ON UPDATE no action ON DELETE no action\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `messages_event_id_unique` ON `messages` (`event_id`);--> statement-breakpoint\nCREATE INDEX `messages_peer_time` ON `messages` (`peer_key`,`sent_at`);--> statement-breakpoint\nCREATE TABLE `relay_settings` (\n\t`url` text PRIMARY KEY NOT NULL,\n\t`enabled` integer DEFAULT true NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `settings` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL\n);\n",
-    "m0001": "CREATE TABLE `message_reactions` (\n\t`peer_key` text NOT NULL,\n\t`target_id` text NOT NULL,\n\t`author` text NOT NULL,\n\t`emoji` text NOT NULL,\n\t`removed` integer DEFAULT false NOT NULL,\n\tPRIMARY KEY(`peer_key`, `target_id`, `author`, `emoji`),\n\tFOREIGN KEY (`peer_key`) REFERENCES `conversations`(`peer_key`) ON UPDATE no action ON DELETE no action\n);\n--> statement-breakpoint\nDROP INDEX `messages_peer_time`;--> statement-breakpoint\nALTER TABLE `messages` ADD `sender_key` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `recipient_key` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `status` text DEFAULT 'received' NOT NULL;--> statement-breakpoint\nALTER TABLE `messages` ADD `failure` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `deleted_at` integer;--> statement-breakpoint\nALTER TABLE `messages` ADD `is_unread` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `messages` ADD `rumor_json` text;--> statement-breakpoint\nALTER TABLE `messages` ADD `content_type` text DEFAULT 'text' NOT NULL;--> statement-breakpoint\nCREATE INDEX `messages_peer_order` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_unread` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"is_unread\" = 1 AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_outbox` ON `messages` (`sent_at`,`id`) WHERE \"messages\".\"status\" = 'pending' AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `pinned_rank` integer;--> statement-breakpoint\nALTER TABLE `conversations` ADD `muted` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `archived` integer DEFAULT false NOT NULL;--> statement-breakpoint\nALTER TABLE `conversations` ADD `deleted_at` integer;--> statement-breakpoint\nUPDATE `messages`\nSET `sender_key` = CASE `direction` WHEN 'incoming' THEN `peer_key` ELSE (SELECT `value` FROM `settings` WHERE `key` = 'identity.publicKey') END,\n    `recipient_key` = CASE `direction` WHEN 'outgoing' THEN `peer_key` ELSE (SELECT `value` FROM `settings` WHERE `key` = 'identity.publicKey') END,\n    `status` = CASE WHEN `direction` = 'incoming' THEN 'received' WHEN `event_id` IS NOT NULL THEN 'synced' ELSE 'failed' END,\n    `failure` = CASE WHEN `direction` = 'outgoing' AND `event_id` IS NULL THEN 'legacy_message' END;--> statement-breakpoint\nWITH unread_rank AS (\n    SELECT `id`, `peer_key`, row_number() OVER (PARTITION BY `peer_key` ORDER BY `sent_at` DESC, `id` DESC) AS rank\n    FROM `messages` WHERE `direction` = 'incoming'\n)\nUPDATE `messages` SET `is_unread` = 1 WHERE `id` IN (\n    SELECT unread_rank.`id` FROM unread_rank JOIN `conversations` USING (`peer_key`)\n    WHERE unread_rank.rank <= `conversations`.`unread`\n);--> statement-breakpoint\nUPDATE `conversations` SET `unread` = (SELECT count(*) FROM `messages` WHERE `messages`.`peer_key` = `conversations`.`peer_key` AND `is_unread` = 1);\n",
-    "m0002": "ALTER TABLE `call_history` ADD `answered_at` integer;--> statement-breakpoint\nALTER TABLE `call_history` ADD `ended_at` integer;",
-    "m0003": "ALTER TABLE `contacts` ADD `allow_incoming_video` integer DEFAULT false NOT NULL;",
-    "m0004": "ALTER TABLE `relay_settings` ADD `general` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `inbox` integer DEFAULT true NOT NULL;--> statement-breakpoint\nALTER TABLE `relay_settings` ADD `discovery` integer DEFAULT false NOT NULL;",
-    "m0005": "CREATE TABLE `message_translations` (\n\t`message_id` text NOT NULL,\n\t`content_hash` text NOT NULL,\n\t`target_language` text NOT NULL,\n\t`source_language` text NOT NULL,\n\t`translated_text` text NOT NULL,\n\t`engine` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`message_id`, `target_language`, `content_hash`),\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE TRIGGER `invalidate_message_translations`\nAFTER UPDATE OF `body`, `deleted_at` ON `messages`\nWHEN OLD.`body` IS NOT NEW.`body` OR NEW.`deleted_at` IS NOT NULL\nBEGIN\n  DELETE FROM `message_translations` WHERE `message_id` = NEW.`id`;\nEND;\r\n",
-    "m0006": "CREATE INDEX `conversations_order` ON `conversations` (\"pinned_rank\" IS NULL,`pinned_rank`,\"updated_at\" DESC,`peer_key`) WHERE \"conversations\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `conversations_unread` ON `conversations` (`unread`) WHERE \"conversations\".\"deleted_at\" IS NULL AND \"conversations\".\"unread\" > 0;",
-    "m0007": "ALTER TABLE `call_history` ADD `participant_keys` text DEFAULT '[]' NOT NULL;",
-    "m0008": "ALTER TABLE `call_history` ADD `invitation_ids` text DEFAULT '[]' NOT NULL;",
-    "m0009": "CREATE TABLE `message_timelocks` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`chain_hash` text NOT NULL,\n\t`unlock_round` integer NOT NULL,\n\t`requested_at` integer NOT NULL,\n\t`round_time` integer NOT NULL,\n\t`opened_at` integer,\n\t`retry_at` integer,\n\t`attempts` integer DEFAULT 0 NOT NULL,\n\t`error` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_timelocks_pending` ON `message_timelocks` (`retry_at`,`unlock_round`,`message_id`) WHERE \"message_timelocks\".\"retry_at\" IS NOT NULL;",
-    "m0010": "CREATE TABLE `blocked_identities` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`blocked_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `communication_grants` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`initiated` integer DEFAULT false NOT NULL,\n\t`approved` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `message_requests` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`received_at` integer NOT NULL,\n\t`declined_through` integer DEFAULT 0 NOT NULL,\n\t`message` text\n);\n--> statement-breakpoint\nINSERT INTO communication_grants (public_key, initiated)\nSELECT peer_key, 1 FROM messages WHERE direction = 'outgoing' AND status = 'sent'\nUNION SELECT peer_key, 1 FROM call_history WHERE direction = 'outgoing' AND answered_at IS NOT NULL AND outcome IN ('completed', 'answered', 'remote-disconnected');\n--> statement-breakpoint\nCREATE TRIGGER grant_on_message_delivery AFTER UPDATE OF status ON messages\nWHEN NEW.direction = 'outgoing' AND NEW.status = 'sent' AND OLD.status <> 'sent'\nBEGIN\n  INSERT INTO communication_grants (public_key, initiated) VALUES (NEW.peer_key, 1)\n  ON CONFLICT(public_key) DO UPDATE SET initiated = 1;\nEND;\n",
-    "m0011": "CREATE TABLE `avatar_cache` (\r\n\t`public_key` text PRIMARY KEY NOT NULL,\r\n\t`source_url` text NOT NULL,\r\n\t`filename` text NOT NULL,\r\n\t`size` integer NOT NULL,\r\n\t`fetched_at` integer NOT NULL,\r\n\t`accessed_at` integer NOT NULL\r\n);\r\n--> statement-breakpoint\r\nCREATE TABLE `nostr_profiles` (\r\n\t`public_key` text PRIMARY KEY NOT NULL,\r\n\t`event_id` text NOT NULL,\r\n\t`created_at` integer NOT NULL,\r\n\t`fields` text NOT NULL,\r\n\t`picture` text,\r\n\t`name` text,\r\n\t`about` text,\r\n\t`checked_at` integer NOT NULL\r\n);\r\n--> statement-breakpoint\r\nUPDATE `contacts` SET `avatar_url` = NULL WHERE `avatar_url` IS NOT NULL;\r\n",
-    "m0012": "CREATE TABLE `attachment_cache` (\r\n\t`owner` text NOT NULL,\r\n\t`hash` text NOT NULL,\r\n\t`source` text NOT NULL,\r\n\t`size` integer NOT NULL,\r\n\t`accessed_at` integer NOT NULL,\r\n\tPRIMARY KEY(`owner`, `hash`, `source`)\r\n);\r\n--> statement-breakpoint\r\nCREATE TABLE `message_attachments` (\r\n\t`message_id` text PRIMARY KEY NOT NULL,\r\n\t`file` text NOT NULL,\r\n\t`url` text,\r\n\t`listened` integer DEFAULT false NOT NULL,\r\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\r\n);\r\n--> statement-breakpoint\r\nCREATE TRIGGER `message_attachment_delete`\r\nAFTER UPDATE OF `deleted_at` ON `messages`\r\nWHEN NEW.`deleted_at` IS NOT NULL\r\nBEGIN\r\n  DELETE FROM `message_attachments` WHERE `message_id` = NEW.`id`;\r\nEND;\r\n",
-    "m0013": "CREATE TABLE `link_preview_cache` (\n\t`url` text PRIMARY KEY NOT NULL,\n\t`site_name` text,\n\t`title` text,\n\t`description` text,\n\t`image` text,\n\t`fetched_at` integer NOT NULL,\n\t`expires_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `message_pins` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`peer_key` text NOT NULL,\n\t`pinned_at` integer NOT NULL,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_pins_peer` ON `message_pins` (`peer_key`,`pinned_at`);",
-    "m0014": "CREATE TABLE `message_edit_outbox` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`message_id` text NOT NULL,\n\t`rumor_json` text NOT NULL,\n\t`status` text NOT NULL,\n\t`failure` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_edit_outbox_message` ON `message_edit_outbox` (`message_id`);--> statement-breakpoint\nCREATE INDEX `message_edit_outbox_status` ON `message_edit_outbox` (`status`);--> statement-breakpoint\nCREATE UNIQUE INDEX `message_edit_outbox_recipient` ON `message_edit_outbox` (`message_id`) WHERE \"message_edit_outbox\".\"status\" IN ('pending', 'failed');--> statement-breakpoint\nCREATE TABLE `message_revisions` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`message_id` text NOT NULL,\n\t`previous_revision_id` text,\n\t`body` text NOT NULL,\n\t`timestamp` integer NOT NULL,\n\t`depth` integer NOT NULL,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_revisions_history` ON `message_revisions` (`message_id`,`depth`,`timestamp`,`revision_id`);--> statement-breakpoint\nCREATE TABLE `pending_message_edits` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`target_id` text NOT NULL,\n\t`previous_revision_id` text NOT NULL,\n\t`peer_key` text NOT NULL,\n\t`sender_key` text NOT NULL,\n\t`recipient_key` text NOT NULL,\n\t`body` text NOT NULL,\n\t`timestamp` integer NOT NULL,\n\t`expires_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE INDEX `pending_message_edits_parent` ON `pending_message_edits` (`target_id`,`previous_revision_id`);--> statement-breakpoint\nCREATE INDEX `pending_message_edits_peer` ON `pending_message_edits` (`peer_key`);--> statement-breakpoint\nCREATE INDEX `pending_message_edits_expiry` ON `pending_message_edits` (`expires_at`);--> statement-breakpoint\nALTER TABLE `messages` ADD `edited_at` integer;--> statement-breakpoint\nALTER TABLE `messages` ADD `revision_id` text;\n--> statement-breakpoint\nCREATE TRIGGER `remove_deleted_message_edits`\nAFTER UPDATE OF `deleted_at` ON `messages`\nWHEN OLD.`deleted_at` IS NULL AND NEW.`deleted_at` IS NOT NULL\nBEGIN\n  DELETE FROM `message_revisions` WHERE `message_id` = NEW.`id`;\n  DELETE FROM `message_edit_outbox` WHERE `message_id` = NEW.`id`;\n  DELETE FROM `pending_message_edits` WHERE `target_id` = NEW.`event_id`;\n  UPDATE `messages` SET `edited_at` = NULL, `revision_id` = NULL WHERE `id` = NEW.`id`;\nEND;\n--> statement-breakpoint\nCREATE TRIGGER `remove_blocked_pending_edits`\nAFTER INSERT ON `blocked_identities`\nBEGIN\n  DELETE FROM `pending_message_edits` WHERE `peer_key` = NEW.`public_key`;\nEND;\n",
-    "m0015": "CREATE TABLE `attachment_uploads` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`native_id` text NOT NULL,\n\t`owner` text NOT NULL,\n\t`peer` text NOT NULL,\n\t`hash` text NOT NULL,\n\t`source` text NOT NULL,\n\t`origin` text NOT NULL,\n\t`result_url` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `message_attachments`(`message_id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `attachment_uploads_native_id_unique` ON `attachment_uploads` (`native_id`);"
+    "m0000": "CREATE TABLE `attachment_cache` (\n\t`owner` text NOT NULL,\n\t`hash` text NOT NULL,\n\t`source` text NOT NULL,\n\t`size` integer NOT NULL,\n\t`accessed_at` integer NOT NULL,\n\tPRIMARY KEY(`owner`, `source`, `hash`)\n);\n--> statement-breakpoint\nCREATE TABLE `attachment_uploads` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`native_id` text NOT NULL,\n\t`owner` text NOT NULL,\n\t`peer` text NOT NULL,\n\t`hash` text NOT NULL,\n\t`source` text NOT NULL,\n\t`origin` text NOT NULL,\n\t`result_url` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `message_attachments`(`message_id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `attachment_uploads_native_id_unique` ON `attachment_uploads` (`native_id`);--> statement-breakpoint\nCREATE TABLE `avatar_cache` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`source_url` text NOT NULL,\n\t`filename` text NOT NULL,\n\t`size` integer NOT NULL,\n\t`fetched_at` integer NOT NULL,\n\t`accessed_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `call_history` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`peer_key` text NOT NULL,\n\t`participant_keys` text DEFAULT '[]' NOT NULL,\n\t`invitation_ids` text DEFAULT '[]' NOT NULL,\n\t`direction` text NOT NULL,\n\t`outcome` text NOT NULL,\n\t`started_at` integer NOT NULL,\n\t`answered_at` integer,\n\t`ended_at` integer,\n\t`duration_seconds` integer DEFAULT 0 NOT NULL\n);\n--> statement-breakpoint\nCREATE INDEX `call_history_recent` ON `call_history` (`started_at`);--> statement-breakpoint\nCREATE TABLE `contacts` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`name` text NOT NULL,\n\t`local_avatar_file` text,\n\t`favorite` integer DEFAULT false NOT NULL,\n\t`allow_incoming_video` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `conversations` (\n\t`peer_key` text PRIMARY KEY NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`draft` text DEFAULT '' NOT NULL,\n\t`draft_reply_to` text,\n\t`pinned_rank` integer,\n\t`muted` integer DEFAULT false NOT NULL,\n\t`archived` integer DEFAULT false NOT NULL,\n\t`deleted_at` integer\n);\n--> statement-breakpoint\nCREATE INDEX `conversations_order` ON `conversations` (\"pinned_rank\" IS NULL,`pinned_rank`,\"updated_at\" DESC,`peer_key`) WHERE \"conversations\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE TABLE `link_preview_cache` (\n\t`url` text PRIMARY KEY NOT NULL,\n\t`site_name` text,\n\t`title` text,\n\t`description` text,\n\t`image` text,\n\t`fetched_at` integer NOT NULL,\n\t`expires_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `message_attachments` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`hash` text NOT NULL,\n\t`file` text NOT NULL,\n\t`url` text,\n\t`listened` integer DEFAULT false NOT NULL,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_attachments_hash` ON `message_attachments` (`hash`);--> statement-breakpoint\nCREATE TABLE `message_edit_outbox` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`message_id` text NOT NULL,\n\t`rumor_json` text NOT NULL,\n\t`status` text NOT NULL,\n\t`failure` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_edit_outbox_message` ON `message_edit_outbox` (`message_id`);--> statement-breakpoint\nCREATE INDEX `message_edit_outbox_status` ON `message_edit_outbox` (`status`);--> statement-breakpoint\nCREATE UNIQUE INDEX `message_edit_outbox_recipient` ON `message_edit_outbox` (`message_id`) WHERE \"message_edit_outbox\".\"status\" IN ('pending', 'failed');--> statement-breakpoint\nCREATE TABLE `message_reactions` (\n\t`peer_key` text NOT NULL,\n\t`target_id` text NOT NULL,\n\t`author` text NOT NULL,\n\t`emoji` text NOT NULL,\n\t`removed` integer DEFAULT false NOT NULL,\n\tPRIMARY KEY(`peer_key`, `target_id`, `author`, `emoji`),\n\tFOREIGN KEY (`peer_key`) REFERENCES `conversations`(`peer_key`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE TABLE `message_requests` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`received_at` integer NOT NULL,\n\t`messages` text NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `message_revisions` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`message_id` text NOT NULL,\n\t`previous_revision_id` text,\n\t`body` text NOT NULL,\n\t`timestamp` integer NOT NULL,\n\t`depth` integer NOT NULL,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_revisions_history` ON `message_revisions` (`message_id`,`depth`,`timestamp`,`revision_id`);--> statement-breakpoint\nCREATE TABLE `message_timelocks` (\n\t`message_id` text PRIMARY KEY NOT NULL,\n\t`ciphertext` text NOT NULL,\n\t`chain_hash` text NOT NULL,\n\t`unlock_round` integer NOT NULL,\n\t`requested_at` integer NOT NULL,\n\t`round_time` integer NOT NULL,\n\t`opened_at` integer,\n\t`retry_at` integer,\n\t`attempts` integer DEFAULT 0 NOT NULL,\n\t`error` text,\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE INDEX `message_timelocks_pending` ON `message_timelocks` (`retry_at`,`unlock_round`,`message_id`) WHERE \"message_timelocks\".\"retry_at\" IS NOT NULL;--> statement-breakpoint\nCREATE TABLE `message_translations` (\n\t`message_id` text NOT NULL,\n\t`target_language` text NOT NULL,\n\t`source_language` text NOT NULL,\n\t`translated_text` text NOT NULL,\n\tPRIMARY KEY(`message_id`, `target_language`),\n\tFOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade\n);\n--> statement-breakpoint\nCREATE TABLE `messages` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`event_id` text,\n\t`peer_key` text NOT NULL,\n\t`direction` text NOT NULL,\n\t`body` text NOT NULL,\n\t`sent_at` integer NOT NULL,\n\t`pinned_at` integer,\n\t`edited_at` integer,\n\t`revision_id` text,\n\t`reply_to` text,\n\t`sender_key` text,\n\t`recipient_key` text,\n\t`status` text DEFAULT 'received' NOT NULL,\n\t`failure` text,\n\t`deleted_at` integer,\n\t`is_unread` integer DEFAULT false NOT NULL,\n\t`rumor_json` text,\n\t`content_type` text DEFAULT 'text' NOT NULL,\n\tFOREIGN KEY (`peer_key`) REFERENCES `conversations`(`peer_key`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"messages_read_direction\" CHECK(\"messages\".\"is_unread\" = 0 OR \"messages\".\"direction\" = 'incoming')\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `messages_event_id_unique` ON `messages` (`event_id`);--> statement-breakpoint\nCREATE INDEX `messages_peer_order` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_unread` ON `messages` (`peer_key`,`sent_at`,`id`) WHERE \"messages\".\"is_unread\" = 1 AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_pinned` ON `messages` (`peer_key`,`pinned_at`,`id`) WHERE \"messages\".\"pinned_at\" IS NOT NULL AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE INDEX `messages_attachment_copies` ON `messages` (`sent_at`,`id`) WHERE \"messages\".\"status\" = 'sent' AND \"messages\".\"content_type\" = 'attachment' AND \"messages\".\"deleted_at\" IS NULL AND \"messages\".\"rumor_json\" IS NOT NULL;--> statement-breakpoint\nCREATE INDEX `messages_outbox` ON `messages` (`sent_at`,`id`) WHERE \"messages\".\"status\" = 'pending' AND \"messages\".\"deleted_at\" IS NULL;--> statement-breakpoint\nCREATE TABLE `nostr_profiles` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`event_id` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`fields` text NOT NULL,\n\t`picture` text,\n\t`name` text\n);\n--> statement-breakpoint\nCREATE TABLE `peer_permissions` (\n\t`public_key` text PRIMARY KEY NOT NULL,\n\t`blocked_at` integer,\n\t`initiated` integer DEFAULT false NOT NULL,\n\t`approved` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `pending_message_edits` (\n\t`revision_id` text PRIMARY KEY NOT NULL,\n\t`target_id` text NOT NULL,\n\t`previous_revision_id` text NOT NULL,\n\t`peer_key` text NOT NULL,\n\t`sender_key` text NOT NULL,\n\t`recipient_key` text NOT NULL,\n\t`body` text NOT NULL,\n\t`timestamp` integer NOT NULL,\n\t`expires_at` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE INDEX `pending_message_edits_parent` ON `pending_message_edits` (`target_id`,`previous_revision_id`);--> statement-breakpoint\nCREATE INDEX `pending_message_edits_peer` ON `pending_message_edits` (`peer_key`);--> statement-breakpoint\nCREATE INDEX `pending_message_edits_expiry` ON `pending_message_edits` (`expires_at`);--> statement-breakpoint\nCREATE TABLE `relay_settings` (\n\t`url` text PRIMARY KEY NOT NULL,\n\t`enabled` integer DEFAULT true NOT NULL,\n\t`general` integer DEFAULT true NOT NULL,\n\t`inbox` integer DEFAULT true NOT NULL,\n\t`discovery` integer DEFAULT false NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE `settings` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL\n);\n--> statement-breakpoint\r\nCREATE TRIGGER grant_on_message_delivery\nAFTER UPDATE OF status ON messages\nWHEN NEW.direction = 'outgoing' AND NEW.status = 'sent' AND OLD.status <> 'sent'\nBEGIN\n  INSERT INTO peer_permissions (public_key, initiated) VALUES (NEW.peer_key, 1)\n  ON CONFLICT(public_key) DO UPDATE SET initiated = 1;\nEND;\n--> statement-breakpoint\nCREATE TRIGGER invalidate_message_translations\nAFTER UPDATE OF body ON messages\nWHEN OLD.body IS NOT NEW.body\nBEGIN\n  DELETE FROM message_translations WHERE message_id = NEW.id;\nEND;\n--> statement-breakpoint\nCREATE TRIGGER remove_deleted_message_content\nAFTER UPDATE OF deleted_at ON messages\nWHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL\nBEGIN\n  DELETE FROM message_revisions WHERE message_id = NEW.id;\n  DELETE FROM message_edit_outbox WHERE message_id = NEW.id;\n  DELETE FROM pending_message_edits WHERE target_id = NEW.event_id;\n  DELETE FROM message_translations WHERE message_id = NEW.id;\n  DELETE FROM message_attachments WHERE message_id = NEW.id;\n  DELETE FROM message_timelocks WHERE message_id = NEW.id;\n  UPDATE messages SET edited_at = NULL, revision_id = NULL WHERE id = NEW.id;\nEND;\n--> statement-breakpoint\nPRAGMA user_version = 1;\r\n"
   }
 };

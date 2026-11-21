@@ -17,7 +17,7 @@ import {
   type MediaServer,
 } from "@/core/media/servers";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function MediaServers() {
   const { t } = useTranslation(namespaces);

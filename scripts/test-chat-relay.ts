@@ -17,7 +17,7 @@ import {
   TimeLockError,
 } from "../src/core/messaging/special-messages/timelock";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "../tests/db-fixture";
 import { preference, setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 
@@ -43,9 +43,7 @@ type RelayConnection = {
 
 function client(seed: string) {
   const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const chat = createMessagingRepository(db);
   const signer = new NDKPrivateKeySigner(seed.repeat(32));
@@ -104,11 +102,15 @@ async function testOpenLater(
   });
   const queuedMs = performance.now() - started;
   const pending = alice.chat.message(bob.key, localId);
+  const sealed = alice.chat
+    .pending()
+    .find(({ id }) => id === localId)?.rumorJson;
   if (
     !pending?.eventId ||
     pending.status !== "pending" ||
     pending.body ||
-    pending.rumorJson?.includes(text)
+    !sealed ||
+    sealed.includes(text)
   )
     throw Error("Open Later was not sealed in the offline outbox");
   const id = pending.eventId;

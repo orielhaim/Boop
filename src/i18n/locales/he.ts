@@ -268,8 +268,6 @@ export const he = {
     readLocalError: "לא ניתן לקרוא את נתוני השיחות במכשיר.",
     noArchived: "אין שיחות בארכיון",
     startHint: "כדי להתחיל שיחה, אפשר להזין כתובת או לסרוק קוד QR.",
-    testMessageError: "לא ניתן להוסיף את הודעת הבדיקה",
-    testMessage: "הדמיית הודעת בדיקה",
   },
   calls: {
     groupCall: "שיחה קבוצתית",
@@ -502,9 +500,6 @@ export const he = {
     version: "גרסה",
     build: "בילד",
     development: "פיתוח",
-    stressError: "לא ניתן לפתוח את תרחיש בדיקת העומס.",
-    prepareStress: "היסטוריית הבדיקה בהכנה…",
-    openStress: "פתיחת שיחת בדיקה עם 10,000 הודעות",
     callingDiagnostics: "אבחון שיחות",
     checkingCalls: "מתבצעת בדיקה של מערכת השיחות…",
     checkCalls: "בדיקת מערכת השיחות",

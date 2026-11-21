@@ -58,16 +58,23 @@ export function createBlobCache(
     pendingRemoval.delete(key);
   }
 
-  function local(hash: string, source: Source) {
+  function cachedFile({
+    hash,
+    source,
+    size,
+  }: typeof attachmentCache.$inferSelect) {
     if (pendingRemoval.has(fileKey(hash, source))) return;
+    const file = location(hash, source);
+    if (file.exists && file.size === size) return file;
+  }
+
+  function local(hash: string, source: Source) {
     const item = db
       .select()
       .from(attachmentCache)
       .where(cacheKey(hash, source))
       .get();
-    if (!item) return;
-    const file = location(hash, source);
-    if (file.exists && file.size === item.size) return file;
+    return item && cachedFile(item);
   }
 
   function reserve(
@@ -140,7 +147,7 @@ export function createBlobCache(
       const known = new Set<string>();
       for (const source of ["sent", "download"] as const) {
         for (const item of entries(source)) {
-          const file = local(item.hash, source);
+          const file = cachedFile(item);
           if (file && (source === "download" || retainSent(item.hash)))
             known.add(file.name);
           else drop(item.hash, source);
@@ -150,7 +157,7 @@ export function createBlobCache(
     },
     usage(source: Source) {
       return entries(source).reduce(
-        (total, item) => total + (local(item.hash, source)?.size ?? 0),
+        (total, item) => total + (cachedFile(item) ? item.size : 0),
         0,
       );
     },

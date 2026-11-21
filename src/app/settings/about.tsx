@@ -1,5 +1,4 @@
 import Constants from "expo-constants";
-import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
@@ -7,15 +6,14 @@ import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink, Screen, Section } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function About() {
   const { t } = useTranslation(namespaces);
-  const { db, identity, chat, calling, messaging } = useLocal();
+  const { calling, messaging } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   const config = Constants.expoConfig;
   return (
     <Screen>
@@ -38,31 +36,6 @@ export default function About() {
       {__DEV__ ? (
         <>
           <Section>{t("settings:development")}</Section>
-          <Action
-            disabled={seeding || !chatsEnabled}
-            onPress={async () => {
-              setSeeding(true);
-              try {
-                const fixture = await import("@/db/chat-stress");
-                if (!messaging.getChatsEnabled()) return;
-                const { peerKey } = fixture.seedStressConversations(
-                  db,
-                  identity.publicKey,
-                );
-                chat.invalidate();
-                router.push({
-                  pathname: "/chat/[key]",
-                  params: { key: peerKey },
-                });
-              } catch {
-                setNotice(t("settings:stressError"));
-              } finally {
-                setSeeding(false);
-              }
-            }}
-          >
-            {seeding ? t("settings:prepareStress") : t("settings:openStress")}
-          </Action>
           <Action
             disabled={!chatsEnabled}
             onPress={async () => {

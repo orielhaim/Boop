@@ -14,7 +14,7 @@ import {
 import { useTranslationLanguages } from "@/components/settings/translation-languages";
 import { Action, Screen, Search } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export default function TranslationModels() {
   const { t, i18n } = useTranslation(namespaces);

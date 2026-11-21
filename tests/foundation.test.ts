@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import baseline from "../src/db/migrations/bundle";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
@@ -11,7 +15,7 @@ import {
 import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { callList, preference, setPreference } from "../src/db/queries";
 import { editRelays, seedRelays } from "../src/db/relays";
 import * as schema from "../src/db/schema";
@@ -73,15 +77,27 @@ test("fails closed when the secure store is locked, missing or corrupted", async
   expect(writes).toBe(0);
 });
 
-test("migration creates the app tables and enforces event and contact uniqueness", () => {
+test("fresh baseline initializes once and enforces event and contact uniqueness", () => {
   using db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    db.exec(migration);
+  const migrationsFolder = join(import.meta.dir, "../src/db/migrations");
+  expect(baseline.journal.entries.map(({ tag }) => tag)).toEqual([
+    "0000_initial",
+  ]);
+  expect(baseline.migrations.m0000).toBe(
+    readFileSync(join(migrationsFolder, "0000_initial.sql"), "utf8"),
+  );
+  const orm = drizzle(db, { schema });
+  migrate(orm, { migrationsFolder });
+  migrate(orm, { migrationsFolder });
+  expect(db.query("PRAGMA user_version").values()).toEqual([[1]]);
+  expect(
+    db.query("SELECT count(*) FROM __drizzle_migrations").values(),
+  ).toEqual([[1]]);
   expect(
     db
       .query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name <> '__drizzle_migrations' ORDER BY name",
       )
       .values()
       .flat(),
@@ -89,15 +105,12 @@ test("migration creates the app tables and enforces event and contact uniqueness
     "attachment_cache",
     "attachment_uploads",
     "avatar_cache",
-    "blocked_identities",
     "call_history",
-    "communication_grants",
     "contacts",
     "conversations",
     "link_preview_cache",
     "message_attachments",
     "message_edit_outbox",
-    "message_pins",
     "message_reactions",
     "message_requests",
     "message_revisions",
@@ -105,6 +118,7 @@ test("migration creates the app tables and enforces event and contact uniqueness
     "message_translations",
     "messages",
     "nostr_profiles",
+    "peer_permissions",
     "pending_message_edits",
     "relay_settings",
     "settings",
@@ -136,12 +150,41 @@ test("migration creates the app tables and enforces event and contact uniqueness
       [localKey],
     ),
   ).toThrow("FOREIGN KEY");
+  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  expect(db.query("PRAGMA integrity_check").values()).toEqual([["ok"]]);
+});
+
+test("chat reads use the targeted partial indexes", () => {
+  using sqlite = new Database(":memory:");
+  initializeTestDatabase(sqlite);
+  const queries = {
+    message_attachments_hash:
+      "SELECT message_id FROM message_attachments WHERE hash = 'digest'",
+    messages_peer_order:
+      "SELECT * FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND (sent_at, id) < (10, 'id') ORDER BY sent_at DESC, id DESC LIMIT 50",
+    messages_unread:
+      "SELECT count(*) FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND is_unread = 1",
+    messages_pinned:
+      "SELECT * FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND pinned_at IS NOT NULL ORDER BY pinned_at DESC, id DESC",
+    messages_outbox:
+      "SELECT * FROM messages WHERE status = 'pending' AND deleted_at IS NULL ORDER BY sent_at, id LIMIT 25",
+    messages_attachment_copies:
+      "SELECT * FROM messages WHERE status = 'sent' AND content_type = 'attachment' AND deleted_at IS NULL AND rumor_json IS NOT NULL ORDER BY sent_at, id LIMIT 16",
+  };
+  for (const [index, query] of Object.entries(queries)) {
+    const plan = sqlite
+      .query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${query}`)
+      .all();
+    expect(plan.some(({ detail }) => detail.includes(index))).toBe(true);
+    expect(plan.some(({ detail }) => detail.includes("TEMP B-TREE"))).toBe(
+      false,
+    );
+  }
 });
 
 test("queries local call history, conversation previews, drafts and preferences", () => {
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const repo = createMessagingRepository(db);
   db.insert(schema.contacts)
@@ -186,8 +229,7 @@ test("queries local call history, conversation previews, drafts and preferences"
 
 test("seeds verified roles on a new identity and does not reseed after removal", () => {
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   seedRelays(db, true);
   const saved = db.select().from(schema.relaySettings).all();
@@ -205,30 +247,6 @@ test("seeds verified roles on a new identity and does not reseed after removal",
   seedRelays(db, false);
   expect(db.select().from(schema.relaySettings).all()).toEqual([]);
   expect(preference(db, inboxIntentKey)).toBe("explicit-removal");
-});
-
-test("migrates a disabled custom relay without replacing it or its publication policy", () => {
-  using sqlite = new Database(":memory:");
-  const steps = Object.values(migrations.migrations);
-  for (const migration of steps.slice(0, -1)) sqlite.exec(migration);
-  sqlite.run(
-    "insert into relay_settings (url, enabled) values ('wss://custom.example/', 0)",
-  );
-  const current = steps.at(-1);
-  if (!current) throw new Error("Missing relay migration");
-  sqlite.exec(current);
-  const db = drizzle(sqlite, { schema });
-  seedRelays(db, false);
-  expect(db.select().from(schema.relaySettings).all()).toEqual([
-    {
-      url: "wss://custom.example/",
-      enabled: false,
-      general: true,
-      inbox: true,
-      discovery: false,
-    },
-  ]);
-  expect(preference(db, inboxIntentKey)).toBeNull();
 });
 
 test("requires a secure relay URL", () => {

@@ -13,7 +13,6 @@ export const conferenceInvite = z.strictObject({
     .max(callCapacity - 1)
     .refine((keys) => new Set(keys).size === keys.length),
 });
-export type ConferenceInvite = z.infer<typeof conferenceInvite>;
 export const reservationRequest = z.strictObject({
   version: z.literal(1),
   callId: opaqueId,

@@ -14,7 +14,7 @@ import {
   createMessagingRepository,
   type MessageInput,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 import { resources } from "../src/i18n/resources";
 
@@ -24,9 +24,7 @@ const peer = new NDKPrivateKeySigner("02".repeat(32)).pubkey;
 const participants = { self: { _id: own }, peer: { _id: peer } };
 
 function createChat(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   return createMessagingRepository(drizzle(sqlite, { schema }));
 }
 

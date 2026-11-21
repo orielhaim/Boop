@@ -16,7 +16,7 @@ import {
 } from "@/components/settings/group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 
 export default function Identity() {

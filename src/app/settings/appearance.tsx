@@ -9,7 +9,7 @@ import { SettingsDescription } from "@/components/settings/group";
 import { Screen, Section } from "@/components/ui/kit";
 import { setPreference } from "@/db/queries";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { themes, useAppPreferences } from "@/stores/preferences";
 
 export default function Appearance() {

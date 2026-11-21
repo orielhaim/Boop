@@ -53,21 +53,14 @@ function settingsFor(entries = new Map<string, string>()) {
   return { store, settings: createMediaSettings(store) };
 }
 
-test("migrates profile server order, keeps the private role independent, and persists changes", () => {
-  const { settings, store } = settingsFor(
-    new Map([
-      ["media.primary", first],
-      ["media.backup", second],
-      ["media.mirror", "true"],
-    ]),
+test("recommended servers keep roles independent and a saved empty list stays empty", () => {
+  const { settings, store } = settingsFor();
+  expect(settings.configured("profile").map(({ origin }) => origin)).toEqual([
+    "https://blossom.nostr.build",
+  ]);
+  expect(settings.configured("attachment").map(({ origin }) => origin)).toEqual(
+    ["https://nostr.download"],
   );
-  expect(settings.configured("profile").map((server) => server.origin)).toEqual(
-    [first, second],
-  );
-  expect(
-    settings.configured("attachment").map((server) => server.origin),
-  ).toEqual(["https://nostr.download"]);
-  expect(settings.snapshot().mirror).toBe(true);
   settings.save({ servers: [], mirror: false });
   const reopened = createMediaSettings(store);
   expect(reopened.snapshot()).toEqual({ servers: [], mirror: false });

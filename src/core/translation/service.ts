@@ -1,7 +1,4 @@
-import {
-  type createTranslationCache,
-  translationEngine,
-} from "@/db/translations";
+import type { createTranslationCache } from "@/db/translations";
 
 type MessageDirection = "incoming" | "outgoing";
 type Message = { id: string; text: string; direction: MessageDirection };
@@ -76,7 +73,6 @@ export function viewportMessages<T extends { direction: MessageDirection }>(
 export function createTranslationService(
   cache: Cache,
   loadEngine: () => Promise<TranslationEngine>,
-  hash: (text: string) => Promise<string>,
 ) {
   let native: Promise<TranslationEngine> | undefined;
   const engine = () =>
@@ -102,22 +98,15 @@ export function createTranslationService(
   let failedDownload: string | undefined;
 
   const service = {
-    async cached(messages: Message[], target: string) {
+    cached(messages: Message[], target: string) {
       const bodies = new Map(
         messages
           .filter(({ direction }) => direction === "incoming")
           .map(({ id, text }) => [id, text]),
       );
-      const rows = cache.read([...bodies.keys()], target);
-      const valid = await Promise.all(
-        rows.map(async (row) => {
-          const body = bodies.get(row.messageId);
-          return body !== undefined && (await hash(body)) === row.contentHash
-            ? row
-            : null;
-        }),
-      );
-      return valid.filter((row) => row !== null);
+      return cache
+        .read([...bodies.keys()], target)
+        .filter((row) => bodies.get(row.messageId) === row.original);
     },
     revision: () => revision,
     refreshModelStatus: changed,
@@ -182,10 +171,9 @@ export function createTranslationService(
       const version = generation;
       const sample = languageSample(message.text);
       if (!sample) return { kind: "original" };
-      const contentHash = await hash(message.text);
       if (signal?.aborted || version !== generation)
         return { kind: "cancelled" };
-      const key = JSON.stringify([message.id, target, contentHash, version]);
+      const key = JSON.stringify([message.id, target, message.text, version]);
       const running = pending.get(key);
       if (running) {
         const result = await running;
@@ -199,9 +187,7 @@ export function createTranslationService(
         if (!cache.matchesIncoming(message.id, message.text)) {
           return { kind: "original" };
         }
-        const hit = cache
-          .read([message.id], target)
-          .find((row) => row.contentHash === contentHash);
+        const [hit] = cache.read([message.id], target);
         if (hit) return { kind: "translated", text: hit.translatedText };
         const worker = await engine().catch(() => null);
         if (!worker) return { kind: "unavailable" };
@@ -233,12 +219,9 @@ export function createTranslationService(
           !cache.store(
             {
               messageId: message.id,
-              contentHash,
               sourceLanguage: source,
               targetLanguage: target,
               translatedText: text,
-              engine: translationEngine,
-              createdAt: Date.now(),
             },
             message.text,
           )

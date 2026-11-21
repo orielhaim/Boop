@@ -640,11 +640,7 @@ export function createMessagingService({
       const syncingChats = chatsEnabled;
       const current = () => active() && token === watch;
       const catchup = syncingChats
-        ? inboxCatchup(
-            Math.floor(Date.now() / 1_000),
-            readState(syncKey),
-            readState(`chat.sync.${relay.url}`),
-          )
+        ? inboxCatchup(Math.floor(Date.now() / 1_000), readState(syncKey))
         : undefined;
       const started = Date.now();
       let receiveSucceeded = true;
@@ -1308,15 +1304,11 @@ export function createMessagingService({
 
   function retry(peerKey: string, id: string) {
     if (!chatsEnabled) return;
-    if (privacy?.isBlocked(peerKey)) return;
-    const message = chat.message(peerKey, id);
     if (
-      message?.status !== "failed" ||
-      (!message.rumorJson && message.contentType !== "attachment") ||
-      message.deletedAt
+      privacy?.isBlocked(peerKey) ||
+      !chat.setStatus(id, "pending", null, peerKey)
     )
       return;
-    chat.setStatus(message.id, "pending");
     if (!connectedRelays().length && configured.length) startAgain();
     void flush();
   }

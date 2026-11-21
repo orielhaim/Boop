@@ -3,8 +3,7 @@ import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import * as schema from "./schema";
 
 const { messages, messageTranslations } = schema;
-export type TranslationRow = typeof messageTranslations.$inferInsert;
-export const translationEngine = "mlkit-v1";
+type TranslationRow = typeof messageTranslations.$inferInsert;
 const liveIncoming = and(
   eq(messages.direction, "incoming"),
   isNull(messages.deletedAt),
@@ -18,14 +17,16 @@ export function createTranslationCache<TResult>(
     read(ids: string[], target: string) {
       if (!ids.length) return [];
       return db
-        .select(getTableColumns(messageTranslations))
+        .select({
+          ...getTableColumns(messageTranslations),
+          original: messages.body,
+        })
         .from(messageTranslations)
         .innerJoin(messages, eq(messages.id, messageTranslations.messageId))
         .where(
           and(
             inArray(messageTranslations.messageId, ids),
             eq(messageTranslations.targetLanguage, target),
-            eq(messageTranslations.engine, translationEngine),
             liveIncoming,
           ),
         )
@@ -65,7 +66,6 @@ export function createTranslationCache<TResult>(
             target: [
               messageTranslations.messageId,
               messageTranslations.targetLanguage,
-              messageTranslations.contentHash,
             ],
             set: row,
           })

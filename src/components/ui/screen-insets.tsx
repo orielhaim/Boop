@@ -1,4 +1,4 @@
-import { type ViewProps } from "react-native";
+import type { ViewProps } from "react-native";
 import Animated from "react-native-reanimated";
 import { type Edge, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTabBarClearance } from "./tab-bar-insets";

@@ -22,7 +22,7 @@ import {
 } from "react-native";
 import { Icon } from "@/components/ui/kit";
 import { formatDuration } from "@/i18n/format";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import type { DetailMessage } from "./detail-adapter";
 
 export const VoiceMessage = memo(function VoiceMessage({

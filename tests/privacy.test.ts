@@ -7,7 +7,7 @@ import {
   createMessagingRepository,
   type MessageInput,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const own = deriveIdentity("01".repeat(32)).publicKey;
@@ -15,9 +15,7 @@ const alice = deriveIdentity("02".repeat(32)).publicKey;
 const bob = deriveIdentity("03".repeat(32)).publicKey;
 
 function prepare(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const chat = createMessagingRepository(db);
   return { db, chat, privacy: createPrivacy(db, chat, own) };
@@ -58,15 +56,24 @@ test("contacts, delivery grants and request approvals are distinct permissions",
   privacy.set("requests", true);
   expect(privacy.messagePermission(alice)).toBe("request");
   const first = incoming(alice, "alpha", 1);
-  db.insert(schema.messageRequests)
-    .values({ publicKey: alice, receivedAt: 1, message: first })
-    .run();
+  privacy.queue(first);
   const second = incoming(alice, "beta", 2);
   privacy.queue(second);
   privacy.queue({ ...second, id: "duplicate" });
   expect(privacy.request(alice).map((message) => message.id)).toEqual([
     "alpha",
     "beta",
+  ]);
+  expect(privacy.pending()).toEqual([
+    {
+      publicKey: alice,
+      id: "beta",
+      sentAt: 2,
+      body: "Hello",
+      attachmentKind: null,
+      location: 0,
+      locked: 0,
+    },
   ]);
   expect(chat.unreadCount()).toBe(0);
   expect(privacy.accept(alice)).toBe(true);
@@ -104,19 +111,11 @@ test("contacts, delivery grants and request approvals are distinct permissions",
   expect(chat.history(alice).messages).toHaveLength(4);
 });
 
-test("bounds pending requests, retains them on restart, and honors existing decline cutoffs", () => {
+test("bounds pending requests, retains them on restart", () => {
   using sqlite = new Database(":memory:");
   const { db, chat, privacy } = prepare(sqlite);
   privacy.set("requests", true);
   const first = incoming(alice, "first");
-  db.insert(schema.messageRequests)
-    .values({
-      publicKey: alice,
-      receivedAt: first.sentAt,
-      declinedThrough: first.sentAt - 1,
-    })
-    .run();
-  privacy.queue(incoming(alice, "old", first.sentAt - 1));
   privacy.queue(first);
   for (let index = 0; index < 1_000; index++)
     privacy.queue(incoming(alice, `flood-${index}`));
@@ -125,7 +124,6 @@ test("bounds pending requests, retains them on restart, and honors existing decl
   expect(restarted.pendingCount()).toBe(2);
   expect(restarted.request(alice)).toHaveLength(16);
   expect(restarted.request(alice).some(({ id }) => id === "first")).toBe(true);
-  expect(restarted.request(alice).some(({ id }) => id === "old")).toBe(false);
   restarted.block(alice);
   expect(restarted.pendingCount()).toBe(1);
   restarted.set("messages", "initiated");

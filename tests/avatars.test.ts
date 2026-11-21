@@ -12,7 +12,7 @@ import {
   type ProfilePhotoPolicy,
 } from "../src/core/avatars/protocol";
 import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { saveContact, setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 
@@ -91,8 +91,7 @@ function fixture(
   blocked = false,
 ) {
   const sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   setPreference(db, "identity.publicKey", owner);
   if (contact) saveContact(db, key, "My Name");

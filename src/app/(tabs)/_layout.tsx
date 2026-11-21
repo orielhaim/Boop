@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tab-bar-insets";
 import { unreadBadge } from "@/core/messaging/conversations";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 
 export default function TabLayout() {

@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { isolateText } from "@/i18n/format";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 
 export default function Profile() {

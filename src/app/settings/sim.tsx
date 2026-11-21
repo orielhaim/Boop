@@ -21,7 +21,7 @@ import { Action, Ink, layout, Screen } from "@/components/ui/kit";
 import { exportIdentity, stageIdentity } from "@/core/identity";
 import { backupKind, readBackup } from "@/core/identity/backup";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 const paint = () => new Promise<void>((resolve) => setTimeout(resolve, 32));
 const secretInput = {

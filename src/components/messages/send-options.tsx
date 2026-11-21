@@ -190,7 +190,10 @@ export function OpenLaterSheet({
     if (!open || !valid) return;
     const timer = setTimeout(
       () => setNow(Date.now()),
-      Math.max(1, Math.min(requested - Date.now(), 2_147_000_000)),
+      Math.max(
+        1,
+        Math.min(requested - Math.max(now, Date.now()), 2_147_000_000),
+      ),
     );
     return () => clearTimeout(timer);
   }, [open, valid, requested, now]);

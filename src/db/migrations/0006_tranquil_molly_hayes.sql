@@ -1,2 +1,0 @@
-CREATE INDEX `conversations_order` ON `conversations` ("pinned_rank" IS NULL,`pinned_rank`,"updated_at" DESC,`peer_key`) WHERE "conversations"."deleted_at" IS NULL;--> statement-breakpoint
-CREATE INDEX `conversations_unread` ON `conversations` (`unread`) WHERE "conversations"."deleted_at" IS NULL AND "conversations"."unread" > 0;

@@ -32,7 +32,7 @@ import {
   createMessagingRepository,
   type MessageInput,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const file: EncryptedAttachment = {
@@ -50,8 +50,7 @@ const file: EncryptedAttachment = {
 
 function database() {
   const sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const entry of Object.values(migrations.migrations)) sqlite.exec(entry);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   return { sqlite, db, chat: createMessagingRepository(db) };
 }

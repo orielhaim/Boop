@@ -12,7 +12,7 @@ import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-polic
 import { Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function Privacy() {
   const { t } = useTranslation(namespaces);

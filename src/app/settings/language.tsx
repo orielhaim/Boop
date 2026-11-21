@@ -19,7 +19,7 @@ import {
   readLanguagePreference,
   saveLanguagePreference,
 } from "@/i18n/preference";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 const names = {
   en: "settings:languageEnglish",

@@ -29,7 +29,7 @@ import { byNameOrKey, useContacts } from "@/db/contacts";
 import { updateContactPreferences } from "@/db/queries";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { isolateText } from "@/i18n/format";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
 
 export default function Contacts() {

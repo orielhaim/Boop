@@ -14,7 +14,7 @@ import {
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createProfileEditor } from "../src/core/avatars/editor";
 import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 import {
@@ -289,8 +289,7 @@ test("profile edits preserve unrelated public metadata and remove picture explic
 
 test("confirmed photos survive relay refusal and retry without a second upload", async () => {
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const secret = generateSecretKey();
   const owner = getPublicKey(secret);

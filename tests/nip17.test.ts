@@ -18,7 +18,7 @@ import {
 import { createMessagingService } from "../src/core/messaging/runtime";
 import { createPrivacy } from "../src/core/privacy";
 import { createMessagingRepository } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const ndk = new NDK({ enableOutboxModel: false });
@@ -30,8 +30,7 @@ const quoteId = "42".repeat(32);
 
 test("NDK keeps a live inbox after EOSE and catches up after restarting the session", async () => {
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
   const repo = createMessagingRepository(db);
   const privacy = createPrivacy(db, repo, bob.pubkey);
@@ -224,9 +223,7 @@ test("recipient and sender decrypt distinct gift wraps to the same unsigned rumo
   expect(decryptions).toBe(1);
 
   using sqlite = new Database(":memory:");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const repo = createMessagingRepository(drizzle(sqlite, { schema }));
   for (const wrap of [received, receivedElsewhere]) {
     const event = await unwrapPrivateEvent(wrap.rawEvent(), bob);

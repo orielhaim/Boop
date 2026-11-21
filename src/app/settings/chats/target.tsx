@@ -15,7 +15,7 @@ import {
   useTranslationPreferences,
 } from "@/core/translation/preferences";
 import { namespaces, resolveLanguage } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 
 export default function TranslationTarget() {

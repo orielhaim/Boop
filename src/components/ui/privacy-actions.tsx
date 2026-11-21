@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local";
+import { useLocal } from "@/services/local-context";
 
 export function usePrivacy() {
   const { privacy } = useLocal();

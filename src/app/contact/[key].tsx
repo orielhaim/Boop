@@ -28,7 +28,7 @@ import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { useContact } from "@/db/contacts";
 import { updateContactPreferences } from "@/db/queries";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 export default function ContactDetail() {

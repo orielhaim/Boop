@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createInstance } from "i18next";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 import {
@@ -141,8 +141,7 @@ test("Auto-detect follows the primary supported locale and manual choices win", 
 
 test("SQLite app language survives reader replacement and tolerates invalid or failed reads", () => {
   using sqlite = new Database(":memory:");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   const open = () => drizzle(sqlite, { schema });
   expect(readLanguagePreference(open())).toBe("auto");
   expect(preferredLanguage(readLanguagePreference(open()), "he-IL")).toBe("he");

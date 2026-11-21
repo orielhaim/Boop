@@ -1,3 +1,4 @@
+import { createPrivacy } from "../src/core/privacy";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import NDK, { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
@@ -21,7 +22,7 @@ import {
   createMessagingRepository,
   type MessageInput,
 } from "../src/db/messaging";
-import migrations from "../src/db/migrations/bundle";
+import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
 const ndk = new NDK({ enableOutboxModel: false });
@@ -86,9 +87,7 @@ function edit(value: ReturnType<typeof rumor>, owner = bob.pubkey) {
 }
 
 function database(sqlite: Database) {
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const migration of Object.values(migrations.migrations))
-    sqlite.exec(migration);
+  initializeTestDatabase(sqlite);
   return drizzle(sqlite, { schema });
 }
 
@@ -304,12 +303,11 @@ test("validates author, conversation, type, causal time, and deletion at persist
   const missing = rumor("Missing parent", "c3".repeat(32));
   expect(chat.receiveEdit(edit(missing))).toBe("unresolved");
   expect(chat.revisions(alice.pubkey, targetId)?.incomplete).toBe(true);
-  db.insert(schema.blockedIdentities)
-    .values({ publicKey: alice.pubkey, blockedAt: 0 })
-    .run();
+  const privacy = createPrivacy(db, chat, bob.pubkey);
+  privacy.block(alice.pubkey);
   expect(chat.receiveEdit(edit(rumor("Blocked", first.id)))).toBe("rejected");
   expect(chat.revisions(alice.pubkey, targetId)?.incomplete).toBe(false);
-  db.delete(schema.blockedIdentities).run();
+  privacy.unblock(alice.pubkey);
   chat.deleteMessages(alice.pubkey, [original().id]);
   expect(chat.receiveEdit(edit(rumor("After deletion", first.id)))).toBe(
     "rejected",
@@ -338,12 +336,9 @@ test("keeps original identity, pins, replies and order while invalidating derive
   db.insert(schema.messageTranslations)
     .values({
       messageId: original().id,
-      contentHash: "original hash",
       targetLanguage: "he",
       sourceLanguage: "en",
       translatedText: "ישן",
-      engine: "test",
-      createdAt: time,
     })
     .run();
   const value = rumor("Changed", targetId, { at: time + 30 });
