@@ -1,3 +1,4 @@
+import type { MediaLabel } from "./media-label";
 import type { ChatListItem } from "@kesha-antonov/react-native-chat";
 import { toNpub } from "@/core/identity/keys";
 import type { ConversationSummary } from "@/db/messaging";
@@ -13,6 +14,7 @@ export function createConversationListAdapter(
   translationLabel: (text: string) => string,
   lockedLabel?: (time: number) => string,
   voiceLabel?: (duration: number | null) => string,
+  mediaLabel?: MediaLabel,
 ) {
   const items = new WeakMap<ConversationSummary, ConversationListItem>();
   return (row: ConversationSummary) => {
@@ -24,6 +26,7 @@ export function createConversationListAdapter(
       translationLabel,
       lockedLabel,
       voiceLabel,
+      mediaLabel,
     );
     items.set(row, next);
     return next;
@@ -36,6 +39,7 @@ export function toConversationListItem(
   translationLabel?: (text: string) => string,
   lockedLabel?: (time: number) => string,
   voiceLabel?: (duration: number | null) => string,
+  mediaLabel?: MediaLabel,
 ): ConversationListItem {
   const address = toNpub(row.peerKey);
   const author = row.lastMessageDirection === "outgoing" ? ownKey : row.peerKey;
@@ -53,13 +57,17 @@ export function toConversationListItem(
             _id: row.lastMessageId,
             text:
               row.lastMessageType === "attachment"
-                ? (voiceLabel?.(row.voiceDuration) ?? "")
-                : row.lockedUntil != null
-                  ? (lockedLabel?.(row.lockedUntil) ?? "")
-                  : row.translatedPreview
-                    ? (translationLabel?.(row.translatedPreview) ??
-                      row.translatedPreview)
-                    : (row.preview ?? ""),
+                ? row.mediaKind && row.mediaKind !== "voice"
+                  ? (mediaLabel?.(row.mediaKind) ?? "")
+                  : (voiceLabel?.(row.voiceDuration) ?? "")
+                : row.lastMessageType === "location"
+                  ? (mediaLabel?.("location") ?? "")
+                  : row.lockedUntil != null
+                    ? (lockedLabel?.(row.lockedUntil) ?? "")
+                    : row.translatedPreview
+                      ? (translationLabel?.(row.translatedPreview) ??
+                        row.translatedPreview)
+                      : (row.preview ?? ""),
             createdAt: row.lastMessageAt,
             user: { _id: author },
             pending: row.lastMessageStatus === "pending",

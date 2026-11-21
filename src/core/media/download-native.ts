@@ -56,7 +56,7 @@ export async function downloadEncryptedBlob(
       );
     }
   });
-  const timeout = setTimeout(cancel, 16_000);
+  const timeout = setTimeout(cancel, limit > 8 * 1024 * 1024 ? 60_000 : 16_000);
   try {
     return await native.download(id, url, destination, hash, limit);
   } catch (error) {

@@ -1,13 +1,13 @@
 import {
-  maxAttachmentBytes,
-  voiceAttachment,
-  type VoiceAttachment,
+  byteLimit,
+  encryptedAttachment,
+  type EncryptedAttachment,
 } from "./protocol";
 
 export function createManualDownloads<TResult>(options: {
-  authorize(peer: string, id: string): VoiceAttachment | undefined;
+  authorize(peer: string, id: string): EncryptedAttachment | undefined;
   transfer(
-    file: VoiceAttachment,
+    file: EncryptedAttachment,
     signal: AbortSignal,
     limit: number,
     peer: string,
@@ -23,7 +23,7 @@ export function createManualDownloads<TResult>(options: {
       const key = `${peer}:${id}`;
       const existing = jobs.get(key);
       if (existing) return existing.result;
-      const file = voiceAttachment.safeParse(options.authorize(peer, id));
+      const file = encryptedAttachment.safeParse(options.authorize(peer, id));
       if (!file.success || jobs.size >= 3)
         return Promise.reject(new Error("media-unavailable"));
       const abort = new AbortController();
@@ -33,7 +33,7 @@ export function createManualDownloads<TResult>(options: {
           return options.transfer(
             file.data,
             abort.signal,
-            file.data.size ?? maxAttachmentBytes,
+            file.data.size ?? byteLimit(file.data.kind),
             peer,
             id,
           );

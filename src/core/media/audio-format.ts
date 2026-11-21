@@ -24,7 +24,7 @@ function boxes(bytes: Uint8Array, start: number, end: number) {
   return result;
 }
 
-export function validateVoiceAudio(bytes: Uint8Array) {
+function movieTracks(bytes: Uint8Array) {
   const top = boxes(bytes, 0, bytes.length);
   const movie = top.find(({ type }) => type === "moov");
   const data = top.find(
@@ -35,6 +35,15 @@ export function validateVoiceAudio(bytes: Uint8Array) {
   const children = (box: { start: number; end: number }) =>
     boxes(bytes, box.start, box.end);
   const tracks = children(movie).filter(({ type }) => type === "trak");
+  if (
+    children(movie).some(({ type }) => type === "rmra") ||
+    top.some(({ type }) => type === "rmra")
+  )
+    throw new Error("media-format");
+  return { tracks, children };
+}
+export function validateVoiceAudio(bytes: Uint8Array) {
+  const { tracks, children } = movieTracks(bytes);
   if (tracks.length !== 1) throw new Error("media-format");
   const media = children(tracks[0]).find(({ type }) => type === "mdia");
   const handler = media && children(media).find(({ type }) => type === "hdlr");
@@ -55,4 +64,42 @@ export function validateVoiceAudio(bytes: Uint8Array) {
   const codecs = boxes(bytes, descriptions.start + 8, descriptions.end);
   if (codecs.length !== 1 || codecs[0].type !== "mp4a")
     throw new Error("media-format");
+}
+
+export function validateVideo(bytes: Uint8Array) {
+  const { tracks, children } = movieTracks(bytes);
+  let hasVideo = false;
+  for (const track of tracks) {
+    const media = children(track).find(({ type }) => type === "mdia");
+    if (!media) throw new Error("media-format");
+    const handler = children(media).find(({ type }) => type === "hdlr");
+    const info = children(media).find(({ type }) => type === "minf");
+    const references =
+      info && children(info).find(({ type }) => type === "dinf");
+    const table =
+      references && children(references).find(({ type }) => type === "dref");
+    if (
+      handler &&
+      handler.end - handler.start >= 12 &&
+      String.fromCharCode(
+        ...bytes.subarray(handler.start + 8, handler.start + 12),
+      ) === "vide"
+    )
+      hasVideo = true;
+    if (table) {
+      if (table.end - table.start < 8) throw new Error("media-format");
+      for (const entry of boxes(bytes, table.start + 8, table.end)) {
+        if (
+          entry.type !== "url " ||
+          entry.end - entry.start !== 4 ||
+          bytes[entry.start] !== 0 ||
+          bytes[entry.start + 1] !== 0 ||
+          bytes[entry.start + 2] !== 0 ||
+          bytes[entry.start + 3] !== 1
+        )
+          throw new Error("media-format");
+      }
+    }
+  }
+  if (!hasVideo) throw new Error("media-format");
 }

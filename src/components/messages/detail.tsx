@@ -1,3 +1,18 @@
+import { locateForChat } from "@/core/messaging/current-location";
+import { AttachmentPreview, type MediaPick } from "./attachment-preview";
+import { RichMedia } from "./rich-media";
+import { exportAttachment } from "./export-attachment";
+import { mediaLabels, type MediaLabel } from "./media-label";
+import {
+  discardPickedAttachment,
+  localPickerUri,
+  preparePickedAttachment,
+} from "@/core/media/prepare";
+import { locationText, sharedLocation } from "@/core/messaging/location";
+import {
+  launchCameraAsync,
+  requestCameraPermissionsAsync,
+} from "expo-image-picker";
 import { randomUUID } from "expo-crypto";
 import { isUploadFailure } from "@/core/media/blossom";
 import { voiceRecordingPrefix } from "@/core/media/files";
@@ -16,6 +31,7 @@ import {
   ChatHeader,
   type ChatProps,
   Composer,
+  getChatCapabilities,
   InputToolbar,
   type MessageActionKey,
   type MessageMenuItem,
@@ -92,6 +108,7 @@ const viewabilityConfig = {
 const autoText = { textAlign: "auto", writingDirection: "auto" } as const;
 const emptySendSlot = () => null;
 function discardVoiceRecording(uri: string) {
+  if (!localPickerUri(uri)) return;
   try {
     const file = new File(uri);
     if (file.exists) file.delete();
@@ -145,8 +162,16 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const [openedAt] = useState(() => (__DEV__ ? performance.now() : 0));
   const measuredFirstMessages = useRef(false);
   const { t } = useTranslation(namespaces);
-  const { chat, identity, messaging, history, conversations, lock, calling } =
-    useLocal();
+  const {
+    chat,
+    identity,
+    messaging,
+    history,
+    conversations,
+    lock,
+    calling,
+    attachments,
+  } = useLocal();
   const {
     available: stressEnabled,
     scheduled,
@@ -165,18 +190,37 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     const state = lock.getState();
     return state.active && !state.locked;
   });
-  const allowVoice = focused && !blocked && activeUnlocked && !inCall;
+  const isLocked = useSyncExternalStore(
+    lock.subscribe,
+    () => lock.getState().locked,
+  );
+  const mediaEnabled = focused && !blocked && activeUnlocked;
+  const allowVoice = mediaEnabled && !inCall;
+  const latestMediaPermission = useRef({ focused, blocked });
+  useLayoutEffect(() => {
+    latestMediaPermission.current = { focused, blocked };
+  }, [focused, blocked]);
+  const canUseMedia = useCallback(() => {
+    const gate = lock.getState();
+    return (
+      latestMediaPermission.current.focused &&
+      !latestMediaPermission.current.blocked &&
+      gate.active &&
+      !gate.locked &&
+      AppState.currentState === "active"
+    );
+  }, [lock]);
   const canUseAudioSession = useCallback(() => {
     const gate = lock.getState();
     const call = calling.store.getState().call;
     return (
-      focused &&
-      !blocked &&
+      latestMediaPermission.current.focused &&
+      !latestMediaPermission.current.blocked &&
       gate.active &&
       !gate.locked &&
       (!call || call.phase === "ended")
     );
-  }, [focused, blocked, lock, calling]);
+  }, [lock, calling]);
   const {
     theme,
     darkTheme,
@@ -191,6 +235,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     reducedTransparency,
   } = useChatAppearance(true);
   const material = conversationMaterials[colorScheme];
+  const mediaLabel = useCallback<MediaLabel>(
+    (kind) => t(mediaLabels[kind]),
+    [t],
+  );
   const kit = useMemo(
     () => ({
       theme,
@@ -202,6 +250,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         ...labels,
         actionDelete: t("messages:deleteLocal"),
         send: t("messages:send"),
+        attachCaption: t("messages:mediaCaption"),
+        attachLocationUnavailable: t("messages:mediaLocationUnavailable"),
+        location: t("messages:mediaOpenMaps"),
+        openLocationAccessibility: t("messages:mediaOpenMaps"),
       },
       icons,
     }),
@@ -248,7 +300,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     participants,
     t("messages:unavailableQuote"),
     t("messages:lockedMessage"),
-    t("messages:voiceMessage"),
+    mediaLabel,
   );
   const [detached, setDetached] = useState(initiallyDetached);
   const positioned =
@@ -269,6 +321,54 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     toggleOriginal,
     refresh,
   } = useMessageTranslations(items, visibleIds, locale, focused && !blocked);
+  const galleryItemsRef = useRef(items);
+  useLayoutEffect(() => {
+    galleryItemsRef.current = items;
+  }, [items]);
+  const galleryItems = useCallback(() => galleryItemsRef.current, []);
+  const performFileAction = useCallback(
+    (message: DetailMessage, action: "share" | "save" | "open") => {
+      if (!message.media || !canUseMedia()) return;
+      void exportAttachment(
+        attachments,
+        peerKey,
+        message._id,
+        message.media,
+        action,
+        canUseMedia,
+      )
+        .then((result) => {
+          if (result === "saved") setNotice(t("messages:mediaSaved"));
+        })
+        .catch(() => setNotice(t("messages:mediaExportFailed")));
+    },
+    [attachments, canUseMedia, peerKey, t],
+  );
+  const openFile = useCallback(
+    (message: DetailMessage) => {
+      if (!canUseMedia()) return;
+      Alert.alert(
+        message.media?.filename ?? t("messages:mediaFile"),
+        undefined,
+        [
+          {
+            text: t("messages:mediaOpen"),
+            onPress: () => performFileAction(message, "open"),
+          },
+          {
+            text: t("messages:mediaShare"),
+            onPress: () => performFileAction(message, "share"),
+          },
+          {
+            text: t("messages:mediaSave"),
+            onPress: () => performFileAction(message, "save"),
+          },
+        ],
+        { cancelable: true },
+      );
+    },
+    [canUseMedia, performFileAction, t],
+  );
   const renderTranslatedBubble = useCallback<
     NonNullable<ChatProps<DetailMessage>["renderBubble"]>
   >(
@@ -290,6 +390,31 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
                     ? colors.outgoingInk
                     : colors.text
                 }
+              />
+            )}
+          />
+        );
+      }
+      const media = message?.media;
+      if (message && media) {
+        return (
+          <Bubble
+            {...props}
+            renderCustomView={() => (
+              <RichMedia
+                key={message._id}
+                message={{ ...message, media }}
+                peer={peerKey}
+                enabled={mediaEnabled}
+                allowVideo={allowVoice}
+                color={
+                  message.direction === "outgoing"
+                    ? colors.outgoingInk
+                    : colors.text
+                }
+                reducedMotion={reducedMotion}
+                galleryItems={galleryItems}
+                onFile={openFile}
               />
             )}
           />
@@ -365,6 +490,9 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     },
     [
       allowVoice,
+      mediaEnabled,
+      galleryItems,
+      openFile,
       peerKey,
       colors.accent,
       colors.outgoingInk,
@@ -382,12 +510,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         ? chat.message(peerKey, saved.draftReplyTo)
         : undefined;
       const quote = target
-        ? toQuote(
-            target,
-            participants,
-            t("messages:lockedMessage"),
-            t("messages:voiceMessage"),
-          )
+        ? toQuote(target, participants, t("messages:lockedMessage"), mediaLabel)
         : null;
       return { text: saved?.draft ?? "", quote };
     } catch {
@@ -398,6 +521,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const [quote, setQuote] = useState<ReplyMessage | null>(initialDraft.quote);
   const composition = useRef(initialDraft);
   const [sending, setSending] = useState(false);
+  const [pickedMedia, setPickedMedia] = useState<MediaPick[]>([]);
+  useEffect(() => {
+    if (!pickedMedia.length || (focused && !blocked && !isLocked)) return;
+    const disposal = setTimeout(() => {
+      for (const item of pickedMedia) discardPickedAttachment(item.uri);
+      setPickedMedia((current) => (current === pickedMedia ? [] : current));
+    }, 0);
+    return () => clearTimeout(disposal);
+  }, [blocked, focused, isLocked, pickedMedia]);
   const sendBusy = useRef(false);
   const chatRef = useRef<ChatHandle>(null);
   const textInputRef = useRef<ComponentRef<typeof TextInput>>(null);
@@ -652,11 +784,256 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     [renderSend, rtl],
   );
 
-  const onSendVoice = useCallback<
+  const sendPicks = useCallback(
+    async (
+      picks: readonly MediaPick[],
+      caption: string,
+      target: ReplyMessage | null,
+      round = false,
+    ) => {
+      if (
+        sendBusy.current ||
+        !canUseMedia() ||
+        (round && !canUseAudioSession())
+      ) {
+        if (round && picks[0] && localPickerUri(picks[0].uri))
+          discardVoiceRecording(picks[0].uri);
+        return;
+      }
+      sendBusy.current = true;
+      setSending(true);
+      setNotice(undefined);
+      let count = 0;
+      let failure: string | undefined;
+      try {
+        for (const item of picks) {
+          if (!canUseMedia() || (round && !canUseAudioSession())) break;
+          try {
+            const prepared = await preparePickedAttachment(
+              item,
+              count === 0 ? caption : "",
+              round,
+            );
+            try {
+              if (!canUseMedia() || (round && !canUseAudioSession())) break;
+              await messaging.sendAttachment({
+                peerKey,
+                uri: prepared.uri,
+                metadata: prepared.metadata,
+                replyTo: target ? String(target._id) : null,
+              });
+              count++;
+            } finally {
+              prepared.dispose();
+            }
+          } catch (error) {
+            failure =
+              error instanceof Error && error.message === "media-size"
+                ? t("messages:mediaSizeLimit")
+                : t("messages:mediaPrepareFailed");
+          }
+        }
+        if (count > 0) {
+          if (composition.current.quote?._id === target?._id) updateQuote(null);
+          const id = loadLatest();
+          if (id) setJump({ id, highlight: false });
+        }
+        if (failure)
+          setNotice(
+            count ? t("messages:mediaPartialSend", { count }) : failure,
+          );
+      } finally {
+        for (const item of picks) {
+          if (round && localPickerUri(item.uri))
+            discardVoiceRecording(item.uri);
+          else discardPickedAttachment(item.uri);
+        }
+        setSending(false);
+        sendBusy.current = false;
+      }
+    },
+    [
+      canUseAudioSession,
+      canUseMedia,
+      loadLatest,
+      messaging,
+      peerKey,
+      t,
+      updateQuote,
+    ],
+  );
+
+  const attachmentOptions = useMemo<ChatProps<DetailMessage>["attachments"]>(
+    () =>
+      !focused || blocked || isLocked || sending
+        ? false
+        : {
+            tabs: inCall
+              ? ["gallery", "file", "location"]
+              : ["gallery", "camera", "file", "location"],
+            isGalleryGridEnabled: false,
+            pickers: {
+              location: locateForChat,
+              camera: async () => {
+                if (!canUseAudioSession()) return [];
+                const choice = await new Promise<"images" | "videos" | null>(
+                  (resolve) =>
+                    Alert.alert(
+                      t("messages:mediaCamera"),
+                      undefined,
+                      [
+                        {
+                          text: t("common:cancel"),
+                          style: "cancel",
+                          onPress: () => resolve(null),
+                        },
+                        {
+                          text: t("messages:mediaPhoto"),
+                          onPress: () => resolve("images"),
+                        },
+                        {
+                          text: t("messages:mediaVideo"),
+                          onPress: () => resolve("videos"),
+                        },
+                      ],
+                      { cancelable: true, onDismiss: () => resolve(null) },
+                    ),
+                );
+                if (!choice || !canUseAudioSession()) return [];
+                const permission = await requestCameraPermissionsAsync();
+                if (!permission.granted) {
+                  setNotice(t("messages:mediaCameraPermission"));
+                  return [];
+                }
+                if (!canUseAudioSession()) return [];
+                const result = await launchCameraAsync({
+                  mediaTypes: [choice],
+                  quality: 1,
+                  videoMaxDuration: 60,
+                  exif: false,
+                });
+                if (result.canceled) return [];
+                return result.assets.map((asset) => ({
+                  type: asset.type === "video" ? "video" : "image",
+                  uri: asset.uri,
+                  width: asset.width,
+                  height: asset.height,
+                  duration:
+                    asset.duration == null ? undefined : asset.duration / 1000,
+                  mimeType: asset.mimeType ?? undefined,
+                  fileName: asset.fileName ?? undefined,
+                }));
+              },
+            },
+            onPick(picks) {
+              const pointer = picks[0];
+              if (!pointer || !focused || blocked || lock.getState().locked)
+                return null;
+              if (pointer.type === "location") {
+                const { data: location } = sharedLocation.safeParse(pointer);
+                if (!location || !canUseMedia()) return null;
+                const target = composition.current.quote;
+                Alert.alert(
+                  t("messages:mediaSendLocation"),
+                  locationText(location),
+                  [
+                    { text: t("common:cancel"), style: "cancel" },
+                    {
+                      text: t("messages:send"),
+                      onPress: () => {
+                        if (!canUseMedia()) return;
+                        void messaging
+                          .send({
+                            peerKey,
+                            body: "",
+                            location,
+                            replyTo: target ? String(target._id) : null,
+                          })
+                          .then(() => {
+                            if (composition.current.quote?._id === target?._id)
+                              updateQuote(null);
+                            const id = loadLatest();
+                            if (id) setJump({ id, highlight: false });
+                          })
+                          .catch(() => setNotice(t("messages:sendError")));
+                      },
+                    },
+                  ],
+                );
+              } else {
+                const selected = picks
+                  .filter(
+                    (item): item is MediaPick =>
+                      item.type !== "location" && localPickerUri(item.uri),
+                  )
+                  .slice(0, 10);
+                if (selected.length) setPickedMedia(selected);
+                else setNotice(t("messages:mediaPrepareFailed"));
+              }
+              return null;
+            },
+          },
+    [
+      blocked,
+      canUseAudioSession,
+      canUseMedia,
+      focused,
+      inCall,
+      loadLatest,
+      lock,
+      isLocked,
+      messaging,
+      peerKey,
+      sending,
+      t,
+      updateQuote,
+    ],
+  );
+
+  const videoRecording = useMemo<ChatProps<DetailMessage>["videoRecording"]>(
+    () =>
+      !allowVoice || sending || !getChatCapabilities().roundVideoCapture
+        ? false
+        : {
+            maxDuration: 60,
+            minDurationMs: 800,
+            confirmBeforeSend: true,
+            canUseCapture: canUseAudioSession,
+            onDiscardRecording: discardVoiceRecording,
+            onPermissionDenied: () =>
+              Alert.alert(
+                t("messages:mediaVideoNote"),
+                t("messages:mediaCameraPermission"),
+                [
+                  { text: t("common:cancel"), style: "cancel" },
+                  {
+                    text: t("security:permissions"),
+                    onPress: () => {
+                      void Linking.openSettings();
+                    },
+                  },
+                ],
+              ),
+            onTooShort: () => setNotice(t("messages:mediaVideoTooShort")),
+            onError: () => setNotice(t("messages:mediaPrepareFailed")),
+          },
+    [allowVoice, canUseAudioSession, sending, t],
+  );
+
+  const onSendMedia = useCallback<
     NonNullable<ChatProps<DetailMessage>["onSend"]>
   >(
     (messages) => {
       const take = messages[0];
+      if (take?.video && take.videoNote) {
+        void sendPicks(
+          [{ type: "video", uri: take.video, duration: take.duration }],
+          "",
+          take.replyMessage ?? composition.current.quote,
+          true,
+        );
+        return;
+      }
       if (!take?.audio) return;
       const uri = take.audio;
       if (!canUseAudioSession() || sendBusy.current) {
@@ -680,11 +1057,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         : undefined;
       const target = take.replyMessage ?? composition.current.quote;
       void messaging
-        .sendVoice({
+        .sendAttachment({
           peerKey,
           uri,
           replyTo: target ? String(target._id) : null,
-          voice: {
+          metadata: {
             kind: "voice",
             mime: voiceMime,
             durationMs: Math.round((take.duration ?? 0) * 1_000),
@@ -719,6 +1096,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       peerKey,
       loadLatest,
       saveDraft,
+      sendPicks,
       t,
     ],
   );
@@ -758,10 +1136,27 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const mediaPlayback = useMemo<ChatProps<DetailMessage>["mediaPlayback"]>(
     () => ({
       isAutoPlayNextEnabled: false,
+      isRoundVideoAutoplayEnabled: false,
+      isFloatingRoundNoteEnabled: false,
       isNowPlayingBarEnabled: true,
       onMediaRead: (message) => chat.markListened(peerKey, String(message._id)),
     }),
     [chat, peerKey],
+  );
+
+  const mediaTransfer = useMemo<ChatProps<DetailMessage>["mediaTransfer"]>(
+    () => ({
+      onDownload: (message) => {
+        if (canUseMedia())
+          void attachments.download(peerKey, String(message._id));
+      },
+      onCancel: (message) => {
+        if (message.transfer?.type === "upload")
+          messaging.cancelAttachment(peerKey, String(message._id));
+        else attachments.cancel(peerKey, String(message._id));
+      },
+    }),
+    [attachments, canUseMedia, messaging, peerKey],
   );
 
   const renderToolbar = useCallback(
@@ -1093,11 +1488,63 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             },
           });
       }
-      if (message.voice && (message.pending || message.isFailed))
+      if (message.media && canUseMedia()) {
+        const state = attachments.downloadState(peerKey, message._id);
+        const transferring =
+          state === "downloading" ||
+          state === "verifying" ||
+          typeof state === "number";
+        if (transferring)
+          actions.push({
+            key: "media-cancel",
+            label: t("messages:voiceCancelDownload"),
+            onPress: () => attachments.cancel(peerKey, message._id),
+          });
+        else if (state !== "downloaded" && !message.pending)
+          actions.push({
+            key: "media-download",
+            label: t("messages:mediaDownload"),
+            onPress: () => {
+              if (canUseMedia())
+                void attachments.download(peerKey, message._id);
+            },
+          });
+        else if (state === "downloaded") {
+          actions.push(
+            {
+              key: "media-share",
+              label: t("messages:mediaShare"),
+              onPress: () => performFileAction(message, "share"),
+            },
+            {
+              key: "media-save",
+              label: t("messages:mediaSave"),
+              onPress: () => performFileAction(message, "save"),
+            },
+          );
+          if (message.media.kind === "file")
+            actions.push({
+              key: "media-open",
+              label: t("messages:mediaOpen"),
+              onPress: () => performFileAction(message, "open"),
+            });
+          if (attachments.canRemoveDownload(peerKey, message._id))
+            actions.push({
+              key: "media-remove",
+              label: t("messages:mediaRemoveDownload"),
+              onPress: () => attachments.removeDownload(peerKey, message._id),
+            });
+        }
+      }
+      if (message.media && (message.pending || message.isFailed))
         actions.push({
           key: "cancel-voice",
-          label: t("messages:voiceCancelSend"),
-          onPress: () => messaging.cancelVoice(peerKey, message._id),
+          label: t(
+            message.voice
+              ? "messages:voiceCancelSend"
+              : "messages:mediaCancelUpload",
+          ),
+          onPress: () => messaging.cancelAttachment(peerKey, message._id),
         });
       if (!message.isFailed) return actions;
       const uploadFailure = message.failure?.startsWith("media-")
@@ -1106,7 +1553,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       const detail = isUploadFailure(uploadFailure)
         ? t(`settings:mediaFailure_${uploadFailure}`)
         : message.failure === "media-upload"
-          ? t("messages:voiceUploadFailed")
+          ? t(
+              message.voice
+                ? "messages:voiceUploadFailed"
+                : "messages:mediaUploadFailed",
+            )
           : message.failure === "no-inbox"
             ? t("messages:noInbox")
             : message.failure === "invalid-message"
@@ -1121,7 +1572,17 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         },
       ];
     },
-    [t, chat, locale, peerKey, refresh, messaging],
+    [
+      t,
+      chat,
+      locale,
+      peerKey,
+      refresh,
+      messaging,
+      attachments,
+      canUseMedia,
+      performFileAction,
+    ],
   );
 
   const reactions = useMemo<ChatProps<DetailMessage>["reactions"]>(
@@ -1147,16 +1608,18 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         updateQuote({
           _id: message._id,
           user: message.user,
-          text: message.voice
-            ? t("messages:voiceMessage")
-            : message.locked
-              ? t("messages:lockedMessage")
-              : (message.originalText ?? message.text),
+          text: message.media
+            ? mediaLabel(message.media.kind)
+            : message.location
+              ? mediaLabel("location")
+              : message.locked
+                ? t("messages:lockedMessage")
+                : (message.originalText ?? message.text),
         }),
       onClear: () => updateQuote(null),
       onPress: jumpToQuote,
     }),
-    [jumpToQuote, quote, rtl, t, updateQuote],
+    [jumpToQuote, mediaLabel, quote, rtl, t, updateQuote],
   );
 
   const messageTextProps = useMemo<
@@ -1370,13 +1833,32 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           reply={reply}
           messageTextProps={messageTextProps}
           renderBubble={renderTranslatedBubble}
-          attachments={false}
+          attachments={attachmentOptions}
           audioRecording={audioRecording}
-          onSend={onSendVoice}
+          onSend={onSendMedia}
           mediaPlayback={mediaPlayback}
-          videoRecording={false}
+          videoRecording={videoRecording}
+          mediaTransfer={mediaTransfer}
           emojiKeyboard
         />
+        {mediaEnabled && pickedMedia.length > 0 ? (
+          <AttachmentPreview
+            items={pickedMedia}
+            color={colors.text}
+            background={colors.background}
+            allowVideo={allowVoice}
+            reducedMotion={reducedMotion}
+            onClose={() => {
+              for (const item of pickedMedia) discardPickedAttachment(item.uri);
+              setPickedMedia([]);
+            }}
+            onSend={(caption) => {
+              const batch = pickedMedia;
+              setPickedMedia([]);
+              void sendPicks(batch, caption, composition.current.quote);
+            }}
+          />
+        ) : null}
         {menu ? (
           <SpecialSendMenu
             anchor={menu}

@@ -1,7 +1,8 @@
+import { locationFromText, locationTag, type SharedLocation } from "./location";
 import {
   fileMessageKind,
   parseFileMessage,
-  type VoiceAttachment,
+  type EncryptedAttachment,
 } from "../media/protocol";
 import type NDK from "@nostr-dev-kit/ndk";
 import {
@@ -65,7 +66,8 @@ export type PrivateEvent = {
   recipientKey: string;
   sentAt: number;
 } & (
-  | { type: "attachment"; file: VoiceAttachment; replyTo: string | null }
+  | { type: "attachment"; file: EncryptedAttachment; replyTo: string | null }
+  | { type: "location"; location: SharedLocation; replyTo: string | null }
   | { type: "message"; body: string; replyTo: string | null }
   | {
       type: "timelock";
@@ -207,6 +209,13 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     return file
       ? { ...base, type: "attachment", file, replyTo: target ?? null }
       : null;
+  }
+  if (
+    rumor.tags.some(([tag, version]) => tag === locationTag && version === "1")
+  ) {
+    const location = locationFromText(rumor.content);
+    if (location)
+      return { ...base, type: "location", location, replyTo: target ?? null };
   }
   if (!rumor.content.trim() || rumor.content.length > 16_000) return null;
   return {

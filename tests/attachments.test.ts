@@ -1,3 +1,9 @@
+import { validateAttachment } from "../src/core/media/attachment-format";
+import {
+  locationFromText,
+  locationTag,
+  locationText,
+} from "../src/core/messaging/location";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createDecipheriv } from "node:crypto";
@@ -12,10 +18,11 @@ import {
   fileTags,
   maxAttachmentBytes,
   parseFileMessage,
-  type VoiceAttachment,
+  type EncryptedAttachment,
 } from "../src/core/media/protocol";
 import {
   createRumor,
+  messageKind,
   unwrapPrivateEvent,
   wrapRumor,
 } from "../src/core/messaging/nip17";
@@ -28,7 +35,7 @@ import {
 import migrations from "../src/db/migrations/bundle";
 import * as schema from "../src/db/schema";
 
-const file: VoiceAttachment = {
+const file: EncryptedAttachment = {
   kind: "voice",
   mime: "audio/mp4",
   algorithm: "aes-gcm",
@@ -90,7 +97,7 @@ test("kind 15 keeps file metadata inside independently wrapped copies and valida
     { ...file, algorithm: "aes-cbc" },
   ])
     expect(
-      parseFileMessage(file.url, fileTags(changed as VoiceAttachment)),
+      parseFileMessage(file.url, fileTags(changed as EncryptedAttachment)),
     ).toBeNull();
   expect(
     parseFileMessage("http://media.example.com/file", fileTags(file)),
@@ -301,12 +308,18 @@ test("authenticated receipt, requests, history, quotes, previews, read and resum
       .messages.find(({ id }) => id === replyId);
     if (!reply) throw new Error("Missing quoted reply");
     expect(
-      toDetailMessage(reply, row, recipients, "", "Locked", "Voice message")
-        .replyMessage,
+      toDetailMessage(
+        reply,
+        row,
+        recipients,
+        "",
+        "Locked",
+        () => "Voice message",
+      ).replyMessage,
     ).toEqual({ _id: row.id, text: "Voice message", user: recipients.peer });
     chat.markRead(peer, [row.id]);
     expect(chat.conversation(peer)?.unread).toBe(1);
-    expect(chat.history(peer).messages[0].voice?.listened).toBe(false);
+    expect(chat.message(peer, rumor.id)?.voice?.listened).toBe(false);
     expect(chat.receive(toInput(rumor.id))).toBe(false);
     expect(requests).toBe(0);
     const download = manual.download(peer, rumor.id);
@@ -320,7 +333,7 @@ test("authenticated receipt, requests, history, quotes, previews, read and resum
     expect(requests).toBe(2);
     finish();
     await retry;
-    expect(chat.history(peer).messages[0].voice?.listened).toBe(false);
+    expect(chat.message(peer, rumor.id)?.voice?.listened).toBe(false);
   } finally {
     sqlite.close();
   }
@@ -381,6 +394,260 @@ test("recovers a staged voice outbox row and keeps its ID through reconciliation
     expect(reopened.history(peer).messages.map((item) => item.id)).toEqual([
       id,
     ]);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("rich kind-15 metadata renders locally and dispatches only one explicit transfer per attachment", async () => {
+  const { sqlite, chat } = database();
+  try {
+    const sender = NDKPrivateKeySigner.generate();
+    const recipient = NDKPrivateKeySigner.generate();
+    const ndk = new NDK({ signer: sender });
+    const author = sender.userSync.pubkey;
+    const owner = recipient.userSync.pubkey;
+    const participants = { self: { _id: owner }, peer: { _id: author } };
+    const photo = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+    const attachmentTypes = [
+      {
+        kind: "image",
+        mime: "image/jpeg",
+        blurhash: photo,
+        dimensions: { width: 420, height: 560 },
+        caption: "A caption",
+      },
+      { kind: "video", mime: "video/mp4", blurhash: photo, durationMs: 3800 },
+      {
+        kind: "round-video",
+        mime: "video/mp4",
+        blurhash: photo,
+        durationMs: 6100,
+      },
+      { kind: "file", mime: "application/pdf", filename: "Notes.pdf" },
+    ] satisfies Partial<EncryptedAttachment>[];
+    const seen: string[] = [];
+    const manual = createManualDownloads({
+      authorize(peer, id) {
+        const record = chat.attachment(peer, id);
+        return record?.url ? { ...record.file, url: record.url } : undefined;
+      },
+      async transfer(blob) {
+        seen.push(blob.url);
+      },
+    });
+    const ids: string[] = [];
+    for (const [index, description] of attachmentTypes.entries()) {
+      const attachment: EncryptedAttachment = {
+        ...file,
+        durationMs: undefined,
+        waveform: undefined,
+        ...description,
+        url: `https://media.example.com/rich-${index}`,
+        hash: (index + 1).toString().repeat(64),
+      };
+      const tags = fileTags(attachment);
+      const withExternalPreviews = [
+        ...tags,
+        ["thumb", "https://example.net/thumbnail.png"],
+        ["fallback", "https://localhost/no"],
+      ];
+      expect(
+        parseFileMessage(attachment.url, withExternalPreviews),
+      ).toMatchObject(description);
+      expect(
+        parseFileMessage(attachment.url, withExternalPreviews)?.fallbacks,
+      ).toBeUndefined();
+      const rumor = createRumor({
+        pubkey: author,
+        kind: fileMessageKind,
+        created_at: 1_710_000_000 + index,
+        content: attachment.url,
+        tags: [["p", owner], ...withExternalPreviews],
+      });
+      const wrap = (await wrapRumor(ndk, rumor, owner, sender)).rawEvent();
+      expect(JSON.stringify(wrap)).not.toContain("thumbnail.png");
+      expect(JSON.stringify(wrap)).not.toContain(attachment.url);
+      const event = await unwrapPrivateEvent(wrap, recipient);
+      if (event?.type !== "attachment")
+        throw new Error("Invalid rich media rumor");
+      chat.receive({
+        id: event.id,
+        eventId: event.id,
+        peerKey: author,
+        senderKey: author,
+        recipientKey: owner,
+        direction: "incoming",
+        sentAt: event.sentAt,
+        replyTo: ids.at(-1) ?? null,
+        attachment: event.file,
+        body: event.file.caption ?? "",
+      });
+      const row = chat.message(author, rumor.id);
+      if (!row) throw new Error("Missing media");
+      const mapped = toDetailMessage(
+        row,
+        row.replyTo
+          ? chat.refs(author, [row.replyTo]).get(row.replyTo)
+          : undefined,
+        participants,
+        "",
+        "",
+        (kind) => kind,
+      );
+      expect(mapped.media?.kind).toBe(description.kind);
+      expect(mapped.text).toBe(
+        "caption" in description ? (description.caption ?? "") : "",
+      );
+      expect(mapped.image).toBeUndefined();
+      expect(mapped.video).toBeUndefined();
+      expect(mapped.audio).toBeUndefined();
+      expect(mapped.file?.uri).toBeUndefined();
+      expect(mapped.linkPreview).toBeNull();
+      expect(JSON.stringify(mapped)).not.toContain("https://");
+      expect(
+        toConversationListItem(
+          chat.conversations()[0],
+          owner,
+          undefined,
+          undefined,
+          undefined,
+          (kind) => kind,
+        ).lastMessage?.text,
+      ).toBe(description.kind);
+      if (index > 0)
+        expect(mapped.replyMessage?.text).toBe(attachmentTypes[index - 1].kind);
+      chat.markRead(author, [row.id]);
+      ids.push(row.id);
+    }
+    chat.history(author);
+    expect(seen).toEqual([]);
+    for (const id of ids) {
+      const first = manual.download(author, id);
+      expect(manual.download(author, id)).toBe(first);
+      await first;
+    }
+    expect(seen).toEqual(
+      attachmentTypes.map((_, i) => `https://media.example.com/rich-${i}`),
+    );
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("untrusted thumbnails, names and dimensions never reach a native decoder unchanged", () => {
+  const image: EncryptedAttachment = {
+    ...file,
+    kind: "image",
+    mime: "image/png",
+  };
+  expect(
+    parseFileMessage(
+      image.url,
+      fileTags(image).filter(([key]) => key !== "boop:media"),
+    )?.kind,
+  ).toBe("image");
+  const base = fileTags(image);
+  const invalid = [
+    ["thumbhash", "AAAAAAAA"],
+    ["blurhash", "LEHV?+"],
+    ["dim", "99999x0"],
+    ["boop:filename", "../../secret"],
+  ];
+  const safe = parseFileMessage(image.url, [...base, ...invalid]);
+  expect(safe).not.toBeNull();
+  expect(safe?.thumbhash).toBeUndefined();
+  expect(safe?.blurhash).toBeUndefined();
+  expect(safe?.dimensions).toBeUndefined();
+  expect(safe?.filename).toBeUndefined();
+
+  const fileLikeBlurhash = "file:".padEnd(64, "0");
+  expect(
+    parseFileMessage(image.url, [...base, ["blurhash", fileLikeBlurhash]])
+      ?.blurhash,
+  ).toBeUndefined();
+
+  const thumb = new Uint8Array(24);
+  thumb[3] = 7;
+  const hash = btoa(String.fromCharCode(...thumb));
+  expect(
+    parseFileMessage(image.url, [...base, ["thumbhash", hash]])?.thumbhash,
+  ).toBe(hash);
+  const png = Uint8Array.fromBase64(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+Ww4sAAAAASUVORK5CYII=",
+  );
+  expect(() => validateAttachment(png, image)).not.toThrow();
+  expect(() => validateAttachment(png.slice(0, -1), image)).toThrow(
+    "media-format",
+  );
+  new DataView(png.buffer).setUint32(16, 15_000);
+  expect(() => validateAttachment(png, image)).toThrow("media-format");
+  const doc = {
+    ...file,
+    kind: "file",
+    mime: "application/pdf",
+  } satisfies EncryptedAttachment;
+  expect(() =>
+    validateAttachment(new TextEncoder().encode("%PDF-1.7"), doc),
+  ).not.toThrow();
+  expect(() =>
+    validateAttachment(new TextEncoder().encode("<html>"), doc),
+  ).toThrow("media-format");
+});
+
+test("confirmed location reaches the receiver in a kind-14 wrap and has no blob or map URL", async () => {
+  const sender = NDKPrivateKeySigner.generate();
+  const recipient = NDKPrivateKeySigner.generate();
+  const owner = recipient.userSync.pubkey;
+  const peer = sender.userSync.pubkey;
+  const replyTo = "56".repeat(32);
+  const ndk = new NDK({ signer: sender });
+  const location = { latitude: 31.321123, longitude: 34.765432 };
+  const rumor = createRumor({
+    pubkey: peer,
+    kind: messageKind,
+    created_at: 1_710_000_000,
+    content: locationText(location),
+    tags: [
+      ["p", owner],
+      ["e", replyTo],
+      [locationTag, "1"],
+    ],
+  });
+  const wrap = (await wrapRumor(ndk, rumor, owner, sender)).rawEvent();
+  expect(JSON.stringify(wrap)).not.toContain(rumor.content);
+  expect(await unwrapPrivateEvent(wrap, recipient)).toMatchObject({
+    type: "location",
+    location,
+    replyTo,
+  });
+  expect(locationFromText("91.000000, 34.767890")).toBeUndefined();
+  expect(locationFromText("32.000000, 190.000000")).toBeUndefined();
+  const { sqlite, chat } = database();
+  try {
+    chat.receive({
+      id: rumor.id,
+      eventId: rumor.id,
+      peerKey: peer,
+      senderKey: peer,
+      recipientKey: owner,
+      direction: "incoming",
+      sentAt: rumor.created_at * 1000,
+      replyTo,
+      location: true,
+      body: rumor.content,
+    });
+    const row = chat.history(peer).messages[0];
+    const rendered = toDetailMessage(
+      row,
+      undefined,
+      { self: { _id: owner }, peer: { _id: peer } },
+      "",
+    );
+    expect(rendered.location).toEqual(location);
+    expect(rendered.text).toBe("");
+    expect(rendered.linkPreview).toBeNull();
+    expect(chat.attachment(peer, row.id)).toBeUndefined();
   } finally {
     sqlite.close();
   }

@@ -7,19 +7,18 @@ import {
   aesEncryptAsync,
 } from "expo-crypto";
 import { sha256 } from "./hash";
-import { validateVoiceAudio } from "./audio-format";
+import { validateAttachment } from "./attachment-format";
 import {
-  maxAttachmentBytes,
+  byteLimit,
   type SealedAttachment,
-  type VoiceMetadata,
+  type AttachmentMetadata,
 } from "./protocol";
 
-export async function sealVoice(
+export async function sealAttachment(
   plaintext: Uint8Array<ArrayBuffer>,
-  voice: VoiceMetadata,
+  metadata: AttachmentMetadata,
 ) {
-  if (plaintext.length > maxAttachmentBytes - 16) throw new Error("media-size");
-  validateVoiceAudio(plaintext);
+  validateAttachment(plaintext, metadata);
   const key = await AESEncryptionKey.generate(AESKeySize.AES256);
   const sealed = await aesEncryptAsync(plaintext, key, {
     nonce: { length: 12 },
@@ -27,7 +26,7 @@ export async function sealVoice(
   });
   const bytes = Uint8Array.from(await sealed.ciphertext({ includeTag: true }));
   const file: SealedAttachment = {
-    ...voice,
+    ...metadata,
     algorithm: "aes-gcm",
     key: await key.encoded("hex"),
     nonce: bytesToHex(await sealed.iv()),
@@ -38,13 +37,13 @@ export async function sealVoice(
   return { file, bytes };
 }
 
-export async function openVoice(
+export async function openAttachment(
   bytes: Uint8Array<ArrayBuffer>,
   file: SealedAttachment,
 ) {
   if (
     bytes.length < 17 ||
-    bytes.length > maxAttachmentBytes ||
+    bytes.length > byteLimit(file.kind) ||
     (file.size !== undefined && bytes.length !== file.size) ||
     (await sha256(bytes)) !== file.hash
   )
@@ -64,7 +63,7 @@ export async function openVoice(
   try {
     if (file.originalHash && (await sha256(audio)) !== file.originalHash)
       throw new Error("media-integrity");
-    validateVoiceAudio(audio);
+    validateAttachment(audio, file);
     return audio;
   } catch (error) {
     audio.fill(0);

@@ -1,3 +1,4 @@
+import { mediaLabels } from "@/components/messages/media-label";
 import { useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { ProfileChatCell } from "@/components/messages/profile-chat-cell";
 import { ChatList } from "@kesha-antonov/react-native-chat";
@@ -30,10 +31,12 @@ export default function Requests() {
         createdAt: latest.sentAt,
         user: { _id: publicKey, name: title },
         text: latest.attachment
-          ? t("messages:voiceMessage")
-          : latest.timeLock
-            ? t("security:requestLocked")
-            : latest.body,
+          ? t(mediaLabels[latest.attachment.kind])
+          : latest.location
+            ? t(mediaLabels.location)
+            : latest.timeLock
+              ? t("security:requestLocked")
+              : latest.body,
       },
     };
   });

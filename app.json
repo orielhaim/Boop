@@ -26,8 +26,13 @@
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.SYSTEM_ALERT_WINDOW",
-        "android.permission.WRITE_CONTACTS"
+        "android.permission.WRITE_CONTACTS",
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "locales": {
@@ -74,23 +79,23 @@
         "expo-camera",
         {
           "recordAudioAndroid": false,
-          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call.",
+          "cameraPermission": "Capture and send photos or videos, scan Boop addresses, and share your camera during calls.",
           "microphonePermission": false
         }
       ],
       [
         "@config-plugins/react-native-webrtc",
         {
-          "microphonePermission": "Use the microphone for peer-to-peer audio calls.",
-          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call."
+          "microphonePermission": "Record voice and video messages and talk during peer-to-peer calls.",
+          "cameraPermission": "Capture and send photos or videos, scan Boop addresses, and share your camera during calls."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": false,
-          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call.",
-          "microphonePermission": "Use the microphone for peer-to-peer audio calls."
+          "photosPermission": "Select photos and videos to send in Boop.",
+          "cameraPermission": "Capture and send photos or videos, scan Boop addresses, and share your camera during calls.",
+          "microphonePermission": "Record voice and video messages and talk during peer-to-peer calls."
         }
       ],
       "expo-font",
@@ -126,7 +131,25 @@
           "enableBackgroundPlayback": false
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-video",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Share your current location when you choose it in a chat.",
+          "locationAlwaysPermission": false,
+          "locationAlwaysAndWhenInUsePermission": false
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": false,
+          "savePhotosPermission": "Save photos and videos you choose to keep.",
+          "granularPermissions": [],
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

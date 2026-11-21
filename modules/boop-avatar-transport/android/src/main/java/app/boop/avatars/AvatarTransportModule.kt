@@ -5,6 +5,7 @@ import android.graphics.ImageDecoder
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.OkHttpClient
@@ -70,6 +71,11 @@ class AvatarTransportModule : Module() {
     .callTimeout(12, TimeUnit.SECONDS)
     .build()
 
+  private val attachmentClient = client.newBuilder()
+    .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
+    .callTimeout(58, TimeUnit.SECONDS)
+    .build()
+
   override fun definition() = ModuleDefinition {
     Name("BoopAvatarTransport")
     Events("attachmentProgress")
@@ -98,13 +104,13 @@ class AvatarTransportModule : Module() {
         val target = File(URI(output)).canonicalFile
         val context = appContext.reactContext ?: throw IOException("No React context")
         val limit = attachmentLimit ?: maxBytes
-        require(attachmentLimit == null || (limit in 17..(8 * 1024 * 1024) &&
+        require(attachmentLimit == null || (limit in 17..(32 * 1024 * 1024) &&
           expectedHash?.matches(Regex("[a-f0-9]{64}")) == true))
         val root = if (attachmentLimit == null) File(context.filesDir, "avatar-cache")
           else File(context.cacheDir, "attachment-work")
         val extension = if (attachmentLimit == null) ".jpg" else ".bin"
         require(target.path.startsWith(root.canonicalPath + File.separator) && target.name.endsWith(extension))
-        val call = client.newCall(Request.Builder().url(address)
+        val call = (if (attachmentLimit != null) attachmentClient else client).newCall(Request.Builder().url(address)
           .header("Accept", if (attachmentLimit == null) "image/jpeg, image/png, image/webp" else "*/*")
           .header("Accept-Encoding", "identity").build())
         job.call = call

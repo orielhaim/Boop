@@ -43,6 +43,7 @@ export function attachmentFiles(owner: string) {
         removeMediaFile(file);
   const root = new Directory(Paths.document, "attachment-blobs");
   sweepRetiredOwners(root, owner);
+  removeMediaFile(new Directory(Paths.cache, "attachment-exports"));
   const work = new Directory(Paths.cache, "attachment-work");
   removeMediaFile(work);
   return { blobs: new Directory(root, owner), work };

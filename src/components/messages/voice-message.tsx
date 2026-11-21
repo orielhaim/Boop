@@ -1,4 +1,8 @@
-import { MessageAudio, VoiceWaveform } from "@kesha-antonov/react-native-chat";
+import {
+  MessageAudio,
+  useMediaTransfer,
+  VoiceWaveform,
+} from "@kesha-antonov/react-native-chat";
 import {
   memo,
   useCallback,
@@ -35,6 +39,7 @@ export const VoiceMessage = memo(function VoiceMessage({
   rtl: boolean;
 }) {
   const { attachments } = useLocal();
+  const mediaTransfer = useMediaTransfer();
   const { t } = useTranslation("messages");
   const id = message._id;
   const getState = useCallback(
@@ -49,7 +54,10 @@ export const VoiceMessage = memo(function VoiceMessage({
   const upload = useSyncExternalStore(subscribe, () =>
     attachments.uploadProgress(id),
   );
-  const transferring = state === "downloading" || typeof state === "number";
+  const transferring =
+    state === "downloading" ||
+    state === "verifying" ||
+    typeof state === "number";
   const [uri, setUri] = useState<string>();
   const [preparing, setPreparing] = useState(false);
   const [playbackError, setPlaybackError] = useState(false);
@@ -92,6 +100,7 @@ export const VoiceMessage = memo(function VoiceMessage({
         currentMessage={{
           ...message,
           audio: uri,
+          isDownloadRequired: false,
           duration: seconds,
           waveform: bars,
           isMediaUnread: !outgoing && !message.voice?.listened,
@@ -102,12 +111,12 @@ export const VoiceMessage = memo(function VoiceMessage({
 
   function press() {
     if (transferring) {
-      attachments.cancel(peer, id);
+      mediaTransfer.onCancel({ ...message, transfer: { type: "download" } });
       return;
     }
     if (!enabled || preparing) return;
     if (!available) {
-      void attachments.download(peer, id);
+      mediaTransfer.onDownload({ ...message, isDownloadRequired: true });
       return;
     }
     const lease: NonNullable<typeof playback.current> = {

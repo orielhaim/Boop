@@ -137,11 +137,300 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
      $[2] = audioStyle;
      $[3] = currentMessage;
      $[4] = position;
+diff --git a/lib/MessageFile.js b/lib/MessageFile.js
+index 4a69ce80a45d1178b5626225c0c87a2f922c49d5..2688124de858f4f9f1ca825e495e50f62989ba09 100644
+--- a/lib/MessageFile.js
++++ b/lib/MessageFile.js
+@@ -39,6 +39,7 @@ export const displayFileName = name => (name ?? '').replace(BIDI_CONTROLS, '');
+ /** Opens a file: the system share sheet (`expo-sharing`) when installed, otherwise `Linking`. */
+ export const openFile = file => {
+   // The uri comes from the message: an `intent:` or custom scheme must not reach the system.
++  if (!file.uri) return;
+   if (!isSafeMediaUrl(file.uri)) {
+     openMediaUrl(file.uri);
+     return;
+@@ -68,7 +69,7 @@ export function MessageFile(t0) {
+     currentMessage,
+     position: t1,
+     containerStyle,
+-    onPress
++    onPress, accessibilityHint
+   } = t0;
+   const position = t1 === undefined ? "left" : t1;
+   const styles = useThemedStyles(position === "right" ? createRightStyles : createLeftStyles);
+@@ -252,8 +253,8 @@ export function MessageFile(t0) {
+     t19 = $[52];
+   }
+   let t20;
+-  if ($[53] !== handlePress || $[54] !== t12 || $[55] !== t19 || $[56] !== t8 || $[57] !== t9) {
+-    t20 = <Pressable onPress={handlePress} {...suppressPressAfterHold} accessibilityRole="button" accessibilityLabel={t8} style={t9}>{t12}{t19}</Pressable>;
++  if (accessibilityHint !== undefined || $[53] !== handlePress || $[54] !== t12 || $[55] !== t19 || $[56] !== t8 || $[57] !== t9) {
++    t20 = <Pressable onPress={handlePress} {...suppressPressAfterHold} accessibilityRole="button" accessibilityLabel={t8} accessibilityHint={accessibilityHint} style={t9}>{t12}{t19}</Pressable>;
+     $[53] = handlePress;
+     $[54] = t12;
+     $[55] = t19;
+diff --git a/lib/MessageImage.d.ts b/lib/MessageImage.d.ts
+index 233f71daff0a5b005eaf1e5f313ea7d8a75aa549..fb8e2ff168ba72215d2ed45d16fce819486487d3 100644
+--- a/lib/MessageImage.d.ts
++++ b/lib/MessageImage.d.ts
+@@ -8,6 +8,7 @@ export interface MessageImageProps<TMessage extends IMessage> {
+     containerStyle?: StyleProp<ViewStyle>;
+     imageSourceProps?: Partial<ImageURISource>;
+     imageStyle?: StyleProp<ImageStyle>;
++    onOpen?: () => void;
+     imageProps?: Partial<ImageProps>;
+ }
+ export declare function MessageImage<TMessage extends IMessage = IMessage>({ containerStyle, imageProps, imageSourceProps, imageStyle, currentMessage, }: MessageImageProps<TMessage>): React.JSX.Element | null;
+diff --git a/lib/MessageImage.js b/lib/MessageImage.js
+index 03fb848930ed5c7dbdcc0ce95cf0d781b9f5a476..0bbfd5f9b8d7ca3df4d69dd737e5fdef1635fb41 100644
+--- a/lib/MessageImage.js
++++ b/lib/MessageImage.js
+@@ -112,7 +112,7 @@ export function MessageImage(t0) {
+     imageProps,
+     imageSourceProps,
+     imageStyle,
+-    currentMessage
++    currentMessage, onOpen
+   } = t0;
+   const gallery = useMediaGallery();
+   const [isViewerOpen, setIsViewerOpen] = useState(false);
+@@ -247,12 +247,14 @@ export function MessageImage(t0) {
+   }
+   const onError = t7;
+   let t8;
+-  if ($[18] !== currentMessage || $[19] !== gallery || $[20] !== imageSource.uri) {
++  if (onOpen || $[18] !== currentMessage || $[19] !== gallery || $[20] !== imageSource.uri) {
+     t8 = () => {
+       if (!imageSource.uri || !currentMessage) {
+         return;
+       }
+-      if (gallery) {
++      if (onOpen) {
++        onOpen();
++      } else if (gallery) {
+         gallery.open(currentMessage._id);
+       } else {
+         setIsViewerOpen(true);
+@@ -342,7 +344,7 @@ export function MessageImage(t0) {
+   }
+   let t13;
+   if ($[41] !== computedImageStyle || $[42] !== imageFadeStyle || $[43] !== imageProps || $[44] !== imageSource || $[45] !== loadKey || $[46] !== onError || $[47] !== onLoad || $[48] !== onLoadProgress || $[49] !== onLoadStart || $[50] !== shouldLoad || $[51] !== transfer?.type) {
+-    t13 = shouldLoad || transfer?.type === "upload" ? <Animated.View style={imageFadeStyle}><Image key={loadKey} testID="message-image" {...imageProps} style={computedImageStyle} source={imageSource} onLoadStart={onLoadStart} onProgress={onLoadProgress} onLoad={onLoad} onError={onError} resizeMode="cover" /></Animated.View> : <View style={computedImageStyle} />;
++    t13 = shouldLoad || transfer?.type === "upload" ? <Animated.View style={imageFadeStyle}><Image key={loadKey} testID="message-image" {...imageProps} style={computedImageStyle} source={imageSource} onLoadStart={onLoadStart} onProgress={onLoadProgress} onLoad={onLoad} onError={onError} resizeMode={imageProps?.resizeMode ?? "cover"} /></Animated.View> : <View style={computedImageStyle} />;
+     $[41] = computedImageStyle;
+     $[42] = imageFadeStyle;
+     $[43] = imageProps;
+diff --git a/lib/MessageVideo/ExpoVideoPlayer.js b/lib/MessageVideo/ExpoVideoPlayer.js
+index 2abe62fd5ccb4a4fcf904429986f470ce360a088..40bb66a6eee80dcd113d4f289ea7c7cf48420081 100644
+--- a/lib/MessageVideo/ExpoVideoPlayer.js
++++ b/lib/MessageVideo/ExpoVideoPlayer.js
+@@ -11,9 +11,10 @@ export const ExpoVideoPlayer = t0 => {
+     uri,
+     style,
+     videoProps,
+-    playerKey
++    playerKey, autoPlay
+   } = t0;
+   const player = expoVideo.useVideoPlayer(uri, _temp);
++  useEffect(() => { if (autoPlay) player.play(); }, [autoPlay, player]);
+   const VideoView = expoVideo.VideoView;
+   let t1;
+   let t2;
+diff --git a/lib/MessageVideo/RoundNotePlayer.js b/lib/MessageVideo/RoundNotePlayer.js
+index 69fa2d02a2a1e6af91f4866ef6a7bbf084d916ec..035f118d6685edd8a9303a290e31e47dad7d387c 100644
+--- a/lib/MessageVideo/RoundNotePlayer.js
++++ b/lib/MessageVideo/RoundNotePlayer.js
+@@ -6,7 +6,7 @@ import Animated, { runOnJS } from 'react-native-reanimated';
+ import { useRaiseToListen } from '../components/earpiece';
+ import { isRemoteUri } from '../components/mediaDownload';
+ import { MEDIA_LOADER_BACKGROUND, MEDIA_LOADER_ICON, ROUND_BUTTON_SIZE } from '../components/MediaLoader';
+-import { detachRoundNoteFromRow, releasePlayback, useIsNoteFloating, useNotePlaybackOptions, useReportNoteGrown, useReportNowPlaying } from '../components/mediaPlayback';
++import { detachRoundNoteFromRow, releasePlayback, useIsNoteFloating, useMediaPlaybackController, useNotePlaybackOptions, useReportNoteGrown, useReportNowPlaying } from '../components/mediaPlayback';
+ import { transferState, useMediaTransfer } from '../components/mediaTransfer';
+ import { PRESS_HOLD_MS } from '../components/messagePress';
+ import { RadialProgress } from '../components/RadialProgress';
+@@ -33,7 +33,23 @@ import { expoVideo, playerTime } from './videoPlayers';
+ const ACTIVATE = [{
+   name: 'activate'
+ }];
+-export const RoundNotePlayer = t0 => {
++export function RoundNotePlayer(props) {
++  const controller = useMediaPlaybackController();
++  return controller?.getOptions().isFloatingRoundNoteEnabled === false
++    ? <OwnedRoundNotePlayer {...props} />
++    : <RoundNoteView {...props} />;
++}
++
++function OwnedRoundNotePlayer(props) {
++  const player = expoVideo.useVideoPlayer(props.uri, (instance) => {
++    instance.muted = true;
++    instance.loop = false;
++  });
++  return <RoundNoteView {...props} ownedPlayer={player} />;
++}
++
++const RoundNoteView = t0 => {
++  const autoPlay = t0.autoPlay;
+   const $ = _c(140);
+   const {
+     uri,
+@@ -80,7 +96,7 @@ export const RoundNotePlayer = t0 => {
+     player,
+     isPlayerLoading,
+     bufferProgress
+-  } = useNotePlayer(uri, messageId, isAutoplay, duration);
++  } = useNotePlayer(uri, messageId, isAutoplay, duration, t0.ownedPlayer);
+   let t3;
+   if ($[2] !== message) {
+     t3 = transferState(message);
+@@ -148,6 +164,13 @@ export const RoundNotePlayer = t0 => {
+     playFromStart,
+     onPress
+   } = useRoundNotePlayback(t4);
++  const didStart = useRef(false);
++  useEffect(() => {
++    if (autoPlay && !didStart.current) {
++      didStart.current = true;
++      playFromStart();
++    }
++  }, [autoPlay, playFromStart]);
+   useReportNoteGrown(messageId, isGrown, timeShift);
+   let t5;
+   if ($[16] !== playerId || $[17] !== reset) {
+diff --git a/lib/MessageVideo/VideoTransferOverlay.d.ts b/lib/MessageVideo/VideoTransferOverlay.d.ts
+index 81ae1efa6a4a02db0381f4144924cd80f63ff903..1c309ca01ff867ebe5d8dca48b9a6f6270ee3944 100644
+--- a/lib/MessageVideo/VideoTransferOverlay.d.ts
++++ b/lib/MessageVideo/VideoTransferOverlay.d.ts
+@@ -7,5 +7,6 @@ import { IMessage } from '../Models';
+  */
+ export declare const VideoTransferOverlay: ({ message }: {
+     message: IMessage;
++    accessibilityLabel?: string;
+ }) => React.JSX.Element | null;
+ //# sourceMappingURL=VideoTransferOverlay.d.ts.map
+\ No newline at end of file
+diff --git a/lib/MessageVideo/VideoTransferOverlay.js b/lib/MessageVideo/VideoTransferOverlay.js
+index 71f7f8b034d1f8f195caabb9232d0a3e64f6a7c7..a4b3f5dbe0751a516e171d45bfd39b0e2159460b 100644
+--- a/lib/MessageVideo/VideoTransferOverlay.js
++++ b/lib/MessageVideo/VideoTransferOverlay.js
+@@ -14,7 +14,7 @@ import { styles } from './styles';
+ export const VideoTransferOverlay = t0 => {
+   const $ = _c(15);
+   const {
+-    message
++    message, accessibilityLabel
+   } = t0;
+   const mediaTransfer = useMediaTransfer();
+   const state = transferState(message);
+@@ -34,7 +34,7 @@ export const VideoTransferOverlay = t0 => {
+     t1 = $[0];
+   }
+   const t2 = state ? "auto" : "none";
+-  const t3 = state?.icon === "cancel" ? "cancel" : "download video";
++  const t3 = accessibilityLabel ?? (state?.icon === "cancel" ? "cancel" : "download video");
+   let t4;
+   if ($[1] !== mediaTransfer || $[2] !== message) {
+     t4 = () => {
+@@ -73,7 +73,7 @@ export const VideoTransferOverlay = t0 => {
+   }
+   let t9;
+   if ($[9] !== t2 || $[10] !== t3 || $[11] !== t4 || $[12] !== t7 || $[13] !== t8) {
+-    t9 = <Pressable style={t1} pointerEvents={t2} accessibilityRole="button" accessibilityLabel={t3} onPress={t4}>{t7}{t8}</Pressable>;
++    t9 = <Pressable style={t1} pointerEvents={t2} accessibilityRole={state ? "button" : undefined} accessibilityElementsHidden={!state} importantForAccessibility={state ? "yes" : "no-hide-descendants"} accessibilityLabel={state ? t3 : undefined} onPress={t4}>{t7}{t8}</Pressable>;
+     $[9] = t2;
+     $[10] = t3;
+     $[11] = t4;
+diff --git a/lib/MessageVideo/index.js b/lib/MessageVideo/index.js
+index 8f55708fab33770b32a3c3fee2702fc8753456b9..1a168fb587ce0e7b747c004b65f181f3cbf175a1 100644
+--- a/lib/MessageVideo/index.js
++++ b/lib/MessageVideo/index.js
+@@ -18,7 +18,7 @@ export function MessageVideo(t0) {
+     position: t1,
+     containerStyle,
+     videoStyle,
+-    videoProps
++    videoProps, autoPlay
+   } = t0;
+   const position = t1 === undefined ? "left" : t1;
+   const {
+@@ -62,8 +62,8 @@ export function MessageVideo(t0) {
+     t6 = $[6];
+   }
+   let t7;
+-  if ($[7] !== currentMessage || $[8] !== isNote || $[9] !== lifted || $[10] !== noteSize || $[11] !== noteStyle || $[12] !== playingNoteSize || $[13] !== position || $[14] !== uri || $[15] !== videoProps || $[16] !== videoStyle) {
+-    t7 = isExpoVideoAvailable && (!isNote || isRoundNotePlayerAvailable) ? isNote ? lifted && currentMessage?._id != null ? <MirroredRoundNote uri={uri} videoProps={videoProps} videoStyle={videoStyle} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage._id} isIncoming={position === "left"} controller={lifted} /> : <RoundNotePlayer key={`${String(currentMessage?._id)}:${uri}`} uri={uri} videoProps={videoProps} videoStyle={videoStyle} duration={currentMessage?.duration} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage?._id} isIncoming={position === "left"} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View>{lifted && videoPlayerKey(currentMessage?._id, uri) ? <MirroredInlineVideo uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} /> : <ExpoVideoPlayer uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} />}{currentMessage && <VideoTransferOverlay message={currentMessage} />}</View> : <MediaCard kind="video" uri={uri} position={position} style={[isNote && noteStyle, videoStyle]} />;
++  if (autoPlay || $[7] !== currentMessage || $[8] !== isNote || $[9] !== lifted || $[10] !== noteSize || $[11] !== noteStyle || $[12] !== playingNoteSize || $[13] !== position || $[14] !== uri || $[15] !== videoProps || $[16] !== videoStyle) {
++    t7 = isExpoVideoAvailable && (!isNote || isRoundNotePlayerAvailable) ? isNote ? lifted && currentMessage?._id != null ? <MirroredRoundNote uri={uri} videoProps={videoProps} videoStyle={videoStyle} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage._id} isIncoming={position === "left"} controller={lifted} /> : <RoundNotePlayer autoPlay={autoPlay} key={`${String(currentMessage?._id)}:${uri}`} uri={uri} videoProps={videoProps} videoStyle={videoStyle} duration={currentMessage?.duration} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage?._id} isIncoming={position === "left"} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View>{lifted && videoPlayerKey(currentMessage?._id, uri) ? <MirroredInlineVideo uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} /> : <ExpoVideoPlayer autoPlay={autoPlay} uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} />}{currentMessage && <VideoTransferOverlay message={currentMessage} />}</View> : <MediaCard kind="video" uri={uri} position={position} style={[isNote && noteStyle, videoStyle]} />;
+     $[7] = currentMessage;
+     $[8] = isNote;
+     $[9] = lifted;
+diff --git a/lib/MessageVideo/useNotePlayer.js b/lib/MessageVideo/useNotePlayer.js
+index 9f785dd253040679fcae376f13413faab7cfac47..393eec03a037e85fd00c5fa2c840f5aeba2e1c4f 100644
+--- a/lib/MessageVideo/useNotePlayer.js
++++ b/lib/MessageVideo/useNotePlayer.js
+@@ -8,8 +8,8 @@ import { expoVideo } from './videoPlayers';
+  * A round note's player: taken from the chat's note-player cache, so a playing note outlives its
+  * row, and how much of it has buffered while it loads.
+  */
+-export const useNotePlayer = (uri, messageId, isAutoplay, duration) => {
+-  const $ = _c(33);
++export const useNotePlayer = (uri, messageId, isAutoplay, duration, ownedPlayer) => {
++  const $ = _c(34);
+   const controller = useMediaPlaybackController();
+   const playerCache = useNotePlayerCache();
+   const playerId = useId();
+@@ -33,15 +33,18 @@ export const useNotePlayer = (uri, messageId, isAutoplay, duration) => {
+   } else {
+     t0 = $[4];
+   }
+-  const [player] = useState(t0);
++  const [cachedPlayer] = useState(ownedPlayer ? () => undefined : t0);
++  const player = ownedPlayer ?? cachedPlayer;
+   let t1;
+   let t2;
+-  if ($[5] !== playerCache || $[6] !== playerKey) {
++  if ($[5] !== playerCache || $[6] !== playerKey || $[33] !== ownedPlayer) {
+     t1 = () => {
++      if (ownedPlayer) return;
+       playerCache.retain(playerKey);
+       return () => playerCache.release(playerKey);
+     };
+-    t2 = [playerCache, playerKey];
++    t2 = [playerCache, playerKey, ownedPlayer];
++    $[33] = ownedPlayer;
+     $[5] = playerCache;
+     $[6] = playerKey;
+     $[7] = t1;
 diff --git a/lib/Models.d.ts b/lib/Models.d.ts
-index 9047ce232bd66320cd34cb767eaf904c77a57167..0c8497a86c5988e9d259ddd9925ec30ce9084b2a 100644
+index 9047ce232bd66320cd34cb767eaf904c77a57167..85b4852b2f0cf22a47cc7dfeb1fc0aa2fc529912 100644
 --- a/lib/Models.d.ts
 +++ b/lib/Models.d.ts
-@@ -217,6 +217,11 @@ export interface MessageLocationProps<TMessage extends IMessage> {
+@@ -51,7 +51,7 @@ export interface MessageReaction {
+ /** A document attached to a message (`IMessage.file`), drawn as a file bubble. */
+ export interface IMessageFile {
+     /** Where the file is: a local `file://` path or a remote URL. */
+-    uri: string;
++    uri?: string;
+     /** The file name shown in the bubble, with its extension. */
+     name: string;
+     /** Size in bytes, shown under the name. */
+@@ -186,6 +186,7 @@ export interface MessageVideoProps<TMessage extends IMessage> {
+     containerStyle?: StyleProp<ViewStyle>;
+     videoStyle?: StyleProp<ViewStyle>;
+     videoProps?: object;
++    autoPlay?: boolean;
+ }
+ export interface MessageAudioProps<TMessage extends IMessage> {
+     currentMessage: TMessage;
+@@ -198,6 +199,7 @@ export interface MessageFileProps<TMessage extends IMessage> {
+     currentMessage: TMessage;
+     position?: 'left' | 'right';
+     containerStyle?: StyleProp<ViewStyle>;
++    accessibilityHint?: string;
+     /** Override opening the file (the system share sheet with `expo-sharing`, else `Linking`). */
+     onPress?: (file: IMessageFile) => void;
+ }
+@@ -217,6 +219,11 @@ export interface MessageLocationProps<TMessage extends IMessage> {
   * `expo-audio` peer dependency; when it is absent the mic button is hidden.
   */
  export interface AudioRecordingProps {
@@ -153,6 +442,113 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..0c8497a86c5988e9d259ddd9925ec30c
      /**
       * Show the "view once" toggle above the lock while a take is locked.
       * A take sent with it on arrives in `onSend` with `isViewOnce: true`.
+@@ -254,6 +261,9 @@ export interface VideoRecordingProps {
+      * off, `true` also falls back to the system camera (`expo-image-picker`) without it.
+      */
+     isEnabled?: boolean;
++    canUseCapture?: () => boolean;
++    onDiscardRecording?: (uri: string) => void;
++    confirmBeforeSend?: boolean;
+     /** Max video length in seconds. Default 60. */
+     maxDuration?: number;
+     /** Minimum video length (ms) below which the take is discarded. Default 800. */
+diff --git a/lib/attachments/AttachmentMenu/TabPanel.js b/lib/attachments/AttachmentMenu/TabPanel.js
+index a178af0228ac1a7827a3de666e346a09ba890d3d..38b42b734aca43cf1bc56f992fd63984cb2c3b90 100644
+--- a/lib/attachments/AttachmentMenu/TabPanel.js
++++ b/lib/attachments/AttachmentMenu/TabPanel.js
+@@ -36,7 +36,7 @@ export function TabPanel(t0) {
+     if ($[0] !== labels.attachLocating || $[1] !== labels.attachLocationAccuracy || $[2] !== labels.attachLocationDenied || $[3] !== location) {
+       t1 = location === "locating" || location == null ? labels.attachLocating : location.status === "located" ? location.accuracy ? formatLabel(labels.attachLocationAccuracy, {
+         meters: Math.round(location.accuracy)
+-      }) : "" : location.status === "denied" ? labels.attachLocationDenied : "";
++      }) : "" : location.status === "denied" ? labels.attachLocationDenied : labels.attachLocationUnavailable ?? "";
+       $[0] = labels.attachLocating;
+       $[1] = labels.attachLocationAccuracy;
+       $[2] = labels.attachLocationDenied;
+diff --git a/lib/attachments/AttachmentMenu/index.js b/lib/attachments/AttachmentMenu/index.js
+index aadd704f83b345ce373d0b4fd6b8b2e67b6b1671..fd9c8f5ce8b5e2ce9e3ed7c67f97b24e988a4dde 100644
+--- a/lib/attachments/AttachmentMenu/index.js
++++ b/lib/attachments/AttachmentMenu/index.js
+@@ -83,6 +83,7 @@ export function AttachmentMenu(t0) {
+   const [selected, setSelected] = useState(t4);
+   const [caption, setCaption] = useState("");
+   const [location, setLocation] = useState(null);
++  const locationEpoch = useRef(0);
+   const scrollY = useSharedValue(0);
+   const gridMode = useSharedValue(1);
+   const captionShown = useSharedValue(0);
+@@ -96,7 +97,9 @@ export function AttachmentMenu(t0) {
+   const [wasMounted, setWasMounted] = useState(false);
+   if (isMounted !== wasMounted) {
+     setWasMounted(isMounted);
++    locationEpoch.current++;
+     if (isMounted) {
++      if (location !== null) setLocation(null);
+       if (activeTab !== initialTab) {
+         setActiveTab(initialTab);
+       }
+@@ -210,12 +213,14 @@ export function AttachmentMenu(t0) {
+   }
+   const runPicker = t12;
+   let t13;
+-  if ($[28] === Symbol.for("react.memo_cache_sentinel")) {
++  if (pickers?.location || $[28] === Symbol.for("react.memo_cache_sentinel")) {
+     t13 = () => {
++      const epoch = ++locationEpoch.current;
+       setLocation("locating");
+-      getCurrentLocation().then(setLocation).catch(() => setLocation({
+-        status: "failed"
+-      }));
++      const complete = result => {
++        if (locationEpoch.current === epoch) setLocation(result);
++      };
++      (pickers?.location ?? getCurrentLocation)().then(complete).catch(() => complete({ status: "failed" }));
+     };
+     $[28] = t13;
+   } else {
+diff --git a/lib/attachments/buildMessages.js b/lib/attachments/buildMessages.js
+index cc57150ad7b841052369cd4a0d31ee3feba6ebce..e402fc288f267802ddbe3a1162155adb91b9cbb4 100644
+--- a/lib/attachments/buildMessages.js
++++ b/lib/attachments/buildMessages.js
+@@ -76,7 +76,7 @@ export const isAttachmentTabAvailable = (tab, pickers, isGalleryGridEnabled = tr
+     case 'file':
+       return hasDocumentPicker() || !!pickers?.file;
+     case 'location':
+-      return hasLocation();
++      return hasLocation() || !!pickers?.location;
+   }
+   return false;
+ };
+@@ -121,7 +121,7 @@ export async function pickFromSystemGallery() {
+     mediaTypes: ['images', 'videos'],
+     allowsMultipleSelection: true,
+     selectionLimit: 10,
+-    quality: 0.8
++    quality: 1
+   });
+   return result?.canceled ? [] : fromImagePickerAssets(result?.assets);
+ }
+@@ -174,7 +174,7 @@ export async function getCurrentLocation() {
+     const timeout = new Promise(resolve => setTimeout(() => resolve(null), LOCATION_TIMEOUT_MS));
+     const position = (await Promise.race([location.getCurrentPositionAsync({
+       accuracy: location.Accuracy?.Balanced ?? 3
+-    }), timeout])) ?? (await location.getLastKnownPositionAsync?.());
++    }), timeout])) ?? (await location.getLastKnownPositionAsync?.({ maxAge: 15000 }));
+     if (!position?.coords) return {
+       status: 'failed'
+     };
+diff --git a/lib/attachments/types.d.ts b/lib/attachments/types.d.ts
+index 6cd8dca7b646d632347e92f71ea5aa60e1bf925e..aad6ffa99513ec8f309da21ac0bd37639cab064b 100644
+--- a/lib/attachments/types.d.ts
++++ b/lib/attachments/types.d.ts
+@@ -45,6 +45,7 @@ export interface AttachmentPickers {
+     gallery?: () => Promise<PickedAttachment[]>;
+     camera?: () => Promise<PickedAttachment[]>;
+     file?: () => Promise<PickedAttachment[]>;
++    location?: () => Promise<import('./buildMessages').CurrentLocation>;
+ }
+ /** What `attachments.onPick` can return. */
+ export type AttachmentPickResult<TMessage extends IMessage> = Partial<TMessage>[] | null | undefined | void;
 diff --git a/lib/components/RecordButton/useRecordGesture.js b/lib/components/RecordButton/useRecordGesture.js
 index 5db7c3f17dca5bf48c768211998435dc9674764f..ab817808c0e05455bc8ae0d7c2aaf58f3ca91290 100644
 --- a/lib/components/RecordButton/useRecordGesture.js
@@ -194,6 +590,169 @@ index 5db7c3f17dca5bf48c768211998435dc9674764f..ab817808c0e05455bc8ae0d7c2aaf58f
        runOnJS(jsTap)();
      };
      $[45] = t12;
+diff --git a/lib/components/VideoNoteCapture/VideoNoteCaptureView.js b/lib/components/VideoNoteCapture/VideoNoteCaptureView.js
+index f7328206b3a329b9e70d6af1e9c9a85444cde569..20888fbfb8631d9bd3d95d43de211ccca3f68cbd 100644
+--- a/lib/components/VideoNoteCapture/VideoNoteCaptureView.js
++++ b/lib/components/VideoNoteCapture/VideoNoteCaptureView.js
+@@ -65,6 +65,8 @@ export function VideoNoteCaptureView(t0) {
+   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
+     t2 = {
+       enableAudio: true,
++      targetResolution: { width: 640, height: 480 },
++      targetBitRate: 2000000,
+       enablePersistentRecorder: true
+     };
+     $[0] = t2;
+diff --git a/lib/components/VideoNoteCapture/useVideoNoteSession.js b/lib/components/VideoNoteCapture/useVideoNoteSession.js
+index 7cc38db0d8b5b9d349d157a23823404f93072979..751313297560e1f284bc9dd62e67d0315197d9c7 100644
+--- a/lib/components/VideoNoteCapture/useVideoNoteSession.js
++++ b/lib/components/VideoNoteCapture/useVideoNoteSession.js
+@@ -48,12 +48,14 @@ export function useVideoNoteSession(t0) {
+   const durationRef = useRef(0);
+   const [takeDurationMs, setTakeDurationMs] = useState(0);
+   const abortedRef = useRef(false);
++  const takeEpoch = useRef(0);
+   const timerRef = useRef(null);
+   const finishTimeoutRef = useRef(null);
+   const closingTimerRef = useRef(null);
+   const previewUriRef = useRef(null);
+   const elapsedRef = useRef(0);
+   const configRef = useRef(config);
++  const discardRef = useRef(config?.onDiscardRecording);
+   const onSendRef = useRef(onSend);
+   let t1;
+   if ($[0] !== config || $[1] !== isViewOnce || $[2] !== onSend || $[3] !== previewUri) {
+@@ -61,6 +63,7 @@ export function useVideoNoteSession(t0) {
+       isViewOnceRef.current = isViewOnce;
+       previewUriRef.current = previewUri;
+       configRef.current = config;
++      if (config?.onDiscardRecording) discardRef.current = config.onDiscardRecording;
+       onSendRef.current = onSend;
+     };
+     $[0] = config;
+@@ -125,6 +128,7 @@ export function useVideoNoteSession(t0) {
+           setClosing(null);
+         }, isFlight ? FLIGHT_CLOSE_MS : DIM_ANIMATION_MS);
+       }
++      if (!isFlight && previewUriRef.current) discardRef.current?.(previewUriRef.current);
+       clearTimers();
+       startedAtRef.current = 0;
+       setPhase("idle");
+@@ -151,6 +155,10 @@ export function useVideoNoteSession(t0) {
+   let t6;
+   if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
+     t6 = uri => {
++      if (configRef.current?.canUseCapture?.() === false || abortedRef.current) {
++        discardRef.current?.(uri);
++        return;
++      }
+       expectSendFlight("round");
+       onSendRef.current?.({
+         video: uri,
+@@ -195,7 +203,7 @@ export function useVideoNoteSession(t0) {
+       setTakeDurationMs(duration);
+       elapsedStore.set(duration);
+       clearTimers();
+-      setPhase(outcome === "preview" ? "stopping" : "finishing");
++      setPhase(outcome === "preview" || (canPreview && configRef.current?.confirmBeforeSend) ? "stopping" : "finishing");
+       stopCapture();
+       finishTimeoutRef.current = setTimeout(() => close(), FINISH_TIMEOUT_MS);
+     };
+@@ -221,7 +229,7 @@ export function useVideoNoteSession(t0) {
+   let t9;
+   if ($[15] === Symbol.for("react.memo_cache_sentinel")) {
+     t9 = () => {
+-      if (phaseRef.current !== "idle" || !isVisionCameraAvailable) {
++      if (phaseRef.current !== "idle" || !isVisionCameraAvailable || configRef.current?.canUseCapture?.() === false) {
+         return;
+       }
+       stopAllPlayback();
+@@ -240,6 +248,7 @@ export function useVideoNoteSession(t0) {
+         return;
+       }
+       abortedRef.current = false;
++      takeEpoch.current++;
+       if (closingTimerRef.current) {
+         clearTimeout(closingTimerRef.current);
+         closingTimerRef.current = null;
+@@ -280,7 +289,7 @@ export function useVideoNoteSession(t0) {
+   let t11;
+   if ($[19] !== elapsedStore || $[20] !== startTicking) {
+     t11 = () => {
+-      if (phaseRef.current !== "preparing") {
++      if (phaseRef.current !== "preparing" || configRef.current?.canUseCapture?.() === false) {
+         return;
+       }
+       const recorder = cameraRef.current;
+@@ -289,23 +298,32 @@ export function useVideoNoteSession(t0) {
+         return;
+       }
+       ;
++      const epoch = takeEpoch.current;
+       try {
+         recorder.startRecording({
+           onRecordingFinished: video => {
+-            if (abortedRef.current) {
++            const uri_0 = withFileScheme(video.path);
++            if (epoch !== takeEpoch.current || abortedRef.current || configRef.current?.canUseCapture?.() === false || phaseRef.current === "idle") {
++              discardRef.current?.(uri_0);
+               return;
+             }
+-            const uri_0 = withFileScheme(video.path);
+             if (phaseRef.current === "stopping") {
+               clearTimers();
+               setPreviewUri(uri_0);
+               setPhase("preview");
+               return;
+             }
+-            sendVideo(uri_0);
+-            close(true);
++            if (phaseRef.current === "finishing") {
++              sendVideo(uri_0);
++              close(true);
++            } else {
++              discardRef.current?.(uri_0);
++              configRef.current?.onError?.(new Error("Recording interrupted"));
++              close();
++            }
+           },
+           onRecordingError: error_1 => {
++            if (epoch !== takeEpoch.current || phaseRef.current === "idle") return;
+             if (!abortedRef.current) {
+               configRef.current?.onError?.(error_1);
+             }
+@@ -366,7 +384,7 @@ export function useVideoNoteSession(t0) {
+           close();
+           return;
+         }
+-        setPhase("finishing");
++        setPhase(canPreview && configRef.current?.confirmBeforeSend ? "stopping" : "finishing");
+         stopCapture();
+         finishTimeoutRef.current = setTimeout(() => close(), FINISH_TIMEOUT_MS);
+         return;
+@@ -444,6 +462,7 @@ export function useVideoNoteSession(t0) {
+       }
+       if (phaseRef.current !== "idle") {
+         abortedRef.current = true;
++        if (previewUriRef.current) discardRef.current?.(previewUriRef.current);
+         cameraRef.current?.stopRecording().catch(_temp3);
+       }
+     };
+@@ -455,6 +474,14 @@ export function useVideoNoteSession(t0) {
+     t19 = $[34];
+   }
+   useEffect(t18, t19);
++  useLayoutEffect(() => {
++    if (config !== undefined || phaseRef.current === "idle") return;
++    abortedRef.current = true;
++    stopCapture();
++    close();
++    if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
++    setClosing(null);
++  }, [config, stopCapture, close]);
+   let t20;
+   if ($[35] === Symbol.for("react.memo_cache_sentinel")) {
+     t20 = () => {
 diff --git a/lib/components/VoiceMessageInput/recorder.js b/lib/components/VoiceMessageInput/recorder.js
 index da09a9ba6faf240fafae8d490394ca3f96d48b4b..bff65ec022dce68b1570222776023589c2abe334 100644
 --- a/lib/components/VoiceMessageInput/recorder.js
@@ -264,7 +823,7 @@ index a1328a60adeb27ac63d7df8ec9818ae43ce25e31..96d4a98bea1fb49a07cc2b4bcd3f9b8c
          }, false);
          return;
 diff --git a/lib/components/VoiceMessageInput/useVoiceTake.js b/lib/components/VoiceMessageInput/useVoiceTake.js
-index 108ce6d68646df40ee5517aa991c98c3b43f7f44..de0cededb47d8dcb9384ff4297837c2bb420025c 100644
+index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244371e01f0 100644
 --- a/lib/components/VoiceMessageInput/useVoiceTake.js
 +++ b/lib/components/VoiceMessageInput/useVoiceTake.js
 @@ -67,6 +67,12 @@ export function useVoiceTake(t0, ref) {
@@ -390,8 +949,78 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..de0cededb47d8dcb9384ff4297837c2b
        onStateChange?.(IDLE_STATE);
      };
      t14 = [clearTimer, onStateChange, recorderRef];
+diff --git a/lib/components/mediaViewer/MediaViewer.d.ts b/lib/components/mediaViewer/MediaViewer.d.ts
+index a02de2badcd07f21697ae8d10c7772b5e06132be..29efb7802b696c2b326d3086e4423d84c9b4be70 100644
+--- a/lib/components/mediaViewer/MediaViewer.d.ts
++++ b/lib/components/mediaViewer/MediaViewer.d.ts
+@@ -1,10 +1,12 @@
+ import React from 'react';
+ import { ImageProps } from 'react-native';
+ import { IMessage } from '../../Models';
++import { MediaViewerPage } from './MediaViewerPage';
+ export interface MediaViewerProps {
+     /** The photos to page through, oldest first. */
+     items: IMessage[];
+     initialIndex: number;
++    renderPage?: (props: React.ComponentProps<typeof MediaViewerPage>) => React.ReactNode;
+     imageProps?: Partial<ImageProps>;
+     onClose: () => void;
+ }
+diff --git a/lib/components/mediaViewer/MediaViewer.js b/lib/components/mediaViewer/MediaViewer.js
+index 8ecb11bd8fdaefa4f0f0278b2b3342134820c100..2691f15eae097954c97c7d0447ead2f055a87768 100644
+--- a/lib/components/mediaViewer/MediaViewer.js
++++ b/lib/components/mediaViewer/MediaViewer.js
+@@ -35,6 +35,7 @@ export function MediaViewer(t0) {
+     items,
+     initialIndex,
+     imageProps,
++    renderPage,
+     onClose
+   } = t0;
+   const {
+@@ -199,13 +200,14 @@ export function MediaViewer(t0) {
+     opacity: progress.get() * (dragY.get() === 0 ? 1 : 0)
+   }));
+   let t14;
+-  if ($[26] !== height || $[27] !== imageProps || $[28] !== pageWidth || $[29] !== width) {
++  if (renderPage || $[26] !== height || $[27] !== imageProps || $[28] !== pageWidth || $[29] !== width) {
+     t14 = t15 => {
+       const {
+         item,
+         index: pageIndex_0
+       } = t15;
+-      return <MediaViewerPage message={item} index={pageIndex_0} width={width} height={height} pageWidth={pageWidth} listRef={listRef} imageProps={imageProps} onZoomStateChange={onZoomStateChange} />;
++      const props = { message: item, index: pageIndex_0, width, height, pageWidth, listRef, imageProps, onZoomStateChange };
++      return renderPage ? renderPage(props) : <MediaViewerPage {...props} />;
+     };
+     $[26] = height;
+     $[27] = imageProps;
+diff --git a/lib/components/mediaViewer/MediaViewerPage.js b/lib/components/mediaViewer/MediaViewerPage.js
+index 56d1c7b5befb65782aed63570185dcb624505565..4c721864c001791b0aaf5d0156303dc3e6000a2f 100644
+--- a/lib/components/mediaViewer/MediaViewerPage.js
++++ b/lib/components/mediaViewer/MediaViewerPage.js
+@@ -25,6 +25,7 @@ function useImageSize(uri) {
+       }
+       let isCurrent = true;
+       Image.getSize(uri, (width, height) => {
++        if (sizes.size >= 96) sizes.delete(sizes.keys().next().value);
+         sizes.set(uri, {
+           width,
+           height
+diff --git a/lib/i18n.d.ts b/lib/i18n.d.ts
+index 742f1ca2e89b4ac27129aedab94cf8dbb22bd0e3..9a479ad702c21128db67f8dce90e56a06afcecd5 100644
+--- a/lib/i18n.d.ts
++++ b/lib/i18n.d.ts
+@@ -151,6 +151,7 @@ export interface ChatLabels {
+     attachChooseFile: string;
+     /** Attachment menu: shown when location access is denied. */
+     attachLocationDenied: string;
++    attachLocationUnavailable?: string;
+     /** Empty chat card: the title. */
+     emptyChatTitle: string;
+     /** Empty chat card: the line above the greeting. */
 diff --git a/lib/index.d.ts b/lib/index.d.ts
-index bda3053d7379d3ff2d8c75b106e1a5a2630d9aa6..f41fbfcaf8cbe68db0e1c5890bf25bcc98fc6c39 100644
+index bda3053d7379d3ff2d8c75b106e1a5a2630d9aa6..6cee94540faa26b44463bef08e2d980117cd6b23 100644
 --- a/lib/index.d.ts
 +++ b/lib/index.d.ts
 @@ -53,7 +53,7 @@ export { Time } from './Time';
@@ -403,8 +1032,16 @@ index bda3053d7379d3ff2d8c75b106e1a5a2630d9aa6..f41fbfcaf8cbe68db0e1c5890bf25bcc
  export { MessageVideo } from './MessageVideo';
  export { MessageReply } from './components/MessageReply';
  export { ReplyPreview } from './components/ReplyPreview';
+@@ -86,3 +86,7 @@ export { LinkPreviewCard, findFirstUrl } from './components/LinkPreviewCard';
+ export type { LinkPreviewProps, FetchLinkPreview } from './components/LinkPreviewCard';
+ export { countEmojiOnly } from './emojiOnly';
+ //# sourceMappingURL=index.d.ts.map
++export { MediaViewer } from './components/mediaViewer/MediaViewer';
++export { MediaViewerPage } from './components/mediaViewer/MediaViewerPage';
++export { VideoTransferOverlay } from './MessageVideo/VideoTransferOverlay';
++export { useMediaTransfer } from './components/mediaTransfer';
 diff --git a/lib/index.js b/lib/index.js
-index c7958761ee01a492015656d21e4ab7e818450d46..6fe13eaf46da5ac95fbabf4cf6eafe13190061d1 100644
+index c7958761ee01a492015656d21e4ab7e818450d46..cfd791ca06be145fefe44db2fce652e012b11585 100644
 --- a/lib/index.js
 +++ b/lib/index.js
 @@ -47,7 +47,7 @@ export { Send } from './Send';
@@ -416,3 +1053,11 @@ index c7958761ee01a492015656d21e4ab7e818450d46..6fe13eaf46da5ac95fbabf4cf6eafe13
  export { MessageVideo } from './MessageVideo';
  export { MessageReply } from './components/MessageReply';
  export { ReplyPreview } from './components/ReplyPreview';
+@@ -71,3 +71,7 @@ export { UnreadSeparator } from './components/UnreadSeparator';
+ export { LinkPreviewCard, findFirstUrl } from './components/LinkPreviewCard';
+ export { countEmojiOnly } from './emojiOnly';
+ //# sourceMappingURL=index.js.map
++export { MediaViewer } from './components/mediaViewer/MediaViewer';
++export { MediaViewerPage } from './components/mediaViewer/MediaViewerPage';
++export { VideoTransferOverlay } from './MessageVideo/VideoTransferOverlay';
++export { useMediaTransfer } from './components/mediaTransfer';

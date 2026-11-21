@@ -69,7 +69,7 @@ export const messages = sqliteTable(
       .default(false),
     rumorJson: text("rumor_json"),
     contentType: text("content_type", {
-      enum: ["text", "timelock", "attachment"],
+      enum: ["text", "timelock", "attachment", "location"],
     })
       .notNull()
       .default("text"),

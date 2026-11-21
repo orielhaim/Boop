@@ -1,9 +1,15 @@
+import {
+  locationTag,
+  locationText,
+  sharedLocation,
+  type SharedLocation,
+} from "./location";
 import { BlossomError } from "../media/blossom";
 import { parseServerOrigins, serverListKind } from "../media/servers";
 import {
   fileMessageKind,
   fileTags,
-  type VoiceMetadata,
+  type AttachmentMetadata,
 } from "../media/protocol";
 import type { AttachmentMedia } from "../media/service";
 import type { NDKRelay, NDKSigner } from "@nostr-dev-kit/ndk";
@@ -59,6 +65,7 @@ export type RelayState = {
 export type InboxStatus =
   "idle" | "validating" | "published" | "conflict" | "unverified" | "pending";
 type SendInput = {
+  location?: SharedLocation;
   peerKey: string;
   body: string;
   replyTo: string | null;
@@ -241,7 +248,15 @@ export function createMessagingService({
           senderKey: event.senderKey,
           recipientKey: event.recipientKey,
           sentAt: event.sentAt,
-          body: event.type === "message" ? event.body : "",
+          body:
+            event.type === "message"
+              ? event.body
+              : event.type === "attachment"
+                ? (event.file.caption ?? "")
+                : event.type === "location"
+                  ? locationText(event.location)
+                  : "",
+          location: event.type === "location" ? (true as const) : undefined,
           attachment: event.type === "attachment" ? event.file : undefined,
           timeLock: event.type === "timelock" ? event.special : undefined,
           replyTo: event.replyTo,
@@ -981,11 +996,26 @@ export function createMessagingService({
     }
   }
 
-  async function send({ peerKey, body, replyTo, unlockAt }: SendInput) {
+  async function send({
+    peerKey,
+    body,
+    replyTo,
+    unlockAt,
+    location,
+  }: SendInput) {
     if (!chatsEnabled) throw new Error("chats-disabled");
     if (privacy?.isBlocked(peerKey)) throw new Error("blocked");
     if (!publicKeySchema.safeParse(peerKey).success || peerKey === publicKey)
       throw new Error("invalid-recipient");
+    if (location) {
+      if (
+        !unlockActive ||
+        unlockAt !== undefined ||
+        !sharedLocation.safeParse(location).success
+      )
+        throw new Error("invalid-message");
+      body = locationText(location);
+    }
     if (!body.trim() || body.length > maxMessageLength)
       throw new Error("invalid-message");
     const id = createId();
@@ -994,6 +1024,7 @@ export function createMessagingService({
       ["p", peerKey],
       ["salt", id],
     ];
+    if (location) tags.push([locationTag, "1"]);
     if (replyTo) {
       const quoted = chat.message(peerKey, replyTo);
       if (!quoted?.eventId || quoted.deletedAt)
@@ -1042,6 +1073,7 @@ export function createMessagingService({
       recipientKey: peerKey,
       direction: "outgoing",
       body: special ? "" : body,
+      location: location ? true : undefined,
       timeLock: special,
       sentAt: created_at * 1_000,
       replyTo,
@@ -1058,21 +1090,21 @@ export function createMessagingService({
     return id;
   }
 
-  async function sendVoice({
+  async function sendAttachment({
     peerKey,
     uri,
-    voice,
+    metadata,
     replyTo,
   }: {
     peerKey: string;
     uri: string;
-    voice: VoiceMetadata;
+    metadata: AttachmentMetadata;
     replyTo: string | null;
   }) {
     if (!media) throw new Error("media-unavailable");
     const id = createId();
     const sentAt = Math.floor(Date.now() / 1_000) * 1_000;
-    await media.stageRecording(uri, voice, (attachment) => {
+    await media.stageAttachment(uri, metadata, (attachment) => {
       if (
         !chatsEnabled ||
         !unlockActive ||
@@ -1094,7 +1126,7 @@ export function createMessagingService({
           senderKey: publicKey,
           recipientKey: peerKey,
           direction: "outgoing",
-          body: "",
+          body: attachment.caption ?? "",
         })
       )
         throw new Error("media-storage");
@@ -1104,7 +1136,7 @@ export function createMessagingService({
     return id;
   }
 
-  function cancelVoice(peerKey: string, id: string) {
+  function cancelAttachment(peerKey: string, id: string) {
     const record = chat.attachment(peerKey, id);
     if (!record || !["pending", "failed"].includes(record.status)) return;
     chat.deleteMessages(peerKey, [id]);
@@ -1212,7 +1244,11 @@ export function createMessagingService({
         [
           "k",
           String(
-            message.contentType === "timelock" ? timeLockKind : messageKind,
+            message.contentType === "attachment"
+              ? fileMessageKind
+              : message.contentType === "timelock"
+                ? timeLockKind
+                : messageKind,
           ),
         ],
       ],
@@ -1327,8 +1363,8 @@ export function createMessagingService({
     getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,
     send,
-    sendVoice,
-    cancelVoice,
+    sendAttachment,
+    cancelAttachment,
     retry,
     toggleReaction,
     sendCall,

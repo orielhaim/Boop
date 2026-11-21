@@ -1,3 +1,4 @@
+import { mediaLabels } from "@/components/messages/media-label";
 import { useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { ProfileChatCell } from "@/components/messages/profile-chat-cell";
 import { ChatList } from "@kesha-antonov/react-native-chat";
@@ -74,6 +75,7 @@ function MessageInbox() {
             : t("messages:voicePreview", {
                 duration: formatDuration(duration / 1000),
               }),
+        (kind) => t(mediaLabels[kind]),
       ),
     [identity.publicKey, locale, t],
   );

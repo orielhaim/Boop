@@ -1,3 +1,4 @@
+import { mediaLabels } from "@/components/messages/media-label";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   Chat,
@@ -46,10 +47,12 @@ function RequestConversation({ publicKey }: { publicKey: string | null }) {
         createdAt: message.sentAt,
         user: { _id: message.senderKey, name },
         text: message.attachment
-          ? t("messages:voiceMessage")
-          : message.timeLock
-            ? t("security:requestLocked")
-            : message.body,
+          ? t(mediaLabels[message.attachment.kind])
+          : message.location
+            ? t(mediaLabels.location)
+            : message.timeLock
+              ? t("security:requestLocked")
+              : message.body,
       }))
     : [];
 

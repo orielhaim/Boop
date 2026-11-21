@@ -1,7 +1,10 @@
 {
   "ios": {
-    "NSCameraUsageDescription": "המצלמה משמשת לסריקת כתובות Boop, לצילום תמונת פרופיל ולשיתוף וידאו בשיחה לפי בחירתך.",
-    "NSMicrophoneUsageDescription": "המיקרופון משמש לשיחות קוליות ישירות.",
-    "NSFaceIDUsageDescription": "אימות באמצעות Face ID מבטל את נעילת Boop כשנעילת האפליקציה מופעלת."
+    "NSCameraUsageDescription": "צילום ושליחת תמונות וסרטונים, סריקת כתובות Boop ושיתוף מצלמה בשיחות.",
+    "NSMicrophoneUsageDescription": "הקלטת הודעות קוליות והודעות וידאו ושימוש במיקרופון בשיחות ישירות.",
+    "NSFaceIDUsageDescription": "אימות באמצעות Face ID מבטל את נעילת Boop כשנעילת האפליקציה מופעלת.",
+    "NSLocationWhenInUseUsageDescription": "שיתוף המיקום הנוכחי לפי בחירתך בצ׳אט.",
+    "NSPhotoLibraryAddUsageDescription": "שמירת תמונות וסרטונים שבחרת לשמור.",
+    "NSPhotoLibraryUsageDescription": "בחירת תמונות וסרטונים לשליחה ב-Boop."
   }
 }

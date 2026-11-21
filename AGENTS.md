@@ -70,8 +70,8 @@ Use Bun 1.4.4 or later and run `bun fmt` for formatting.
 ## Received attachments
 
 - No received attachment may trigger an HTTP media request without explicit user action. This includes GET, HEAD, prefetch, probes, and remote player initialization from any background, history, preview, request, quote, or visible-message path.
-- Only the explicit Download control for a live, accepted attachment may dispatch a media GET. Validate the HTTPS socket destination, size, hash, authentication tag, and format before saving it. Give Chat Kit only approved local audio files. Keep profile photos under their separate policy.
-- Keep voice recording and playback within the focused, foreground, unlocked conversation. Yield audio to the call controller. Keep plaintext playback files in private, non-backed-up temporary storage.
+- Only the explicit Download control for a live, accepted attachment may dispatch a media GET. Validate the HTTPS socket destination, size, hash, authentication tag, and format before saving it. Give Chat Kit only approved local file or playback URIs. Keep placeholders self-contained and use authenticated metadata for preview hashes, dimensions, filenames and captions. Keep profile photos under their separate policy.
+- Use Chat Kit's picker and media players with the shared encrypted attachment model. Keep recording and playback within the focused, foreground, unlocked conversation. Yield camera and audio to the call controller. Keep location sharing one-shot, confirmed and encrypted, and open external maps only on tap. Keep plaintext playback files in private, non-backed-up temporary storage.
 
 ## Profile photos
 

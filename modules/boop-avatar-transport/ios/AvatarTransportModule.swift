@@ -108,7 +108,7 @@ private func downloadMedia(
 ) async throws -> Int {
   let limit = attachmentLimit ?? maxBytes
   let avatar = attachmentLimit == nil
-  guard avatar || ((17...(8 * 1024 * 1024)).contains(limit) &&
+  guard avatar || ((17...(32 * 1024 * 1024)).contains(limit) &&
     hash?.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil)
   else { throw AvatarTransferError.destination }
   try job.check()
@@ -134,7 +134,7 @@ private func downloadMedia(
 
   let configuration = URLSessionConfiguration.ephemeral
   configuration.timeoutIntervalForRequest = 8
-  configuration.timeoutIntervalForResource = 12
+  configuration.timeoutIntervalForResource = limit > 8 * 1024 * 1024 ? 58 : 12
   configuration.httpCookieStorage = nil
   configuration.httpShouldSetCookies = false
   configuration.urlCredentialStorage = nil

@@ -1,4 +1,9 @@
-import type { SealedAttachment, VoiceMetadata } from "@/core/media/protocol";
+import { voiceMetadata } from "@/core/media/protocol";
+import type {
+  AttachmentMetadata,
+  SealedAttachment,
+  VoiceMetadata,
+} from "@/core/media/protocol";
 import {
   and,
   asc,
@@ -56,6 +61,7 @@ export type MessageRecord = MessageRow & {
   reactions: Reaction[];
   locked?: LockedPresentation;
   voice?: VoiceMetadata & { listened: boolean };
+  media?: AttachmentMetadata & { size?: number; listened: boolean };
 };
 type PendingUnlock = {
   messageId: string;
@@ -71,6 +77,7 @@ export type MessageInput = Pick<
   recipientKey: string;
   rumorJson?: string;
   timeLock?: TimeLockContent;
+  location?: true;
   attachment?: SealedAttachment & { url?: string };
 };
 type ReactionInput = Reaction & {
@@ -115,6 +122,9 @@ function conversationQuery<TResult>(
       voiceDuration: sql<
         number | null
       >`json_extract(${messageAttachments.file}, '$.durationMs')`,
+      mediaKind: sql<
+        AttachmentMetadata["kind"] | null
+      >`json_extract(${messageAttachments.file}, '$.kind')`,
       lastMessageType: latest.contentType,
       translatedPreview,
       lastMessageAt: latest.sentAt,
@@ -251,31 +261,47 @@ export function createMessagingRepository<TResult>(
     const fileIds = rows
       .filter((row) => row.contentType === "attachment")
       .map((row) => row.id);
-    const voices = fileIds.length
+    const attachments = fileIds.length
       ? db
           .select()
           .from(messageAttachments)
           .where(inArray(messageAttachments.messageId, fileIds))
           .all()
       : [];
-    const voiceById = new Map(
-      voices.map(({ messageId, file, listened }) => [
+    const mediaById = new Map(
+      attachments.map(({ messageId, file, listened }) => [
         messageId,
         {
           kind: file.kind,
           mime: file.mime,
           durationMs: file.durationMs,
           waveform: file.waveform,
+          filename: file.filename,
+          dimensions: file.dimensions,
+          thumbhash: file.thumbhash,
+          blurhash: file.blurhash,
+          size: file.size,
           listened,
         },
       ]),
     );
-    return rows.map((row) => ({
-      voice: voiceById.get(row.id),
-      locked: locks.get(row.id),
-      ...row,
-      reactions: grouped.get(row.eventId ?? row.id) ?? [],
-    }));
+    return rows.map((row) => {
+      const media = mediaById.get(row.id);
+      const checkedVoice =
+        media?.kind === "voice"
+          ? voiceMetadata.safeParse(media).data
+          : undefined;
+      return {
+        voice:
+          checkedVoice && media
+            ? { ...checkedVoice, listened: media.listened }
+            : undefined,
+        media,
+        locked: locks.get(row.id),
+        ...row,
+        reactions: grouped.get(row.eventId ?? row.id) ?? [],
+      };
+    });
   }
 
   function messageRow(peerKey: string, reference: string) {
@@ -297,15 +323,21 @@ export function createMessagingRepository<TResult>(
     outgoing: boolean,
     clearDraft: boolean,
   ) {
-    const { timeLock, attachment, ...record } = input;
+    const { timeLock, attachment, location, ...record } = input;
     ensureRoom(tx, input.peerKey, input.sentAt);
     const isUnread = input.direction === "incoming";
     const stored = tx
       .insert(messages)
       .values({
         ...record,
-        contentType: attachment ? "attachment" : timeLock ? "timelock" : "text",
-        body: timeLock || attachment ? "" : record.body,
+        contentType: attachment
+          ? "attachment"
+          : timeLock
+            ? "timelock"
+            : location
+              ? "location"
+              : "text",
+        body: timeLock ? "" : record.body,
         status: outgoing ? "pending" : isUnread ? "received" : "synced",
         isUnread,
       })
@@ -690,13 +722,25 @@ export function createMessagingRepository<TResult>(
     },
 
     refs(peerKey: string, references: readonly string[]) {
-      const result = new Map<string, MessageRow>();
+      const result = new Map<
+        string,
+        MessageRow & { quotedKind: AttachmentMetadata["kind"] | null }
+      >();
       const unique = [...new Set(references)];
       for (let start = 0; start < unique.length; start += 250) {
         const chunk = unique.slice(start, start + 250);
         const rows = db
-          .select()
+          .select({
+            ...getTableColumns(messages),
+            quotedKind: sql<
+              AttachmentMetadata["kind"] | null
+            >`json_extract(${messageAttachments.file}, '$.kind')`,
+          })
           .from(messages)
+          .leftJoin(
+            messageAttachments,
+            eq(messageAttachments.messageId, messages.id),
+          )
           .where(
             and(
               liveMessage(peerKey),
@@ -985,7 +1029,7 @@ export function createMessagingRepository<TResult>(
 
     attachment(peerKey: string, id: string) {
       const row = messageRow(peerKey, id);
-      if (!row || row.contentType !== "attachment") return;
+      if (row?.contentType !== "attachment") return;
       const stored = db
         .select()
         .from(messageAttachments)
@@ -1021,7 +1065,7 @@ export function createMessagingRepository<TResult>(
 
     markListened(peerKey: string, id: string) {
       const row = messageRow(peerKey, id);
-      if (!row || row.direction !== "incoming") return;
+      if (row?.direction !== "incoming") return;
       const updated = db
         .update(messageAttachments)
         .set({ listened: true })
