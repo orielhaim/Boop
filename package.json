@@ -50,6 +50,7 @@
     "expo-symbols": "~58.0.5",
     "expo-system-ui": "~58.0.7",
     "expo-video": "~58.0.14",
+    "htmlparser2": "^12.0.0",
     "i18next": "^27.2.3",
     "nostr-tools": "^2.26.1",
     "react": "19.3.0",

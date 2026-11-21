@@ -31,6 +31,7 @@ const {
   conversations,
   contacts,
   messageReactions,
+  messagePins,
   messageTimeLocks,
   messageAttachments,
   blockedIdentities,
@@ -59,6 +60,7 @@ type LockedPresentation = Pick<
 >;
 export type MessageRecord = MessageRow & {
   reactions: Reaction[];
+  isPinned?: boolean;
   locked?: LockedPresentation;
   voice?: VoiceMetadata & { listened: boolean };
   media?: AttachmentMetadata & { size?: number; listened: boolean };
@@ -258,6 +260,19 @@ export function createMessagingRepository<TResult>(
           .all()
       : [];
     const locks = new Map(locked.map(({ id, ...row }) => [id, row]));
+    const pins = new Set(
+      db
+        .select({ id: messagePins.messageId })
+        .from(messagePins)
+        .where(
+          inArray(
+            messagePins.messageId,
+            rows.map(({ id }) => id),
+          ),
+        )
+        .all()
+        .map(({ id }) => id),
+    );
     const fileIds = rows
       .filter((row) => row.contentType === "attachment")
       .map((row) => row.id);
@@ -299,6 +314,7 @@ export function createMessagingRepository<TResult>(
         media,
         locked: locks.get(row.id),
         ...row,
+        isPinned: pins.has(row.id),
         reactions: grouped.get(row.eventId ?? row.id) ?? [],
       };
     });
@@ -867,11 +883,79 @@ export function createMessagingRepository<TResult>(
       changed({ summaries: true });
     },
 
+    pinnedMessages(peerKey: string) {
+      return db
+        .select({
+          id: messages.id,
+          sentAt: messages.sentAt,
+          body: messages.body,
+          contentType: messages.contentType,
+          deletedAt: messages.deletedAt,
+          direction: messages.direction,
+          quotedKind: sql<
+            AttachmentMetadata["kind"] | null
+          >`json_extract(${messageAttachments.file}, '$.kind')`,
+        })
+        .from(messagePins)
+        .innerJoin(messages, eq(messagePins.messageId, messages.id))
+        .leftJoin(
+          messageAttachments,
+          eq(messagePins.messageId, messageAttachments.messageId),
+        )
+        .where(and(eq(messagePins.peerKey, peerKey), liveMessage(peerKey)))
+        .orderBy(desc(messagePins.pinnedAt), desc(messagePins.messageId))
+        .all();
+    },
+
+    toggleMessagePin(peerKey: string, reference: string) {
+      const row = messageRow(peerKey, reference);
+      if (!row || row.deletedAt !== null) return;
+      db.transaction((tx) => {
+        const removed = tx
+          .delete(messagePins)
+          .where(eq(messagePins.messageId, row.id))
+          .returning({ id: messagePins.messageId })
+          .get();
+        if (!removed)
+          tx.insert(messagePins)
+            .values({ messageId: row.id, peerKey, pinnedAt: Date.now() })
+            .run();
+      });
+      changed({ history: [peerKey] });
+    },
+
+    hasMessages(peerKey: string) {
+      return Boolean(
+        db
+          .select({ id: messages.id })
+          .from(messages)
+          .where(liveMessage(peerKey))
+          .limit(1)
+          .get(),
+      );
+    },
+
+    previewMessage(peerKey: string, id: string) {
+      return db
+        .select({ body: messages.body, direction: messages.direction })
+        .from(messages)
+        .where(
+          and(
+            liveMessage(peerKey),
+            eq(messages.id, id),
+            inArray(messages.contentType, ["text", "timelock"]),
+            ne(messages.body, ""),
+          ),
+        )
+        .get();
+    },
+
     deleteConversations(keys: readonly string[]) {
       if (keys.length === 0) return;
       const peers = [...new Set(keys)];
       const deletedAt = Date.now();
       db.transaction((tx) => {
+        tx.delete(messagePins).where(inArray(messagePins.peerKey, peers)).run();
         tx.delete(messageTimeLocks)
           .where(
             inArray(
@@ -937,6 +1021,14 @@ export function createMessagingRepository<TResult>(
           .returning({ id: messages.id, eventId: messages.eventId })
           .all();
         if (removed.length === 0) return;
+        tx.delete(messagePins)
+          .where(
+            inArray(
+              messagePins.messageId,
+              removed.map(({ id }) => id),
+            ),
+          )
+          .run();
         tx.delete(messageTimeLocks)
           .where(
             inArray(

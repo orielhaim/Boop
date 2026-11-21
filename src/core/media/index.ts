@@ -5,6 +5,7 @@ import type { Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
 import {
   downloadEncryptedBlob,
+  downloadPreviewFile,
   nativeAvatarTransport,
 } from "./download-native";
 import { attachmentFiles, profileFiles } from "./files";
@@ -51,6 +52,7 @@ export function createMediaSdk(db: Database, signer: NDKSigner) {
     blobCache: createBlobCache(db, owner, attachmentFiles(owner)),
     profileDownload: nativeAvatarTransport,
     downloadExplicit: downloadEncryptedBlob,
+    downloadPreview: downloadPreviewFile,
     profileMirrors(from: string) {
       if (!settings.snapshot().mirror) return [];
       const servers = settings

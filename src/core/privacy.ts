@@ -12,6 +12,10 @@ import {
   messages,
 } from "@/db/schema";
 import { parsePublicKey } from "./identity/keys";
+import {
+  type LinkPreviewPolicy,
+  previewPolicy,
+} from "./messaging/link-previews";
 
 export type IncomingCallPolicy = "everyone" | "contacts" | "nobody";
 export type IncomingMessagePolicy = "everyone" | "contacts" | "initiated";
@@ -73,17 +77,20 @@ export function createPrivacy<Result>(
   const calls = preference(db, "privacy.calls");
   const messagesPolicy = preference(db, "privacy.messages");
   const photos = preference(db, "privacy.profilePhotos");
-  let preferences: PrivacyPreferences & { profilePhotos: ProfilePhotoPolicy } =
-    {
-      profilePhotos:
-        photos === "everyone" || photos === "nobody" ? photos : "contacts",
-      calls: calls === "contacts" || calls === "nobody" ? calls : "everyone",
-      messages:
-        messagesPolicy === "contacts" || messagesPolicy === "initiated"
-          ? messagesPolicy
-          : "everyone",
-      requests: preference(db, "privacy.requests") === "true",
-    };
+  let preferences: PrivacyPreferences & {
+    profilePhotos: ProfilePhotoPolicy;
+    linkPreviews: LinkPreviewPolicy;
+  } = {
+    linkPreviews: previewPolicy(preference(db, "privacy.linkPreviews")),
+    profilePhotos:
+      photos === "everyone" || photos === "nobody" ? photos : "contacts",
+    calls: calls === "contacts" || calls === "nobody" ? calls : "everyone",
+    messages:
+      messagesPolicy === "contacts" || messagesPolicy === "initiated"
+        ? messagesPolicy
+        : "everyone",
+    requests: preference(db, "privacy.requests") === "true",
+  };
   let revision = 0;
   function notify() {
     revision++;
@@ -121,6 +128,7 @@ export function createPrivacy<Result>(
     isBlocked,
     isContact,
     photoPolicy: () => preferences.profilePhotos,
+    linkPreviewPolicy: () => preferences.linkPreviews,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {

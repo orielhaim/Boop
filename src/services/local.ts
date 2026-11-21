@@ -1,4 +1,5 @@
 import { createMediaSdk } from "@/core/media";
+import { createNativeLinkPreviews } from "@/core/messaging/native-link-previews";
 import { createAttachmentMedia } from "@/core/media/service";
 import { File } from "expo-file-system";
 import { uploadAvatar } from "@/core/avatars/blossom";
@@ -131,6 +132,23 @@ async function start() {
       authenticate: authenticateApp,
       protect: protectAppWindow,
     });
+    const previews = createNativeLinkPreviews(
+      db,
+      chat,
+      privacy,
+      mediaSdk,
+      () => {
+        const state = lock.getState();
+        return (
+          state.active &&
+          !state.locked &&
+          AppState.currentState === "active" &&
+          messaging.getChatsEnabled()
+        );
+      },
+    );
+    lock.subscribe(previews.revalidate);
+    messaging.subscribeStatus(previews.revalidate);
     const media = trysteroMedia(
       signer,
       {
@@ -221,6 +239,7 @@ async function start() {
       identity,
       avatars,
       attachments,
+      previews,
       mediaSdk,
       profileEditor,
       privacy,

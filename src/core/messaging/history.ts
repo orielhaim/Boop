@@ -105,6 +105,14 @@ export function createHistoryLoader(chat: MessagingRepository) {
       if (disposed) throw new Error("Messaging session has ended");
       return chat.history(peerKey, options);
     },
+    around(peerKey: string, cursor: MessageCursor) {
+      if (disposed) throw new Error("Messaging session has ended");
+      const { messages } = chat.history(peerKey, {
+        atOrBefore: cursor,
+        limit: Math.floor(recentPageSize / 2),
+      });
+      return { start: messages[0] ?? cursor, limit: recentPageSize };
+    },
     prefetch,
     cancelPrefetch,
     position: (peerKey: string) => visited.get(peerKey),

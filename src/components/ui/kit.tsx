@@ -87,6 +87,7 @@ const icons = {
   palette: { ios: "circle.lefthalf.filled", android: "contrast" },
   connection: { ios: "antenna.radiowaves.left.and.right", android: "sensors" },
   check: { ios: "checkmark", android: "check" },
+  pin: { ios: "pin.fill", android: "push_pin" },
 } satisfies Record<string, SymbolViewProps["name"]>;
 
 type IconName = keyof typeof icons;

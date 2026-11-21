@@ -13,6 +13,7 @@ import {
   messageReactions,
   messageRequests,
   attachmentCache,
+  linkPreviewCache,
   messages,
   settings,
 } from "@/db/schema";
@@ -106,6 +107,7 @@ async function recoverSwitch<TResult>(
       try {
         db.transaction((tx) => {
           tx.delete(messageReactions).run();
+          tx.delete(linkPreviewCache).run();
           tx.delete(messages).run();
           tx.delete(attachmentCache).run();
           tx.delete(conversations).run();

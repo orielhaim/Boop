@@ -94,6 +94,14 @@ class AvatarTransportModule : Module() {
     }
 
     AsyncFunction("download") { id: String, url: String, output: String, expectedHash: String?, attachmentLimit: Int? ->
+      download(id, url, output, expectedHash, attachmentLimit, null)
+    }
+    AsyncFunction("downloadPreview") { id: String, url: String, output: String, image: Boolean ->
+      download(id, url, output, null, null, image)
+    }
+  }
+
+  private fun download(id: String, url: String, output: String, expectedHash: String?, attachmentLimit: Int?, previewImage: Boolean?): Int {
       val job = jobs[id] ?: throw IOException("Avatar operation missing")
       try {
         if (job.cancelled.get()) throw IOException("Avatar cancelled")
@@ -103,15 +111,18 @@ class AvatarTransportModule : Module() {
           !localSuffix.containsMatchIn(address.host))
         val target = File(URI(output)).canonicalFile
         val context = appContext.reactContext ?: throw IOException("No React context")
-        val limit = attachmentLimit ?: maxBytes
+        val html = previewImage == false
+        val images = attachmentLimit == null && !html
+        val limit = if (html) 512 * 1024 else attachmentLimit ?: maxBytes
         require(attachmentLimit == null || (limit in 17..(32 * 1024 * 1024) &&
           expectedHash?.matches(Regex("[a-f0-9]{64}")) == true))
-        val root = if (attachmentLimit == null) File(context.filesDir, "avatar-cache")
+        val root = if (previewImage != null) File(context.cacheDir, "link-previews")
+          else if (attachmentLimit == null) File(context.filesDir, "avatar-cache")
           else File(context.cacheDir, "attachment-work")
-        val extension = if (attachmentLimit == null) ".jpg" else ".bin"
+        val extension = if (images) ".jpg" else if (html) ".html" else ".bin"
         require(target.path.startsWith(root.canonicalPath + File.separator) && target.name.endsWith(extension))
         val call = (if (attachmentLimit != null) attachmentClient else client).newCall(Request.Builder().url(address)
-          .header("Accept", if (attachmentLimit == null) "image/jpeg, image/png, image/webp" else "*/*")
+          .header("Accept", if (html) "text/html" else if (images) "image/jpeg, image/png, image/webp" else "*/*")
           .header("Accept-Encoding", "identity").build())
         job.call = call
         if (job.cancelled.get()) call.cancel()
@@ -123,7 +134,7 @@ class AvatarTransportModule : Module() {
             if (response.code != 200) throw IOException("Avatar HTTP ${response.code}")
             val body = response.body ?: throw IOException("No avatar body")
             val mime = body.contentType()?.let { "${it.type}/${it.subtype}" }
-            if ((attachmentLimit == null && mime !in types) || body.contentLength() > limit)
+            if ((images && mime !in types) || (html && mime != "text/html") || body.contentLength() > limit)
               throw IOException("Unsupported avatar")
             body.byteStream().use { source ->
               incoming.outputStream().use { sink ->
@@ -149,10 +160,10 @@ class AvatarTransportModule : Module() {
           }
           val hash = digest.digest().joinToString("") { "%02x".format(it) }
           if (expectedHash != null && hash != expectedHash) throw IOException("MEDIA_INTEGRITY")
-          if (attachmentLimit != null) {
-            if (call.isCanceled() || incoming.length() < 17 || target.exists() ||
+          if (!images) {
+            if (call.isCanceled() || incoming.length() < (if (html) 1 else 17) || target.exists() ||
                 !incoming.renameTo(target)) throw IOException("Attachment transfer failed")
-            return@AsyncFunction target.length().toInt()
+            return target.length().toInt()
           }
           val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(incoming)) { decoder, info, _ ->
             val width = info.size.width
@@ -174,13 +185,12 @@ class AvatarTransportModule : Module() {
           } finally {
             bitmap.recycle()
           }
-          target.length().toInt()
+          return target.length().toInt()
         } finally {
           incoming.delete()
         }
       } finally {
         jobs.remove(id, job)
       }
-    }
   }
 }

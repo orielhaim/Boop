@@ -296,6 +296,15 @@ export function createMessagingService({
     for (const listener of listeners) listener();
   }
 
+  function getHistoryReady() {
+    return (
+      Boolean(connectionKey) &&
+      chatsEnabled &&
+      inboxSync === "idle" &&
+      (!configuration.inbox.length || [...syncing.values()].includes("synced"))
+    );
+  }
+
   function connectedRelays() {
     return configured.filter(transport.connected);
   }
@@ -565,6 +574,7 @@ export function createMessagingService({
   function start(next: RelayConfiguration) {
     const key = JSON.stringify(next);
     if (connectionKey === key) return;
+    const historyWasReady = getHistoryReady();
     connectionKey = key;
     configuration = next;
     publicationRetries = 0;
@@ -572,6 +582,8 @@ export function createMessagingService({
     reportInbox("idle");
     syncConnections();
     schedulePublication();
+    if (historyWasReady !== getHistoryReady())
+      for (const listener of listeners) listener();
   }
 
   function connectRelay(relay: NDKRelay, session: number, inbox: boolean) {
@@ -1362,6 +1374,7 @@ export function createMessagingService({
     getRelayStates: () => snapshot,
     getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,
+    getHistoryReady,
     send,
     sendAttachment,
     cancelAttachment,

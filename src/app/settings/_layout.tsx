@@ -22,6 +22,10 @@ export default function SettingsLayout() {
         options={{ title: t("settings:profilePhotos") }}
       />
       <Stack.Screen
+        name="privacy/link-previews"
+        options={{ title: t("settings:linkPreviews") }}
+      />
+      <Stack.Screen
         name="connections/media-storage"
         options={{ title: t("settings:mediaStorage") }}
       />

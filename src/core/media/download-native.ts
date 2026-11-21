@@ -9,6 +9,12 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
     hash: string | null,
     attachmentLimit: number | null,
   ): Promise<number>;
+  downloadPreview?(
+    id: string,
+    url: string,
+    output: string,
+    image: boolean,
+  ): Promise<number>;
   addListener(
     event: "attachmentProgress",
     listener: (event: { id: string; received: number; total: number }) => void,
@@ -19,6 +25,25 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
 const native = requireOptionalNativeModule<NativeAvatarTransport>(
   "BoopAvatarTransport",
 );
+
+export async function downloadPreviewFile(
+  id: string,
+  url: string,
+  output: string,
+  image: boolean,
+  signal: AbortSignal,
+) {
+  if (!native?.available?.() || !native.downloadPreview || signal.aborted)
+    throw new Error("preview-unavailable");
+  native.prepare(id);
+  const cancel = () => native.cancel(id);
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await native.downloadPreview(id, url, output, image);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
 
 export const nativeAvatarTransport: AvatarTransport | null =
   native?.available?.() && native

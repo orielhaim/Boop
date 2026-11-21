@@ -240,11 +240,7 @@ export function useDetailHistory(
 
   const loadAround = useCallback(
     (cursor: MessageCursor) => {
-      const page = history.read(peerKey, {
-        atOrBefore: cursor,
-        limit: Math.floor(pageSize / 2),
-      });
-      setScope({ start: page.messages[0] ?? cursor, limit: pageSize });
+      setScope(history.around(peerKey, cursor));
     },
     [history, peerKey],
   );

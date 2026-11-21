@@ -90,6 +90,7 @@ export function toDetailMessage(
     user: author(row, participants),
     createdAt: row.sentAt,
     unread: row.isUnread,
+    isPinned: row.isPinned,
     failure: row.failure,
     pending: row.status === "pending",
     sent: row.status === "sent",
@@ -132,6 +133,7 @@ export function equalDetailMessage(a: DetailMessage, b: DetailMessage) {
     a.user === b.user &&
     a.createdAt === b.createdAt &&
     a.unread === b.unread &&
+    a.isPinned === b.isPinned &&
     a.failure === b.failure &&
     a.pending === b.pending &&
     a.sent === b.sent &&

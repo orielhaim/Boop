@@ -25,8 +25,8 @@ import {
 import { VoiceMessage } from "./voice-message";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import {
-  Bubble,
   Chat,
+  ChatEmpty,
   type ChatHandle,
   ChatHeader,
   type ChatProps,
@@ -77,6 +77,13 @@ import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
 import { useBlockAction } from "@/components/ui/privacy-actions";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { messagingMetric } from "@/core/messaging/diagnostics";
+import { firstPreviewUrl } from "@/core/messaging/link-previews";
+import {
+  canShowGreeting,
+  externalMessageUrl,
+  sendEmptyGreeting,
+  waveGreeting,
+} from "@/core/messaging/message-links";
 import { nameOrAddress, useContact } from "@/db/contacts";
 import type { MessageCursor } from "@/db/messaging";
 import { namespaces, resolveLanguage } from "@/i18n";
@@ -93,10 +100,13 @@ import {
 } from "./send-options";
 import { canRetryUnlock, LockedMessageBubble } from "./timelock-message";
 import { useMessageTranslations } from "./use-message-translations";
+import { MessageBubble } from "./message-bubble";
+import { PinnedBanner } from "./pinned-banner";
 
 const messageActions: MessageActionKey[] = [
   "reply",
   "copy",
+  "pin",
   "select",
   "delete",
 ];
@@ -118,7 +128,9 @@ function discardVoiceRecording(uri: string) {
 }
 const renderTranslatedText: NonNullable<
   ChatProps<DetailMessage>["renderMessageText"]
-> = (props) => <MessageText {...props} url={false} />;
+> = (props) => (
+  <MessageText {...props} url={false} email={false} phone={false} />
+);
 
 function useStressArrival(peerKey: string) {
   const { t } = useTranslation(namespaces);
@@ -171,6 +183,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     lock,
     calling,
     attachments,
+    privacy,
+    previews,
   } = useLocal();
   const {
     available: stressEnabled,
@@ -195,6 +209,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     () => lock.getState().locked,
   );
   const mediaEnabled = focused && !blocked && activeUnlocked;
+  const pendingRequest = privacy.request(peerKey).length > 0;
+  const incomingPreviewAllowed =
+    !blocked &&
+    !pendingRequest &&
+    privacy.messagePermission(peerKey) === "allow";
   const allowVoice = mediaEnabled && !inCall;
   const latestMediaPermission = useRef({ focused, blocked });
   useLayoutEffect(() => {
@@ -280,6 +299,14 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     messaging.getStatus,
     messaging.getStatus,
   );
+  const historyReady = useSyncExternalStore(
+    messaging.subscribeStatus,
+    messaging.getHistoryReady,
+  );
+  const previewPolicy = useSyncExternalStore(
+    privacy.subscribe,
+    privacy.linkPreviewPolicy,
+  );
   const {
     items,
     error,
@@ -311,6 +338,101 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const [jump, setJump] = useState<{ id: string; highlight: boolean }>();
   const [notice, setNotice] = useState<string>();
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
+  const visibleForPreview = useRef(new Set<string>());
+  const previewFocused = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      previewFocused.current = true;
+      return () => {
+        previewFocused.current = false;
+        previews.revalidate();
+      };
+    }, [previews]),
+  );
+  const canRequestPreview = useCallback(
+    () => previewFocused.current && canUseMedia(),
+    [canUseMedia],
+  );
+  useEffect(() => {
+    if (!mediaEnabled || pendingRequest || previewPolicy !== "always") return;
+    previews.revalidate();
+    const visible = new Set(visibleIds);
+    for (const item of items) {
+      if (
+        !visible.has(item._id) ||
+        item.locked ||
+        item.media ||
+        item.location ||
+        (item.direction === "incoming" && !incomingPreviewAllowed)
+      )
+        continue;
+      const url = firstPreviewUrl(item.text);
+      if (url)
+        previews.request(
+          { peer: peerKey, id: item._id, url },
+          false,
+          () => canRequestPreview() && visibleForPreview.current.has(item._id),
+        );
+    }
+  }, [
+    mediaEnabled,
+    pendingRequest,
+    previewPolicy,
+    previews,
+    visibleIds,
+    items,
+    incomingPreviewAllowed,
+    peerKey,
+    canRequestPreview,
+  ]);
+  const openLink = useCallback(
+    (value: string, type: string) => {
+      const target = externalMessageUrl(value, type);
+      if (target) {
+        void Linking.openURL(target).catch(() =>
+          setNotice(t("messages:openError")),
+        );
+      }
+    },
+    [t],
+  );
+  const openPreview = useCallback(
+    ({ url }: { url: string }) => openLink(url, "url"),
+    [openLink],
+  );
+  const renderBubble = useCallback(
+    (
+      bubble: Parameters<
+        NonNullable<ChatProps<DetailMessage>["renderBubble"]>
+      >[0],
+    ) => (
+      <MessageBubble
+        bubble={bubble}
+        peer={peerKey}
+        previewsAllowed={
+          mediaEnabled &&
+          !pendingRequest &&
+          (bubble.currentMessage?.direction === "outgoing" ||
+            incomingPreviewAllowed)
+        }
+        canRequest={canRequestPreview}
+        ink={
+          bubble.currentMessage?.direction === "outgoing"
+            ? colors.outgoingInk
+            : colors.text
+        }
+      />
+    ),
+    [
+      peerKey,
+      mediaEnabled,
+      pendingRequest,
+      incomingPreviewAllowed,
+      canRequestPreview,
+      colors.outgoingInk,
+      colors.text,
+    ],
+  );
   const visibleUnread = useRef<string[]>([]);
   const readingPosition = useRef<MessageCursor>(undefined);
   const {
@@ -375,118 +497,108 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     (props) => {
       const message = props.currentMessage;
       if (message?.voice) {
-        return (
-          <Bubble
-            {...props}
-            renderCustomView={() => (
-              <VoiceMessage
-                key={message._id}
-                message={message}
-                peer={peerKey}
-                enabled={allowVoice}
-                rtl={rtl}
-                color={
-                  message.direction === "outgoing"
-                    ? colors.outgoingInk
-                    : colors.text
-                }
-              />
-            )}
-          />
-        );
+        return renderBubble({
+          ...props,
+          renderCustomView: () => (
+            <VoiceMessage
+              key={message._id}
+              message={message}
+              peer={peerKey}
+              enabled={allowVoice}
+              rtl={rtl}
+              color={
+                message.direction === "outgoing"
+                  ? colors.outgoingInk
+                  : colors.text
+              }
+            />
+          ),
+        });
       }
       const media = message?.media;
       if (message && media) {
-        return (
-          <Bubble
-            {...props}
-            renderCustomView={() => (
-              <RichMedia
-                key={message._id}
-                message={{ ...message, media }}
-                peer={peerKey}
-                enabled={mediaEnabled}
-                allowVideo={allowVoice}
-                color={
-                  message.direction === "outgoing"
-                    ? colors.outgoingInk
-                    : colors.text
-                }
-                reducedMotion={reducedMotion}
-                galleryItems={galleryItems}
-                onFile={openFile}
-              />
-            )}
-          />
-        );
+        return renderBubble({
+          ...props,
+          renderCustomView: () => (
+            <RichMedia
+              key={message._id}
+              message={{ ...message, media }}
+              peer={peerKey}
+              enabled={mediaEnabled}
+              allowVideo={allowVoice}
+              color={
+                message.direction === "outgoing"
+                  ? colors.outgoingInk
+                  : colors.text
+              }
+              reducedMotion={reducedMotion}
+              galleryItems={galleryItems}
+              onFile={openFile}
+            />
+          ),
+        });
       }
       if (message?.locked) {
         const sealed = message.locked;
-        return (
-          <Bubble
-            {...props}
-            renderCustomView={() => (
-              <LockedMessageBubble
-                lock={sealed}
-                color={
-                  props.position === "right" ? colors.outgoingInk : colors.text
-                }
-                rtl={rtl}
-              />
-            )}
-          />
-        );
+        return renderBubble({
+          ...props,
+          renderCustomView: () => (
+            <LockedMessageBubble
+              lock={sealed}
+              color={
+                props.position === "right" ? colors.outgoingInk : colors.text
+              }
+              rtl={rtl}
+            />
+          ),
+        });
       }
       if (message?.originalText === undefined) {
-        if (!message?.timeLock || reducedMotion) return <Bubble {...props} />;
-        return (
-          <Bubble
-            {...props}
-            renderMessageText={(textProps) => (
-              <Animated.View entering={FadeIn.duration(180)}>
-                <MessageText {...textProps} />
-              </Animated.View>
-            )}
-          />
-        );
+        if (!message?.timeLock || reducedMotion) return renderBubble(props);
+        return renderBubble({
+          ...props,
+          renderMessageText: (textProps) => (
+            <Animated.View entering={FadeIn.duration(180)}>
+              <MessageText {...textProps} />
+            </Animated.View>
+          ),
+        });
       }
       const original = message.text === message.originalText;
-      return (
-        <Bubble
-          {...props}
-          renderMessageText={original ? undefined : renderTranslatedText}
-          renderTime={(timeProps) => (
-            <View
-              style={[styles.translationMeta, rtl && styles.translationMetaRtl]}
+      return renderBubble({
+        ...props,
+        renderMessageText: original ? undefined : renderTranslatedText,
+        renderTime: (timeProps) => (
+          <View
+            style={[styles.translationMeta, rtl && styles.translationMetaRtl]}
+          >
+            <Pressable
+              accessibilityRole="link"
+              hitSlop={6}
+              onPress={() => toggleOriginal(message._id)}
             >
-              <Pressable
-                accessibilityRole="link"
-                hitSlop={6}
-                onPress={() => toggleOriginal(message._id)}
+              <Text
+                style={[
+                  styles.translationLink,
+                  {
+                    color:
+                      props.position === "right"
+                        ? colors.outgoingInk
+                        : colors.accent,
+                  },
+                ]}
               >
-                <Text
-                  style={[
-                    styles.translationLink,
-                    {
-                      color:
-                        props.position === "right"
-                          ? colors.outgoingInk
-                          : colors.accent,
-                    },
-                  ]}
-                >
-                  {t(
-                    original
-                      ? "translation:showTranslation"
-                      : "translation:showOriginal",
-                  )}
-                </Text>
-              </Pressable>
-              <Time {...timeProps} />
-            </View>
-          )}
-        />
-      );
+                {t(
+                  original
+                    ? "translation:showTranslation"
+                    : "translation:showOriginal",
+                )}
+              </Text>
+            </Pressable>
+            <Time {...timeProps} />
+          </View>
+        ),
+      });
     },
     [
       allowVoice,
@@ -498,6 +610,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       colors.outgoingInk,
       colors.text,
       reducedMotion,
+      renderBubble,
       rtl,
       t,
       toggleOriginal,
@@ -713,6 +826,48 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       }
     },
     [messaging, peerKey, flushDraft, loadLatest, t],
+  );
+
+  const greetingVisible = canShowGreeting({
+    historyReady: !error && !loadingPage && historyReady && mediaEnabled,
+    hasHistory: items.length > 0 || older !== null || newer !== null,
+    blocked,
+    pending: pendingRequest,
+  });
+  const renderGreeting = useCallback(
+    () =>
+      greetingVisible ? (
+        <View style={styles.emptyGreeting}>
+          <ChatEmpty
+            greeting={waveGreeting}
+            onPressGreeting={() => {
+              try {
+                void sendEmptyGreeting(
+                  {
+                    historyReady: canUseMedia() && messaging.getHistoryReady(),
+                    blocked: privacy.isBlocked(peerKey),
+                    pending: privacy.request(peerKey).length > 0,
+                    hasHistory: chat.hasMessages(peerKey),
+                  },
+                  (body) => sendText(body, () => {}),
+                );
+              } catch {
+                setNotice(t("messages:historyError"));
+              }
+            }}
+          />
+        </View>
+      ) : null,
+    [
+      greetingVisible,
+      canUseMedia,
+      messaging,
+      privacy,
+      peerKey,
+      chat,
+      sendText,
+      t,
+    ],
   );
 
   // Keep the built-in button, and clear the controlled composer only after SQLite commits.
@@ -1171,9 +1326,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     [rtl],
   );
 
-  const jumpToQuote = useCallback(
-    (target: ReplyMessage) => {
-      const id = String(target._id);
+  const jumpToMessage = useCallback(
+    (id: string) => {
       setNotice(undefined);
       if (items.some((row) => row._id === id)) {
         chatRef.current?.scrollToMessage(id, {
@@ -1196,6 +1350,12 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       }
     },
     [chat, t, items, loadAround, peerKey, reducedMotion],
+  );
+  const jumpToQuote = useCallback(
+    (target: ReplyMessage) => {
+      jumpToMessage(String(target._id));
+    },
+    [jumpToMessage],
   );
 
   useLayoutEffect(() => {
@@ -1294,6 +1454,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     ({ viewableItems }) => {
       const shown = viewableItems.filter((entry) => entry.isViewable);
       const ids = shown.map(({ item }) => item._id);
+      visibleForPreview.current = new Set(ids);
+      previews.revalidate();
       const leading = shown[0]?.item;
       if (__DEV__ && leading && focused && !measuredFirstMessages.current) {
         measuredFirstMessages.current = true;
@@ -1324,7 +1486,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       );
       markVisibleRead();
     },
-    [focused, lock, markVisibleRead, openedAt],
+    [focused, lock, markVisibleRead, openedAt, previews],
   );
 
   useEffect(() => {
@@ -1360,6 +1522,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           }
         : {}),
       viewabilityConfig,
+      contentContainerStyle: greetingVisible ? styles.emptyList : undefined,
       recycleItems: false,
       onScroll,
       maintainScrollAtEnd:
@@ -1379,6 +1542,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       atLatest,
       detached,
       extend,
+      greetingVisible,
       jump,
       loadingPage,
       newer,
@@ -1387,6 +1551,21 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       reducedMotion,
       restoredIndex,
     ],
+  );
+
+  const togglePin = useCallback(
+    (id: string) => {
+      try {
+        chat.toggleMessagePin(peerKey, id);
+      } catch {
+        setNotice(t("messages:updateError"));
+      }
+    },
+    [chat, peerKey, t],
+  );
+  const pinMessage = useCallback(
+    ({ _id }: DetailMessage) => togglePin(_id),
+    [togglePin],
   );
 
   const confirmDelete = useCallback(
@@ -1627,31 +1806,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   >(
     () => ({
       url: true,
-      phone: false,
-      email: false,
+      phone: true,
+      email: true,
       hashtag: false,
       mention: false,
       markdown: false,
       customTextStyle: autoText,
-      onPress: (_message, value) => {
-        try {
-          const url = new URL(value);
-          if (
-            (url.protocol === "https:" || url.protocol === "http:") &&
-            url.hostname &&
-            !url.username &&
-            !url.password
-          ) {
-            void Linking.openURL(url.href).catch(() =>
-              setNotice(t("messages:openError")),
-            );
-          }
-        } catch {
-          setNotice(t("messages:openError"));
-        }
-      },
+      onPress: (_message, value, type) => openLink(value, type),
     }),
-    [t],
+    [openLink],
   );
 
   const textInputProps = useMemo(
@@ -1738,6 +1901,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           style={styles.headerContent}
         />
       </GlassSurface>
+      <PinnedBanner
+        peer={peerKey}
+        participants={participants}
+        mediaLabel={mediaLabel}
+        tint={material.panel}
+        rtl={rtl}
+        onJump={jumpToMessage}
+        onUnpin={togglePin}
+      />
       {(error || notice) && (
         <View style={[styles.notice, { backgroundColor: colors.surface }]}>
           <Ink
@@ -1823,15 +1995,18 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           renderComposer={renderComposer}
           renderSend={emptySendSlot}
           isMultiline
-          emptyChatGreeting={null}
+          emptyChatGreeting={waveGreeting}
+          renderChatEmpty={renderGreeting}
           defaultMessageActions={messageActions}
           messageActions={actionsForMessage}
+          onPinMessage={pinMessage}
           onDeleteMessage={deleteOne}
           onDeleteMessages={confirmDelete}
           onRetryMessage={retryMessage}
           reactions={reactions}
           reply={reply}
           messageTextProps={messageTextProps}
+          onPressLinkPreview={openPreview}
           renderBubble={renderTranslatedBubble}
           attachments={attachmentOptions}
           audioRecording={audioRecording}
@@ -1893,6 +2068,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 }
 
 const styles = StyleSheet.create({
+  emptyList: { flexGrow: 1 },
+  emptyGreeting: { flex: 1, justifyContent: "center" },
   translationMeta: {
     flexDirection: "row",
     alignItems: "center",

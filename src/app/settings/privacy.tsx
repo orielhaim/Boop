@@ -112,6 +112,11 @@ export default function Privacy() {
         />
       </SettingsGroup>
       <SettingsGroup>
+        <SettingsRow
+          title={t("settings:linkPreviews")}
+          detail={t(`settings:linkPreview_${selected.linkPreviews}`)}
+          onPress={() => router.push("/settings/privacy/link-previews")}
+        />
         <ProfilePhotoPolicyRow
           title={t("settings:profilePhotos")}
           value={selected.profilePhotos}

@@ -87,6 +87,28 @@ export const messages = sqliteTable(
   ],
 );
 
+export const messagePins = sqliteTable(
+  "message_pins",
+  {
+    messageId: text("message_id")
+      .primaryKey()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    peerKey: text("peer_key").notNull(),
+    pinnedAt: integer("pinned_at").notNull(),
+  },
+  (table) => [index("message_pins_peer").on(table.peerKey, table.pinnedAt)],
+);
+
+export const linkPreviewCache = sqliteTable("link_preview_cache", {
+  url: text().primaryKey(),
+  siteName: text("site_name"),
+  title: text(),
+  description: text(),
+  image: text(),
+  fetchedAt: integer("fetched_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
 export const messageTimeLocks = sqliteTable(
   "message_timelocks",
   {
