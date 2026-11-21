@@ -7,7 +7,6 @@ import {
 } from "expo-glass-tabs";
 import { router } from "expo-router";
 import { TabList, TabSlot, Tabs, TabTrigger } from "expo-router/ui";
-import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
@@ -17,9 +16,10 @@ import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
 } from "@/components/ui/tab-bar-insets";
-import { unreadBadge } from "@/core/messaging/conversations";
+import { useMarmotWindow } from "@/components/messages/marmot-window";
+import { marmot } from "@/core/marmot/native";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local-context";
+import { useChatsEnabled } from "@/services/local-context";
 import { useTheme } from "@/theme";
 
 export default function TabLayout() {
@@ -38,15 +38,10 @@ function DockNavigator() {
   const { t, i18n } = useTranslation(namespaces);
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
-  const { conversations } = useLocal();
   const chatsEnabled = useChatsEnabled();
-  const badge = unreadBadge(
-    useSyncExternalStore(
-      conversations.subscribeUnread,
-      conversations.getUnreadCount,
-      conversations.getUnreadCount,
-    ),
-  );
+  const { snapshot } = useMarmotWindow(marmot.openAttention, chatsEnabled);
+  const unread = snapshot?.count ?? 0;
+  const badge = unread > 99 ? "99+" : unread || null;
   const calls: GlassTabItem = {
     name: "index",
     label: t("navigation:calls"),

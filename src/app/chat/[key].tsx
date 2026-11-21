@@ -1,27 +1,40 @@
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { DetailConversation } from "@/components/messages/detail";
+import {
+  MarmotConversationScreen,
+  OpenMarmotDirect,
+} from "@/components/messages/marmot-conversation";
+import {
+  MarmotGroupDetailsScreen,
+  NewMarmotGroup,
+} from "@/components/messages/marmot-group";
 import { Empty, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
 
 export default function ChatRoute() {
   const { t } = useTranslation(namespaces);
-  const params = useLocalSearchParams<{ key: string }>();
-  const peerKey =
-    typeof params.key === "string" ? parsePublicKey(params.key) : null;
-  if (!peerKey) {
-    const title = t("messages:unavailable");
-    return (
-      <Screen>
-        <Stack.Screen options={{ headerShown: true, title }} />
-        <Empty
-          icon="chat"
-          title={title}
-          detail={t("messages:unavailableHint")}
-        />
-      </Screen>
-    );
+  const { key, details } = useLocalSearchParams<{
+    key?: string;
+    details?: string;
+  }>();
+  if (key === "new-group") return <NewMarmotGroup />;
+  if (typeof key === "string") {
+    const group = /^marmot-([a-f0-9]{2,512})$/u.exec(key)?.[1];
+    if (group)
+      return details === "1" ? (
+        <MarmotGroupDetailsScreen key={group} id={group} />
+      ) : (
+        <MarmotConversationScreen key={group} id={group} />
+      );
+    const peer = parsePublicKey(key);
+    if (peer) return <OpenMarmotDirect key={peer} peer={peer} />;
   }
-  return <DetailConversation key={peerKey} peerKey={peerKey} />;
+  const title = t("messages:unavailable");
+  return (
+    <Screen>
+      <Stack.Screen options={{ headerShown: true, title }} />
+      <Empty icon="chat" title={title} detail={t("messages:unavailableHint")} />
+    </Screen>
+  );
 }

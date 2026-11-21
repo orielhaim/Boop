@@ -16,13 +16,14 @@ import {
 } from "@/components/settings/group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local-context";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 
 export default function Identity() {
   const { t } = useTranslation(namespaces);
   const { qr } = useLocalSearchParams<{ qr?: string }>();
   const { identity } = useLocal();
+  const chats = useChatsEnabled();
   const [showQR, setShowQR] = useState(qr === "1");
   const [notice, setNotice] = useState("");
   const { width } = useWindowDimensions();
@@ -46,6 +47,12 @@ export default function Identity() {
           title={t("settings:editProfile")}
           onPress={() => router.push("/settings/identity/edit-profile")}
         />
+        {chats && (
+          <SettingsRow
+            title={t("messages:marmot.devices")}
+            onPress={() => router.push("./identity/devices")}
+          />
+        )}
       </SettingsGroup>
       <SettingsGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>

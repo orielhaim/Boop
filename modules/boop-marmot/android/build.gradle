@@ -1,0 +1,26 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.boop'
+version = '1.0.0'
+
+def sdk = file('../sdk/marmotkit-android-0.18.0')
+def prepareMarmotKit = tasks.register('prepareMarmotKit', Exec) {
+  workingDir file('../../..')
+  commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android'
+}
+
+android {
+  namespace 'app.boop.marmot'
+  sourceSets.main.java.srcDir(sdk.toPath().resolve('kotlin').toFile())
+  sourceSets.main.jniLibs.srcDir(sdk.toPath().resolve('jniLibs').toFile())
+  defaultConfig.consumerProguardFiles('marmot.pro')
+}
+
+tasks.named('preBuild') { dependsOn prepareMarmotKit }
+
+dependencies {
+  implementation 'net.java.dev.jna:jna:5.18.1@aar'
+}

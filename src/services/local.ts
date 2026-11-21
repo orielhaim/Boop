@@ -25,7 +25,11 @@ import {
   randomCallId,
   trysteroMedia,
 } from "@/core/calling/trystero";
-import { initializeIdentity } from "@/core/identity";
+import { initializeIdentity, initializeMarmotIdentity } from "@/core/identity";
+import { createChatPreferences } from "@/core/marmot/chat-preferences";
+import { createMarmotSession } from "@/core/marmot/account-session";
+import { createMarmotViewport } from "@/core/marmot/viewport";
+import { marmot } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { createMessagingService } from "@/core/messaging/runtime";
 import { createConversationFeed } from "@/core/messaging/conversations";
@@ -53,10 +57,10 @@ import {
 } from "@/db/queries";
 import { seedRelays } from "@/db/relays";
 import { relaySettings } from "@/db/schema";
-import { createTranslationCache } from "@/db/translations";
+import { createDerivedTranslations } from "@/db/translations";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
-import { useChatsEnabled, useLocal } from "./local-context";
+import { useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
@@ -76,6 +80,7 @@ async function start() {
     });
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
+    const chatPreferences = createChatPreferences(db);
     const chat = createMessagingRepository(db);
     const privacy = createPrivacy(db, chat, identity.publicKey);
     const mediaSdk = createMediaSdk(db, signer);
@@ -141,6 +146,44 @@ async function start() {
         uploadAvatar(mediaSdk, new File(localDirectory, filename), signal),
       publicMetadata,
     );
+    const marmotSession = createMarmotSession(async (configuration) => {
+      const state = await initializeMarmotIdentity(
+        db,
+        identity.publicKey,
+        configuration,
+      );
+      try {
+        for (const key of privacy.blockedKeys())
+          await marmot.setBlocked(key, true);
+      } catch (failure) {
+        await marmot.closeAccount();
+        throw failure;
+      }
+      return state;
+    });
+    let previousBlocks = new Set(privacy.blockedKeys());
+    privacy.subscribe(() => {
+      const current = new Set(privacy.blockedKeys());
+      const changes = [
+        ...[...previousBlocks]
+          .filter((key) => !current.has(key))
+          .map((key) => ({ key, blocked: false })),
+        ...[...current]
+          .filter((key) => !previousBlocks.has(key))
+          .map((key) => ({ key, blocked: true })),
+      ];
+      previousBlocks = current;
+      if (changes.length)
+        void marmotSession
+          .ready()
+          .then(async () => {
+            for (const { key, blocked } of changes) {
+              if (privacy.isBlocked(key) === blocked)
+                await marmot.setBlocked(key, blocked);
+            }
+          })
+          .catch(() => undefined);
+    });
     privacy.subscribe(avatars.invalidate);
     let profileRelays = publicMetadata.profileRelayKey();
     relays.subscribe(() => {
@@ -152,23 +195,27 @@ async function start() {
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
     });
-    const previews = createNativeLinkPreviews(
-      db,
-      chat,
-      privacy,
-      mediaSdk,
+    const marmotViewport = createMarmotViewport(
+      identity.publicKey,
       () => {
         const state = lock.getState();
         return (
           state.active &&
           !state.locked &&
           AppState.currentState === "active" &&
-          messaging.getChatsEnabled()
+          chatPreferences.enabled()
         );
       },
+      privacy.isBlocked,
+    );
+    const previews = createNativeLinkPreviews(
+      db,
+      privacy,
+      mediaSdk,
+      marmotViewport,
     );
     lock.subscribe(previews.revalidate);
-    messaging.subscribeStatus(previews.revalidate);
+    chatPreferences.subscribe(previews.revalidate);
     const media = trysteroMedia(
       signer,
       {
@@ -236,8 +283,6 @@ async function start() {
     });
     privacy.subscribeBlock((key) => {
       calling.peerBlocked(key);
-      attachments.block(key);
-      messaging.invalidateBlockedPeer();
     });
     callSignaling.subscribe((message) => {
       if (message.type === "call.rtc") media.receive(message);
@@ -252,7 +297,7 @@ async function start() {
     return {
       db,
       translation: createTranslationService(
-        createTranslationCache(db),
+        createDerivedTranslations(db, marmotViewport.incomingText),
         loadTranslationEngine,
       ),
       identity,
@@ -267,6 +312,9 @@ async function start() {
       history,
       conversations,
       messaging,
+      chatPreferences,
+      marmotSession,
+      marmotViewport,
       relays,
       callSignaling,
       calling,
@@ -299,24 +347,14 @@ export function initializeLocal() {
 export function LocalSessionLifecycle() {
   const {
     db,
-    messaging,
     relays,
     callSignaling,
     calling,
     lock,
-    conversations,
     avatars,
+    marmotSession,
+    chatPreferences,
   } = useLocal();
-  const chatsEnabled = useChatsEnabled();
-  useEffect(() => {
-    if (!chatsEnabled) return;
-    const stop = conversations.start();
-    const active =
-      AppState.currentState === "active" && !lock.getState().locked;
-    conversations.setPrefetchEnabled(active);
-    messaging.setUnlockActive(active);
-    return stop;
-  }, [chatsEnabled, conversations, lock, messaging]);
   useEffect(() => {
     const databasePath =
       db.$client.getFirstSync<{ file: string }>(
@@ -330,17 +368,21 @@ export function LocalSessionLifecycle() {
     let queued = false;
     let mounted = true;
     let relaysChanged = false;
+    function connectMessaging() {
+      if (!chatPreferences.enabled()) void marmotSession.stop();
+      else if (AppState.currentState === "active")
+        void marmotSession.start(configuredRelays(rows, intent));
+    }
     function connect() {
       callSignaling.start();
-      messaging.start();
-      relays.start(configuredRelays(rows, intent));
+      const configuration = configuredRelays(rows, intent);
+      relays.start(configuration);
+      connectMessaging();
     }
     const dbChanges = addDatabaseChangeListener(
       ({ databaseFilePath, tableName }) => {
         if (databaseFilePath !== databasePath) return;
         if (tableName === "contacts") queueMicrotask(avatars.invalidate);
-        if (messaging.getChatsEnabled())
-          conversations.externalChange(tableName);
         if (tableName !== "relay_settings" && tableName !== "settings") return;
         relaysChanged ||= tableName === "relay_settings";
         if (queued) return;
@@ -361,31 +403,16 @@ export function LocalSessionLifecycle() {
       avatars.setActive(
         AppState.currentState === "active" && !lock.getState().locked,
       );
-      messaging.setUnlockActive(
-        AppState.currentState === "active" && !lock.getState().locked,
-        AppState.currentState === "background" ||
-          AppState.currentState === "inactive",
-      );
     }
     function background() {
       calling.setForeground(false);
       if (calling.isRequestingMicrophone()) return;
-      messaging.stop(true);
       callSignaling.stop();
       relays.stop();
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
-      messaging.setUnlockActive(
-        state === "active" && !lock.getState().locked,
-        state !== "active",
-      );
-      conversations.setPrefetchEnabled(
-        messaging.getChatsEnabled() &&
-          state === "active" &&
-          !lock.getState().locked,
-      );
       if (state === "active") {
         calling.setForeground(true);
         connect();
@@ -395,11 +422,6 @@ export function LocalSessionLifecycle() {
     };
     const unsubscribeLock = lock.subscribe(() => {
       updateUnlocks();
-      conversations.setPrefetchEnabled(
-        messaging.getChatsEnabled() &&
-          AppState.currentState === "active" &&
-          !lock.getState().locked,
-      );
       if (
         lock.getState().authenticating ||
         AppState.currentState !== "background"
@@ -416,27 +438,28 @@ export function LocalSessionLifecycle() {
     });
     update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
+    const unsubscribeChats = chatPreferences.subscribe(connectMessaging);
     return () => {
       mounted = false;
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
+      unsubscribeChats();
       subscription.remove();
       dbChanges.remove();
       avatars.setActive(false);
-      messaging.setUnlockActive(false);
-      messaging.stop();
+      void marmotSession.stop();
       callSignaling.stop();
       relays.stop();
     };
   }, [
     db,
-    messaging,
     relays,
     callSignaling,
     calling,
     lock,
-    conversations,
     avatars,
+    marmotSession,
+    chatPreferences,
   ]);
   return null;
 }

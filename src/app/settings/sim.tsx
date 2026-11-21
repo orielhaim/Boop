@@ -36,7 +36,7 @@ export default function DigitalSim() {
   const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
-  const { db, identity, calling, lock, attachments } = useLocal();
+  const { db, identity, calling, lock, marmotSession } = useLocal();
   const protection = useId();
   const [protectedWindow, setProtectedWindow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -227,7 +227,7 @@ export default function DigitalSim() {
               await stageIdentity(db, candidate.secret);
               setCandidate(null);
               setStatus(t("security:restartForSim"));
-              attachments.retire();
+              await marmotSession.stop();
               calling.end();
               await reloadAppAsync("Activate staged Digital SIM").catch(
                 () => undefined,
@@ -247,6 +247,7 @@ export default function DigitalSim() {
         }}
       />
       <Ink>{t("security:backupScope")}</Ink>
+      <Ink>{t("messages:marmot.backupScope")}</Ink>
       <Ink kind="label">{t("security:currentIdentity")}</Ink>
       <Ink kind="caption" selectable>
         {identity.npub}

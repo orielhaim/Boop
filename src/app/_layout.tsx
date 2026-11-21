@@ -222,10 +222,6 @@ function ProtectedApplication({
                 name="requests"
                 options={{ title: t("security:pendingRequests") }}
               />
-              <Stack.Screen
-                name="requests/[key]"
-                options={{ headerShown: false }}
-              />
             </Stack.Protected>
             <Stack.Screen
               name="contact/[key]"

@@ -14,11 +14,17 @@ import {
 } from "@/core/translation/service";
 import { resolveLanguage } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import type { DetailMessage } from "./detail-adapter";
+type TranslationMessage = {
+  _id: string;
+  text: string;
+  direction: "incoming" | "outgoing";
+  locked?: unknown;
+  originalText?: string;
+};
 
 const maxRemembered = 120;
 const emptyOutcomes = new Map<string, TranslationOutcome>();
-const messageKey = (message: DetailMessage) =>
+const messageKey = (message: TranslationMessage) =>
   JSON.stringify([message._id, message.text]);
 
 function subscribeAppState(listener: () => void) {
@@ -26,8 +32,8 @@ function subscribeAppState(listener: () => void) {
   return () => subscription.remove();
 }
 
-export function useMessageTranslations(
-  items: DetailMessage[],
+export function useMessageTranslations<T extends TranslationMessage>(
+  items: T[],
   visibleIds: readonly string[],
   language: string,
   focused: boolean,

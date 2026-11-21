@@ -1,0 +1,8 @@
+{
+  "platforms": ["android", "apple"],
+  "android": { "modules": ["app.boop.marmot.BoopMarmotModule"] },
+  "apple": {
+    "modules": ["BoopMarmotModule"],
+    "podspecPath": "BoopMarmot.podspec"
+  }
+}

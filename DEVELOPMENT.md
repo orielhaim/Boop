@@ -34,6 +34,4 @@ Open Later uses the vendored `tlock-js` 1.0.0 build from [upstream PR #52](https
 
 ## MarmotKit release inputs
 
-For native integration work, run `bun scripts/fetch-marmotkit.ts android` or `bun scripts/fetch-marmotkit.ts ios`. The script verifies the pinned 0.18.0 archive and source commit and extracts matching bindings and libraries under `.expo/marmotkit`. The iOS archive also contains the SDK privacy manifest. The published iOS artifacts require iOS 18 or later. See the [0.18.0 distribution guide](https://github.com/marmot-protocol/mdk/blob/v0.18.0/crates/marmot-uniffi/DISTRIBUTION.md).
-
-The current app build still uses NIP-17 for persistent messages. The downloaded archives are inputs for the native integration.
+The Android and iOS builds fetch the pinned MarmotKit 0.18.0 archive into `modules/boop-marmot/sdk`. The fetch script verifies the archive checksum and source commit. To prepare the inputs manually, run `bun scripts/fetch-marmotkit.ts android` or `bun scripts/fetch-marmotkit.ts ios`. The CocoaPods integration bundles the SDK privacy manifest and requires iOS 18 or later. See the [0.18.0 distribution guide](https://github.com/marmot-protocol/mdk/blob/v0.18.0/crates/marmot-uniffi/DISTRIBUTION.md).

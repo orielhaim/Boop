@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -17,7 +17,7 @@ if (platform !== "android" && platform !== "ios") {
 
 const release = `marmotkit-v${version}`;
 const name = `marmotkit-${platform}-${version}`;
-const output = join(import.meta.dir, "..", ".expo", "marmotkit");
+const output = join(import.meta.dir, "..", "modules", "boop-marmot", "sdk");
 const destination = join(output, name);
 const manifest = z.object({ source_sha: z.literal(source) });
 const installed = Bun.file(join(destination, "manifest.json"));
@@ -54,6 +54,7 @@ try {
   if (!extract.success) throw new Error("MarmotKit archive extraction failed");
   const extracted = join(temporary, name);
   manifest.parse(await Bun.file(join(extracted, "manifest.json")).json());
+  await rmdir(destination).catch(() => undefined);
   try {
     await rename(extracted, destination);
   } catch (error) {

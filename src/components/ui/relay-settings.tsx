@@ -49,7 +49,7 @@ const inboxLabels = {
 
 export function RelaySettings() {
   const { t, i18n } = useTranslation(namespaces);
-  const { db, messaging, relays } = useLocal();
+  const { db, relays } = useLocal();
   const { colors } = useTheme();
   const states = useSyncExternalStore(relays.subscribe, relays.getRelayStates);
   const inboxState = useSyncExternalStore(
@@ -162,7 +162,7 @@ export function RelaySettings() {
         />
         <SettingsRow
           title={t("connections:reconnect")}
-          onPress={messaging.reconnect}
+          onPress={relays.reconnect}
         />
       </SettingsGroup>
       <SettingsGroup title={t("connections:privateInbox")}>

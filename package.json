@@ -9,6 +9,7 @@
     "@kesha-antonov/react-native-background-downloader": "5.1.0",
     "@kesha-antonov/react-native-chat": "^7.2.0",
     "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@shopify/flash-list": "2.3.2",
     "@trystero-p2p/core": "0.27.0",

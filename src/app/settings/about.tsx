@@ -10,7 +10,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function About() {
   const { t } = useTranslation(namespaces);
-  const { calling, messaging } = useLocal();
+  const { calling, relays } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState(false);
@@ -65,7 +65,7 @@ export default function About() {
                   t(`settings:${await probe.checkNativeCalling()}`),
                   t("settings:callDiagnosticState", {
                     phase: call?.phase ?? "idle",
-                    transport: messaging.getStatus(),
+                    transport: relays.getStatus(),
                   }),
                   call?.phase === "connected"
                     ? t("settings:callDiagnosticOutput", {
