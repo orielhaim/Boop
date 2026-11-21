@@ -224,7 +224,7 @@ Use the existing Nostr private messaging standards:
 - NIP-59 for gift-wrapped events.
 - NIP-17-compatible inbox relay discovery.
 
-Do not implement custom public-key encryption or invent a separate messaging protocol.
+Private Boop extensions use the same encryption, envelopes, and inbox runtime as NIP-17.
 
 ### Message flow
 
@@ -292,6 +292,22 @@ Privacy & Security offers Off, On Demand, and Always. Off hides placeholders and
 The preview service deduplicates normalized URLs, runs at most two transfers at once, bounds pending work and backs off after a failure. The shared native Media SDK pins HTTPS connections to checked public socket addresses, validates TLS for the original hostname, rejects every redirect and disables cookies and application credentials. HTML is limited to 512 KiB and parsed as text with `htmlparser2` for standard, Open Graph, and Twitter metadata. Scripts and page resources do not execute. An optional image goes through the same network checks and the existing bounded raster decoder. It accepts at most 2 MiB of supported JPEG, PNG, or WebP and saves a resized local JPEG. Chat Kit renders the rich card from local data. The message's link remains independently tappable.
 
 SQLite keeps up to 96 normalized URLs with compact metadata and seven-day expiration. A dedicated, purgeable filesystem directory stores preview images separately from attachments and avatars. Startup and cache writes reclaim expired or evicted images, and startup removes orphaned files. Reopening a conversation or restarting can reuse cached metadata without a request. Identity replacement clears the cache records. Old native builds and platforms without the checked transport show previews as unavailable. Redirecting sites, non-HTTPS URLs, nonstandard ports, unsupported image formats, and sites that require JavaScript can yield no preview. A direct request can reveal the device's public IP, the requested URL and the request time to the destination. DNS resolution can expose the hostname to the resolver.
+
+### Encrypted message edits
+
+Boop sends edits as kind `24882` unsigned Rumors inside the existing NIP-44 kind `13` Seal and NIP-59 kind `1059` Gift Wrap. The outer event carries the normal inbox recipient tag. Recipient and sender copies wrap the same canonical revision ID independently. Version 1 has exactly the JSON fields `v`, `targetId`, `previousRevisionId`, and `text`. `v` is `1`. The inner tags are `p` for the original recipient and `e` for the original event ID. Both references are lowercase 32-byte hex event IDs. New text is trimmed and limited to 4,000 UTF-16 code units, and the encoded payload is limited to 24,576 characters.
+
+The inbox verifies both signatures, checks that the Rumor hashes to its event ID, and matches the Rumor author to the Seal signer. Before storage it checks the block list and the current incoming message policy. SQLite requires an accepted, live ordinary text target with the same authenticated author and participants. A request cannot grant access through an edit. The existing catch-up after request acceptance can recover edits that the client skipped. A tombstone rejects delayed edits to a deleted original.
+
+`targetId` stays the same for the lifetime of a message. A first edit uses that ID as its predecessor. Subsequent edits name the canonical edit ID they replace. The authenticated Rumor timestamp must be at least the predecessor's timestamp. Equal timestamps are valid. Missing originals or predecessors can leave verified edits in `pending_message_edits` for up to 30 days, with at most 64 per peer and 1,024 across the account. Reconciliation walks descendants when their predecessor arrives. Records past the time and capacity limits depend on a later relay replay. A client reports incomplete history when it knows about an unresolved revision.
+
+`message_revisions` stores the original and each connected edit as immutable full text snapshots. An edit's event ID deduplicates independent wraps and relay replays. Concurrent branches survive. Greatest chain depth wins, followed by greatest authenticated timestamp and lexicographically greatest event ID. The history sheet lists snapshots in timestamp order, placing parents ahead of children within the same second, and marks the visible revision as Latest. A transaction records the snapshots and writes the winning body, `revisionId`, and `editedAt` to `messages`. Local deletion removes the message's revisions, pending edits, and edit outbox in the tombstone transaction. Identity replacement also clears unresolved edits without a message row.
+
+Chat Kit opens its built-in Edit action and restores the stashed text draft on cancellation or successful enqueue. The installed patch lets failed enqueue attempts keep the edit open and preserves the existing reply draft. The protected runtime accepts edits only for the local author's sent or synchronized ordinary text with a canonical event ID. It keeps one unfinished recipient publication per message and treats unchanged text as a no-op. `message_edit_outbox` keeps the canonical Rumor and failure state across restart. Recipient acknowledgment commits the revision and advances the outbox to sender-copy publication. A failed sender copy retains the committed revision and retries independently. Retry rewraps the stored Rumor with the same revision ID.
+
+The original local and Nostr IDs, `sentAt`, and Chat Kit `createdAt` remain the keys for ordering, pagination, replies, reactions, and pins. Edits leave unread state and conversation activity unchanged. ChatList reads the latest body from the same row. Chat Kit's timestamp renders `editedAt` with a tappable Edited label. The Glass Sheet shows stored snapshots as read-only Chat Kit bubbles and refreshes on the conversation repository's change signal.
+
+The existing SQLite body-change trigger clears old translation results in the edit transaction. The visible-message translation worker uses the updated body and the saved preferences. Link previews resolve the first eligible URL from the winning body and revalidate active work against SQLite. History bubbles schedule no previews or translation, and the normal chat retains Off, On Demand, and Always behavior.
 
 ### Initial messaging features
 

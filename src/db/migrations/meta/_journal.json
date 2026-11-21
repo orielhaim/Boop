@@ -99,6 +99,13 @@
       "when": 1795288277151,
       "tag": "0013_lumpy_captain_universe",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795291320784,
+      "tag": "0014_rich_karma",
+      "breakpoints": true
     }
   ]
 }

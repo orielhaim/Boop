@@ -214,6 +214,7 @@ async function testOpenLater(
 async function runScenario(tlsDirectory: string) {
   const events = new Map<string, Event>();
   let refuseMessages = false;
+  let refuseRecipient: string | undefined;
   const sockets = new Set<Bun.ServerWebSocket<RelayConnection>>();
   const relay = Bun.serve<RelayConnection>({
     hostname: "127.0.0.1",
@@ -288,7 +289,15 @@ async function runScenario(tlsDirectory: string) {
             socket.send(encode(["OK", event.id, true, ""]));
             return;
           }
-          if (refuseMessages && event.kind === 1059) {
+          if (
+            event.kind === 1059 &&
+            (refuseMessages ||
+              (refuseRecipient &&
+                !event.tags.some(([tag]) => tag === "expiration") &&
+                event.tags.some(
+                  ([tag, key]) => tag === "p" && key === refuseRecipient,
+                )))
+          ) {
             socket.send(
               encode(["OK", event.id, false, "blocked: test write refusal"]),
             );
@@ -408,6 +417,70 @@ async function runScenario(tlsDirectory: string) {
     }
     if (alice.chat.conversation(bob.key)?.unread !== 1)
       throw new Error("Incorrect unread count");
+
+    if (!original.eventId) throw new Error("The original needs a canonical ID");
+    alice.service.setUnlockActive(true);
+    alice.service.editMessage(bob.key, outgoing, original.eventId, ` ${text} `);
+    if (alice.chat.message(bob.key, outgoing)?.editStatus)
+      throw new Error("Unchanged text queued an edit");
+    const revisedText = "Updated message\nהודעה ערוכה";
+    refuseRecipient = bob.key;
+    alice.service.editMessage(bob.key, outgoing, original.eventId, revisedText);
+    await wait(
+      "failed edit publication",
+      () => alice.chat.message(bob.key, outgoing)?.editStatus === "failed",
+    );
+    const failed = alice.chat.message(bob.key, outgoing);
+    const failure = alice.sqlite
+      .query<{ revision_id: string }, []>(
+        "SELECT revision_id FROM message_edit_outbox WHERE status = 'failed'",
+      )
+      .get();
+    if (!failure || failed?.body !== text)
+      throw new Error(
+        "Failed edit changed the original or lost its revision ID",
+      );
+
+    refuseRecipient = alice.key;
+    alice.service.retryEdit(bob.key, outgoing);
+    await wait(
+      "edit received and sender copy independently failed",
+      () =>
+        bob.chat.message(alice.key, original.id)?.body === revisedText &&
+        alice.chat.message(bob.key, outgoing)?.editStatus === "copy-failed",
+    );
+    const amended = bob.chat.message(alice.key, original.id);
+    if (
+      amended?.revisionId !== failure.revision_id ||
+      amended.sentAt !== original.sentAt ||
+      bob.chat.history(alice.key).messages.length !== 2 ||
+      bob.chat.conversation(alice.key)?.unread !== 1
+    )
+      throw new Error(
+        "An edit changed message identity, position, or unread count",
+      );
+    refuseRecipient = undefined;
+    alice.service.retryEdit(bob.key, outgoing);
+    await wait(
+      "edit sender-copy retry",
+      () => alice.chat.message(bob.key, outgoing)?.editStatus === undefined,
+    );
+    const seen = new Set<string>();
+    for (const wrapped of events.values()) {
+      if (wrapped.kind !== 1059) continue;
+      for (const identity of [alice, bob]) {
+        const opened = await unwrapPrivateEvent(wrapped, identity.signer);
+        if (opened?.type === "edit" && opened.id === failure.revision_id)
+          seen.add(identity.key);
+      }
+    }
+    if (
+      seen.size !== 2 ||
+      alice.chat.revisions(bob.key, outgoing)?.versions.length !== 2
+    )
+      throw new Error(
+        "Sender copy did not preserve the canonical revision or duplicated history",
+      );
 
     const callSignals: CallSignal[] = [];
     bob.service.setChatsEnabled(false);
@@ -642,7 +715,7 @@ async function runScenario(tlsDirectory: string) {
       await testOpenLater(alice, bob, url, events);
 
     console.log(
-      "TLS relay verified encrypted messaging, call signaling with chats disabled, chat pause and catch-up, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, reconnect, and stable retries.",
+      "TLS relay verified encrypted messaging and edits, call signaling with chats disabled, chat pause and catch-up, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, reconnect, and stable recipient and sender-copy retries.",
     );
   } finally {
     alice.service.stop();

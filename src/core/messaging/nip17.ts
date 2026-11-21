@@ -30,15 +30,29 @@ import {
 
 export const messageKind = 14;
 export const reactionKind = 7;
+export const messageEditKind = 24882;
 export const giftWrapKind = 1059;
 export const inboxListKind = 10050;
 export const callReplyRelayTag = "boop:reply-relay";
 export const maxMessageLength = 4_000;
 const maxEnvelopeLength = 90_000;
-const eventId = z.string().regex(/^[0-9a-f]{64}$/);
+export const eventIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+const normalizedEditText = z
+  .string()
+  .min(1)
+  .max(maxMessageLength)
+  .refine((text) => text === text.trim());
+export const messageEditText = z.string().trim().pipe(normalizedEditText);
+const editPayload = z.strictObject({
+  v: z.literal(1),
+  targetId: eventIdSchema,
+  previousRevisionId: eventIdSchema,
+  text: normalizedEditText,
+});
+const maxEditPayload = 24_576;
 const event = z.object({
-  id: eventId,
-  pubkey: eventId,
+  id: eventIdSchema,
+  pubkey: eventIdSchema,
   kind: z.number().int().nonnegative(),
   created_at: z.number().int().nonnegative(),
   tags: z.array(z.array(z.string().max(2_048)).max(8)).max(64),
@@ -51,6 +65,7 @@ const rumorSchema = event.extend({
     z.literal(fileMessageKind),
     z.literal(timeLockKind),
     z.literal(reactionKind),
+    z.literal(messageEditKind),
     z.literal(callSignalKind),
   ]),
   sig: z.undefined().optional(),
@@ -75,6 +90,7 @@ export type PrivateEvent = {
       replyTo: string | null;
     }
   | { type: "reaction"; emoji: string; targetEventId: string }
+  | { type: "edit"; edit: z.infer<typeof editPayload> }
   | { type: "call"; signal: CallSignal; replyRelays: string[] }
 );
 
@@ -159,6 +175,7 @@ export async function unwrapPrivateEvent(
 }
 
 function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
+  if (rumor.kind === messageEditKind) return parseEditRumor(rumor, myKey);
   const participants = new Set(
     rumor.tags.filter(([key]) => key === "p").map((tag) => tag[1]),
   );
@@ -169,7 +186,7 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
   if (!peerKey || !publicKeySchema.safeParse(peerKey).success) return null;
 
   const target = rumor.tags.findLast(
-    ([tag, id]) => tag === "e" && eventId.safeParse(id).success,
+    ([tag, id]) => tag === "e" && eventIdSchema.safeParse(id).success,
   )?.[1];
   const base = {
     id: rumor.id,
@@ -224,6 +241,52 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     body: rumor.content,
     replyTo: target ?? null,
   };
+}
+
+export function parseEditRumor(
+  rumor: Rumor,
+  myKey: string,
+): Extract<PrivateEvent, { type: "edit" }> | null {
+  if (rumor.kind !== messageEditKind || rumor.content.length > maxEditPayload)
+    return null;
+  const [recipient, reference] = rumor.tags;
+  const recipientKey = recipient?.[1];
+  if (
+    rumor.tags.length !== 2 ||
+    recipient?.length !== 2 ||
+    recipient[0] !== "p" ||
+    !recipientKey ||
+    !publicKeySchema.safeParse(recipientKey).success ||
+    recipientKey === rumor.pubkey ||
+    (myKey !== recipientKey && myKey !== rumor.pubkey) ||
+    reference?.length !== 2 ||
+    reference[0] !== "e"
+  )
+    return null;
+  try {
+    const raw: unknown = JSON.parse(rumor.content);
+    const parsed = editPayload.safeParse(raw);
+    const sentAt = rumor.created_at * 1_000;
+    if (
+      !parsed.success ||
+      reference[1] !== parsed.data.targetId ||
+      rumor.id === parsed.data.targetId ||
+      rumor.id === parsed.data.previousRevisionId ||
+      sentAt > Date.now() + 5 * 60_000
+    )
+      return null;
+    return {
+      type: "edit",
+      edit: parsed.data,
+      id: rumor.id,
+      sentAt,
+      senderKey: rumor.pubkey,
+      recipientKey,
+      peerKey: myKey === rumor.pubkey ? recipientKey : rumor.pubkey,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function parseReaction(value: string): string | null {

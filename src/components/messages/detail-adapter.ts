@@ -7,6 +7,7 @@ import type {
 import type { MessageRecord } from "@/db/messaging";
 import type { AttachmentKind } from "@/core/media/protocol";
 import { locationFromText } from "@/core/messaging/location";
+import { eventIdSchema } from "@/core/messaging/nip17";
 import type { MediaLabel } from "./media-label";
 
 export interface DetailMessage extends IMessage {
@@ -20,6 +21,8 @@ export interface DetailMessage extends IMessage {
   timeLock?: true;
   voice?: MessageRecord["voice"];
   media?: MessageRecord["media"];
+  editableRevision?: string;
+  editStatus?: MessageRecord["editStatus"];
 }
 
 export type Participants = { self: User; peer: User };
@@ -89,6 +92,19 @@ export function toDetailMessage(
     timeLock: row.contentType === "timelock" ? true : undefined,
     user: author(row, participants),
     createdAt: row.sentAt,
+    isEdited: row.editedAt != null,
+    editedAt: row.editedAt ?? undefined,
+    editableRevision:
+      row.contentType === "text" &&
+      row.direction === "outgoing" &&
+      row.senderKey === String(participants.self._id) &&
+      row.recipientKey === String(participants.peer._id) &&
+      eventIdSchema.safeParse(row.eventId).success &&
+      row.deletedAt === null &&
+      (row.status === "sent" || row.status === "synced")
+        ? (row.revisionId ?? row.eventId ?? undefined)
+        : undefined,
+    editStatus: row.editStatus,
     unread: row.isUnread,
     isPinned: row.isPinned,
     failure: row.failure,
@@ -132,6 +148,9 @@ export function equalDetailMessage(a: DetailMessage, b: DetailMessage) {
     a.locked?.error === b.locked?.error &&
     a.user === b.user &&
     a.createdAt === b.createdAt &&
+    a.editedAt === b.editedAt &&
+    a.editableRevision === b.editableRevision &&
+    a.editStatus === b.editStatus &&
     a.unread === b.unread &&
     a.isPinned === b.isPinned &&
     a.failure === b.failure &&

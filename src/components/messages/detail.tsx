@@ -78,6 +78,7 @@ import { useBlockAction } from "@/components/ui/privacy-actions";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { firstPreviewUrl } from "@/core/messaging/link-previews";
+import { maxMessageLength } from "@/core/messaging/nip17";
 import {
   canShowGreeting,
   externalMessageUrl,
@@ -102,10 +103,12 @@ import { canRetryUnlock, LockedMessageBubble } from "./timelock-message";
 import { useMessageTranslations } from "./use-message-translations";
 import { MessageBubble } from "./message-bubble";
 import { PinnedBanner } from "./pinned-banner";
+import { EditHistory } from "./edit-history";
 
 const messageActions: MessageActionKey[] = [
   "reply",
   "copy",
+  "edit",
   "pin",
   "select",
   "delete",
@@ -354,8 +357,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     [canUseMedia],
   );
   useEffect(() => {
-    if (!mediaEnabled || pendingRequest || previewPolicy !== "always") return;
     previews.revalidate();
+    if (!mediaEnabled || pendingRequest || previewPolicy !== "always") return;
     const visible = new Set(visibleIds);
     for (const item of items) {
       if (
@@ -491,6 +494,40 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     },
     [canUseMedia, performFileAction, t],
   );
+  const [historySheet, setHistorySheet] = useState<{
+    id: string;
+    open: boolean;
+  }>();
+  const openEditHistory = useCallback((id: string) => {
+    Keyboard.dismiss();
+    setHistorySheet({ id, open: true });
+  }, []);
+  const closeEditHistory = useCallback(() => {
+    setHistorySheet((current) => current && { ...current, open: false });
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      const unsubscribe = lock.subscribe(() => {
+        const state = lock.getState();
+        if (state.locked || !state.active) closeEditHistory();
+      });
+      return () => {
+        unsubscribe();
+        closeEditHistory();
+      };
+    }, [lock, closeEditHistory]),
+  );
+  const retryEdit = useCallback(
+    (id: string) => {
+      try {
+        messaging.retryEdit(peerKey, id);
+      } catch {
+        setNotice(t("messages:editUnavailable"));
+      }
+    },
+    [messaging, peerKey, t],
+  );
+
   const renderTranslatedBubble = useCallback<
     NonNullable<ChatProps<DetailMessage>["renderBubble"]>
   >(
@@ -553,7 +590,12 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           ),
         });
       }
-      if (message?.originalText === undefined) {
+      if (
+        !message ||
+        (message.originalText === undefined &&
+          !message.isEdited &&
+          !message.editStatus)
+      ) {
         if (!message?.timeLock || reducedMotion) return renderBubble(props);
         return renderBubble({
           ...props,
@@ -565,37 +607,86 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         });
       }
       const original = message.text === message.originalText;
+      const translated = message.originalText !== undefined;
+      const editFailed =
+        message.editStatus === "failed" || message.editStatus === "copy-failed";
+      const metaColor =
+        message.direction === "outgoing" ? colors.outgoingInk : colors.accent;
       return renderBubble({
         ...props,
-        renderMessageText: original ? undefined : renderTranslatedText,
+        renderMessageText:
+          translated && !original ? renderTranslatedText : undefined,
         renderTime: (timeProps) => (
           <View
             style={[styles.translationMeta, rtl && styles.translationMetaRtl]}
           >
-            <Pressable
-              accessibilityRole="link"
-              hitSlop={6}
-              onPress={() => toggleOriginal(message._id)}
-            >
-              <Text
-                style={[
-                  styles.translationLink,
-                  {
-                    color:
-                      props.position === "right"
-                        ? colors.outgoingInk
-                        : colors.accent,
-                  },
-                ]}
+            {translated ? (
+              <Pressable
+                accessibilityRole="link"
+                hitSlop={6}
+                onPress={() => toggleOriginal(message._id)}
               >
-                {t(
-                  original
-                    ? "translation:showTranslation"
-                    : "translation:showOriginal",
-                )}
-              </Text>
-            </Pressable>
-            <Time {...timeProps} />
+                <Text
+                  style={[
+                    styles.translationLink,
+                    {
+                      color:
+                        props.position === "right"
+                          ? colors.outgoingInk
+                          : colors.accent,
+                    },
+                  ]}
+                >
+                  {t(
+                    original
+                      ? "translation:showTranslation"
+                      : "translation:showOriginal",
+                  )}
+                </Text>
+              </Pressable>
+            ) : null}
+            {message.editStatus ? (
+              <Pressable
+                accessibilityRole={editFailed ? "button" : undefined}
+                disabled={!editFailed}
+                accessibilityLabel={
+                  editFailed ? t("messages:editRetry") : undefined
+                }
+                onPress={() => retryEdit(message._id)}
+                hitSlop={8}
+              >
+                <Text
+                  style={[
+                    styles.editStatus,
+                    editFailed && styles.translationLink,
+                    { color: metaColor },
+                  ]}
+                  accessibilityLiveRegion="polite"
+                >
+                  {t(
+                    message.editStatus === "copy-failed"
+                      ? "messages:editCopyFailed"
+                      : message.editStatus === "failed"
+                        ? "messages:editFailed"
+                        : message.editStatus === "copy-pending"
+                          ? "messages:editCopyPending"
+                          : "messages:editPending",
+                  )}
+                </Text>
+              </Pressable>
+            ) : null}
+            {message.isEdited ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityHint={t("messages:editHistory")}
+                style={styles.editedTime}
+                onPress={() => openEditHistory(message._id)}
+              >
+                <Time {...timeProps} />
+              </Pressable>
+            ) : (
+              <Time {...timeProps} />
+            )}
           </View>
         ),
       });
@@ -614,6 +705,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       rtl,
       t,
       toggleOriginal,
+      openEditHistory,
+      retryEdit,
     ],
   );
   const [initialDraft] = useState(() => {
@@ -630,7 +723,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       return { text: "", quote: null };
     }
   });
-  const [draft, setDraft] = useState(initialDraft.text);
   const [quote, setQuote] = useState<ReplyMessage | null>(initialDraft.quote);
   const composition = useRef(initialDraft);
   const [sending, setSending] = useState(false);
@@ -759,7 +851,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     (value: string) => {
       if (sendBusy.current) return;
       composition.current = { ...composition.current, text: value };
-      setDraft(value);
       saveDraft(value, composition.current.quote);
       setNotice(undefined);
     },
@@ -795,7 +886,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         pendingDraft.current = null;
         clearInput();
         composition.current = { text: "", quote: null };
-        setDraft("");
         setQuote(null);
         setDetached(false);
       } catch (error) {
@@ -870,10 +960,40 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     ],
   );
 
-  // Keep the built-in button, and clear the controlled composer only after SQLite commits.
+  const onEditMessage = useCallback(
+    (message: DetailMessage, text: string) => {
+      if (sendBusy.current || !canUseMedia() || !message.editableRevision)
+        return false;
+      try {
+        messaging.editMessage(
+          peerKey,
+          message._id,
+          message.editableRevision,
+          text,
+        );
+        setNotice(undefined);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : undefined;
+        setNotice(
+          t(
+            code === "invalid-message"
+              ? "messages:invalidMessage"
+              : code === "edit-conflict"
+                ? "messages:editConflict"
+                : "messages:editUnavailable",
+          ),
+        );
+        return false;
+      }
+    },
+    [canUseMedia, messaging, peerKey, t],
+  );
+
+  // The stock composer owns draft restoration. Normal sends clear after the SQLite commit.
   const renderSend = useCallback(
-    (props: SendProps<DetailMessage>) => {
+    (props: SendProps<DetailMessage>, editing: boolean) => {
       const enabled = !sending && !openLater && Boolean(props.text?.trim());
+      const special = enabled && !editing;
       const clear = () => props.onSend?.([], true);
       const show = () => showMenu(clear);
       return (
@@ -885,13 +1005,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             sendButtonProps={{
               ...props.sendButtonProps,
               hitSlop: 6,
-              accessibilityLabel: t("messages:send"),
-              onLongPress: enabled ? show : undefined,
-              accessibilityActions: enabled
+              accessibilityLabel: t(
+                editing ? "messages:editSave" : "messages:send",
+              ),
+              onLongPress: special ? show : undefined,
+              accessibilityActions: special
                 ? [{ name: "special-send", label: t("messages:openLater") }]
                 : undefined,
               onAccessibilityAction: (event) => {
-                if (enabled && event.nativeEvent.actionName === "special-send")
+                if (special && event.nativeEvent.actionName === "special-send")
                   show();
               },
               accessibilityState: { disabled: !enabled, busy: sending },
@@ -900,7 +1022,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             onSend={(value) => {
               const message = Array.isArray(value) ? value[0] : value;
               if (enabled && message?.text) {
-                void sendText(message.text, clear);
+                if (editing) props.onSend?.({ text: message.text }, true);
+                else void sendText(message.text, clear);
               }
             }}
           >
@@ -928,11 +1051,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   );
 
   const renderComposer = useCallback(
-    (props: ComponentProps<typeof Composer>) => (
+    (props: ComponentProps<typeof Composer>, editing: boolean) => (
       <View style={[styles.composerControls, rtl && styles.rtlControls]}>
         <Composer {...props} />
         {props.text?.trim()
-          ? renderSend({ text: props.text, onSend: props.onSend })
+          ? renderSend({ text: props.text, onSend: props.onSend }, editing)
           : null}
       </View>
     ),
@@ -1318,12 +1441,18 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     (props: ComponentProps<typeof InputToolbar<DetailMessage>>) => (
       <InputToolbar
         {...props}
+        renderComposer={(composer) =>
+          renderComposer(composer, !!props.editMessage)
+        }
+        attachments={props.editMessage ? false : props.attachments}
+        audioRecording={props.editMessage ? false : props.audioRecording}
+        videoRecording={props.editMessage ? false : props.videoRecording}
         containerStyle={rtl ? styles.rtlToolbar : styles.toolbar}
         replyPreviewContainerStyle={rtl ? styles.rtlReplyPreview : undefined}
         replyPreviewTextStyle={autoText}
       />
     ),
-    [rtl],
+    [rtl, renderComposer],
   );
 
   const jumpToMessage = useCallback(
@@ -1609,10 +1738,18 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const actionsForMessage = useCallback(
     (message: DetailMessage, defaults: MessageMenuItem[]) => {
       const original = message.originalText;
-      const actions =
-        message.locked || message.voice
-          ? defaults.filter(({ key }) => key !== "copy")
-          : [...defaults];
+      const actions = defaults.filter(({ key }) => {
+        if (key === "copy" && (message.locked || message.voice)) return false;
+        if (key === "edit")
+          return (
+            canUseMedia() &&
+            !pendingRequest &&
+            !!message.editableRevision &&
+            message.editStatus !== "failed" &&
+            message.editStatus !== "pending"
+          );
+        return true;
+      });
       if (original !== undefined)
         actions.push(
           {
@@ -1754,6 +1891,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     [
       t,
       chat,
+      pendingRequest,
       locale,
       peerKey,
       refresh,
@@ -1820,7 +1958,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const textInputProps = useMemo(
     () => ({
       editable: !sending,
-      maxLength: 4000,
+      maxLength: maxMessageLength,
       style: autoText,
     }),
     [sending],
@@ -1980,7 +2118,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           loadEarlierMessagesProps={loadEarlierMessagesProps}
           listProps={listProps}
           initialText={initialDraft.text}
-          text={draft}
           onDraftChange={updateText}
           textInputProps={textInputProps}
           renderInputToolbar={
@@ -1992,7 +2129,6 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
                 )
               : renderToolbar
           }
-          renderComposer={renderComposer}
           renderSend={emptySendSlot}
           isMultiline
           emptyChatGreeting={waveGreeting}
@@ -2003,6 +2139,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           onDeleteMessage={deleteOne}
           onDeleteMessages={confirmDelete}
           onRetryMessage={retryMessage}
+          onEditMessage={onEditMessage}
           reactions={reactions}
           reply={reply}
           messageTextProps={messageTextProps}
@@ -2044,6 +2181,15 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           />
         ) : null}
       </View>
+      {historySheet && focused && activeUnlocked ? (
+        <EditHistory
+          id={historySheet.id}
+          peer={peerKey}
+          open={historySheet.open}
+          participants={participants}
+          onClose={closeEditHistory}
+        />
+      ) : null}
       {pickerSession > 0 ? (
         <OpenLaterSheet
           key={pickerSession}
@@ -2068,6 +2214,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
 }
 
 const styles = StyleSheet.create({
+  editStatus: { fontSize: 11 },
+  editedTime: { minHeight: 36, justifyContent: "center", paddingHorizontal: 4 },
   emptyList: { flexGrow: 1 },
   emptyGreeting: { flex: 1, justifyContent: "center" },
   translationMeta: {

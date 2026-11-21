@@ -34,6 +34,8 @@ const pending: MessageRecord = {
   senderKey: participants.self._id,
   recipientKey: participants.peer._id,
   status: "pending",
+  editedAt: null,
+  revisionId: null,
   failure: null,
   deletedAt: null,
   isUnread: false,

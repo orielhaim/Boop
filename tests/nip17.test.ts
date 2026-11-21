@@ -8,6 +8,7 @@ import { createHistoryLoader } from "../src/core/messaging/history";
 import {
   createRumor,
   giftWrapKind,
+  messageEditKind,
   messageKind,
   parseReaction,
   reactionKind,
@@ -116,10 +117,27 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
 
   try {
     const initial = await createWrap("Historical");
+    const edit = createRumor({
+      kind: messageEditKind,
+      pubkey: alice.pubkey,
+      created_at: initial.rumor.created_at,
+      tags: [
+        ["p", bob.pubkey],
+        ["e", initial.rumor.id],
+      ],
+      content: JSON.stringify({
+        v: 1,
+        targetId: initial.rumor.id,
+        previousRevisionId: initial.rumor.id,
+        text: "Historical, edited",
+      }),
+    });
+    envelopes.push(await wrapRumor(ndk, edit, bob.pubkey, alice));
     runtime.start(config);
     await until(() => privacy.pendingCount() === 1 && state.size > 0);
     expect(feed.getUnreadCount()).toBe(0);
     expect(repo.conversation(alice.pubkey)).toBeUndefined();
+    expect(db.select().from(schema.pendingMessageEdits).all()).toEqual([]);
     const extra = await createWrap("Second message before approval");
     expect(privacy.accept(alice.pubkey)).toBe(true);
     await until(() => feed.getUnreadCount() === 1 && state.size > 0);
@@ -127,7 +145,17 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
       initial.rumor.id,
     );
     runtime.catchupRequest(alice.pubkey);
-    await until(() => feed.getUnreadCount() === 2);
+    await until(
+      () =>
+        feed.getUnreadCount() === 2 &&
+        repo.message(alice.pubkey, initial.rumor.id)?.body ===
+          "Historical, edited",
+    );
+    expect(
+      repo
+        .revisions(alice.pubkey, initial.rumor.id)
+        ?.versions.map(({ body }) => body),
+    ).toEqual(["Historical", "Historical, edited"]);
     expect(repo.message(alice.pubkey, extra.rumor.id)?.body).toBe(
       "Second message before approval",
     );

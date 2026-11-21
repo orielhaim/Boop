@@ -15,6 +15,7 @@ import {
   attachmentCache,
   linkPreviewCache,
   messages,
+  pendingMessageEdits,
   settings,
 } from "@/db/schema";
 import { deriveIdentity, loadIdentity, parsePublicKey } from "./keys";
@@ -108,6 +109,7 @@ async function recoverSwitch<TResult>(
         db.transaction((tx) => {
           tx.delete(messageReactions).run();
           tx.delete(linkPreviewCache).run();
+          tx.delete(pendingMessageEdits).run();
           tx.delete(messages).run();
           tx.delete(attachmentCache).run();
           tx.delete(conversations).run();

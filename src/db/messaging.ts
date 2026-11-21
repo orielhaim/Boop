@@ -24,6 +24,11 @@ import {
   type UnlockFailure,
 } from "@/core/messaging/special-messages/timelock";
 import * as schema from "./schema";
+import {
+  reconcileOriginal,
+  storeVerifiedEdit,
+  type VerifiedEdit,
+} from "./message-edits";
 import { translationEngine } from "./translations";
 
 const {
@@ -37,6 +42,9 @@ const {
   blockedIdentities,
   communicationGrants,
   messageRequests,
+  messageRevisions,
+  pendingMessageEdits,
+  messageEditOutbox,
 } = schema;
 const notBlocked = (
   key: typeof messages.peerKey | typeof conversations.peerKey,
@@ -64,6 +72,7 @@ export type MessageRecord = MessageRow & {
   locked?: LockedPresentation;
   voice?: VoiceMetadata & { listened: boolean };
   media?: AttachmentMetadata & { size?: number; listened: boolean };
+  editStatus?: typeof messageEditOutbox.$inferSelect.status;
 };
 type PendingUnlock = {
   messageId: string;
@@ -300,6 +309,25 @@ export function createMessagingRepository<TResult>(
         },
       ]),
     );
+    const outgoingTextIds = rows
+      .filter(
+        (row) => row.direction === "outgoing" && row.contentType === "text",
+      )
+      .map(({ id }) => id);
+    const edits = outgoingTextIds.length
+      ? db
+          .select({
+            id: messageEditOutbox.messageId,
+            status: messageEditOutbox.status,
+          })
+          .from(messageEditOutbox)
+          .where(inArray(messageEditOutbox.messageId, outgoingTextIds))
+          .orderBy(
+            sql`CASE ${messageEditOutbox.status} WHEN 'pending' THEN 4 WHEN 'failed' THEN 3 WHEN 'copy-failed' THEN 2 ELSE 1 END`,
+          )
+          .all()
+      : [];
+    const editStatuses = new Map(edits.map(({ id, status }) => [id, status]));
     return rows.map((row) => {
       const media = mediaById.get(row.id);
       const checkedVoice =
@@ -314,6 +342,7 @@ export function createMessagingRepository<TResult>(
         media,
         locked: locks.get(row.id),
         ...row,
+        editStatus: editStatuses.get(row.id),
         isPinned: pins.has(row.id),
         reactions: grouped.get(row.eventId ?? row.id) ?? [],
       };
@@ -358,7 +387,7 @@ export function createMessagingRepository<TResult>(
         isUnread,
       })
       .onConflictDoNothing()
-      .returning({ id: messages.id })
+      .returning()
       .get();
     // A duplicate sender copy says nothing about acceptance by the recipient's relays.
     if (!stored) return false;
@@ -383,6 +412,7 @@ export function createMessagingRepository<TResult>(
         })
         .run();
     }
+    reconcileOriginal(tx, stored);
     tx.update(conversations)
       .set({
         updatedAt: sql`max(${conversations.updatedAt}, ${input.sentAt})`,
@@ -423,6 +453,179 @@ export function createMessagingRepository<TResult>(
     );
 
   return {
+    receiveEdit(event: VerifiedEdit) {
+      const result = db.transaction((tx) => storeVerifiedEdit(tx, event));
+      if (result === "applied" || result === "unresolved")
+        changed({ history: [event.peerKey], summaries: result === "applied" });
+      return result;
+    },
+
+    revisions(peerKey: string, id: string) {
+      const original = messageRow(peerKey, id);
+      if (!original?.revisionId || !original.eventId) return null;
+      const versions = db
+        .select()
+        .from(messageRevisions)
+        .where(eq(messageRevisions.messageId, original.id))
+        .orderBy(
+          asc(messageRevisions.timestamp),
+          asc(messageRevisions.depth),
+          asc(messageRevisions.revisionId),
+        )
+        .all();
+      const unresolved = db
+        .select({ id: pendingMessageEdits.revisionId })
+        .from(pendingMessageEdits)
+        .where(
+          and(
+            eq(pendingMessageEdits.targetId, original.eventId),
+            eq(pendingMessageEdits.peerKey, peerKey),
+            eq(pendingMessageEdits.senderKey, original.senderKey ?? ""),
+            eq(pendingMessageEdits.recipientKey, original.recipientKey ?? ""),
+            sql`${pendingMessageEdits.expiresAt} > ${Date.now()}`,
+          ),
+        )
+        .get();
+      return {
+        versions,
+        current: original.revisionId,
+        direction: original.direction,
+        incomplete:
+          !!unresolved || versions[0]?.revisionId !== original.eventId,
+      };
+    },
+
+    enqueueEdit(messageId: string, event: VerifiedEdit, rumorJson: string) {
+      const inserted = db.transaction((tx) => {
+        const original = messageRow(event.peerKey, messageId);
+        if (
+          !original ||
+          original.eventId !== event.edit.targetId ||
+          original.direction !== "outgoing" ||
+          !["sent", "synced"].includes(original.status) ||
+          original.contentType !== "text" ||
+          original.senderKey !== event.senderKey ||
+          original.recipientKey !== event.recipientKey ||
+          (original.revisionId ?? original.eventId) !==
+            event.edit.previousRevisionId ||
+          original.body.trim() === event.edit.text
+        )
+          return false;
+        return !!tx
+          .insert(messageEditOutbox)
+          .values({
+            messageId,
+            revisionId: event.id,
+            rumorJson,
+            status: "pending",
+          })
+          .onConflictDoNothing()
+          .returning({ id: messageEditOutbox.revisionId })
+          .get();
+      });
+      if (inserted) changed({ history: [event.peerKey] });
+      return inserted;
+    },
+
+    editOutbox(copies: boolean) {
+      return db
+        .select({
+          ...getTableColumns(messageEditOutbox),
+          peerKey: messages.peerKey,
+        })
+        .from(messageEditOutbox)
+        .innerJoin(messages, eq(messages.id, messageEditOutbox.messageId))
+        .where(
+          and(
+            isNull(messages.deletedAt),
+            copies
+              ? inArray(messageEditOutbox.status, [
+                  "copy-pending",
+                  "copy-failed",
+                ])
+              : eq(messageEditOutbox.status, "pending"),
+          ),
+        )
+        .orderBy(asc(messageEditOutbox.revisionId))
+        .all();
+    },
+
+    finishEditDelivery(event: VerifiedEdit) {
+      const committed = db.transaction((tx) => {
+        const pending = tx
+          .select({ id: messageEditOutbox.revisionId })
+          .from(messageEditOutbox)
+          .where(
+            and(
+              eq(messageEditOutbox.revisionId, event.id),
+              eq(messageEditOutbox.status, "pending"),
+            ),
+          )
+          .get();
+        if (!pending) return false;
+        const result = storeVerifiedEdit(tx, event);
+        if (result !== "applied" && result !== "duplicate") return false;
+        tx.update(messageEditOutbox)
+          .set({ status: "copy-pending", failure: null })
+          .where(eq(messageEditOutbox.revisionId, event.id))
+          .run();
+        return true;
+      });
+      if (committed) changed({ history: [event.peerKey], summaries: true });
+      return committed;
+    },
+
+    finishEditCopy(peerKey: string, revisionId: string, success: boolean) {
+      const filter = and(
+        eq(messageEditOutbox.revisionId, revisionId),
+        inArray(messageEditOutbox.status, ["copy-pending", "copy-failed"]),
+      );
+      const updated = success
+        ? db
+            .delete(messageEditOutbox)
+            .where(filter)
+            .returning({ id: messageEditOutbox.revisionId })
+            .get()
+        : db
+            .update(messageEditOutbox)
+            .set({ status: "copy-failed", failure: "relay-rejected" })
+            .where(filter)
+            .returning({ id: messageEditOutbox.revisionId })
+            .get();
+      if (updated) changed({ history: [peerKey] });
+    },
+
+    failEdit(peerKey: string, revisionId: string, failure: string) {
+      const updated = db
+        .update(messageEditOutbox)
+        .set({ status: "failed", failure })
+        .where(
+          and(
+            eq(messageEditOutbox.revisionId, revisionId),
+            eq(messageEditOutbox.status, "pending"),
+          ),
+        )
+        .returning({ id: messageEditOutbox.revisionId })
+        .get();
+      if (updated) changed({ history: [peerKey] });
+    },
+
+    retryEdit(peerKey: string, id: string) {
+      if (!messageRow(peerKey, id)) return;
+      db.update(messageEditOutbox)
+        .set({
+          status: sql`CASE ${messageEditOutbox.status} WHEN 'failed' THEN 'pending' ELSE 'copy-pending' END`,
+          failure: null,
+        })
+        .where(
+          and(
+            eq(messageEditOutbox.messageId, id),
+            inArray(messageEditOutbox.status, ["failed", "copy-failed"]),
+          ),
+        )
+        .run();
+      changed({ history: [peerKey] });
+    },
     nextUnlock() {
       return (
         db
@@ -955,6 +1158,9 @@ export function createMessagingRepository<TResult>(
       const peers = [...new Set(keys)];
       const deletedAt = Date.now();
       db.transaction((tx) => {
+        tx.delete(pendingMessageEdits)
+          .where(inArray(pendingMessageEdits.peerKey, peers))
+          .run();
         tx.delete(messagePins).where(inArray(messagePins.peerKey, peers)).run();
         tx.delete(messageTimeLocks)
           .where(

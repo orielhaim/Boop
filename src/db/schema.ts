@@ -3,6 +3,7 @@ import {
   index,
   integer,
   primaryKey,
+  uniqueIndex,
   sqliteTable,
   text,
 } from "drizzle-orm/sqlite-core";
@@ -56,6 +57,8 @@ export const messages = sqliteTable(
     direction: text({ enum: ["incoming", "outgoing"] }).notNull(),
     body: text().notNull(),
     sentAt: integer("sent_at").notNull(),
+    editedAt: integer("edited_at"),
+    revisionId: text("revision_id"),
     replyTo: text("reply_to"),
     senderKey: text("sender_key"),
     recipientKey: text("recipient_key"),
@@ -84,6 +87,73 @@ export const messages = sqliteTable(
     index("messages_outbox")
       .on(table.sentAt, table.id)
       .where(sql`${table.status} = 'pending' AND ${table.deletedAt} IS NULL`),
+  ],
+);
+
+export const messageRevisions = sqliteTable(
+  "message_revisions",
+  {
+    revisionId: text("revision_id").primaryKey().notNull(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    previousRevisionId: text("previous_revision_id"),
+    body: text().notNull(),
+    timestamp: integer().notNull(),
+    depth: integer().notNull(),
+  },
+  (table) => [
+    index("message_revisions_history").on(
+      table.messageId,
+      table.depth,
+      table.timestamp,
+      table.revisionId,
+    ),
+  ],
+);
+
+export const pendingMessageEdits = sqliteTable(
+  "pending_message_edits",
+  {
+    revisionId: text("revision_id").primaryKey().notNull(),
+    targetId: text("target_id").notNull(),
+    previousRevisionId: text("previous_revision_id").notNull(),
+    peerKey: text("peer_key").notNull(),
+    senderKey: text("sender_key").notNull(),
+    recipientKey: text("recipient_key").notNull(),
+    body: text().notNull(),
+    timestamp: integer().notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [
+    index("pending_message_edits_parent").on(
+      table.targetId,
+      table.previousRevisionId,
+    ),
+    index("pending_message_edits_peer").on(table.peerKey),
+    index("pending_message_edits_expiry").on(table.expiresAt),
+  ],
+);
+
+export const messageEditOutbox = sqliteTable(
+  "message_edit_outbox",
+  {
+    revisionId: text("revision_id").primaryKey().notNull(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    rumorJson: text("rumor_json").notNull(),
+    status: text({
+      enum: ["pending", "failed", "copy-pending", "copy-failed"],
+    }).notNull(),
+    failure: text(),
+  },
+  (table) => [
+    index("message_edit_outbox_message").on(table.messageId),
+    index("message_edit_outbox_status").on(table.status),
+    uniqueIndex("message_edit_outbox_recipient")
+      .on(table.messageId)
+      .where(sql`${table.status} IN ('pending', 'failed')`),
   ],
 );
 

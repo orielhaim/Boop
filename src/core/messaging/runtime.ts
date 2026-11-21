@@ -32,8 +32,11 @@ import {
   createRumor,
   inboxListKind,
   maxMessageLength,
+  messageEditKind,
+  messageEditText,
   messageKind,
   parseReaction,
+  parseEditRumor,
   parseRumor,
   type Rumor,
   reactionKind,
@@ -226,6 +229,14 @@ export function createMessagingService({
           });
         }
         for (const listener of callListeners) listener(signal);
+      } else if (event.type === "edit") {
+        if (
+          event.senderKey !== publicKey &&
+          privacy &&
+          privacy.messagePermission(event.peerKey) !== "allow"
+        )
+          return;
+        chat.receiveEdit(event);
       } else if (event.type === "reaction") {
         if (
           event.senderKey !== publicKey &&
@@ -849,6 +860,63 @@ export function createMessagingService({
     }
   }
 
+  async function flushEdits(active: () => boolean) {
+    for (const copies of [false, true]) {
+      for (const item of chat.editOutbox(copies)) {
+        if (!active() || !connectedRelays().length) return;
+        const targetIsLive = () =>
+          active() && Boolean(chat.message(item.peerKey, item.messageId));
+        const canCopy = () =>
+          targetIsLive() && !privacy?.isBlocked(item.peerKey);
+        if (!targetIsLive() || (copies && !canCopy())) continue;
+        try {
+          const rumor = parseRumor(JSON.parse(item.rumorJson));
+          const edit = rumor && parseEditRumor(rumor, publicKey);
+          if (
+            !rumor ||
+            !edit ||
+            edit.senderKey !== publicKey ||
+            edit.id !== item.revisionId ||
+            edit.peerKey !== item.peerKey
+          ) {
+            if (copies)
+              chat.finishEditCopy(item.peerKey, item.revisionId, false);
+            else
+              chat.failEdit(item.peerKey, item.revisionId, "invalid-message");
+            continue;
+          }
+          if (copies) {
+            const success = await storeSenderCopy(rumor, canCopy);
+            if (canCopy() && (success || connectedRelays().length))
+              chat.finishEditCopy(item.peerKey, item.revisionId, success);
+          } else {
+            const result = await publishRumor(
+              rumor,
+              item.peerKey,
+              targetIsLive,
+            );
+            if (!targetIsLive()) continue;
+            if (result === "accepted") {
+              if (!chat.finishEditDelivery(edit))
+                chat.failEdit(
+                  item.peerKey,
+                  item.revisionId,
+                  privacy?.isBlocked(item.peerKey)
+                    ? "blocked"
+                    : "invalid-message",
+                );
+            } else if (result !== "interrupted")
+              chat.failEdit(item.peerKey, item.revisionId, result);
+          }
+        } catch {
+          if (!targetIsLive()) continue;
+          if (copies) chat.finishEditCopy(item.peerKey, item.revisionId, false);
+          else chat.failEdit(item.peerKey, item.revisionId, "relay-rejected");
+        }
+      }
+    }
+  }
+
   async function flush() {
     if (!chatsEnabled || !connectedRelays().length) return;
     if (running) {
@@ -997,6 +1065,12 @@ export function createMessagingService({
           }
         }
       }
+      if (!interrupted && unlockActive) {
+        const activation = unlockGeneration;
+        await flushEdits(
+          () => active() && unlockActive && activation === unlockGeneration,
+        );
+      }
     } catch {
       // A persistence failure leaves rows pending for the next flush.
     } finally {
@@ -1100,6 +1174,60 @@ export function createMessagingService({
     if (status === "offline" && configured.length) startAgain();
     void flush();
     return id;
+  }
+
+  function editMessage(
+    peerKey: string,
+    id: string,
+    baseRevisionId: string,
+    input: string,
+  ) {
+    if (!chatsEnabled || !unlockActive || privacy?.isBlocked(peerKey))
+      throw new Error("edit-unavailable");
+    const text = messageEditText.safeParse(input);
+    if (!text.success) throw new Error("invalid-message");
+    const target = chat.message(peerKey, id);
+    if (
+      !target?.eventId ||
+      target.direction !== "outgoing" ||
+      target.senderKey !== publicKey ||
+      target.recipientKey !== peerKey ||
+      target.contentType !== "text"
+    )
+      throw new Error("edit-unavailable");
+    const parent = target.revisionId ?? target.eventId;
+    if (target.body.trim() === text.data) return;
+    if (parent !== baseRevisionId) throw new Error("edit-conflict");
+    const rumor = createRumor({
+      kind: messageEditKind,
+      pubkey: publicKey,
+      created_at: Math.floor(
+        Math.max(Date.now(), target.editedAt ?? target.sentAt) / 1_000,
+      ),
+      tags: [
+        ["p", peerKey],
+        ["e", target.eventId],
+      ],
+      content: JSON.stringify({
+        v: 1,
+        targetId: target.eventId,
+        previousRevisionId: parent,
+        text: text.data,
+      }),
+    });
+    const edit = parseEditRumor(rumor, publicKey);
+    if (!edit || !chat.enqueueEdit(target.id, edit, JSON.stringify(rumor)))
+      throw new Error("edit-unavailable");
+    if (status === "offline" && configured.length) startAgain();
+    void flush();
+  }
+
+  function retryEdit(peerKey: string, id: string) {
+    if (!chatsEnabled || !unlockActive || privacy?.isBlocked(peerKey))
+      throw new Error("edit-unavailable");
+    chat.retryEdit(peerKey, id);
+    if (status === "offline" && configured.length) startAgain();
+    void flush();
   }
 
   async function sendAttachment({
@@ -1376,6 +1504,8 @@ export function createMessagingService({
     getInboxSync: () => inboxSync,
     getHistoryReady,
     send,
+    editMessage,
+    retryEdit,
     sendAttachment,
     cancelAttachment,
     retry,

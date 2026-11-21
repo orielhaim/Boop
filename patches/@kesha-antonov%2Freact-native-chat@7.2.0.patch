@@ -1061,3 +1061,85 @@ index c7958761ee01a492015656d21e4ab7e818450d46..cfd791ca06be145fefe44db2fce652e0
 +export { MediaViewerPage } from './components/mediaViewer/MediaViewerPage';
 +export { VideoTransferOverlay } from './MessageVideo/VideoTransferOverlay';
 +export { useMediaTransfer } from './components/mediaTransfer';
+diff --git a/lib/Chat/useComposerState.js b/lib/Chat/useComposerState.js
+--- a/lib/Chat/useComposerState.js
++++ b/lib/Chat/useComposerState.js
+@@ -166,7 +166,6 @@
+   let t10;
+   if ($[27] !== editStore || $[28] !== focusComposer || $[29] !== textStore) {
+     t10 = message_1 => {
+-      clearReplyRef.current();
+       if (!isEditingRef.current) {
+         stashedDraftRef.current = textStore.get();
+       }
+diff --git a/lib/Chat/useComposerHandlers.js b/lib/Chat/useComposerHandlers.js
+--- a/lib/Chat/useComposerHandlers.js
++++ b/lib/Chat/useComposerHandlers.js
+@@ -136,13 +136,13 @@
+       }
+       const [edit] = messages;
+       const editingMessage = editStore.get();
+-      if (editingMessage && messages.length === 1 && typeof edit?.text === "string" && !edit.audio && !edit.video) {
+-        if (shouldResetInputToolbar === true) {
+-          resetInputToolbar();
+-        }
++      if (editingMessage) {
++        if (messages.length !== 1 || typeof edit?.text !== "string" || edit.audio || edit.video || edit.image || edit.file || edit.location)
++          return;
++        if (actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text) === false)
++          return;
+         editStore.set(null);
+         restoreDraft();
+-        actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text);
+         return;
+       }
+       const replyMessage = getReplyMessage();
+diff --git a/lib/Time.js b/lib/Time.js
+--- a/lib/Time.js
++++ b/lib/Time.js
+@@ -30,6 +30,6 @@
+  * style.
+  */
+ export function formatMessageTime(message, locale, timeFormat, editedLabel) {
+-  const time = formatTimeCached(message.createdAt, locale, timeFormat);
+-  return isMessageEdited(message) ? `${editedLabel} ${time}` : time;
++  const time = formatTimeCached(message.editedAt ?? message.createdAt, locale, timeFormat);
++  return isMessageEdited(message) ? `${editedLabel} · ${time}` : time;
+ }
+diff --git a/lib/Chat/types.d.ts b/lib/Chat/types.d.ts
+--- a/lib/Chat/types.d.ts
++++ b/lib/Chat/types.d.ts
+@@ -228,7 +228,8 @@
+      * composer under an "Editing" banner; sending calls this with the message and the new text
+      * instead of `onSend`.
+      */
+-    onEditMessage?: (message: TMessage, text: string) => void;
++    /** Return false to retain the active edit and its text. */
++    onEditMessage?: (message: TMessage, text: string) => void | false;
+     /** Turns on the "Delete" action. */
+     onDeleteMessage?: (message: TMessage) => void;
+     /**
+diff --git a/lib/Chat/useComposerHandlers.d.ts b/lib/Chat/useComposerHandlers.d.ts
+--- a/lib/Chat/useComposerHandlers.d.ts
++++ b/lib/Chat/useComposerHandlers.d.ts
+@@ -13,7 +13,7 @@
+     textInputRef: RefObject<React.ComponentRef<typeof TextInput>>;
+     messagesContainerRef: RefObject<AnimatedList>;
+     actionCallbacksRef: RefObject<{
+-        onEditMessage?: (message: TMessage, text: string) => void;
++        onEditMessage?: (message: TMessage, text: string) => void | false;
+     }>;
+     textStore: Store<string>;
+     replyStore: Store<ReplyMessage | null>;
+diff --git a/lib/Chat/useMessageActions.d.ts b/lib/Chat/useMessageActions.d.ts
+--- a/lib/Chat/useMessageActions.d.ts
++++ b/lib/Chat/useMessageActions.d.ts
+@@ -22,7 +22,7 @@
+ }): {
+     resolvedMessageActions: MessageMenuItem[] | ((message: TMessage) => MessageMenuItem[]) | undefined;
+     actionCallbacksRef: import("react").RefObject<{
+-        onEditMessage: ((message: TMessage, text: string) => void) | undefined;
++        onEditMessage: ((message: TMessage, text: string) => void | false) | undefined;
+         onDeleteMessage: ((message: TMessage) => void) | undefined;
+         onForwardMessage: ((message: TMessage) => void) | undefined;
+         onPinMessage: ((message: TMessage) => void) | undefined;
