@@ -138,6 +138,10 @@ export const en = {
     mediaStorageFailed: "Not enough space to save the attachment.",
     mediaOpenFailed: "Could not open the local copy.",
     mediaCancelUpload: "Cancel attachment upload",
+    mediaPauseUpload: "Pause upload",
+    mediaResumeUpload: "Restart upload",
+    mediaUploadPaused:
+      "Upload paused. Restarting sends the file from the beginning.",
     mediaUploadFailed: "Could not upload the encrypted attachment.",
     mediaVideoTooShort: "Hold the camera button to record a longer video note.",
     mediaPhoto: "Photo",
@@ -182,6 +186,7 @@ export const en = {
       "Allow microphone access in Settings to record a voice message.",
     voiceUpload_checking: "Checking upload compatibility…",
     voiceUpload_uploading: "Uploading encrypted audio…",
+    voiceUploadProgress: "Uploading encrypted audio, {{percent}}%",
     voiceUpload_validating: "Verifying upload…",
     voiceUpload_mirroring: "Copying to backup server…",
     voiceUploadServer: "Voice upload server",

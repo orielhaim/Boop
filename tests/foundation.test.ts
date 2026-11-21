@@ -87,6 +87,7 @@ test("migration creates the app tables and enforces event and contact uniqueness
       .flat(),
   ).toEqual([
     "attachment_cache",
+    "attachment_uploads",
     "avatar_cache",
     "blocked_identities",
     "call_history",

@@ -17,6 +17,10 @@ export function createBlobCache(
   owner: string,
   { blobs, work }: ReturnType<typeof attachmentFiles>,
 ) {
+  const leases = new Map<string, number>();
+  const pendingRemoval = new Set<string>();
+  const fileKey = (hash: string, source: Source) => `${source}:${hash}`;
+
   function location(hash: string, source: Source) {
     return new File(blobs, `${source}-${hash}.bin`);
   }
@@ -44,11 +48,18 @@ export function createBlobCache(
   }
 
   function drop(hash: string, source: Source) {
+    const key = fileKey(hash, source);
+    if (leases.has(key)) {
+      pendingRemoval.add(key);
+      return;
+    }
     db.delete(attachmentCache).where(cacheKey(hash, source)).run();
     remove(location(hash, source));
+    pendingRemoval.delete(key);
   }
 
   function local(hash: string, source: Source) {
+    if (pendingRemoval.has(fileKey(hash, source))) return;
     const item = db
       .select()
       .from(attachmentCache)
@@ -67,7 +78,8 @@ export function createBlobCache(
     const { evict, remainingBytes } = cacheEvictions(
       entries(source),
       { maxBytes: maxCacheBytes - size },
-      (item) => pin?.(item.hash) === true,
+      (item) =>
+        leases.has(fileKey(item.hash, source)) || pin?.(item.hash) === true,
     );
     if (remainingBytes + size > maxCacheBytes) throw new Error("media-storage");
     for (const item of evict) drop(item.hash, source);
@@ -82,6 +94,7 @@ export function createBlobCache(
     const size = temp.size;
     if (!temp.exists || size <= 0) throw new Error("media-storage");
     if (local(hash, source)) return;
+    if (leases.has(fileKey(hash, source))) throw new Error("media-storage");
     drop(hash, source);
     reserve(size, source, pin);
     blobs.create({ idempotent: true, intermediates: true });
@@ -102,6 +115,21 @@ export function createBlobCache(
     get: local,
     promote,
     remove: drop,
+    retain(hash: string, source: Source) {
+      const key = fileKey(hash, source);
+      leases.set(key, (leases.get(key) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const count = leases.get(key) ?? 0;
+        if (count > 1) leases.set(key, count - 1);
+        else {
+          leases.delete(key);
+          if (pendingRemoval.has(key)) drop(hash, source);
+        }
+      };
+    },
     touch(hash: string, source: Source) {
       db.update(attachmentCache)
         .set({ accessedAt: Date.now() })

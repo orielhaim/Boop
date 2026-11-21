@@ -34,7 +34,7 @@ export function isUploadFailure(
   return uploadFailures.some((code) => code === value);
 }
 export type UploadProgress =
-  "checking" | "uploading" | "validating" | "mirroring";
+  "checking" | "uploading" | "validating" | "mirroring" | number;
 
 export class BlossomError extends Error {
   constructor(
@@ -59,21 +59,26 @@ function httpError(status: number) {
   return new BlossomError(codes[status] ?? "server", status);
 }
 
-export async function uploadAuthorization(
+async function uploadAuthorization(
   signer: NDKSigner,
   host: string,
   hash: string,
   purpose: "profile" | "attachment" = "profile",
+  preflight = false,
 ) {
   const now = Math.floor(Date.now() / 1000);
+  const expires = now + 120;
   const event = new NDKEvent(undefined, {
     kind: 24242,
-    content:
-      purpose === "profile" ? "Upload profile photo" : "Upload encrypted file",
+    content: preflight
+      ? "Check upload permissions"
+      : purpose === "profile"
+        ? "Upload profile photo"
+        : "Upload encrypted file",
     created_at: now - 1,
     tags: [
       ["t", "upload"],
-      ["expiration", String(now + 120)],
+      ["expiration", String(expires)],
       ["server", host],
       ["x", hash],
     ],
@@ -83,7 +88,7 @@ export async function uploadAuthorization(
     .replace(/\+/gu, "-")
     .replace(/\//gu, "_")
     .replace(/=+$/u, "");
-  return `Nostr ${token}`;
+  return { authorization: `Nostr ${token}`, expiresAt: expires * 1000 };
 }
 
 const descriptor = z.object({
@@ -130,15 +135,33 @@ export type BlossomHttp = {
     },
   ): Promise<BlossomResponse>;
   sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string>;
+  putFile?: FilePut;
   timeoutMs?: number;
 };
 
 type BlobInfo = { mime: UploadMime; hash: string; size: number };
-export type BlobUpload = BlobInfo & { bytes: Uint8Array<ArrayBuffer> };
+export type UploadContext = { id: string; peer: string };
+export type BlobUpload = BlobInfo &
+  (
+    | { bytes: Uint8Array<ArrayBuffer> }
+    | { uri: string; context?: UploadContext }
+  );
+export type FilePut = (request: {
+  url: string;
+  uri: string;
+  size: number;
+  hash: string;
+  expiresAt: number;
+  context?: UploadContext;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+  beforeStart?: () => void;
+  progress?: (sent: number, total: number) => void;
+}) => Promise<{ status: number; body: string }>;
 
-function jsonDescriptor(text: Uint8Array, origin: string, blob: BlobInfo) {
+function jsonDescriptor(text: string, origin: string, blob: BlobInfo) {
   try {
-    const data = descriptor.parse(JSON.parse(new TextDecoder().decode(text)));
+    const data = descriptor.parse(JSON.parse(text));
     const url = publicMediaUrl(data.url);
     if (
       url?.origin === origin &&
@@ -154,6 +177,23 @@ function jsonDescriptor(text: Uint8Array, origin: string, blob: BlobInfo) {
   throw new BlossomError("descriptor");
 }
 
+export function attachmentUploadUrl(
+  result: { status: number; body: string },
+  origin: string,
+  hash: string,
+  size: number,
+) {
+  if (result.status !== 200 && result.status !== 201)
+    throw httpError(result.status);
+  if (new TextEncoder().encode(result.body).length > 8192)
+    throw new BlossomError("descriptor");
+  return jsonDescriptor(result.body, origin, {
+    hash,
+    size,
+    mime: "application/octet-stream",
+  });
+}
+
 export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
   async function operation<T>(
     origin: string,
@@ -162,8 +202,11 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
     run: (args: {
       origin: string;
       authorization: string;
+      expiresAt: number;
       signal: AbortSignal;
     }) => Promise<T>,
+    timeoutMs = http.timeoutMs ?? 35_000,
+    checking = false,
   ) {
     const server = blossomServer(origin);
     if (!server) throw new BlossomError("configuration");
@@ -171,16 +214,21 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
     const abort = new AbortController();
     const cancel = () => abort.abort();
     signal.addEventListener("abort", cancel, { once: true });
-    const timeout = setTimeout(cancel, http.timeoutMs ?? 35_000);
+    const timeout = setTimeout(cancel, timeoutMs);
     try {
       const authorization = await uploadAuthorization(
         signer,
         new URL(server).hostname,
         blob.hash,
         blob.mime === "image/jpeg" ? "profile" : "attachment",
+        checking,
       );
       if (abort.signal.aborted) throw new BlossomError("cancelled");
-      return await run({ origin: server, authorization, signal: abort.signal });
+      return await run({
+        origin: server,
+        ...authorization,
+        signal: abort.signal,
+      });
     } catch (error) {
       if (signal.aborted) throw new BlossomError("cancelled");
       if (abort.signal.aborted) throw new BlossomError("timeout");
@@ -220,60 +268,105 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
 
   return {
     check(origin: string, blob: BlobInfo, signal: AbortSignal) {
-      return operation(origin, blob, signal, (args) =>
-        preflight(args.origin, args.authorization, blob, args.signal),
+      return operation(
+        origin,
+        blob,
+        signal,
+        (args) => preflight(args.origin, args.authorization, blob, args.signal),
+        undefined,
+        true,
       );
     },
-    put(
+    async put(
       origin: string,
       blob: BlobUpload,
       signal: AbortSignal,
       options: {
         preflight?: boolean;
         progress?: (progress: UploadProgress) => void;
+        beforeRequest?: () => void;
       } = {},
     ) {
-      return operation(origin, blob, signal, async (args) => {
-        const common = {
-          redirect: "error" as const,
-          credentials: "omit" as const,
-          signal: args.signal,
-        };
-        if (options.preflight !== false) {
-          options.progress?.("checking");
-          await preflight(args.origin, args.authorization, blob, args.signal);
-        }
-        options.progress?.("uploading");
-        const response = await http.request(`${args.origin}/upload`, {
-          ...common,
-          method: "PUT",
-          body: blob.bytes,
-          headers: {
+      if (options.preflight !== false) {
+        options.beforeRequest?.();
+        options.progress?.("checking");
+        await operation(
+          origin,
+          blob,
+          signal,
+          (args) =>
+            preflight(args.origin, args.authorization, blob, args.signal),
+          undefined,
+          true,
+        );
+      }
+      return operation(
+        origin,
+        blob,
+        signal,
+        async (args) => {
+          options.beforeRequest?.();
+          const common = {
+            redirect: "error" as const,
+            credentials: "omit" as const,
+            signal: args.signal,
+          };
+          options.progress?.("uploading");
+          const endpoint = `${args.origin}/upload`;
+          const headers = {
             Authorization: args.authorization,
             "Content-Type": blob.mime,
             "Content-Length": String(blob.size),
             "X-SHA-256": blob.hash,
-          },
-        });
-        if (response.status !== 200 && response.status !== 201)
-          throw httpError(response.status);
-        options.progress?.("validating");
-        const url = jsonDescriptor(
-          await boundedBody(response, 8192),
-          args.origin,
-          blob,
-        );
-        if (blob.mime === "image/jpeg") {
-          const stored = await http.request(url, common);
-          if (
-            stored.status !== 200 ||
-            (await http.sha256(await boundedBody(stored, blob.size))) !==
-              blob.hash
-          )
-            throw new BlossomError("descriptor");
-        }
-        return url;
-      });
+          };
+          const body = await (async () => {
+            if ("uri" in blob) {
+              if (!http.putFile) throw new BlossomError("configuration");
+              const response = await http.putFile({
+                ...blob,
+                url: endpoint,
+                headers,
+                expiresAt: args.expiresAt,
+                signal: args.signal,
+                beforeStart: options.beforeRequest,
+                progress(sent, total) {
+                  if (!args.signal.aborted && total === blob.size)
+                    options.progress?.(
+                      Math.min(99, Math.floor((100 * sent) / total)),
+                    );
+                },
+              });
+              if (response.status !== 200 && response.status !== 201)
+                throw httpError(response.status);
+              if (new TextEncoder().encode(response.body).length > 8192)
+                throw new BlossomError("descriptor");
+              return response.body;
+            }
+            const response = await http.request(endpoint, {
+              ...common,
+              method: "PUT",
+              body: blob.bytes,
+              headers,
+            });
+            if (response.status !== 200 && response.status !== 201)
+              throw httpError(response.status);
+            return new TextDecoder().decode(await boundedBody(response, 8192));
+          })();
+          options.progress?.("validating");
+          const url = jsonDescriptor(body, args.origin, blob);
+          if (blob.mime === "image/jpeg") {
+            const stored = await http.request(url, common);
+            if (
+              stored.status !== 200 ||
+              (await http.sha256(await boundedBody(stored, blob.size))) !==
+                blob.hash
+            )
+              throw new BlossomError("descriptor");
+          }
+          return url;
+        },
+        "uri" in blob ? 300_000 : undefined,
+      );
     },
     mirror(
       origin: string,
@@ -304,7 +397,7 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
         if (response.status !== 200 && response.status !== 201)
           throw httpError(response.status);
         return jsonDescriptor(
-          await boundedBody(response, 8192),
+          new TextDecoder().decode(await boundedBody(response, 8192)),
           args.origin,
           blob,
         );

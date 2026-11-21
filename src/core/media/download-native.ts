@@ -1,5 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
+import { randomUUID } from "expo-crypto";
 import type { AvatarTransport } from "../avatars/service";
+import type { FilePut } from "./blossom";
 
 type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
   download(
@@ -15,9 +17,20 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
     output: string,
     image: boolean,
   ): Promise<number>;
+  uploadAttachment?(
+    id: string,
+    url: string,
+    source: string,
+    headers: Record<string, string>,
+    size: number,
+  ): Promise<{ status: number; body: string }>;
   addListener(
     event: "attachmentProgress",
     listener: (event: { id: string; received: number; total: number }) => void,
+  ): { remove(): void };
+  addListener(
+    event: "uploadProgress",
+    listener: (event: { id: string; sent: number }) => void,
   ): { remove(): void };
   prepare(id: string): void;
   available(): boolean;
@@ -25,6 +38,32 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
 const native = requireOptionalNativeModule<NativeAvatarTransport>(
   "BoopAvatarTransport",
 );
+
+export const putAttachmentFile: FilePut = async (request) => {
+  request.beforeStart?.();
+  if (!native?.uploadAttachment || request.signal.aborted)
+    throw new Error("media-unavailable");
+  const id = randomUUID();
+  native.prepare(id);
+  const cancel = () => native.cancel(id);
+  const subscription = native.addListener("uploadProgress", (event) => {
+    if (event.id === id && !request.signal.aborted)
+      request.progress?.(event.sent, request.size);
+  });
+  request.signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await native.uploadAttachment(
+      id,
+      request.url,
+      request.uri,
+      request.headers,
+      request.size,
+    );
+  } finally {
+    subscription.remove();
+    request.signal.removeEventListener("abort", cancel);
+  }
+};
 
 export async function downloadPreviewFile(
   id: string,
@@ -66,22 +105,24 @@ export async function downloadEncryptedBlob(
   limit: number,
   signal: AbortSignal,
   onProgress: (percent: number) => void,
+  expectedSize?: number,
 ) {
   if (!native?.available?.() || signal.aborted) throw new Error("unavailable");
   native.prepare(id);
   const cancel = () => native.cancel(id);
   signal.addEventListener("abort", cancel, { once: true });
   const subscription = native.addListener("attachmentProgress", (event) => {
-    if (event.id === id && event.total > 0) {
+    const total = expectedSize ?? (event.total > 0 ? event.total : undefined);
+    if (event.id === id && total !== undefined) {
       onProgress(
-        Math.max(
-          0,
-          Math.min(99, Math.floor((100 * event.received) / event.total)),
-        ),
+        Math.max(0, Math.min(99, Math.floor((100 * event.received) / total))),
       );
     }
   });
-  const timeout = setTimeout(cancel, limit > 8 * 1024 * 1024 ? 60_000 : 16_000);
+  const timeout = setTimeout(
+    cancel,
+    limit > 8 * 1024 * 1024 ? 300_000 : 45_000,
+  );
   try {
     return await native.download(id, url, destination, hash, limit);
   } catch (error) {

@@ -149,25 +149,30 @@ export const VoiceMessage = memo(function VoiceMessage({
     : available
       ? t("voicePlay")
       : t("voiceDownload");
-  const caption = upload
-    ? t(`voiceUpload_${upload}`)
-    : playbackError
-      ? t("voicePlaybackFailed")
-      : state === "missing"
-        ? t("voiceMissing")
-        : state === "media-integrity" || state === "media-format"
-          ? t("voiceValidationFailed")
-          : state === "media-storage"
-            ? t("voiceStorageFailed")
-            : state === "cancelled"
-              ? t("voiceDownloadCancelled")
-              : state === "failed"
-                ? t("voiceDownloadFailed")
-                : typeof state === "number"
-                  ? t("voiceDownloadProgress", { percent: state })
-                  : seconds === undefined
-                    ? t("voiceMessage")
-                    : formatDuration(seconds);
+  const caption =
+    message.failure === "media-paused"
+      ? t("mediaUploadPaused")
+      : typeof upload === "number"
+        ? t("voiceUploadProgress", { percent: upload })
+        : upload
+          ? t(`voiceUpload_${upload}`)
+          : playbackError
+            ? t("voicePlaybackFailed")
+            : state === "missing"
+              ? t("voiceMissing")
+              : state === "media-integrity" || state === "media-format"
+                ? t("voiceValidationFailed")
+                : state === "media-storage"
+                  ? t("voiceStorageFailed")
+                  : state === "cancelled"
+                    ? t("voiceDownloadCancelled")
+                    : state === "failed"
+                      ? t("voiceDownloadFailed")
+                      : typeof state === "number"
+                        ? t("voiceDownloadProgress", { percent: state })
+                        : seconds === undefined
+                          ? t("voiceMessage")
+                          : formatDuration(seconds);
   return (
     <View style={[styles.row, outgoing && styles.outgoing, rtl && styles.rtl]}>
       <Pressable

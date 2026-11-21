@@ -1,15 +1,18 @@
 import { validateVideo, validateVoiceAudio } from "./audio-format";
+import { formatInput, type MediaFormatInput } from "./format-input";
 import { byteLimit, type AttachmentMetadata } from "./protocol";
 
 export function validateAttachment(
-  bytes: Uint8Array,
+  input: Uint8Array | MediaFormatInput,
   file: AttachmentMetadata,
 ) {
-  if (!bytes.length || bytes.length > byteLimit(file.kind) - 16)
-    throw new Error("media-size");
-  if (file.kind === "voice") return validateVoiceAudio(bytes);
+  const source = formatInput(input);
+  const { size } = source;
+  if (!size || size > byteLimit(file.kind) - 16) throw new Error("media-size");
+  if (file.kind === "voice") return validateVoiceAudio(source);
   if (file.kind === "video" || file.kind === "round-video")
-    return validateVideo(bytes);
+    return validateVideo(source);
+  const bytes = source.read(0, Math.min(size, 33));
   if (file.kind !== "image") {
     if (
       file.mime === "application/pdf" &&
@@ -31,9 +34,9 @@ export function validateAttachment(
   const text = (start: number, end: number) =>
     String.fromCharCode(...bytes.subarray(start, end));
   const ends = (a: number, b: number) =>
-    bytes[bytes.length - 2] === a && bytes[bytes.length - 1] === b;
+    source.read(size - 2, 2).every((byte, i) => byte === (i === 0 ? a : b));
   const ok =
-    bytes.length >= 16 &&
+    size >= 16 &&
     ((file.mime === "image/jpeg" &&
       bytes[0] === 255 &&
       bytes[1] === 216 &&
@@ -42,7 +45,7 @@ export function validateAttachment(
         bytes[0] === 137 &&
         text(1, 8) === "PNG\r\n\x1a\n" &&
         text(12, 16) === "IHDR" &&
-        text(bytes.length - 8, bytes.length - 4) === "IEND") ||
+        String.fromCharCode(...source.read(size - 8, 4)) === "IEND") ||
       (file.mime === "image/webp" &&
         text(0, 4) === "RIFF" &&
         text(8, 12) === "WEBP" &&
@@ -51,12 +54,12 @@ export function validateAttachment(
           bytes.byteOffset,
           bytes.byteLength,
         ).getUint32(4, true) ===
-          bytes.length - 8) ||
+          size - 8) ||
       (file.mime === "image/gif" &&
         ["GIF87a", "GIF89a"].includes(text(0, 6)) &&
-        bytes[bytes.length - 1] === 59));
+        source.read(size - 1, 1)[0] === 59));
   if (!ok) throw new Error("media-format");
-  const [width, height] = imageDimensions(bytes, file.mime);
+  const [width, height] = imageDimensions(source, bytes, file.mime);
   if (
     !width ||
     !height ||
@@ -67,7 +70,11 @@ export function validateAttachment(
     throw new Error("media-format");
 }
 
-function imageDimensions(bytes: Uint8Array, mime: string): [number, number] {
+function imageDimensions(
+  source: MediaFormatInput,
+  bytes: Uint8Array,
+  mime: string,
+): [number, number] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (mime === "image/png" && bytes.length >= 33)
     return [view.getUint32(16), view.getUint32(20)];
@@ -96,21 +103,24 @@ function imageDimensions(bytes: Uint8Array, mime: string): [number, number] {
       ];
   }
   if (mime === "image/jpeg") {
-    for (let i = 2; i + 8 < bytes.length && bytes[i] === 255;) {
-      const marker = bytes[i + 1];
+    for (let i = 2; i + 8 < source.size;) {
+      const segment = source.read(i, 9);
+      if (segment[0] !== 255) break;
+      const marker = segment[1];
       if (marker === 255) {
         i++;
         continue;
       }
-      const length = view.getUint16(i + 2);
-      if (length < 2 || i + 2 + length > bytes.length || marker === 218) break;
+      const fields = new DataView(segment.buffer, segment.byteOffset, 9);
+      const length = fields.getUint16(2);
+      if (length < 2 || i + 2 + length > source.size || marker === 218) break;
       if (
         [
           192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207,
         ].includes(marker) &&
         length >= 8
       )
-        return [view.getUint16(i + 7), view.getUint16(i + 5)];
+        return [fields.getUint16(7), fields.getUint16(5)];
       i += 2 + length;
     }
   }

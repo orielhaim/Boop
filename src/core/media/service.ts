@@ -1,11 +1,12 @@
 import type { UploadProgress } from "./blossom";
 import { randomUUID } from "expo-crypto";
-import { Directory, File } from "expo-file-system";
+import { Directory, File, Paths } from "expo-file-system";
 import type { MessagingRepository } from "@/db/messaging";
 import type { MediaSdk } from "./index";
 import { removeMediaFile as remove } from "./files";
-import { openAttachment, sealAttachment } from "./crypto";
+import { hashAttachmentFile, openAttachment, sealAttachment } from "./crypto";
 import { createManualDownloads } from "./manual-download";
+import { usesBackgroundUpload } from "./attachment-transfers";
 import {
   byteLimit,
   minVoiceDuration,
@@ -38,14 +39,18 @@ export function createAttachmentMedia(
   const cache = sdk.blobCache;
   const { work } = cache;
   let active = false;
+  let retired = false;
   let generation = 0;
   const listeners = new Set<{ id?: string; run: () => void }>();
   const uploading = new Map<string, UploadProgress>();
   const downloadStates = new Map<string, DownloadState>();
-  const uploads = new Map<string, { peer: string; abort: AbortController }>();
+  const uploads = new Map<
+    string,
+    { peer: string; abort: AbortController; background: boolean }
+  >();
   const plaintext = new Map<
     string,
-    { file: Directory; peer: string; hash: string }
+    { file: Directory; peer: string; hash: string; release: () => void }
   >();
   let preparation = Promise.resolve();
   function prepare<T>(job: () => Promise<T>) {
@@ -67,6 +72,7 @@ export function createAttachmentMedia(
       const valid = () =>
         !signal.aborted && authorize(peer, id)?.hash === file.hash;
       if (!valid()) throw new Error("media-cancelled");
+      if (Paths.availableDiskSpace < limit) throw new Error("media-storage");
       work.create({ idempotent: true, intermediates: true });
       const tempId = randomUUID();
       const temp = new File(work, `${tempId}.bin`);
@@ -88,6 +94,7 @@ export function createAttachmentMedia(
                 downloadStates.set(id, progress);
                 notify(id);
               },
+              file.size,
             );
             break;
           } catch (error) {
@@ -106,12 +113,8 @@ export function createAttachmentMedia(
           throw new Error("media-integrity");
         downloadStates.set(id, "verifying");
         notify(id);
-        await prepare(async () => {
-          if (!valid()) throw new Error("media-cancelled");
-          const clear = await openAttachment(await temp.bytes(), file);
-          clear.fill(0);
-        });
-        if (!valid()) throw new Error("media-cancelled");
+        if (file.size !== undefined && length !== file.size)
+          throw new Error("media-integrity");
         try {
           cache.promote(temp, file.hash, "download");
           notify();
@@ -144,6 +147,7 @@ export function createAttachmentMedia(
       if ((peer && peer !== item.peer) || (hash && hash !== item.hash))
         continue;
       remove(item.file);
+      item.release();
       plaintext.delete(key);
     }
   }
@@ -159,22 +163,43 @@ export function createAttachmentMedia(
       };
     },
     uploadProgress: (id: string) => uploading.get(id),
-    setActive(next: boolean) {
+    setActive(next: boolean, background = false) {
+      if (retired) return;
+      if (!next) {
+        downloads.cancelAll();
+        for (const upload of uploads.values())
+          if (!background || !upload.background) upload.abort.abort();
+      }
       if (next === active) return;
       active = next;
       generation++;
       if (!next) {
-        downloads.cancelAll();
-        for (const { abort } of uploads.values()) abort.abort();
         forgetPlaintext();
+      } else {
+        sdk.transfers.reconcile((row) => {
+          if (isBlocked(row.peer)) return false;
+          const entry = chat.attachment(row.peer, row.messageId);
+          return !!entry && !entry.url && entry.file.hash === row.hash;
+        });
       }
       notify();
     },
     block(peer: string) {
+      sdk.transfers.revoke((row) => row.peer === peer);
       for (const upload of uploads.values())
         if (upload.peer === peer) upload.abort.abort();
       downloads.cancelAll(peer);
       forgetPlaintext(peer);
+      notify();
+    },
+    retire() {
+      active = false;
+      retired = true;
+      generation++;
+      downloads.cancelAll();
+      for (const { abort } of uploads.values()) abort.abort();
+      sdk.transfers.revoke(() => true);
+      forgetPlaintext();
       notify();
     },
     cancel(peer: string, id: string) {
@@ -233,17 +258,40 @@ export function createAttachmentMedia(
           throw new Error("media-cancelled");
         const entry = find(peer, id);
         if (!entry) throw new Error("media-unavailable");
-        let audio: Awaited<ReturnType<typeof openAttachment>>;
+        work.create({ idempotent: true, intermediates: true });
+        const token = randomUUID();
+        const lease = new Directory(work, token);
+        lease.create();
+        const output = new File(lease, localAttachmentName(entry.file));
+        const release = cache.retain(entry.file.hash, entry.source);
         try {
-          audio = await openAttachment(
-            await entry.encrypted.bytes(),
-            entry.file,
-          );
+          await openAttachment(entry.encrypted, output, entry.file, signal);
+          if (signal.aborted || session !== generation || !find(peer, id))
+            throw new Error("media-cancelled");
+          cache.touch(entry.file.hash, entry.source);
+          plaintext.set(token, {
+            file: lease,
+            peer,
+            hash: entry.file.hash,
+            release,
+          });
+          return {
+            uri: output.uri,
+            dispose() {
+              remove(lease);
+              release();
+              plaintext.delete(token);
+            },
+          };
         } catch (error) {
+          remove(lease);
+          release();
           if (
             session === generation &&
             !signal.aborted &&
-            entry.source === "download"
+            entry.source === "download" &&
+            error instanceof Error &&
+            ["media-integrity", "media-format"].includes(error.message)
           ) {
             cache.remove(entry.file.hash, "download");
             downloadStates.set(id, "media-integrity");
@@ -251,40 +299,12 @@ export function createAttachmentMedia(
           }
           throw error;
         }
-        try {
-          if (signal.aborted || session !== generation || !find(peer, id))
-            throw new Error("media-cancelled");
-          work.create({ idempotent: true, intermediates: true });
-          const token = randomUUID();
-          const lease = new Directory(work, token);
-          lease.create();
-          const output = new File(lease, localAttachmentName(entry.file));
-          try {
-            await output.write(audio);
-            if (signal.aborted || session !== generation || !find(peer, id))
-              throw new Error("media-cancelled");
-            cache.touch(entry.file.hash, entry.source);
-            plaintext.set(token, { file: lease, peer, hash: entry.file.hash });
-            return {
-              uri: output.uri,
-              dispose() {
-                remove(lease);
-                plaintext.delete(token);
-              },
-            };
-          } catch (error) {
-            remove(lease);
-            throw error;
-          }
-        } finally {
-          audio.fill(0);
-        }
       });
     },
     async stageAttachment(
       uri: string,
       metadata: AttachmentMetadata,
-      save: (file: Awaited<ReturnType<typeof sealAttachment>>["file"]) => void,
+      save: (file: Awaited<ReturnType<typeof sealAttachment>>) => void,
     ) {
       const source = new File(uri);
       const session = generation;
@@ -301,15 +321,13 @@ export function createAttachmentMedia(
           throw new Error("media-format");
         if (source.size > byteLimit(checked.kind) - 16)
           throw new Error("media-size");
-        const audio = await source.bytes();
-        try {
-          const { file, bytes } = await sealAttachment(audio, checked);
+        await prepare(async () => {
           if (!active || session !== generation)
             throw new Error("media-cancelled");
           work.create({ idempotent: true, intermediates: true });
           const temp = new File(work, `${randomUUID()}.bin`);
           try {
-            await temp.write(bytes);
+            const file = await sealAttachment(source, temp, checked);
             if (!active || session !== generation)
               throw new Error("media-cancelled");
             cache.promote(temp, file.hash, "sent", (hash) =>
@@ -325,9 +343,7 @@ export function createAttachmentMedia(
           } finally {
             remove(temp);
           }
-        } finally {
-          audio.fill(0);
-        }
+        });
       } finally {
         if (metadata.kind === "voice" && uri.startsWith("file:///"))
           remove(source);
@@ -337,23 +353,55 @@ export function createAttachmentMedia(
       const entry = find(peer, id);
       if (entry?.source !== "sent") throw new Error("media-unavailable");
       const abort = new AbortController();
-      uploads.set(id, { peer, abort });
+      const background =
+        entry.file.kind !== "voice" &&
+        usesBackgroundUpload(entry.encrypted.size);
+      uploads.set(id, { peer, abort, background });
+      const release = cache.retain(entry.file.hash, "sent");
       let mirroring = false;
+      const progress = (phase: UploadProgress) => {
+        if (uploading.get(id) === phase) return;
+        uploading.set(id, phase);
+        notify(id);
+      };
       try {
-        const bytes = await entry.encrypted.bytes();
+        const context = { id, peer };
+        const size = entry.encrypted.size;
+        const recovered = await sdk.transfers.recover(
+          context,
+          entry.encrypted.uri,
+          entry.file.hash,
+          size,
+          abort.signal,
+          progress,
+        );
+        if (recovered) return recovered;
         if (!valid() || abort.signal.aborted)
           throw new Error("media-cancelled");
-        const result = await sdk.upload("attachment", bytes, {
-          signal: abort.signal,
-          expectedHash: entry.file.hash,
-          progress(phase) {
-            uploading.set(id, phase);
-            notify(id);
+        if (
+          (await hashAttachmentFile(entry.encrypted, abort.signal)) !==
+          entry.file.hash
+        )
+          throw new Error("media-integrity");
+        const result = await sdk.upload(
+          "attachment",
+          {
+            uri: entry.encrypted.uri,
+            size,
+            hash: entry.file.hash,
+            context: background ? context : undefined,
           },
-        });
+          {
+            signal: abort.signal,
+            expectedHash: entry.file.hash,
+            progress,
+            canStart: valid,
+          },
+        );
         if (result.mirror) {
           mirroring = true;
           void result.mirror.finally(() => {
+            release();
             uploads.delete(id);
             uploading.delete(id);
             notify(id);
@@ -362,11 +410,21 @@ export function createAttachmentMedia(
         return result.url;
       } finally {
         if (!mirroring) {
+          release();
           uploads.delete(id);
           uploading.delete(id);
           notify(id);
         }
       }
+    },
+    finishUpload(id: string) {
+      sdk.transfers.forget(id);
+    },
+    canPauseUpload(id: string) {
+      return uploads.get(id)?.background === true;
+    },
+    pauseUpload(id: string) {
+      uploads.get(id)?.abort.abort();
     },
     cancelUpload(id: string, hash: string) {
       uploads.get(id)?.abort.abort();

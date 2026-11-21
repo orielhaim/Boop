@@ -8,6 +8,7 @@ import {
   downloadPreviewFile,
   nativeAvatarTransport,
 } from "./download-native";
+import { createAttachmentTransfers } from "./attachment-transfers";
 import { attachmentFiles, profileFiles } from "./files";
 import { sha256 } from "./hash";
 import { createMediaSettings } from "./servers";
@@ -27,18 +28,28 @@ export function createMediaSdk(db: Database, signer: NDKSigner) {
     revision++;
     for (const listener of listeners) listener();
   }
+  const transfers = createAttachmentTransfers(db, owner, (origin) =>
+    settings
+      .configured("attachment")
+      .some((server) => server.origin === origin),
+  );
   const uploads = createMediaUploads(
     signer,
-    { request: fetch, sha256 },
+    { request: fetch, sha256, putFile: transfers.put },
     settings,
     changed,
   );
   return {
     ...uploads,
+    transfers,
     snapshot: settings.snapshot,
     configured: settings.configured,
     save(next: Parameters<typeof settings.save>[0]) {
       settings.save(next);
+      const allowed = new Set(
+        settings.configured("attachment").map(({ origin }) => origin),
+      );
+      transfers.revoke((row) => !allowed.has(row.origin));
       changed();
     },
     revision: () => revision,

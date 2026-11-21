@@ -6,6 +6,7 @@
     "@config-plugins/react-native-webrtc": "^15.0.2",
     "@expo/ui": "~58.0.29",
     "@hzblj/expo-translation": "0.1.4",
+    "@kesha-antonov/react-native-background-downloader": "5.1.0",
     "@kesha-antonov/react-native-chat": "^7.2.0",
     "@noble/curves": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
@@ -99,6 +100,7 @@
     "react-native-webrtc@155.0.1": "patches/react-native-webrtc@155.0.1.patch",
     "@hzblj/expo-translation@0.1.4": "patches/@hzblj%2Fexpo-translation@0.1.4.patch",
     "expo-glass-tabs@0.1.1": "patches/expo-glass-tabs@0.1.1.patch",
-    "@kesha-antonov/react-native-chat@7.2.0": "patches/@kesha-antonov%2Freact-native-chat@7.2.0.patch"
+    "@kesha-antonov/react-native-chat@7.2.0": "patches/@kesha-antonov%2Freact-native-chat@7.2.0.patch",
+    "@kesha-antonov/react-native-background-downloader@5.1.0": "patches/@kesha-antonov%2Freact-native-background-downloader@5.1.0.patch"
   }
 }

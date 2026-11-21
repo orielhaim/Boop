@@ -100,8 +100,12 @@ function usePresentation(message: MediaRow, peer: string) {
         progress: typeof state === "number" ? state / 100 : undefined,
         totalBytes,
       }
-    : upload
-      ? { type: "upload", totalBytes }
+    : upload !== undefined
+      ? {
+          type: "upload",
+          totalBytes,
+          progress: typeof upload === "number" ? upload / 100 : undefined,
+        }
       : undefined;
   const unavailable =
     state !== "downloaded" &&
@@ -114,17 +118,19 @@ function usePresentation(message: MediaRow, peer: string) {
       media.durationMs === undefined ? undefined : media.durationMs / 1000,
   };
   const notice =
-    state === "verifying"
-      ? t("mediaVerifying")
-      : state === "missing"
-        ? t("mediaMissing")
-        : state === "media-integrity" || state === "media-format"
-          ? t("mediaValidationFailed")
-          : state === "media-storage"
-            ? t("mediaStorageFailed")
-            : state === "failed"
-              ? t("voiceDownloadFailed")
-              : undefined;
+    message.failure === "media-paused"
+      ? t("mediaUploadPaused")
+      : state === "verifying"
+        ? t("mediaVerifying")
+        : state === "missing"
+          ? t("mediaMissing")
+          : state === "media-integrity" || state === "media-format"
+            ? t("mediaValidationFailed")
+            : state === "media-storage"
+              ? t("mediaStorageFailed")
+              : state === "failed"
+                ? t("voiceDownloadFailed")
+                : undefined;
   return { ready: state === "downloaded", shown, notice };
 }
 

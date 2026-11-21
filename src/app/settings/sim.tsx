@@ -36,7 +36,7 @@ export default function DigitalSim() {
   const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
-  const { db, identity, calling, lock } = useLocal();
+  const { db, identity, calling, lock, attachments } = useLocal();
   const protection = useId();
   const [protectedWindow, setProtectedWindow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -227,6 +227,7 @@ export default function DigitalSim() {
               await stageIdentity(db, candidate.secret);
               setCandidate(null);
               setStatus(t("security:restartForSim"));
+              attachments.retire();
               calling.end();
               await reloadAppAsync("Activate staged Digital SIM").catch(
                 () => undefined,

@@ -237,6 +237,20 @@ export const attachmentCache = sqliteTable(
   (table) => [primaryKey({ columns: [table.owner, table.hash, table.source] })],
 );
 
+export const attachmentUploads = sqliteTable("attachment_uploads", {
+  messageId: text("message_id")
+    .primaryKey()
+    .notNull()
+    .references(() => messageAttachments.messageId, { onDelete: "cascade" }),
+  nativeId: text("native_id").notNull().unique(),
+  owner: text().notNull(),
+  peer: text().notNull(),
+  hash: text().notNull(),
+  source: text().notNull(),
+  origin: text().notNull(),
+  resultUrl: text("result_url"),
+});
+
 export const messageTranslations = sqliteTable(
   "message_translations",
   {

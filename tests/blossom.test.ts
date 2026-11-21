@@ -1,6 +1,9 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import {
   finalizeEvent,
@@ -45,6 +48,95 @@ const response = (overrides = {}) =>
     },
     { status: 201 },
   );
+
+test("file-backed Blossom uses a raw signed PUT and verifies the returned descriptor", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "boop-blossom-"));
+  const filename = join(directory, "ciphertext.bin");
+  const bytes = Uint8Array.from({ length: 64 * 1024 + 16 }, (_, i) => i % 251);
+  writeFileSync(filename, bytes);
+  const ciphertextHash = digest(bytes);
+  const blobUrl = `${origin}/${ciphertextHash}`;
+  const methods: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      methods.push(request.method);
+      expect(new URL(request.url).pathname).toBe("/upload");
+      const auth = request.headers.get("Authorization") ?? "";
+      expect(auth.startsWith("Nostr ")).toBe(true);
+      const event = JSON.parse(
+        Buffer.from(auth.slice(6), "base64url").toString("utf8"),
+      );
+      expect(verifyEvent(event)).toBe(true);
+      expect(event.tags).toContainEqual(["x", ciphertextHash]);
+      if (request.method === "HEAD") {
+        expect(request.headers.get("X-Content-Length")).toBe(
+          String(bytes.length),
+        );
+        return new Response(null, { status: 200 });
+      }
+      expect(request.method).toBe("PUT");
+      expect(request.headers.get("Content-Type")).toBe(
+        "application/octet-stream",
+      );
+      expect(request.headers.get("Content-Length")).toBe(String(bytes.length));
+      expect(request.headers.get("X-SHA-256")).toBe(ciphertextHash);
+      expect(digest(await request.bytes())).toBe(ciphertextHash);
+      return Response.json(
+        {
+          url: blobUrl,
+          sha256: ciphertextHash,
+          size: bytes.length,
+          type: "application/octet-stream",
+          uploaded: 1,
+        },
+        { status: 201 },
+      );
+    },
+  });
+  try {
+    const endpoint = new URL("/upload", server.url);
+    const progress: unknown[] = [];
+    const client = createBlossomClient(signer, {
+      sha256,
+      request: (_url, { method, headers, signal }) =>
+        fetch(endpoint, { method, headers, signal }),
+      async putFile({ url, uri, headers, signal, progress }) {
+        expect(url).toBe(`${origin}/upload`);
+        expect(uri).toBe(filename);
+        progress?.(32768, bytes.length);
+        const response = await fetch(endpoint, {
+          method: "PUT",
+          headers,
+          signal,
+          body: Bun.file(uri),
+        });
+        return { status: response.status, body: await response.text() };
+      },
+    });
+    await expect(
+      client.put(
+        origin,
+        {
+          uri: filename,
+          size: bytes.length,
+          hash: ciphertextHash,
+          mime: "application/octet-stream",
+        },
+        new AbortController().signal,
+        {
+          progress: (state) => progress.push(state),
+        },
+      ),
+    ).resolves.toBe(blobUrl);
+    expect(methods).toEqual(["HEAD", "PUT"]);
+    expect(progress).toEqual(["checking", "uploading", 49, "validating"]);
+  } finally {
+    await server.stop(true);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 const putAvatar = (
   signer: NDKPrivateKeySigner,

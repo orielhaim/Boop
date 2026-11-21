@@ -68,11 +68,12 @@ Use Bun 1.4.4 or later and run `bun fmt` for formatting.
 
 - Use the shared internal Media SDK in `src/core/media` for new HTTP media transfers, Blossom authorization and server selection, and persistent binary cache mechanics. Keep profile and attachment authorization with their owning feature. Use only enabled, explicitly configured origins or the recommended defaults the user can see in Media Servers.
 - Keep BUD-03 imports local until enabled and publish server origins only after explicit confirmation. Keep encryption and NIP-17 publication outside the binary transport.
+- Use the shared file-backed attachment pipeline for every attachment type. Do not use `File.bytes()`, whole-file ArrayBuffers, Base64, or buffered fetch bodies for attachment encryption, hashing, verification, playback preparation, or transfer. Keep file reads and writes bounded and pass file paths to native transport.
 
 ## Received attachments
 
 - No received attachment may trigger an HTTP media request without explicit user action. This includes GET, HEAD, prefetch, probes, and remote player initialization from any background, history, preview, request, quote, or visible-message path.
-- Only the explicit Download control for a live, accepted attachment may dispatch a media GET. Validate the HTTPS socket destination, size, hash, authentication tag, and format before saving it. Give Chat Kit only approved local file or playback URIs. Keep placeholders self-contained and use authenticated metadata for preview hashes, dimensions, filenames and captions. Keep profile photos under their separate policy.
+- Only the explicit Download control for a live, accepted attachment may dispatch a media GET. Check the HTTPS socket destination and enforce the size and ciphertext hash before committing the encrypted cache file. Authenticate the tag and check the format before exposing any plaintext URI. Keep placeholders self-contained and use authenticated metadata for preview hashes, dimensions, filenames and captions. Keep profile photos under their separate policy.
 - Use Chat Kit's picker and media players with the shared encrypted attachment model. Keep recording and playback within the focused, foreground, unlocked conversation. Yield camera and audio to the call controller. Keep location sharing one-shot, confirmed and encrypted, and open external maps only on tap. Keep plaintext playback files in private, non-backed-up temporary storage.
 
 ## Profile photos

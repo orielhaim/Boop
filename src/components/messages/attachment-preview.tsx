@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Action, Icon } from "@/components/ui/kit";
-import { validateVideo } from "@/core/media/audio-format";
+import { validateAttachmentFile } from "@/core/media/file-format";
 import { maxAttachmentBytes } from "@/core/media/protocol";
 import { localPickerUri } from "@/core/media/prepare";
 import { mediaLabels } from "./media-label";
@@ -51,7 +51,7 @@ function SelectedVideo({ uri, color }: { uri: string; color: string }) {
         file.size > maxAttachmentBytes - 16
       )
         throw new Error("media-format");
-      validateVideo(await file.bytes());
+      validateAttachmentFile(file, { kind: "video", mime: "video/mp4" });
       if (active) setState("ready");
     })().catch(() => {
       if (active) setState("failed");

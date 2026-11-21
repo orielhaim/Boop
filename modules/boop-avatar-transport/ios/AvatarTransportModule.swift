@@ -16,7 +16,7 @@ public final class AvatarTransportModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopAvatarTransport")
-    Events("attachmentProgress")
+    Events("attachmentProgress", "uploadProgress")
 
     Function("available") {
       if #available(iOS 17.0, *) { return true }
@@ -39,6 +39,25 @@ public final class AvatarTransportModule: Module {
     }
     AsyncFunction("downloadPreview") { (id: String, url: String, output: String, image: Bool, promise: Promise) in
       self.transfer(id, url, output, nil, nil, image, promise)
+    }
+    AsyncFunction("uploadAttachment") { (id: String, url: String, source: String, headers: [String: String], size: Int, promise: Promise) in
+      guard let job = self.getJob(id) else {
+        promise.reject("MEDIA_UPLOAD", "Media operation missing")
+        return
+      }
+      let task = Task.detached {
+        defer { self.removeJob(id) }
+        do {
+          guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
+          let result = try await uploadMedia(url, source, headers, size) { sent in
+            self.sendEvent("uploadProgress", ["id": id, "sent": sent])
+          }
+          promise.resolve(result)
+        } catch {
+          promise.reject("MEDIA_UPLOAD", "Media upload failed")
+        }
+      }
+      job.attach(task)
     }
   }
 
@@ -143,7 +162,7 @@ private func downloadMedia(
 
   let configuration = URLSessionConfiguration.ephemeral
   configuration.timeoutIntervalForRequest = 8
-  configuration.timeoutIntervalForResource = limit > 8 * 1024 * 1024 ? 58 : 12
+  configuration.timeoutIntervalForResource = attachmentLimit == nil ? 12 : 295
   configuration.httpCookieStorage = nil
   configuration.httpShouldSetCookies = false
   configuration.urlCredentialStorage = nil
@@ -166,20 +185,49 @@ private func downloadMedia(
         !html || response.mimeType == "text/html",
         response.expectedContentLength <= limit
   else { throw AvatarTransferError.response }
+  if attachmentLimit != nil {
+    let incoming = target.appendingPathExtension("download")
+    defer { try? FileManager.default.removeItem(at: incoming) }
+    try Data().write(to: incoming, options: [.withoutOverwriting])
+    let handle = try FileHandle(forWritingTo: incoming)
+    defer { try? handle.close() }
+    var digest = SHA256()
+    var chunk = Data()
+    chunk.reserveCapacity(64 * 1024)
+    var count = 0
+    for try await byte in stream {
+      guard count < limit else { throw AvatarTransferError.size }
+      chunk.append(byte)
+      count += 1
+      if chunk.count == 64 * 1024 {
+        try job.check()
+        digest.update(data: chunk)
+        try handle.write(contentsOf: chunk)
+        chunk.removeAll(keepingCapacity: true)
+        progress(count, response.expectedContentLength)
+      }
+    }
+    digest.update(data: chunk)
+    guard count >= 17,
+          response.expectedContentLength < 0 || response.expectedContentLength == Int64(count),
+          digest.finalize().map({ String(format: "%02x", $0) }).joined() == hash
+    else { throw AvatarTransferError.hash }
+    try handle.write(contentsOf: chunk)
+    try job.check()
+    try FileManager.default.moveItem(at: incoming, to: target)
+    return count
+  }
   var data = Data()
   for try await byte in stream {
     guard data.count < limit else { throw AvatarTransferError.size }
     data.append(byte)
-    if attachmentLimit != nil && response.expectedContentLength > 0 && data.count % (64 * 1024) == 0 {
-      progress(data.count, response.expectedContentLength)
-    }
   }
   if let hash, SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() != hash {
     throw AvatarTransferError.hash
   }
   if !images {
     try Task.checkCancellation()
-    guard data.count >= (html ? 1 : 17) else { throw AvatarTransferError.size }
+    guard !data.isEmpty else { throw AvatarTransferError.size }
     try data.write(to: target, options: [.withoutOverwriting])
     return data.count
   }
@@ -210,12 +258,120 @@ private func downloadMedia(
   return bytes.count
 }
 
-private final class NoAvatarRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+private class NoAvatarRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
   func urlSession(_ session: URLSession, task: URLSessionTask,
                   willPerformHTTPRedirection response: HTTPURLResponse,
                   newRequest request: URLRequest,
                   completionHandler: @escaping (URLRequest?) -> Void) {
     completionHandler(nil)
+  }
+}
+
+private final class MediaUploadResponse: NoAvatarRedirect, URLSessionDataDelegate, @unchecked Sendable {
+  private let continuation: CheckedContinuation<(Int, String), Error>
+  private let progress: (Int64) -> Void
+  private var data = Data()
+
+  init(_ continuation: CheckedContinuation<(Int, String), Error>, _ progress: @escaping (Int64) -> Void) {
+    self.continuation = continuation
+    self.progress = progress
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard data.count <= 8192 - self.data.count else {
+      dataTask.cancel()
+      return
+    }
+    self.data.append(data)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                  totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+    progress(totalBytesSent)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    if let error {
+      continuation.resume(throwing: error)
+    } else if let response = task.response as? HTTPURLResponse,
+              let body = String(data: data, encoding: .utf8) {
+      continuation.resume(returning: (response.statusCode, body))
+    } else {
+      continuation.resume(throwing: AvatarTransferError.response)
+    }
+  }
+}
+
+@available(iOS 17.0, *)
+private func uploadMedia(
+  _ input: String, _ source: String, _ headers: [String: String], _ size: Int,
+  _ progress: @escaping (Int64) -> Void
+) async throws -> [String: Any] {
+  guard let url = URL(string: input), url.scheme == "https",
+        let host = url.host, url.user == nil, url.password == nil,
+        url.port == nil || url.port == 443, url.path == "/upload",
+        url.query == nil, url.fragment == nil,
+        host.range(of: #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"#, options: .regularExpression) != nil,
+        host.range(of: #"\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$"#, options: .regularExpression) == nil,
+        let file = URL(string: source)?.resolvingSymlinksInPath(), file.isFileURL,
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+        file.path.hasPrefix(directory.appendingPathComponent("attachment-blobs").resolvingSymlinksInPath().path + "/"),
+        file.lastPathComponent.range(of: #"^sent-[0-9a-f]{64}\.bin$"#, options: .regularExpression) != nil,
+        (17...(32 * 1024 * 1024)).contains(size),
+        try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == size
+  else { throw AvatarTransferError.destination }
+  let addresses = try publicAddresses(host)
+  try Task.checkCancellation()
+  let gate = try AvatarConnectGate(host: host, addresses: addresses)
+  defer { gate.close() }
+  let endpoint = try await gate.start()
+  try Task.checkCancellation()
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.timeoutIntervalForRequest = 20
+  configuration.timeoutIntervalForResource = 300
+  configuration.httpCookieStorage = nil
+  configuration.httpShouldSetCookies = false
+  configuration.urlCredentialStorage = nil
+  configuration.urlCache = nil
+  var proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
+  proxy.allowFailover = false
+  configuration.proxyConfigurations = [proxy]
+  var request = URLRequest(url: url)
+  request.httpMethod = "PUT"
+  request.allHTTPHeaderFields = headers
+  request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+  let cancellation = UploadCancellation()
+  let (status, body) = try await withTaskCancellationHandler {
+    try await withCheckedThrowingContinuation { continuation in
+      let delegate = MediaUploadResponse(continuation, progress)
+      let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+      let task = session.uploadTask(with: request, fromFile: file)
+      cancellation.start(task)
+      session.finishTasksAndInvalidate()
+    }
+  } onCancel: {
+    cancellation.cancel()
+  }
+  return ["status": status, "body": body]
+}
+
+private final class UploadCancellation: @unchecked Sendable {
+  private let lock = NSLock()
+  private var task: URLSessionUploadTask?
+  private var cancelled = false
+
+  func start(_ task: URLSessionUploadTask) {
+    lock.lock()
+    defer { lock.unlock() }
+    self.task = task
+    if cancelled { task.cancel() } else { task.resume() }
+  }
+
+  func cancel() {
+    lock.lock()
+    defer { lock.unlock() }
+    cancelled = true
+    task?.cancel()
   }
 }
 

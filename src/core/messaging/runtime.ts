@@ -135,23 +135,25 @@ export function createMessagingService({
   );
   let unlockActive = false;
   let unlockAllowed = false;
+  let keepBackgroundUploads = false;
   let unlockGeneration = 0;
   const chatsEnabledKey = "chat.enabled";
   let chatsEnabled = readState(chatsEnabledKey) !== "false";
   let chatGeneration = 0;
 
-  function setUnlockActive(active: boolean) {
+  function setUnlockActive(active: boolean, background = false) {
     unlockAllowed = active;
+    keepBackgroundUploads = background;
     updateUnlocks();
   }
 
   function updateUnlocks() {
     const active = unlockAllowed && chatsEnabled;
+    media?.setActive(active, chatsEnabled && keepBackgroundUploads);
     if (active === unlockActive) return;
     unlockActive = active;
     unlockGeneration++;
     unlocks.setActive(active);
-    media?.setActive(active);
     if (active) void flush();
   }
   const transport = createMessagingRelays(signer);
@@ -563,9 +565,9 @@ export function createMessagingService({
     }
   }
 
-  function stop() {
+  function stop(background = false) {
     requestCatchup?.();
-    setUnlockActive(false);
+    setUnlockActive(false, background);
     generation++;
     replyRoutes.clear();
     revision++;
@@ -973,10 +975,17 @@ export function createMessagingService({
                 continue;
               }
               let url: string;
+              const uploadLive = () =>
+                live() &&
+                chat.message(message.peerKey, message.id)?.status === "pending";
               try {
-                url = await media.upload(message.peerKey, message.id, live);
+                url = await media.upload(
+                  message.peerKey,
+                  message.id,
+                  uploadLive,
+                );
               } catch (error) {
-                if (live()) {
+                if (uploadLive()) {
                   chat.setStatus(
                     message.id,
                     "failed",
@@ -989,7 +998,7 @@ export function createMessagingService({
                 if (interrupted) break;
                 continue;
               }
-              if (!live()) {
+              if (!uploadLive()) {
                 if (!active() || !unlockActive) {
                   interrupted = true;
                   break;
@@ -1019,6 +1028,7 @@ export function createMessagingService({
                 )
               )
                 continue;
+              media.finishUpload(message.id);
               expectedId = rumor.id;
             }
             if (
@@ -1283,6 +1293,19 @@ export function createMessagingService({
     media?.cancelUpload(id, record.file.hash);
   }
 
+  function pauseAttachment(peerKey: string, id: string) {
+    const record = chat.attachment(peerKey, id);
+    if (
+      !unlockActive ||
+      record?.status !== "pending" ||
+      record.url ||
+      !media?.canPauseUpload(id)
+    )
+      return;
+    chat.setStatus(id, "failed", "media-paused");
+    media.pauseUpload(id);
+  }
+
   function retry(peerKey: string, id: string) {
     if (!chatsEnabled) return;
     if (privacy?.isBlocked(peerKey)) return;
@@ -1508,6 +1531,7 @@ export function createMessagingService({
     retryEdit,
     sendAttachment,
     cancelAttachment,
+    pauseAttachment,
     retry,
     toggleReaction,
     sendCall,

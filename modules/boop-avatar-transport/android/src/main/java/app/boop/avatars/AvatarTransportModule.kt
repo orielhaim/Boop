@@ -10,7 +10,10 @@ import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okio.BufferedSink
 import java.io.File
 import java.io.IOException
 import java.net.Inet4Address
@@ -73,12 +76,12 @@ class AvatarTransportModule : Module() {
 
   private val attachmentClient = client.newBuilder()
     .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
-    .callTimeout(58, TimeUnit.SECONDS)
+    .callTimeout(300, TimeUnit.SECONDS)
     .build()
 
   override fun definition() = ModuleDefinition {
     Name("BoopAvatarTransport")
-    Events("attachmentProgress")
+    Events("attachmentProgress", "uploadProgress")
 
     Function("available") { true }
 
@@ -98,6 +101,58 @@ class AvatarTransportModule : Module() {
     }
     AsyncFunction("downloadPreview") { id: String, url: String, output: String, image: Boolean ->
       download(id, url, output, null, null, image)
+    }
+    AsyncFunction("uploadAttachment") { id: String, url: String, source: String, headers: Map<String, String>, size: Int ->
+      uploadAttachment(id, url, source, headers, size)
+    }
+  }
+
+  private fun uploadAttachment(id: String, url: String, source: String, headers: Map<String, String>, size: Int): Map<String, Any> {
+    val job = jobs[id] ?: throw IOException("Media operation missing")
+    try {
+      if (job.cancelled.get()) throw IOException("Media cancelled")
+      val address = url.toHttpUrl()
+      require(address.isHttps && address.port == 443 && address.username.isEmpty() &&
+        address.password.isEmpty() && allowedHost.matches(address.host) &&
+        !localSuffix.containsMatchIn(address.host) && address.encodedPath == "/upload" &&
+        address.query == null && address.fragment == null)
+      val context = appContext.reactContext ?: throw IOException("No React context")
+      val root = File(context.filesDir, "attachment-blobs").canonicalFile
+      val file = File(URI(source)).canonicalFile
+      require(file.path.startsWith(root.path + File.separator) &&
+        file.name.matches(Regex("sent-[a-f0-9]{64}\\.bin")) &&
+        size in 17..(32 * 1024 * 1024) && file.length() == size.toLong())
+      val body = object : RequestBody() {
+        override fun contentType() = "application/octet-stream".toMediaType()
+        override fun contentLength() = size.toLong()
+        override fun isOneShot() = true
+        override fun writeTo(sink: BufferedSink) {
+          file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var sent = 0
+            while (sent < size) {
+              if (job.cancelled.get()) throw IOException("Media cancelled")
+              val count = input.read(buffer, 0, minOf(buffer.size, size - sent))
+              if (count <= 0) throw IOException("Media source ended")
+              sink.write(buffer, 0, count)
+              sent += count
+              sendEvent("uploadProgress", mapOf("id" to id, "sent" to sent))
+            }
+          }
+        }
+      }
+      val request = Request.Builder().url(address).put(body).header("Accept-Encoding", "identity")
+      headers.forEach { (key, value) -> request.header(key, value) }
+      val call = attachmentClient.newCall(request.build())
+      job.call = call
+      if (job.cancelled.get()) call.cancel()
+      return call.execute().use { response ->
+        val data = response.body?.source()
+        if (data?.request(8193) == true) throw IOException("Media response too large")
+        mapOf("status" to response.code, "body" to (data?.readUtf8() ?: ""))
+      }
+    } finally {
+      jobs.remove(id, job)
     }
   }
 
@@ -149,7 +204,7 @@ class AvatarTransportModule : Module() {
                   if (total > limit || call.isCanceled()) throw IOException("Avatar size or cancellation")
                   digest.update(buffer, 0, read)
                   sink.write(buffer, 0, read)
-                  if (attachmentLimit != null && expected > 0 &&
+                  if (attachmentLimit != null &&
                       (total - lastProgress >= 64 * 1024 || total.toLong() == expected)) {
                     lastProgress = total
                     sendEvent("attachmentProgress", mapOf("id" to id, "received" to total, "total" to expected))

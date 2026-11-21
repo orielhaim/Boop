@@ -6,6 +6,7 @@ import {
   type UploadFailure,
   type UploadMime,
   type UploadProgress,
+  type UploadContext,
 } from "./blossom";
 import type { createMediaSettings, MediaRole } from "./servers";
 import { maxAttachmentBytes } from "./protocol";
@@ -97,25 +98,38 @@ export function createMediaUploads(
     },
     async upload(
       role: MediaRole,
-      bytes: Uint8Array<ArrayBuffer>,
+      input:
+        | Uint8Array<ArrayBuffer>
+        | { uri: string; size: number; hash: string; context?: UploadContext },
       options: {
         signal: AbortSignal;
         expectedHash?: string;
         progress?: (progress: UploadProgress) => void;
+        canStart?: () => boolean;
       },
     ): Promise<MediaUploadResult> {
-      const { signal, expectedHash, progress } = options;
-      const size = bytes.length;
+      const { signal, expectedHash, progress, canStart } = options;
+      const checkLive = () => {
+        if (signal.aborted || canStart?.() === false)
+          throw new BlossomError("cancelled");
+      };
+      const size = input instanceof Uint8Array ? input.length : input.size;
       if (!size || size > maxAttachmentBytes) throw new BlossomError("size");
       if (role === "attachment" && !expectedHash)
         throw new BlossomError("hash");
-      const hash = await http.sha256(bytes);
+      const hash =
+        input instanceof Uint8Array ? await http.sha256(input) : input.hash;
       if (expectedHash && hash !== expectedHash) throw new BlossomError("hash");
-      const blob = { bytes, size, hash, mime: mimeFor(role) };
+      const blob = {
+        ...(input instanceof Uint8Array ? { bytes: input } : input),
+        size,
+        hash,
+        mime: mimeFor(role),
+      };
       const servers = settings.configured(role);
       let last = new BlossomError("configuration");
       for (const server of servers) {
-        if (signal.aborted) throw new BlossomError("cancelled");
+        checkLive();
         const allowed = (origin: string) =>
           settings
             .configured(role)
@@ -131,12 +145,24 @@ export function createMediaUploads(
         }
         let url: string;
         try {
-          url = await client.put(server.origin, blob, signal, {
-            progress: (phase) => {
-              checkPreference(server.origin);
-              progress?.(phase);
-            },
-          });
+          const put = () =>
+            client.put(server.origin, blob, signal, {
+              beforeRequest() {
+                checkLive();
+                checkPreference(server.origin);
+              },
+              progress,
+            });
+          try {
+            url = await put();
+          } catch (error) {
+            if (
+              !(error instanceof BlossomError) ||
+              error.code !== "authorization"
+            )
+              throw error;
+            url = await put();
+          }
           record(server.origin, role, {
             checkedAt: now(),
             preflight: getHealth(server.origin, role)?.preflight,
@@ -157,7 +183,7 @@ export function createMediaUploads(
                 candidate.origin !== server.origin &&
                 !priorRejection(candidate.origin, role, size),
             );
-        if (!target || signal.aborted) return { url };
+        if (!target || signal.aborted || canStart?.() === false) return { url };
         const mirror = async () => {
           progress?.("mirroring");
           try {
@@ -173,7 +199,9 @@ export function createMediaUploads(
                 throw error;
               // BUD-04 is optional. Reuse the exact bytes for an opted-in destination.
               checkPreference(target.origin);
-              await client.put(target.origin, blob, signal);
+              const fallback =
+                "uri" in blob ? { ...blob, context: undefined } : blob;
+              await client.put(target.origin, fallback, signal);
             }
             return true;
           } catch (error) {

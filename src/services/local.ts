@@ -330,16 +330,21 @@ export function MessagingLifecycle() {
       );
       messaging.setUnlockActive(
         AppState.currentState === "active" && !lock.getState().locked,
+        AppState.currentState === "background" ||
+          AppState.currentState === "inactive",
       );
     }
     function background() {
       calling.setForeground(false);
-      if (!calling.isRequestingMicrophone()) messaging.stop();
+      if (!calling.isRequestingMicrophone()) messaging.stop(true);
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
-      messaging.setUnlockActive(state === "active" && !lock.getState().locked);
+      messaging.setUnlockActive(
+        state === "active" && !lock.getState().locked,
+        state !== "active",
+      );
       conversations.setPrefetchEnabled(
         messaging.getChatsEnabled() &&
           state === "active" &&

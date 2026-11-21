@@ -3,7 +3,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { Image } from "expo-image";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { createVideoPlayer } from "expo-video";
-import { validateVideo } from "./audio-format";
+import { validateAttachmentFile } from "./file-format";
 import { removeMediaFile } from "./files";
 import {
   type AttachmentMetadata,
@@ -92,7 +92,7 @@ export async function preparePickedAttachment(
         image.release();
       }
     } else if (item.type === "video") {
-      validateVideo(await source.bytes());
+      validateAttachmentFile(source, { kind, mime: "video/mp4" });
       const player = createVideoPlayer(null);
       let preview: string | undefined;
       let duration = item.duration;

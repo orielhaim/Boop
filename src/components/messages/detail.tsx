@@ -1852,7 +1852,27 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             });
         }
       }
-      if (message.media && (message.pending || message.isFailed))
+      if (message.media && canUseMedia()) {
+        if (message.pending && attachments.canPauseUpload(message._id)) {
+          actions.push({
+            key: "media-pause-upload",
+            label: t("messages:mediaPauseUpload"),
+            onPress: () => messaging.pauseAttachment(peerKey, message._id),
+          });
+        } else if (message.failure === "media-paused") {
+          actions.push({
+            key: "media-resume-upload",
+            label: t("messages:mediaResumeUpload"),
+            onPress: () => messaging.retry(peerKey, message._id),
+          });
+        }
+      }
+      if (
+        message.media &&
+        (message.pending ||
+          message.isFailed ||
+          message.failure === "media-paused")
+      )
         actions.push({
           key: "cancel-voice",
           label: t(

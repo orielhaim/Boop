@@ -110,7 +110,7 @@ export function toDetailMessage(
     failure: row.failure,
     pending: row.status === "pending",
     sent: row.status === "sent",
-    isFailed: row.status === "failed",
+    isFailed: row.status === "failed" && row.failure !== "media-paused",
     replyMessage: row.replyTo
       ? source && source.deletedAt === null
         ? toQuote(source, participants, lockedLabel, mediaLabel)

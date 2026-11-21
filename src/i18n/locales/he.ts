@@ -137,6 +137,9 @@ export const he = {
     mediaStorageFailed: "אין מספיק מקום לשמירת הקובץ המצורף.",
     mediaOpenFailed: "לא ניתן לפתוח את העותק המקומי.",
     mediaCancelUpload: "ביטול העלאת הקובץ המצורף",
+    mediaPauseUpload: "השהיית ההעלאה",
+    mediaResumeUpload: "העלאה מחדש",
+    mediaUploadPaused: "ההעלאה הושהתה. בחידוש ההעלאה הקובץ יישלח מההתחלה.",
     mediaUploadFailed: "לא ניתן להעלות את הקובץ המוצפן.",
     mediaVideoTooShort:
       "יש ללחוץ לחיצה ממושכת על כפתור המצלמה כדי להקליט הודעת וידאו ארוכה יותר.",
@@ -181,6 +184,7 @@ export const he = {
     voiceMicrophone: "כדי להקליט הודעה קולית, יש לאפשר גישה למיקרופון בהגדרות.",
     voiceUpload_checking: "נבדקת התאמה להעלאה…",
     voiceUpload_uploading: "ההקלטה המוצפנת מועלת…",
+    voiceUploadProgress: "ההקלטה המוצפנת מועלת, {{percent}}%",
     voiceUpload_validating: "ההעלאה נבדקת…",
     voiceUpload_mirroring: "נשמר עותק בשרת הגיבוי…",
     voiceUploadServer: "שרת להעלאת הודעות קוליות",
