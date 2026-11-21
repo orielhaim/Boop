@@ -88,7 +88,7 @@ class BoopSystemCallingModule : Module() {
         appContext.currentActivity?.let { SystemCallPip.refresh(it) }
       }
     }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
-    AsyncFunction("setAvatar") Coroutine { id: String, file: String ->
+    AsyncFunction("setAvatar") Coroutine { id: String, file: String? ->
       SystemCallSession.setAvatar(id, file)
     }
     AsyncFunction("route") Coroutine { id: String, route: String ->
@@ -128,6 +128,7 @@ internal object SystemCallSession {
     var readyForAudio = false
     var platformDisconnecting = false
     var avatar: IconCompat? = null
+    var avatarGeneration = 0
     var groupTitle: String? = null
     var participants: String? = null
   }
@@ -229,13 +230,17 @@ internal object SystemCallSession {
     refreshNotification(call)
   }
 
-  suspend fun setAvatar(id: String, path: String) = withContext(Dispatchers.Main.immediate) {
+  suspend fun setAvatar(id: String, path: String?) = withContext(Dispatchers.Main.immediate) {
     val call = current?.takeIf { it.id == id && !it.privateMode } ?: return@withContext
-    val icon = withContext(Dispatchers.IO) {
+    val generation = ++call.avatarGeneration
+    val icon = if (path == null) null else withContext(Dispatchers.IO) {
       runCatching {
-        val cache = call.context.cacheDir.canonicalFile
-        val file = File(path).canonicalFile
-        if (!file.path.startsWith(cache.path + File.separator)) return@runCatching null
+        val file = File(java.net.URI(path)).canonicalFile
+        val allowed = listOf("avatar-cache", "avatar-local").any { directory ->
+          val root = File(call.context.filesDir, directory).canonicalFile
+          file.path.startsWith(root.path + File.separator)
+        }
+        if (!allowed) return@runCatching null
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, options)
         val largestDimension = maxOf(options.outWidth, options.outHeight)
@@ -244,8 +249,8 @@ internal object SystemCallSession {
         options.inJustDecodeBounds = false
         BitmapFactory.decodeFile(file.path, options)?.let(IconCompat::createWithBitmap)
       }.getOrNull()
-    } ?: return@withContext
-    if (current === call && !call.privateMode) {
+    }
+    if (current === call && !call.privateMode && generation == call.avatarGeneration) {
       call.avatar = icon
       refreshNotification(call)
     }

@@ -1,3 +1,9 @@
+import { AvatarPicker } from "@/components/avatars/picker";
+import {
+  SettingsDescription,
+  SettingsGroup,
+  SettingsRow,
+} from "@/components/settings/group";
 import { Host, Switch } from "@expo/ui";
 import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
@@ -32,10 +38,12 @@ export default function ContactDetail() {
   const key =
     typeof params.key === "string" ? parsePublicKey(params.key) : null;
   const contact = useContact(key ?? "");
-  const { db } = useLocal();
+  const { db, avatars } = useLocal();
   const block = useBlockAction(key ?? "");
   const chatsEnabled = useChatsEnabled();
   const [showQr, setShowQr] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [notice, setNotice] = useState("");
   const { colors, theme } = useTheme();
 
   if (!key)
@@ -87,11 +95,25 @@ export default function ContactDetail() {
       </Screen>
     );
 
+  if (selecting)
+    return (
+      <Screen scroll={false}>
+        <View style={styles.editor}>
+          <AvatarPicker
+            onCancel={() => setSelecting(false)}
+            onSave={(file) => {
+              avatars.saveOverride(key, file.uri);
+              setSelecting(false);
+            }}
+          />
+        </View>
+      </Screen>
+    );
   return (
     <Screen>
       <Hero>
         <View style={styles.profile}>
-          <Avatar name={contact.name} uri={contact.avatarUrl} size="xl" />
+          <Avatar name={contact.name} publicKey={contact.publicKey} size="xl" />
           <Ink kind="title" accessibilityRole="header" style={styles.center}>
             {contact.name}
           </Ink>
@@ -137,6 +159,28 @@ export default function ContactDetail() {
           </Action>
         )}
       </View>
+      {!block.blocked && (
+        <SettingsGroup title={t("settings:photoLocal")}>
+          <SettingsRow
+            title={t("settings:photoChange")}
+            detail={t("settings:photoLocalHelp")}
+            onPress={() => setSelecting(true)}
+          />
+          {avatars.hasOverride(key) && (
+            <SettingsRow
+              title={t("settings:photoRemove")}
+              onPress={() => {
+                try {
+                  avatars.saveOverride(key, null);
+                } catch {
+                  setNotice(t("security:privacyWriteFailed"));
+                }
+              }}
+            />
+          )}
+        </SettingsGroup>
+      )}
+      {notice && <SettingsDescription>{notice}</SettingsDescription>}
       <Section>{t("contacts:callPermissions")}</Section>
       <Card style={styles.key}>
         <Host
@@ -167,6 +211,7 @@ export default function ContactDetail() {
   );
 }
 const styles = StyleSheet.create({
+  editor: { flex: 1, justifyContent: "center", paddingHorizontal: space.xl },
   qr: { backgroundColor: "#fff", padding: space.md, alignSelf: "center" },
   address: { writingDirection: "ltr", textAlign: "left" },
   center: { textAlign: "center" },

@@ -1,16 +1,11 @@
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  GlassSheet,
-  GlassSheetContent,
-  GlassSheetTitle,
-} from "@/components/glassyui/glass-sheet";
-import {
   SettingsDescription,
   SettingsGroup,
-  SettingsRow,
   SettingsToggle,
 } from "@/components/settings/group";
+import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { lockTimeouts } from "@/core/security/app-lock";
 import { namespaces } from "@/i18n";
@@ -27,7 +22,6 @@ export default function AppLockSettings() {
   const { t } = useTranslation(namespaces);
   const { lock } = useLocal();
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
-  const [selectTimeout, setSelectTimeout] = useState(false);
   const [error, setError] = useState("");
 
   return (
@@ -46,10 +40,22 @@ export default function AppLockSettings() {
           }}
         />
         {state.enabled && (
-          <SettingsRow
+          <SettingsMenuRow
             title={t("security:lockAfter")}
-            value={t(labels[state.timeout])}
-            onPress={() => setSelectTimeout(true)}
+            value={state.timeout}
+            options={lockTimeouts.map((value) => ({
+              value,
+              label: t(labels[value]),
+            }))}
+            disabled={state.authenticating}
+            onChange={(value) => {
+              try {
+                lock.setTimeout(value);
+                setError("");
+              } catch {
+                setError(t("security:saveTimeoutError"));
+              }
+            }}
           />
         )}
       </SettingsGroup>
@@ -62,32 +68,6 @@ export default function AppLockSettings() {
           <SettingsDescription>{t("security:lockHint")}</SettingsDescription>
         )
       )}
-      <GlassSheet
-        open={selectTimeout && state.enabled}
-        onOpenChange={setSelectTimeout}
-      >
-        <GlassSheetContent>
-          <GlassSheetTitle>{t("security:lockAfter")}</GlassSheetTitle>
-          <SettingsGroup>
-            {lockTimeouts.map((timeout) => (
-              <SettingsRow
-                key={timeout}
-                title={t(labels[timeout])}
-                selected={state.timeout === timeout}
-                onPress={() => {
-                  try {
-                    lock.setTimeout(timeout);
-                    setError("");
-                  } catch {
-                    setError(t("security:saveTimeoutError"));
-                  }
-                  setSelectTimeout(false);
-                }}
-              />
-            ))}
-          </SettingsGroup>
-        </GlassSheetContent>
-      </GlassSheet>
     </Screen>
   );
 }

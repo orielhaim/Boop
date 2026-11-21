@@ -1,3 +1,4 @@
+import { useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { FlashList } from "@shopify/flash-list";
 import { router } from "expo-router";
 import { useRef, useState } from "react";
@@ -41,6 +42,9 @@ export default function Contacts() {
       (filter !== "favorites" || contact.favorite) &&
       byNameOrKey(query, contact.publicKey, contact.name),
   );
+  const visibleAvatars = useAvatarVisibility<(typeof contacts)[number]>(
+    (contact) => contact.publicKey,
+  );
   const add = () => router.push("/contact/new");
 
   return (
@@ -74,6 +78,7 @@ export default function Contacts() {
         </GlassSegmentedControl>
       </View>
       <FlashList
+        {...visibleAvatars}
         data={contacts}
         extraData={expandedKey}
         keyExtractor={(item) => item.publicKey}
@@ -138,7 +143,7 @@ function ContactRow({
   const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
   const { colors } = useTheme();
   const swipeable = useRef<SwipeableMethods>(null);
-  const { name, publicKey, avatarUrl, favorite } = contact;
+  const { name, publicKey, favorite } = contact;
   const block = useBlockAction(publicKey);
   const chatsEnabled = useChatsEnabled();
   const { db } = useLocal();
@@ -189,7 +194,9 @@ function ContactRow({
       >
         <View style={{ backgroundColor: colors.surface }}>
           <Row
-            leading={<Avatar name={name} uri={avatarUrl} />}
+            leading={
+              <Avatar name={name} publicKey={publicKey} autoLoad={false} />
+            }
             title={name}
             trailing={
               <View style={styles.indicators}>
@@ -212,7 +219,7 @@ function ContactRow({
                 <IconButton
                   icon={icon}
                   disabled={route === "/call/[key]" && block.blocked}
-                  label={`${t(label)} · ${isolateText(name)}`}
+                  label={`${t(label)} Ã‚Â· ${isolateText(name)}`}
                   onPress={() =>
                     router.push({ pathname: route, params: { key: publicKey } })
                   }

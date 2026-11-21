@@ -86,6 +86,7 @@ test("migration creates the app tables and enforces event and contact uniqueness
       .values()
       .flat(),
   ).toEqual([
+    "avatar_cache",
     "blocked_identities",
     "call_history",
     "communication_grants",
@@ -96,6 +97,7 @@ test("migration creates the app tables and enforces event and contact uniqueness
     "message_timelocks",
     "message_translations",
     "messages",
+    "nostr_profiles",
     "relay_settings",
     "settings",
   ]);
@@ -271,13 +273,16 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
     "chats/target",
     "chats/translation",
     "connections",
+    "connections/media-storage",
     "identity",
+    "identity/edit-profile",
     "language",
     "privacy",
     "privacy/app-lock",
     "privacy/blocked",
     "privacy/incoming-video",
     "privacy/permissions",
+    "privacy/profile-photos",
     "sim",
   ]);
   expect(

@@ -316,7 +316,7 @@ export function createMessagingRelays(signer: NDKSigner) {
 
   async function publish(
     event: NDKEvent,
-    relayUrls: string[],
+    relayUrls: readonly string[],
     active: () => boolean,
   ) {
     const targets = relayUrls.map(getRelay);
@@ -422,6 +422,33 @@ export function createMessagingRelays(signer: NDKSigner) {
     connect,
     connected,
     watchInbox,
+    watchProfiles: (
+      relays: NDKRelay[],
+      authors: string[],
+      onEvent: (event: unknown, author: string) => void,
+      onEose: () => void,
+    ) =>
+      subscription(
+        relays,
+        { kinds: [0], authors, limit: authors.length * 2 },
+        (event) => onEvent(event.rawEvent(), event.pubkey),
+        onEose,
+      ),
+    async publishProfile(
+      content: string,
+      createdAt: number,
+      relays: readonly string[],
+      active: () => boolean,
+    ) {
+      const event = new NDKEvent(undefined, {
+        kind: 0,
+        content,
+        created_at: createdAt,
+        tags: [],
+      });
+      await event.sign(signer);
+      return (await publish(event, relays, active)) ? event.rawEvent() : null;
+    },
     findInbox,
     findCallInbox,
     lookupLists,

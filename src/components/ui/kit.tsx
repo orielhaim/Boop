@@ -1,3 +1,4 @@
+import { useAvatar } from "@/core/avatars/use-avatar";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
@@ -43,6 +44,7 @@ const icons = {
   chat: { ios: "bubble.left.fill", android: "chat_bubble" },
   person: { ios: "person.crop.circle", android: "account_circle" },
   add: { ios: "plus", android: "add" },
+  subtract: { ios: "minus", android: "remove" },
   addPerson: { ios: "person.badge.plus", android: "person_add" },
   search: { ios: "magnifyingglass", android: "search" },
   back: { ios: "arrow.left", android: "arrow_back" },
@@ -65,6 +67,7 @@ const icons = {
   send: { ios: "arrow.up", android: "arrow_upward" },
   reply: { ios: "arrowshape.turn.up.left", android: "reply" },
   forward: { ios: "arrowshape.turn.up.right", android: "forward" },
+  edit: { ios: "pencil", android: "edit" },
   erase: { ios: "delete.left", android: "backspace" },
   mic: { ios: "mic.slash", android: "mic_off" },
   microphone: { ios: "mic.fill", android: "mic" },
@@ -335,13 +338,16 @@ export function Card({
 
 export function Avatar({
   name,
-  uri,
+  publicKey,
+  autoLoad = true,
   size = "md",
 }: {
   name: string;
-  uri?: string | null;
+  publicKey?: string;
+  autoLoad?: boolean;
   size?: GlassAvatarSize;
 }) {
+  const uri = useAvatar(publicKey, autoLoad);
   return (
     <GlassAvatar
       importantForAccessibility="no"

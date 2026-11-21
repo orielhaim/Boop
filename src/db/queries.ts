@@ -69,7 +69,6 @@ export function callList<TResult>(db: ReadyDatabase<TResult>) {
     .select({
       ...getTableColumns(schema.callHistory),
       name: schema.contacts.name,
-      avatarUrl: schema.contacts.avatarUrl,
     })
     .from(schema.callHistory)
     .leftJoin(

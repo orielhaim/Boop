@@ -1,3 +1,5 @@
+import { useAvatarVisibility } from "@/core/avatars/use-avatar";
+import { ProfileChatCell } from "@/components/messages/profile-chat-cell";
 import { ChatList } from "@kesha-antonov/react-native-chat";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -23,7 +25,6 @@ export default function Requests() {
     return {
       id: publicKey,
       title,
-      avatar: contact?.avatarUrl ?? undefined,
       lastMessage: latest && {
         _id: latest.id,
         createdAt: latest.sentAt,
@@ -32,11 +33,16 @@ export default function Requests() {
       },
     };
   });
+  const visibleAvatars = useAvatarVisibility<(typeof chats)[number]>(
+    (item) => item.id,
+  );
   return (
     <Screen scroll={false}>
       <ChatList
         {...kit}
         chats={chats}
+        listProps={visibleAvatars}
+        renderChat={(props) => <ProfileChatCell {...props} />}
         user={{ _id: identity.publicKey }}
         isHeaderVisible={false}
         isSwipeEnabled={false}

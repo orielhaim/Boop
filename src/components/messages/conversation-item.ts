@@ -43,7 +43,6 @@ export function toConversationListItem(
       ? (row.preview ?? undefined)
       : undefined,
     title: row.name ?? `${address.slice(0, 15)}…`,
-    avatar: row.avatarUrl ?? undefined,
     kind: "private",
     lastMessage:
       row.lastMessageId && row.lastMessageAt !== null

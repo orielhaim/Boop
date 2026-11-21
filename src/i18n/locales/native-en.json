@@ -1,6 +1,6 @@
 {
   "ios": {
-    "NSCameraUsageDescription": "Scan Boop addresses and share your camera when you choose during a call.",
+    "NSCameraUsageDescription": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call.",
     "NSMicrophoneUsageDescription": "Use the microphone for peer-to-peer audio calls.",
     "NSFaceIDUsageDescription": "Use Face ID to unlock Boop when App Lock is enabled."
   }

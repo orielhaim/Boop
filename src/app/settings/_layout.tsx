@@ -14,6 +14,18 @@ export default function SettingsLayout() {
       />
 
       <Stack.Screen
+        name="identity/edit-profile"
+        options={{ title: t("settings:editProfile") }}
+      />
+      <Stack.Screen
+        name="privacy/profile-photos"
+        options={{ title: t("settings:profilePhotos") }}
+      />
+      <Stack.Screen
+        name="connections/media-storage"
+        options={{ title: t("settings:mediaStorage") }}
+      />
+      <Stack.Screen
         name="appearance"
         options={{ title: t("settings:appearance") }}
       />

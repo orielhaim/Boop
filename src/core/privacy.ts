@@ -1,3 +1,4 @@
+import type { ProfilePhotoPolicy } from "@/core/avatars/protocol";
 import { and, count, eq, isNotNull } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import type { MessageInput, MessagingRepository } from "@/db/messaging";
@@ -71,14 +72,18 @@ export function createPrivacy<Result>(
   const blockListeners = new Set<(key: string) => void>();
   const calls = preference(db, "privacy.calls");
   const messagesPolicy = preference(db, "privacy.messages");
-  let preferences: PrivacyPreferences = {
-    calls: calls === "contacts" || calls === "nobody" ? calls : "everyone",
-    messages:
-      messagesPolicy === "contacts" || messagesPolicy === "initiated"
-        ? messagesPolicy
-        : "everyone",
-    requests: preference(db, "privacy.requests") === "true",
-  };
+  const photos = preference(db, "privacy.profilePhotos");
+  let preferences: PrivacyPreferences & { profilePhotos: ProfilePhotoPolicy } =
+    {
+      profilePhotos:
+        photos === "everyone" || photos === "nobody" ? photos : "contacts",
+      calls: calls === "contacts" || calls === "nobody" ? calls : "everyone",
+      messages:
+        messagesPolicy === "contacts" || messagesPolicy === "initiated"
+          ? messagesPolicy
+          : "everyone",
+      requests: preference(db, "privacy.requests") === "true",
+    };
   let revision = 0;
   function notify() {
     revision++;
@@ -114,6 +119,8 @@ export function createPrivacy<Result>(
       .get()?.total ?? 0;
   return {
     isBlocked,
+    isContact,
+    photoPolicy: () => preferences.profilePhotos,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -131,9 +138,9 @@ export function createPrivacy<Result>(
       preferences.messages === "initiated"
         ? { ...preferences, requests: false }
         : preferences,
-    set<K extends keyof PrivacyPreferences>(
+    set<K extends keyof typeof preferences>(
       key: K,
-      value: PrivacyPreferences[K],
+      value: (typeof preferences)[K],
     ) {
       if (key === "requests" && preferences.messages === "initiated") return;
       setPreference(db, `privacy.${key}`, String(value));

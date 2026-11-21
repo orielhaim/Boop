@@ -1,3 +1,4 @@
+import { parseProfile } from "../src/core/avatars/protocol";
 import { expect, spyOn, test } from "bun:test";
 import {
   NDKEvent,
@@ -139,5 +140,84 @@ test("ringing and answer share an in-flight verified inbox lookup within one cal
     transport.unconfigure(relay);
     transport.closePeerRelays();
     void server.stop(true);
+  }
+});
+
+test("a signed profile publishes only after relay acknowledgment and is discovered live", async () => {
+  const signer = new NDKPrivateKeySigner("01".repeat(32));
+  const author = signer.pubkey;
+  const watched = Promise.withResolvers<void>();
+  const received = Promise.withResolvers<unknown>();
+  const transport = createMessagingRelays(signer);
+  let subscriptionId: string | undefined;
+  let accepts = true;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return;
+      return new Response(null, { status: 400 });
+    },
+    websocket: {
+      message(ws, data) {
+        const frame: unknown = JSON.parse(String(data));
+        if (!Array.isArray(frame)) return;
+        if (frame[0] === "REQ" && typeof frame[1] === "string") {
+          subscriptionId = frame[1];
+          expect(frame[2]).toMatchObject({ kinds: [0], authors: [author] });
+          ws.send(JSON.stringify(["EOSE", subscriptionId]));
+        }
+        if (frame[0] === "EVENT") {
+          ws.send(
+            JSON.stringify([
+              "OK",
+              frame[1].id,
+              accepts,
+              accepts ? "" : "blocked: test refusal",
+            ]),
+          );
+          if (accepts && subscriptionId)
+            ws.send(JSON.stringify(["EVENT", subscriptionId, frame[1]]));
+        }
+      },
+    },
+  });
+  const url = `ws://127.0.0.1:${server.port}/`;
+  const relay = transport.addConfigured(url, false);
+  const content = JSON.stringify({
+    picture: "https://media.example.com/a.jpg",
+    about: "Preserved",
+  });
+  const timestamp = Math.floor(Date.now() / 1000);
+  let close: (() => void) | undefined;
+  try {
+    expect(await transport.connect(relay)).toBe(true);
+    close = transport.watchProfiles(
+      [relay],
+      [author],
+      (event, key) => {
+        expect(key).toBe(author);
+        received.resolve(event);
+      },
+      watched.resolve,
+    );
+    await watched.promise;
+    const event = await transport.publishProfile(
+      content,
+      timestamp,
+      [url],
+      () => true,
+    );
+    const remote = await received.promise;
+    expect(parseProfile(event, author)?.fields).toEqual(JSON.parse(content));
+    expect(parseProfile(remote, author)?.eventId).toBe(event?.id);
+    accepts = false;
+    expect(
+      await transport.publishProfile("{}", timestamp + 1, [url], () => true),
+    ).toBeNull();
+  } finally {
+    close?.();
+    transport.unconfigure(relay);
+    server.stop(true);
   }
 });

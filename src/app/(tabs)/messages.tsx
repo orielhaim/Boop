@@ -1,3 +1,5 @@
+import { useAvatarVisibility } from "@/core/avatars/use-avatar";
+import { ProfileChatCell } from "@/components/messages/profile-chat-cell";
 import { ChatList } from "@kesha-antonov/react-native-chat";
 import { Redirect, router } from "expo-router";
 import { useMemo, useState, useSyncExternalStore } from "react";
@@ -30,6 +32,9 @@ function MessageInbox() {
   const { t } = useTranslation(namespaces);
   const { identity, chat, conversations, messaging } = useLocal();
   const privacy = usePrivacy();
+  const visibleAvatars = useAvatarVisibility<ConversationListItem>(
+    (item) => item.id,
+  );
   const pending = privacy.pendingCount();
   const { colors } = useTheme();
   const { appearance, theme, darkTheme, colorScheme, labels, locale, icons } =
@@ -97,6 +102,7 @@ function MessageInbox() {
       ) : (
         <ChatList
           chats={chats}
+          renderChat={(props) => <ProfileChatCell {...props} />}
           user={{ _id: identity.publicKey }}
           isLoading={result === undefined}
           appearance={appearance}
@@ -157,6 +163,7 @@ function MessageInbox() {
           }
           onReorderPinnedChats={(ids) => change(() => chat.reorderPinned(ids))}
           listProps={{
+            ...visibleAvatars,
             ListHeaderComponent:
               pending > 0 && !archived && !searching ? (
                 <Pressable

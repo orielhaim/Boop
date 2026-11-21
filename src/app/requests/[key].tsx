@@ -1,3 +1,4 @@
+import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   Chat,
   ChatHeader,
@@ -32,6 +33,7 @@ function RequestConversation({ publicKey }: { publicKey: string | null }) {
   const { identity, messaging } = useLocal();
   const privacy = usePrivacy();
   const contact = useContact(publicKey ?? "");
+  const avatar = useAvatar(publicKey);
   const block = useBlockAction(publicKey ?? "", back);
   const kit = useChatAppearance(true);
   const name = publicKey
@@ -66,11 +68,7 @@ function RequestConversation({ publicKey }: { publicKey: string | null }) {
         {...kit}
         title={name}
         subtitle={t("security:pendingRequests")}
-        avatar={
-          publicKey
-            ? { id: publicKey, uri: contact?.avatarUrl ?? undefined }
-            : undefined
-        }
+        avatar={publicKey ? { id: publicKey, uri: avatar } : undefined}
         onBack={back}
         isTopInsetApplied={false}
       />

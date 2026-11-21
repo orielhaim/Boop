@@ -29,7 +29,6 @@ import { VideoTile } from "./video-stage";
 type Camera = NonNullable<VideoState["conference"]>["cameras"][string];
 type Member = Participant & {
   name: string;
-  avatarUrl?: string | null;
   camera?: Camera;
 };
 
@@ -74,7 +73,6 @@ export function useConferencePeers(video: VideoState | null) {
       return {
         ...peer,
         name: nameOrAddress(contact?.name, peer.key),
-        avatarUrl: contact?.avatarUrl,
         camera: video?.conference?.cameras[peer.key],
       };
     }),
@@ -181,7 +179,10 @@ export function ConferenceSheet({
                           : undefined
                     }
                     leading={
-                      <Avatar name={contact.name} uri={contact.avatarUrl} />
+                      <Avatar
+                        name={contact.name}
+                        publicKey={contact.publicKey}
+                      />
                     }
                     trailing={
                       !unavailable(contact.publicKey) ? (
@@ -207,7 +208,7 @@ export function ConferenceSheet({
                       member.muted ? t("calls:micMuted") : t("calls:inCall")
                     }
                     leading={
-                      <Avatar name={member.name} uri={member.avatarUrl} />
+                      <Avatar name={member.name} publicKey={member.key} />
                     }
                     onPress={() => {
                       setOpen(false);
@@ -271,7 +272,7 @@ export function ConferenceSheet({
                     key={item.id}
                     title={name}
                     detail={t(`calls:${phaseKeys[item.phase]}`)}
-                    leading={<Avatar name={name} uri={contact?.avatarUrl} />}
+                    leading={<Avatar name={name} publicKey={item.key} />}
                   />
                 );
               })}
@@ -375,7 +376,7 @@ export function ConferenceTiles({
           ) : (
             <Avatar
               name={member.name}
-              uri={member.avatarUrl}
+              publicKey={member.key}
               size={mode === "audio" ? "lg" : undefined}
             />
           )}

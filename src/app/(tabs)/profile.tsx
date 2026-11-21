@@ -1,9 +1,24 @@
 import { router } from "expo-router";
+import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
-import { BoopLogo } from "@/components/ui/boop-logo";
-import { Action, Header, Hero, Icon, Ink, Screen } from "@/components/ui/kit";
+import { Alert, StyleSheet, View } from "react-native";
+import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
+import { GlassAvatar } from "@/components/glassyui/glass-avatar";
+import { EditableAvatar } from "@/components/avatars/editable-avatar";
+import {
+  SettingsDescription,
+  SettingsGroup,
+  SettingsRow,
+} from "@/components/settings/group";
+import {
+  Action,
+  Avatar,
+  Header,
+  Hero,
+  Icon,
+  Ink,
+  Screen,
+} from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { isolateText } from "@/i18n/format";
 import { useChatsEnabled, useLocal } from "@/services/local";
@@ -11,14 +26,65 @@ import { space } from "@/theme";
 
 export default function Profile() {
   const { t } = useTranslation(namespaces);
-  const { identity } = useLocal();
+  const { identity, avatars, profileEditor } = useLocal();
+  const picker = useAvatarPicker();
+  useSyncExternalStore(profileEditor.subscribe, profileEditor.revision);
+  const picture = useSyncExternalStore(
+    (listener) => avatars.subscribe(identity.publicKey, listener),
+    () => avatars.profile(identity.publicKey)?.picture,
+  );
+  const draft = profileEditor.draft();
+  const preview = profileEditor.preview();
+  const name = identity.npub.slice(0, 12);
+  const canRemove =
+    draft?.photo.kind !== "remove" && Boolean(picture || preview);
   const chatsEnabled = useChatsEnabled();
+  if (picker.image) {
+    return (
+      <AvatarCropScreen
+        source={picker.image}
+        onCancel={picker.clear}
+        onSave={(file) => {
+          profileEditor.prepare(file.uri, draft?.name);
+          picker.clear();
+          router.push("/settings/identity/edit-profile");
+        }}
+      />
+    );
+  }
+
   return (
     <Screen tab>
       <Header title={t("navigation:profile")} />
       <Hero>
         <View style={styles.identity}>
-          <BoopLogo />
+          <EditableAvatar
+            disabled={profileEditor.stage() !== "idle" || picker.busy}
+            onPick={(source) => void picker.pick(source)}
+            onRemove={
+              canRemove
+                ? () => {
+                    try {
+                      profileEditor.removePhoto(draft?.name);
+                      router.push("/settings/identity/edit-profile");
+                    } catch {
+                      Alert.alert(t("security:privacyWriteFailed"));
+                    }
+                  }
+                : undefined
+            }
+          >
+            {preview || draft?.photo.kind === "remove" ? (
+              <GlassAvatar name={name} src={preview} size="xl" />
+            ) : (
+              <Avatar publicKey={identity.publicKey} name={name} size="xl" />
+            )}
+          </EditableAvatar>
+          {(preview || draft?.photo.kind === "remove") && (
+            <Ink kind="caption" muted>
+              {t("settings:photoDraft")}
+            </Ink>
+          )}
           <Ink kind="heading">{t("settings:yourAddress")}</Ink>
           <Ink kind="caption" muted>
             {isolateText(
@@ -34,6 +100,9 @@ export default function Profile() {
           </Action>
         </View>
       </Hero>
+      {picker.error && (
+        <SettingsDescription>{picker.error}</SettingsDescription>
+      )}
       <SettingsGroup title={t("settings:preferences")}>
         <SettingsRow
           title={t("common:chats")}

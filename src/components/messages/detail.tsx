@@ -1,3 +1,4 @@
+import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   Bubble,
   Chat,
@@ -135,6 +136,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   } = useStressArrival(peerKey);
   const contact = useContact(peerKey);
   const name = nameOrAddress(contact?.name, peerKey);
+  const avatar = useAvatar(peerKey);
   const focused = useIsFocused();
   const {
     theme,
@@ -169,9 +171,9 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const participants = useMemo(
     () => ({
       self: { _id: identity.publicKey, name: t("messages:self") },
-      peer: { _id: peerKey, name, avatar: contact?.avatarUrl ?? undefined },
+      peer: { _id: peerKey, name, avatar: avatar },
     }),
-    [identity.publicKey, peerKey, name, t, contact?.avatarUrl],
+    [identity.publicKey, peerKey, name, t, avatar],
   );
   const resolveUser = useCallback(
     (id: string | number) =>
@@ -1068,7 +1070,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           title={name}
           subtitle={t(`messages:${status}`)}
           isSubtitleActive={status === "online"}
-          avatar={{ id: peerKey, uri: contact?.avatarUrl ?? undefined }}
+          avatar={{ id: peerKey, uri: avatar }}
           onBack={back}
           onPressTitle={openContact}
           renderRight={headerActions}

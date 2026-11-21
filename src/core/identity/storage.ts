@@ -3,6 +3,8 @@ import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { preference, setPreference } from "@/db/queries";
 import type * as schema from "@/db/schema";
 import {
+  avatarCache,
+  nostrProfiles,
   blockedIdentities,
   callHistory,
   communicationGrants,
@@ -106,6 +108,8 @@ async function recoverSwitch<TResult>(
           tx.delete(messages).run();
           tx.delete(conversations).run();
           tx.delete(contacts).run();
+          tx.delete(avatarCache).run();
+          tx.delete(nostrProfiles).run();
           tx.delete(callHistory).run();
           tx.delete(blockedIdentities).run();
           tx.delete(communicationGrants).run();

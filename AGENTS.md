@@ -62,6 +62,14 @@ Use Bun 1.4.4 or later and run `bun fmt` for formatting.
 - Keep pending requests out of normal messages and unread, translation, and unlock processing. Promote the original message and grant approval in one SQLite transaction.
 - Use NIP-49 for exports. Never share or write plaintext private-key documents. Stage and verify a new SecureStore slot before changing the SQLite identity pin or resetting identity-owned data. Resolve the switch before constructing signer-bound services, and never generate a replacement key on a mismatch.
 
+## Profile photos
+
+- Resolve profile photos through the protected session's avatar service. Render only an approved local file or a generated avatar. Pass local files only to native notification and background artwork APIs.
+- Enforce the current download policy and saved-contact membership before network access. Blocked identities have no automatic image access. Recheck authorization before persisting and presenting a download.
+- Validate URLs, redirects, socket destinations, file signatures, dimensions, and byte limits at the image transport boundary. Keep attachment downloads on their own media path.
+- Upload only confirmed, cropped and verified exports with source metadata stripped. Sign scoped Blossom authorization with the existing NDK signer and preserve unrelated kind 0 fields.
+- Scope the image cache, local overrides and publication drafts to the pinned identity. Identity replacement retires the prior owner's pending work and storage references.
+
 ## Building with EAS
 
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.

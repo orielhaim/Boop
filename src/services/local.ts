@@ -1,3 +1,8 @@
+import { File } from "expo-file-system";
+import { uploadAvatar } from "@/core/avatars/blossom";
+import { avatarDisk, nativeAvatarTransport } from "@/core/avatars/native";
+import { createProfileEditor } from "@/core/avatars/editor";
+import { createAvatars } from "@/core/avatars/service";
 import { asc } from "drizzle-orm";
 import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
 import { getLocales } from "expo-localization";
@@ -81,6 +86,37 @@ async function start() {
       chat,
       privacy,
     });
+    const { disk, localDirectory } = avatarDisk(identity.publicKey);
+    const avatars = createAvatars(
+      db,
+      identity.publicKey,
+      privacy,
+      messaging,
+      disk,
+      nativeAvatarTransport,
+    );
+    const profileEditor = createProfileEditor(
+      db,
+      identity.publicKey,
+      avatars,
+      disk,
+      (origin, filename, signal) =>
+        uploadAvatar(
+          signer,
+          origin,
+          new File(localDirectory, filename),
+          signal,
+        ),
+      messaging,
+    );
+    privacy.subscribe(avatars.invalidate);
+    let profileRelays = messaging.profileRelayKey();
+    messaging.subscribeStatus(() => {
+      const next = messaging.profileRelayKey();
+      if (next === profileRelays) return;
+      profileRelays = next;
+      avatars.refreshRelays();
+    });
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
     });
@@ -112,7 +148,8 @@ async function start() {
         return openTelecomAudio({
           id: invite.callId,
           name: contact?.name ?? `${toNpub(peerKey).slice(0, 15)}…`,
-          avatarUrl: contact?.avatarUrl,
+          avatar: () => avatars.resolve(peerKey),
+          subscribeAvatar: (listener) => avatars.subscribe(peerKey, listener),
           incoming: invite.recipientKey === identity.publicKey,
           privateMode,
           signal,
@@ -177,6 +214,8 @@ async function start() {
         (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
       ),
       identity,
+      avatars,
+      profileEditor,
       privacy,
       chat,
       history,
@@ -210,7 +249,7 @@ export function initializeLocal() {
 }
 
 export function MessagingLifecycle() {
-  const { db, messaging, calling, lock, conversations } = useLocal();
+  const { db, messaging, calling, lock, conversations, avatars } = useLocal();
   const chatsEnabled = useChatsEnabled();
   useEffect(() => {
     if (!chatsEnabled) return;
@@ -240,6 +279,7 @@ export function MessagingLifecycle() {
     const dbChanges = addDatabaseChangeListener(
       ({ databaseFilePath, tableName }) => {
         if (databaseFilePath !== databasePath) return;
+        if (tableName === "contacts") queueMicrotask(avatars.invalidate);
         if (messaging.getChatsEnabled())
           conversations.externalChange(tableName);
         if (tableName !== "relay_settings" && tableName !== "settings") return;
@@ -259,6 +299,9 @@ export function MessagingLifecycle() {
       },
     );
     function updateUnlocks() {
+      avatars.setActive(
+        AppState.currentState === "active" && !lock.getState().locked,
+      );
       messaging.setUnlockActive(
         AppState.currentState === "active" && !lock.getState().locked,
       );
@@ -269,6 +312,7 @@ export function MessagingLifecycle() {
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
+      avatars.setActive(state === "active" && !lock.getState().locked);
       messaging.setUnlockActive(state === "active" && !lock.getState().locked);
       conversations.setPrefetchEnabled(
         messaging.getChatsEnabled() &&
@@ -311,9 +355,10 @@ export function MessagingLifecycle() {
       unsubscribeLock();
       subscription.remove();
       dbChanges.remove();
+      avatars.setActive(false);
       messaging.setUnlockActive(false);
       messaging.stop();
     };
-  }, [db, messaging, calling, lock, conversations]);
+  }, [db, messaging, calling, lock, conversations, avatars]);
   return null;
 }

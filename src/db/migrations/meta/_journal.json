@@ -78,6 +78,13 @@
       "when": 1795106492286,
       "tag": "0010_young_turbo",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795179766152,
+      "tag": "0011_panoramic_snowbird",
+      "breakpoints": true
     }
   ]
 }

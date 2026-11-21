@@ -1,5 +1,4 @@
 import { type EventSubscription, requireOptionalNativeModule } from "expo";
-import { Image } from "expo-image";
 import { Platform } from "react-native";
 import { z } from "zod";
 import { createStore } from "zustand/vanilla";
@@ -33,7 +32,7 @@ type NativeSystemCalling = {
     title: string | null,
     participants: string | null,
   ): Promise<void>;
-  setAvatar(id: string, cachedFile: string): Promise<void>;
+  setAvatar(id: string, cachedFile: string | null): Promise<void>;
   setRemoteVideo(id: string, url: string | null): Promise<void>;
   route(id: string, route: AudioRoute): Promise<boolean>;
   end(id: string): Promise<void>;
@@ -56,7 +55,8 @@ const routes = z.object({
 export async function openTelecomAudio({
   id,
   name,
-  avatarUrl,
+  avatar,
+  subscribeAvatar,
   incoming,
   privateMode,
   signal,
@@ -64,7 +64,8 @@ export async function openTelecomAudio({
 }: {
   id: string;
   name: string;
-  avatarUrl?: string | null;
+  avatar: () => string | undefined;
+  subscribeAvatar: (listener: () => void) => () => void;
   incoming: boolean;
   privateMode: boolean;
   signal: AbortSignal;
@@ -79,10 +80,12 @@ export async function openTelecomAudio({
       onRouting({ selected: state.selected, available: state.available });
   });
   let closed = false;
+  let unsubscribeAvatar: (() => void) | undefined;
   function close() {
     if (closed) return;
     closed = true;
     routing.remove();
+    unsubscribeAvatar?.();
     signal.removeEventListener("abort", close);
     void system.end(id).catch(() => undefined);
   }
@@ -101,12 +104,16 @@ export async function openTelecomAudio({
     signal.throwIfAborted();
     return null;
   }
-  if (avatarUrl && !privateMode) {
-    void Image.getCachePathAsync(avatarUrl)
-      .then((file) =>
-        file && !closed ? system.setAvatar(id, file) : undefined,
-      )
-      .catch(() => undefined);
+  if (!privateMode) {
+    let previous: string | undefined;
+    const syncAvatar = () => {
+      const file = avatar();
+      if (closed || file === previous) return;
+      previous = file;
+      void system.setAvatar(id, file ?? null).catch(() => undefined);
+    };
+    unsubscribeAvatar = subscribeAvatar(syncAvatar);
+    syncAvatar();
   }
   return {
     async route(value: AudioRoute) {

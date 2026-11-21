@@ -50,6 +50,7 @@ export function SettingsRow({
   icon,
   accent,
   onPress,
+  onTitlePress,
   selected,
   expanded,
   disabled = false,
@@ -61,12 +62,23 @@ export function SettingsRow({
   icon?: ComponentProps<typeof Icon>["name"];
   accent?: string;
   onPress?: () => void;
+  onTitlePress?: () => void;
   selected?: boolean;
   expanded?: boolean;
   disabled?: boolean;
   trailing?: ReactNode;
 }) {
   const { colors } = useTheme();
+  const label = (
+    <>
+      <Ink kind="label">{title}</Ink>
+      {detail && (
+        <Ink kind="caption" muted>
+          {detail}
+        </Ink>
+      )}
+    </>
+  );
   const content = (
     <>
       {icon && (
@@ -76,14 +88,20 @@ export function SettingsRow({
           <Icon name={icon} size={19} color="#fff" />
         </View>
       )}
-      <View style={styles.label}>
-        <Ink kind="label">{title}</Ink>
-        {detail && (
-          <Ink kind="caption" muted>
-            {detail}
-          </Ink>
-        )}
-      </View>
+      {onTitlePress ? (
+        <Pressable
+          accessibilityRole="button"
+          style={[styles.label, styles.titleTrigger]}
+          onPress={() => {
+            tapFeedback();
+            onTitlePress();
+          }}
+        >
+          {label}
+        </Pressable>
+      ) : (
+        <View style={styles.label}>{label}</View>
+      )}
       {value && (
         <Ink kind="caption" muted style={styles.value}>
           {value}
@@ -128,18 +146,24 @@ export function SettingsToggle({
   value,
   onChange,
   disabled,
+  icon,
+  onTitlePress,
 }: {
   title: string;
   detail?: string;
   value: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
+  icon?: ComponentProps<typeof Icon>["name"];
+  onTitlePress?: () => void;
 }) {
   const { colors } = useTheme();
   return (
     <SettingsRow
       title={title}
       detail={detail}
+      icon={icon}
+      onTitlePress={onTitlePress}
       trailing={
         <Switch
           accessibilityLabel={title}
@@ -173,6 +197,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   label: { flex: 1, gap: 3 },
+  titleTrigger: { minHeight: 44, justifyContent: "center" },
   value: { flexShrink: 1, maxWidth: "48%" },
   description: { marginHorizontal: space.sm },
 });

@@ -10,7 +10,7 @@ import {
 export const contacts = sqliteTable("contacts", {
   publicKey: text("public_key").primaryKey().notNull(),
   name: text().notNull(),
-  avatarUrl: text("avatar_url"),
+  localAvatarFile: text("avatar_url"),
   favorite: integer({ mode: "boolean" }).notNull().default(false),
   allowIncomingVideo: integer("allow_incoming_video", { mode: "boolean" })
     .notNull()
@@ -219,4 +219,24 @@ export const messageRequests = sqliteTable("message_requests", {
   message: text({ mode: "json" }).$type<
     import("./messaging").MessageInput | import("./messaging").MessageInput[]
   >(),
+});
+
+export const nostrProfiles = sqliteTable("nostr_profiles", {
+  publicKey: text("public_key").primaryKey().notNull(),
+  eventId: text("event_id").notNull(),
+  createdAt: integer("created_at").notNull(),
+  fields: text({ mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  picture: text(),
+  name: text(),
+  about: text(),
+  checkedAt: integer("checked_at").notNull(),
+});
+
+export const avatarCache = sqliteTable("avatar_cache", {
+  publicKey: text("public_key").primaryKey().notNull(),
+  sourceUrl: text("source_url").notNull(),
+  filename: text().notNull(),
+  size: integer().notNull(),
+  fetchedAt: integer("fetched_at").notNull(),
+  accessedAt: integer("accessed_at").notNull(),
 });

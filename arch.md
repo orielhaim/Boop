@@ -208,8 +208,7 @@ Contacts are local application records containing:
 
 - Nostr public key (canonical identifier)
 - Display name
-- Optional avatar URL
-- Optional profile metadata
+- Optional private photo override
 - Favorites and local preferences
 
 The contact name is controlled locally and takes precedence over externally published names.
@@ -578,6 +577,30 @@ Translate stable service errors at the presentation boundary. Android's system c
 - Require explicit permission when a feature needs the microphone or camera.
 - Provide clear errors for missing connectivity and unavailable permissions.
 - Use established cryptographic implementations.
+
+### Public profiles and avatar privacy
+
+The protected session owns one avatar resolver. SQLite stores verified Nostr kind 0 metadata, a cache row per downloaded author, photo preferences, and local contact overrides. Contacts keep their locally chosen names. Public display names are self-asserted. The contact column named `avatar_url` now stores only a generated private filename. The migration clears legacy values and never imports them as remote sources.
+
+Photo download policy defaults to My Contacts. Only a saved contact qualifies in that mode. Everyone adds visible unknown peers, including callers and message requests. Nobody uses generated avatars and locally chosen photos. Blocking hides both cached and local contact artwork and cancels remote work. The resolver checks the identity pin, block status, contact membership, policy, override, and profile before dispatch and rechecks them before committing a file. Revocation cancels queued or active work and invalidates consumers. Chat messages and attachment media retain their existing paths.
+
+The resolver watches up to 32 relevant authors through the existing NDK relay pool. It verifies and bounds kind 0 events before storing them. The highest timestamp wins and the lowest event ID wins ties. One grouped subscription carries live updates and refreshes every 15 minutes. Relay disconnects retry without opening additional pools. Profile metadata can arrive without an image request. Creation of a contact and ringing of a call never wait for metadata or images.
+
+A validated local override takes precedence over a permitted cache entry. Contacts, Chat Kit rows and headers, requests, call history, calling screens and conference tiles consume the same local resolver. A permitted local file can supply the call background. Android Telecom receives only a local file from the resolver and removes the icon when permission changes. App Lock uses the existing generic notification identity. Generated initials or the default icon fill empty states.
+
+Automatic downloads use a separate native transport. It resolves DNS before connecting and binds the actual connection to public numeric destinations while retaining the origin hostname for TLS. Redirects, proxies from system settings, cookies, credentials, IP literals, and private or special-use destinations are excluded. Android uses OkHttp with a vetted DNS resolver. iOS 17 and later uses an ephemeral URLSession with a single-origin loopback CONNECT gate and direct fallback disabled. Platforms without the native transport use local and generated avatars. The iOS transport requires a native build and device verification.
+
+The downloader limits concurrent image jobs to three and bounds time, encoded size to 2 MiB, each decoded axis to 4,096 pixels, and total decoded area to eight megapixels. Native decoders accept single-frame JPEG, PNG and WebP. The decoder emits a local JPEG with a maximum 512-pixel edge. A hash in a Blossom-style path is verified against the downloaded bytes before decoding. If mirroring is enabled, a failed request to one configured server can try the other with the same hash. Arbitrary profile hosts have no fallback. Unsupported formats, redirects, and CDN transformations that change a hash-addressed file fail closed.
+
+The disk cache holds up to 64 MiB and 512 entries. A successful refresh commits the new filename in SQLite before retiring the prior file. A failed replacement leaves the prior authorized photo visible. Entries are revalidated after seven days and evicted after 60 days without recent access. Failures back off exponentially and stop after six unsuccessful jobs for a source in the session. Expo Image displays local files and can retain decoded images in memory. Clear Image Cache removes remote cache entries and preserves drafts, overrides, and published-profile state. Identity replacement resets avatar metadata and preferences in the SQLite switch transaction. The startup sweep reclaims abandoned cache files and directories associated with prior owners.
+
+### Profile editing and Blossom
+
+Identity & Keys opens Edit Profile. SDK 58 Image Picker uses the operating system picker and asks for camera access when requested. Image Manipulator bounds the working image to 2,048 pixels per axis and normalizes orientation. The cropper uses Reanimated and Gesture Handler to pan and zoom a circular preview. It exports a square JPEG with an edge of at most 512 pixels and a 250 KiB limit. Boop strips APP and comment segments, rejects malformed framing, checks the actual output dimensions, and strips trailing data. Contact overrides use the same crop flow and remain private to the local identity.
+
+Connections → Media Storage stores a preferred HTTPS origin and one optional backup. A user can copy choices from a verified kind 10063 preference list into settings. Only saved settings authorize uploads. Optional mirroring re-uploads the same bytes to the second approved origin. A failed copy leaves the primary publication available and displays a notice. The default endpoint is `blossom.nostr.build`. Its current free tier advertises 20 MiB uploads and rejects GPS metadata. Files are public and availability depends on the server. [Nostr.build Blossom service](https://blossom.nostr.build/)
+
+Boop uses a typed BUD-02 adapter over Expo fetch and the existing NDK signer. The NDK Blossom package expects browser File APIs and XMLHttpRequest. Boop uploads only a confirmed sanitized draft, signs kind 24242 with short-lived server, action and hash scope, and validates the descriptor and a credential-free hash readback before publication. The adapter accepts direct HTTPS endpoints and same-origin blob URLs. The app refreshes the existing kind 0 event before merging edited fields, and requires an acknowledgment from a configured general relay. An uploaded but unacknowledged photo stays in the local draft for a retry. Removing a photo clears the `picture` field and retains unrelated profile fields. A profile update leaves server and third-party copies subject to their own retention. [BUD-02](https://github.com/hzrd149/blossom/blob/master/buds/02.md) · [BUD-11](https://github.com/hzrd149/blossom/blob/master/buds/11.md)
 
 ### App Lock
 

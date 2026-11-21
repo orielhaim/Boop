@@ -105,7 +105,6 @@ function conversationQuery<TResult>(
       ...getTableColumns(conversations),
       unread: sql<number>`CASE WHEN ${notBlocked(conversations.peerKey)} THEN ${conversations.unread} ELSE 0 END`,
       name: contacts.name,
-      avatarUrl: contacts.avatarUrl,
       preview: latest.body,
       lockedUntil: messageTimeLocks.requestedAt,
       translatedPreview,

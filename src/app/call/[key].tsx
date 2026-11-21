@@ -105,7 +105,6 @@ export default function CallRoute() {
     <CallScreen
       call={call}
       name={nameOrAddress(contact?.name, call.peerKey)}
-      avatarUrl={contact?.avatarUrl}
       close={close}
       focused={focused}
     />

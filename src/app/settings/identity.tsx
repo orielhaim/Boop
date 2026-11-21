@@ -12,6 +12,7 @@ import {
 import {
   SettingsDescription,
   SettingsGroup,
+  SettingsRow,
 } from "@/components/settings/group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
@@ -40,6 +41,12 @@ export default function Identity() {
 
   return (
     <Screen>
+      <SettingsGroup>
+        <SettingsRow
+          title={t("settings:editProfile")}
+          onPress={() => router.push("/settings/identity/edit-profile")}
+        />
+      </SettingsGroup>
       <SettingsGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>
           {identity.npub}

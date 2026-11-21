@@ -1,3 +1,4 @@
+import { useAvatar } from "@/core/avatars/use-avatar";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
@@ -80,19 +81,18 @@ const reflow = LinearTransition.springify()
 
 export function CallScreen({
   name,
-  avatarUrl,
   call,
   close,
   focused,
 }: {
   name: string;
-  avatarUrl?: string | null;
   call: CallView;
   close: () => void;
   focused: boolean;
 }) {
   const { t } = useTranslation(namespaces);
   const { calling, lock } = useLocal();
+  const avatarFile = useAvatar(call.peerKey, focused);
   const video = useStore(calling.store, (state) => state.video);
   const invitationCount = useStore(
     calling.store,
@@ -199,9 +199,10 @@ export function CallScreen({
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
-      {!reduceTransparency && avatarUrl ? (
+      {!reduceTransparency && avatarFile ? (
         <Image
-          source={avatarUrl}
+          source={avatarFile}
+          cachePolicy="memory"
           style={StyleSheet.absoluteFill}
           contentFit="cover"
           blurRadius={60}
@@ -256,7 +257,7 @@ export function CallScreen({
                   compact
                   onPress={close}
                 />
-                {!group && <Avatar name={name} uri={avatarUrl} />}
+                {!group && <Avatar name={name} publicKey={call.peerKey} />}
                 <View style={styles.videoIdentity}>
                   <Text numberOfLines={1} style={styles.videoName}>
                     {label}
@@ -385,9 +386,10 @@ export function CallScreen({
                         ? "•"
                         : Array.from(name.trim())[0]?.toLocaleUpperCase()}
                     </Text>
-                    {avatarUrl ? (
+                    {avatarFile ? (
                       <Image
-                        source={avatarUrl}
+                        source={avatarFile}
+                        cachePolicy="memory"
                         style={StyleSheet.absoluteFill}
                         contentFit="cover"
                       />

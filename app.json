@@ -74,7 +74,7 @@
         "expo-camera",
         {
           "recordAudioAndroid": false,
-          "cameraPermission": "Scan Boop addresses and share your camera when you choose during a call.",
+          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call.",
           "microphonePermission": false
         }
       ],
@@ -82,7 +82,15 @@
         "@config-plugins/react-native-webrtc",
         {
           "microphonePermission": "Use the microphone for peer-to-peer audio calls.",
-          "cameraPermission": "Scan Boop addresses and share your camera when you choose during a call."
+          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": false,
+          "cameraPermission": "Scan Boop addresses, take a profile photo, and share your camera when you choose during a call.",
+          "microphonePermission": "Use the microphone for peer-to-peer audio calls."
         }
       ],
       "expo-font",

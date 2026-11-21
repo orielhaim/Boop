@@ -1065,6 +1065,42 @@ export function createMessagingService({
     },
     start,
     stop,
+    profileRelayKey: () =>
+      discoveryRelays()
+        .slice(0, 4)
+        .map((relay) => relay.url)
+        .join(","),
+    watchProfiles(
+      authors: string[],
+      onEvent: (event: unknown, author: string) => void,
+      onEose: () => void,
+    ) {
+      const relays = discoveryRelays().slice(0, 4);
+      return relays.length
+        ? transport.watchProfiles(relays, authors, onEvent, onEose)
+        : null;
+    },
+    async discoverBlossomServers() {
+      const { general } = await transport.lookupLists(
+        publicKey,
+        discoveryRelays().slice(0, 4),
+        [10063],
+      );
+      return (
+        general?.tags
+          .flatMap(([kind, url]) => (kind === "server" && url ? [url] : []))
+          .slice(0, 8) ?? []
+      );
+    },
+    publishProfile(content: string, createdAt: number) {
+      const session = generation;
+      return transport.publishProfile(
+        content,
+        createdAt,
+        configuration.general,
+        () => session === generation,
+      );
+    },
     reconnect: startAgain,
     catchupRequest,
     setUnlockActive,

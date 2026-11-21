@@ -161,6 +161,8 @@ function Face({ fallback, source, tone }: FaceProps) {
           accessible={false}
           onError={handleError}
           onLoad={handleLoad}
+          cachePolicy="memory"
+          transition={preferences.reduceMotion ? 0 : 160}
           contentFit="cover"
           source={source}
           style={[
