@@ -34,7 +34,7 @@ import {
 } from "@/i18n";
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
-import { initializeLocal, MessagingLifecycle } from "@/services/local";
+import { initializeLocal, LocalSessionLifecycle } from "@/services/local";
 import { LocalContext } from "@/services/local-context";
 import { themes, useAppPreferences } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
@@ -194,7 +194,7 @@ function ProtectedApplication({
   if (!state.hasOpened) return <LockScreen lock={lock} state={state} />;
   return (
     <LocalContext.Provider value={data}>
-      <MessagingLifecycle />
+      <LocalSessionLifecycle />
       <LocaleProvider direction={direction}>
         <View
           style={[styles.root, { direction }, obscured && styles.obscured]}

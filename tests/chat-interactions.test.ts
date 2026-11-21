@@ -9,6 +9,7 @@ import {
   externalMessageUrl,
   sendEmptyGreeting,
 } from "../src/core/messaging/message-links";
+import { createRelayService } from "../src/core/nostr/relay-service";
 import { createMessagingService } from "../src/core/messaging/runtime";
 import {
   createMessagingRepository,
@@ -94,7 +95,13 @@ test("pins multiple messages by canonical reference, reopens them and keeps pins
 test("the empty-chat wave uses the real encrypted outbox entry point and stops after history exists", async () => {
   using sqlite = new Database(":memory:");
   const chat = createChat(sqlite);
+  const relays = createRelayService({
+    signer,
+    readState: () => null,
+    writeState: () => {},
+  });
   const runtime = createMessagingService({
+    relays,
     signer,
     chat,
     readState: () => null,
@@ -102,7 +109,8 @@ test("the empty-chat wave uses the real encrypted outbox entry point and stops a
     createId: () => crypto.randomUUID(),
   });
   expect(runtime.getHistoryReady()).toBe(false);
-  runtime.start({ general: [], discovery: [], inbox: [], intent: null });
+  runtime.start();
+  relays.start({ general: [], discovery: [], inbox: [], intent: null });
   expect(runtime.getHistoryReady()).toBe(true);
   const empty = {
     hasHistory: false,
@@ -131,6 +139,7 @@ test("the empty-chat wave uses the real encrypted outbox entry point and stops a
   expect(resources.en.chatKit.labels.emptyChatTitle).toBe("Say hello");
   expect(resources.he.chatKit.labels.emptyChatTitle).toBe("אפשר להגיד שלום");
   runtime.stop();
+  relays.stop();
   expect(runtime.getHistoryReady()).toBe(false);
 });
 

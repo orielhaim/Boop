@@ -7,22 +7,21 @@ import NDK, {
   NDKRelayStatus,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk";
-import { inviteLifetime } from "../calling/signals";
+import { callSignalKind, inviteLifetime } from "../calling/signals";
 import {
-  createRumor,
+  unsignedRumor,
   giftWrapKind,
   inboxListKind,
-  messageKind,
-  type Rumor,
+  type UnsignedEvent,
   verifiedEvent,
   wrapRumor,
-} from "../messaging/nip17";
+} from "./gift-wrap";
 import { isPublicRelayAddress, secureRelays } from "./relays";
 
 const timeout = 7_000;
 const connected = (relay: NDKRelay) => relay.status >= NDKRelayStatus.CONNECTED;
 
-export function createMessagingRelays(signer: NDKSigner) {
+export function createNostrRelays(signer: NDKSigner) {
   const ndk = new NDK({
     signer,
     enableOutboxModel: false,
@@ -365,9 +364,9 @@ export function createMessagingRelays(signer: NDKSigner) {
   async function verifyInbox(relay: NDKRelay, active: () => boolean) {
     if (!active() || !connected(relay)) return false;
     const publicKey = signer.userSync.pubkey;
-    const probe = createRumor({
-      // A self-addressed empty rumor never becomes a Boop conversation.
-      kind: messageKind,
+    const probe = unsignedRumor({
+      // The self-addressed probe cannot pass call-signal validation.
+      kind: callSignalKind,
       pubkey: publicKey,
       tags: [["p", publicKey]],
       content: "",
@@ -456,8 +455,8 @@ export function createMessagingRelays(signer: NDKSigner) {
     lookupLists,
     safeTargets,
     verifyInbox,
-    wrap: (rumor: Rumor, recipient: string) =>
-      wrapRumor(ndk, rumor, recipient, signer),
+    wrap: (rumor: UnsignedEvent, recipient: string, expiresAt?: number) =>
+      wrapRumor(ndk, rumor, recipient, signer, expiresAt),
     publish,
     advertise,
     closePeerRelays,

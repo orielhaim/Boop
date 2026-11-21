@@ -15,6 +15,7 @@ import {
   unwrapPrivateEvent,
   wrapRumor,
 } from "../src/core/messaging/nip17";
+import { createRelayService } from "../src/core/nostr/relay-service";
 import { createMessagingService } from "../src/core/messaging/runtime";
 import { createPrivacy } from "../src/core/privacy";
 import { createMessagingRepository } from "../src/db/messaging";
@@ -39,12 +40,18 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
   const feed = createConversationFeed(repo, history, () => undefined);
   const stopFeed = feed.start();
   const state = new Map<string, string>();
+  const readState = (key: string) => state.get(key) ?? null;
+  const writeState = (key: string, value: string) => {
+    state.set(key, value);
+  };
+  const relays = createRelayService({ signer: bob, readState, writeState });
   const runtime = createMessagingService({
+    relays,
     signer: bob,
     chat: repo,
     privacy,
-    readState: (key) => state.get(key) ?? null,
-    writeState: (key, value) => state.set(key, value),
+    readState,
+    writeState,
     createId: () => crypto.randomUUID(),
   });
   const envelopes: Awaited<ReturnType<typeof wrapRumor>>[] = [];
@@ -132,7 +139,8 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
       }),
     });
     envelopes.push(await wrapRumor(ndk, edit, bob.pubkey, alice));
-    runtime.start(config);
+    runtime.start();
+    relays.start(config);
     await until(() => privacy.pendingCount() === 1 && state.size > 0);
     expect(feed.getUnreadCount()).toBe(0);
     expect(repo.conversation(alice.pubkey)).toBeUndefined();
@@ -165,8 +173,10 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
     }
     await until(() => feed.getUnreadCount() === 3);
     runtime.stop();
+    relays.stop();
     await createWrap("Missed while away");
-    runtime.start(config);
+    runtime.start();
+    relays.start(config);
     await until(
       () =>
         feed.getUnreadCount() === 4 &&
@@ -180,6 +190,7 @@ test("NDK keeps a live inbox after EOSE and catches up after restarting the sess
     expect(repo.history(alice.pubkey).messages).toHaveLength(4);
   } finally {
     runtime.stop();
+    relays.stop();
     stopFeed();
     history.dispose();
     void server.stop(true);

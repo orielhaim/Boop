@@ -18,11 +18,8 @@ import {
   type InviteSignal,
   parseCallSignal,
 } from "../src/core/calling/signals";
-import {
-  createRumor,
-  unwrapPrivateEvent,
-  wrapRumor,
-} from "../src/core/messaging/nip17";
+import { unsignedRumor, wrapRumor } from "../src/core/nostr/gift-wrap";
+import { unwrapCallSignal } from "../src/core/calling/signaling-service";
 import { initializeTestDatabase } from "./db-fixture";
 import { callById, callList, saveCallRecord } from "../src/db/queries";
 import * as schema from "../src/db/schema";
@@ -137,7 +134,7 @@ test("six-seat conference setup is encrypted to the invitee, and the roster bind
     expiresAt: now + 35_000,
     conference: reservation(frank, [alice, bob, charlie, dana, eve]).invitation,
   };
-  const rumor = createRumor({
+  const rumor = unsignedRumor({
     kind: callSignalKind,
     pubkey: alice,
     content: JSON.stringify(invite),
@@ -165,10 +162,11 @@ test("six-seat conference setup is encrypted to the invitee, and the roster bind
       }),
     ),
   ).toBeNull();
-  expect(
-    await unwrapPrivateEvent(wrapped.rawEvent(), signers[5]),
-  ).toMatchObject({ type: "call", signal: invite });
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), signers[6])).toBeNull();
+  expect(await unwrapCallSignal(wrapped.rawEvent(), signers[5])).toMatchObject({
+    id: rumor.id,
+    signal: invite,
+  });
+  expect(await unwrapCallSignal(wrapped.rawEvent(), signers[6])).toBeNull();
 });
 
 test("connected controller handles invitation ringing, busy, cancellation, subsequent admission and one history record", async () => {

@@ -4,20 +4,16 @@ import {
   parseFileMessage,
   type EncryptedAttachment,
 } from "../media/protocol";
-import type NDK from "@nostr-dev-kit/ndk";
-import {
-  giftWrap,
-  NDKEvent,
-  type NDKSigner,
-  NDKUser,
-} from "@nostr-dev-kit/ndk";
-import { getEventHash, verifyEvent } from "nostr-tools/pure";
+import type { NDKSigner } from "@nostr-dev-kit/ndk";
+import { getEventHash } from "nostr-tools/pure";
 import { z } from "zod";
 import {
-  type CallSignal,
-  callSignalKind,
-  parseCallSignal,
-} from "../calling/signals";
+  eventIdSchema,
+  unsignedRumor,
+  unwrapRumor,
+  unsignedEvent,
+} from "../nostr/gift-wrap";
+
 import { publicKeySchema } from "../identity/keys";
 
 import {
@@ -28,15 +24,18 @@ import {
   timeLockKind,
 } from "./special-messages/timelock";
 
+export {
+  eventIdSchema,
+  giftWrapKind,
+  inboxListKind,
+  verifiedEvent,
+  wrapRumor,
+} from "../nostr/gift-wrap";
+
 export const messageKind = 14;
 export const reactionKind = 7;
 export const messageEditKind = 24882;
-export const giftWrapKind = 1059;
-export const inboxListKind = 10050;
-export const callReplyRelayTag = "boop:reply-relay";
 export const maxMessageLength = 4_000;
-const maxEnvelopeLength = 90_000;
-export const eventIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
 const normalizedEditText = z
   .string()
   .min(1)
@@ -50,25 +49,14 @@ const editPayload = z.strictObject({
   text: normalizedEditText,
 });
 const maxEditPayload = 24_576;
-const event = z.object({
-  id: eventIdSchema,
-  pubkey: eventIdSchema,
-  kind: z.number().int().nonnegative(),
-  created_at: z.number().int().nonnegative(),
-  tags: z.array(z.array(z.string().max(2_048)).max(8)).max(64),
-  content: z.string().max(maxEnvelopeLength),
-});
-const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
-const rumorSchema = event.extend({
+const rumorSchema = unsignedEvent.extend({
   kind: z.union([
     z.literal(messageKind),
     z.literal(fileMessageKind),
     z.literal(timeLockKind),
     z.literal(reactionKind),
     z.literal(messageEditKind),
-    z.literal(callSignalKind),
   ]),
-  sig: z.undefined().optional(),
 });
 
 export type Rumor = z.infer<typeof rumorSchema>;
@@ -91,11 +79,10 @@ export type PrivateEvent = {
     }
   | { type: "reaction"; emoji: string; targetEventId: string }
   | { type: "edit"; edit: z.infer<typeof editPayload> }
-  | { type: "call"; signal: CallSignal; replyRelays: string[] }
 );
 
 export function createRumor(core: RumorCore): Rumor {
-  return { ...core, id: getEventHash(core) };
+  return unsignedRumor(core);
 }
 
 export function parseRumor(input: unknown): Rumor | null {
@@ -105,70 +92,24 @@ export function parseRumor(input: unknown): Rumor | null {
   return parsed.data;
 }
 
-// Parse to a new object, so upstream verification caches cannot reuse another
-// event's verdict for an attacker-supplied copy of an ID.
-export function verifiedEvent(input: unknown) {
-  const parsed = signedEvent.safeParse(input);
-  return parsed.success && verifyEvent(parsed.data) ? parsed.data : null;
-}
-
-export async function wrapRumor(
-  ndk: NDK,
-  rumor: Rumor,
-  recipient: string,
-  signer: NDKSigner,
-  expiresAt?: number,
-) {
-  return giftWrap(
-    new NDKEvent(ndk, rumor),
-    new NDKUser({ pubkey: recipient }),
-    signer,
-    expiresAt === undefined
-      ? undefined
-      : { wrapTags: [["expiration", String(expiresAt)]] },
-  );
-}
-
 export async function unwrapPrivateEvent(
   input: unknown,
   signer: NDKSigner,
   isBlocked?: (sender: string) => boolean,
-  callsOnly = false,
 ): Promise<PrivateEvent | null> {
-  const myKey = signer.userSync.pubkey;
-  const wrap = verifiedEvent(input);
+  const opened = await unwrapRumor(input, signer, isBlocked);
+  if (!opened) return null;
+  const parsed = rumorSchema.safeParse(opened.rumor);
+  if (!parsed.success) return null;
+  const rumor = parsed.data;
   if (
-    wrap?.kind !== giftWrapKind ||
-    !wrap.tags.some(([tag, key]) => tag === "p" && key === myKey)
-  ) {
+    rumor.kind === timeLockKind &&
+    (JSON.stringify(opened.wrap).length > maxTimeLockEnvelope ||
+      opened.plaintextLength > maxTimeLockPayload + 1_024)
+  )
     return null;
-  }
   try {
-    const payload = await signer.decrypt(
-      new NDKUser({ pubkey: wrap.pubkey }),
-      wrap.content,
-      "nip44",
-    );
-    const seal = verifiedEvent(JSON.parse(payload));
-    if (seal?.kind !== 13 || seal.tags.length > 0) return null;
-    if (isBlocked?.(seal.pubkey)) return null;
-
-    const plaintext = await signer.decrypt(
-      new NDKUser({ pubkey: seal.pubkey }),
-      seal.content,
-      "nip44",
-    );
-    const rumor = parseRumor(JSON.parse(plaintext));
-    if (!rumor || rumor.pubkey !== seal.pubkey) return null;
-    if (callsOnly && rumor.kind !== callSignalKind) return null;
-
-    if (
-      rumor.kind === timeLockKind &&
-      (JSON.stringify(wrap).length > maxTimeLockEnvelope ||
-        plaintext.length > maxTimeLockPayload + 1_024)
-    )
-      return null;
-    return privateEvent(rumor, myKey);
+    return privateEvent(rumor, signer.userSync.pubkey);
   } catch {
     return null;
   }
@@ -196,19 +137,6 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     sentAt: rumor.created_at * 1_000,
   };
   if (base.sentAt > Date.now() + 5 * 60_000) return null;
-  if (rumor.kind === callSignalKind) {
-    const signal = parseCallSignal(rumor.content, base, Date.now());
-    if (!signal) return null;
-    const replyRelays =
-      signal.type === "call.invite" || signal.type === "call.rtc"
-        ? rumor.tags
-            .flatMap(([key, url]) =>
-              key === callReplyRelayTag && url ? [url] : [],
-            )
-            .slice(0, 3)
-        : [];
-    return { ...base, type: "call", signal, replyRelays };
-  }
   if (rumor.kind === reactionKind) {
     const emoji = parseReaction(rumor.content);
     return target && emoji

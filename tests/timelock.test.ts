@@ -9,6 +9,7 @@ import {
   unwrapPrivateEvent,
   wrapRumor,
 } from "../src/core/messaging/nip17";
+import { createRelayService } from "../src/core/nostr/relay-service";
 import { createMessagingService } from "../src/core/messaging/runtime";
 import {
   createTimeLockOpener,
@@ -250,7 +251,13 @@ function arrival(id: string) {
 test("queues special and standard messages together and wraps only ciphertext for both identities", async () => {
   using sqlite = new Database(":memory:");
   const chat = createMessagingRepository(database(sqlite));
+  const relays = createRelayService({
+    signer: alice,
+    readState: () => null,
+    writeState: () => {},
+  });
   const runtime = createMessagingService({
+    relays,
     signer: alice,
     chat,
     readState: () => null,
@@ -297,6 +304,7 @@ test("queues special and standard messages together and wraps only ciphertext fo
   } finally {
     runtime.setUnlockActive(false);
     runtime.stop();
+    relays.stop();
   }
 });
 

@@ -11,6 +11,9 @@ import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { useEffect } from "react";
 import { AppState } from "react-native";
+import { createCallSignalingService } from "@/core/calling/signaling-service";
+import { createPublicMetadata } from "@/core/nostr/public-metadata";
+import { createRelayService } from "@/core/nostr/relay-service";
 import { createCallController } from "@/core/calling/controller";
 import { callTone } from "@/core/calling/native-audio";
 import {
@@ -86,7 +89,19 @@ async function start() {
       translationPreviewTarget(db),
     );
     const messagingStarted = performance.now();
+    const relays = createRelayService({
+      readState: (key) => preference(db, key),
+      writeState: (key, value) => setPreference(db, key, value),
+      signer,
+    });
+    const callSignaling = createCallSignalingService({
+      signer,
+      relays,
+      isBlocked: privacy.isBlocked,
+      canReceiveCall: privacy.canReceiveCall,
+    });
     const messaging = createMessagingService({
+      relays,
       readState: (key) => preference(db, key),
       writeState: (key, value) => setPreference(db, key, value),
       createId: randomUUID,
@@ -95,12 +110,24 @@ async function start() {
       privacy,
       media: attachments,
     });
+    const lock = createAppLock({
+      read: (key) => preference(db, key),
+      write: (key, value) => setPreference(db, key, value),
+      startActive: AppState.currentState === "active",
+      authenticate: authenticateApp,
+      protect: protectAppWindow,
+    });
+    const publicMetadata = createPublicMetadata(
+      relays,
+      identity.publicKey,
+      () => AppState.currentState === "active" && !lock.getState().locked,
+    );
     const { disk, localDirectory } = mediaSdk.profileFiles;
     const avatars = createAvatars(
       db,
       identity.publicKey,
       privacy,
-      messaging,
+      publicMetadata,
       disk,
       mediaSdk.profileDownload,
       mediaSdk.profileMirrors,
@@ -112,25 +139,18 @@ async function start() {
       disk,
       (filename, signal) =>
         uploadAvatar(mediaSdk, new File(localDirectory, filename), signal),
-      messaging,
+      publicMetadata,
     );
     privacy.subscribe(avatars.invalidate);
-    let profileRelays = messaging.profileRelayKey();
-    messaging.subscribeStatus(() => {
-      const next = messaging.profileRelayKey();
+    let profileRelays = publicMetadata.profileRelayKey();
+    relays.subscribe(() => {
+      const next = publicMetadata.profileRelayKey();
       if (next === profileRelays) return;
       profileRelays = next;
       avatars.refreshRelays();
     });
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
-    });
-    const lock = createAppLock({
-      read: (key) => preference(db, key),
-      write: (key, value) => setPreference(db, key, value),
-      startActive: AppState.currentState === "active",
-      authenticate: authenticateApp,
-      protect: protectAppWindow,
     });
     const previews = createNativeLinkPreviews(
       db,
@@ -178,7 +198,7 @@ async function start() {
           onRouting,
         });
       },
-      messaging.sendCall,
+      callSignaling.send,
       privacy.isBlocked,
     );
     const calling = createCallController({
@@ -188,12 +208,12 @@ async function start() {
       openMedia: media.open,
       prepareMedia: initializeCallingRuntime,
       prepareInvite: (invite, signal) => {
-        void messaging
-          .prepareCallRoute(invite.callId, invite.recipientKey)
+        void callSignaling
+          .prepareRoute(invite.callId, invite.recipientKey)
           .catch(() => undefined);
         return media.prepare(invite, signal);
       },
-      send: messaging.sendCall,
+      send: callSignaling.send,
       tone: callTone,
       record: (entry) => {
         db.transaction(() => {
@@ -219,7 +239,7 @@ async function start() {
       attachments.block(key);
       messaging.invalidateBlockedPeer();
     });
-    messaging.subscribeCalls((message) => {
+    callSignaling.subscribe((message) => {
       if (message.type === "call.rtc") media.receive(message);
       else calling.receive(message);
     });
@@ -241,11 +261,14 @@ async function start() {
       previews,
       mediaSdk,
       profileEditor,
+      publicMetadata,
       privacy,
       chat,
       history,
       conversations,
       messaging,
+      relays,
+      callSignaling,
       calling,
       nativeOpen,
       lock,
@@ -273,8 +296,17 @@ export function initializeLocal() {
   return initialization;
 }
 
-export function MessagingLifecycle() {
-  const { db, messaging, calling, lock, conversations, avatars } = useLocal();
+export function LocalSessionLifecycle() {
+  const {
+    db,
+    messaging,
+    relays,
+    callSignaling,
+    calling,
+    lock,
+    conversations,
+    avatars,
+  } = useLocal();
   const chatsEnabled = useChatsEnabled();
   useEffect(() => {
     if (!chatsEnabled) return;
@@ -299,7 +331,9 @@ export function MessagingLifecycle() {
     let mounted = true;
     let relaysChanged = false;
     function connect() {
-      messaging.start(configuredRelays(rows, intent));
+      callSignaling.start();
+      messaging.start();
+      relays.start(configuredRelays(rows, intent));
     }
     const dbChanges = addDatabaseChangeListener(
       ({ databaseFilePath, tableName }) => {
@@ -335,7 +369,10 @@ export function MessagingLifecycle() {
     }
     function background() {
       calling.setForeground(false);
-      if (!calling.isRequestingMicrophone()) messaging.stop(true);
+      if (calling.isRequestingMicrophone()) return;
+      messaging.stop(true);
+      callSignaling.stop();
+      relays.stop();
     }
     const update = (state: typeof AppState.currentState) => {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
@@ -388,7 +425,18 @@ export function MessagingLifecycle() {
       avatars.setActive(false);
       messaging.setUnlockActive(false);
       messaging.stop();
+      callSignaling.stop();
+      relays.stop();
     };
-  }, [db, messaging, calling, lock, conversations, avatars]);
+  }, [
+    db,
+    messaging,
+    relays,
+    callSignaling,
+    calling,
+    lock,
+    conversations,
+    avatars,
+  ]);
   return null;
 }

@@ -7,6 +7,8 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { type Filter, matchFilters } from "nostr-tools/filter";
 import type { Event } from "nostr-tools/pure";
 import { z } from "zod";
+import { createCallSignalingService } from "../src/core/calling/signaling-service";
+import { createRelayService } from "../src/core/nostr/relay-service";
 import type { CallSignal } from "../src/core/calling/signals";
 import { unwrapPrivateEvent, verifiedEvent } from "../src/core/messaging/nip17";
 import { createMessagingService } from "../src/core/messaging/runtime";
@@ -47,7 +49,19 @@ function client(seed: string) {
   const db = drizzle(sqlite, { schema });
   const chat = createMessagingRepository(db);
   const signer = new NDKPrivateKeySigner(seed.repeat(32));
+  const relays = createRelayService({
+    signer,
+    readState: (key) => preference(db, key),
+    writeState: (key, value) => setPreference(db, key, value),
+  });
+  const callSignaling = createCallSignalingService({
+    signer,
+    relays,
+    isBlocked: () => false,
+    canReceiveCall: () => true,
+  });
   const service = createMessagingService({
+    relays,
     signer,
     chat,
     createId: () => crypto.randomUUID(),
@@ -55,15 +69,34 @@ function client(seed: string) {
     writeState: (key, value) => setPreference(db, key, value),
   });
   function start(urls: string[], intent: string | null = "initial") {
-    service.start({
+    service.start();
+    startTransport(urls, intent);
+  }
+  function startTransport(urls: string[], intent: string | null = "initial") {
+    callSignaling.start();
+    relays.start({
       general: urls,
       inbox: urls,
       discovery: [],
       intent,
     });
   }
+  function stop() {
+    service.stop();
+    callSignaling.stop();
+    relays.stop();
+  }
   return {
-    service: { ...service, start },
+    callSignaling,
+    relays,
+    startTransport,
+    service: {
+      ...service,
+      start,
+      stop,
+      stopChat: service.stop,
+      startChat: service.start,
+    },
     chat,
     key: signer.pubkey,
     signer,
@@ -497,7 +530,10 @@ async function runScenario(tlsDirectory: string) {
             ),
       ),
     );
-    const stopCalls = bob.service.subscribeCalls((signal) =>
+    // Keep the relay connections and call service up with both chat runtimes stopped.
+    alice.service.stopChat();
+    bob.service.stopChat();
+    const stopCalls = bob.callSignaling.subscribe((signal) =>
       callSignals.push(signal),
     );
     const stamp = Math.floor(Date.now() / 1000) * 1000;
@@ -517,7 +553,7 @@ async function runScenario(tlsDirectory: string) {
       createdAt: stamp,
       expiresAt: stamp + 30_000,
     } satisfies CallSignal;
-    if (!(await alice.service.sendCall(signal, () => true))) {
+    if (!(await alice.callSignaling.send(signal, () => true))) {
       throw new Error("Relay rejected the call invitation");
     }
     await wait("encrypted call invitation", () =>
@@ -529,11 +565,11 @@ async function runScenario(tlsDirectory: string) {
       ),
     );
     const answers: CallSignal[] = [];
-    const stopAnswers = alice.service.subscribeCalls((message) =>
+    const stopAnswers = alice.callSignaling.subscribe((message) =>
       answers.push(message),
     );
     const rtcAnswer = "private-rtc-description".repeat(220);
-    const accepted = await bob.service.sendCall(
+    const accepted = await bob.callSignaling.send(
       {
         type: "call.rtc",
         version: 1,
@@ -566,6 +602,10 @@ async function runScenario(tlsDirectory: string) {
       throw new Error("Call signaling leaked into chat history");
     }
     bob.service.setChatsEnabled(true);
+    alice.service.startChat();
+    bob.service.startChat();
+    alice.service.setUnlockActive(true);
+    bob.service.setUnlockActive(true);
     if (
       [...events.values()].some(
         ({ kind, content }) =>
@@ -624,12 +664,37 @@ async function runScenario(tlsDirectory: string) {
     ) {
       throw new Error("The client published without a recipient inbox");
     }
-    charlie.service.start([url]);
+    charlie.startTransport([url]);
     await wait("Charlie's advertised inbox", () =>
       [...events.values()].some(
         ({ pubkey, kind }) => pubkey === charlie.key && kind === 10050,
       ),
     );
+    if (charlie.chat.conversation(alice.key))
+      throw new Error("First-contact call fixture already has a conversation");
+    const incoming: CallSignal[] = [];
+    const unwatchFirstCall = charlie.callSignaling.subscribe((event) =>
+      incoming.push(event),
+    );
+    try {
+      const createdAt = Math.floor(Date.now() / 1_000) * 1_000;
+      const firstCall = {
+        ...signal,
+        recipientKey: charlie.key,
+        createdAt,
+        expiresAt: createdAt + 30_000,
+      };
+      if (!(await alice.callSignaling.send(firstCall, () => true)))
+        throw new Error("First-contact call invitation was rejected");
+      await wait("first-contact call with no chat runtime", () =>
+        incoming.some(({ nonce }) => nonce === firstCall.nonce),
+      );
+      if (charlie.chat.conversation(alice.key))
+        throw new Error("First-contact call created a conversation");
+    } finally {
+      unwatchFirstCall();
+    }
+    charlie.service.startChat();
     alice.service.retry(charlie.key, noInbox);
     await wait(
       "failed message retry",
@@ -674,14 +739,14 @@ async function runScenario(tlsDirectory: string) {
     charlie.service.start([url], null);
     await wait(
       "external inbox conflict",
-      () => charlie.service.getInboxStatus() === "conflict",
+      () => charlie.relays.getInboxStatus() === "conflict",
     );
     if (!events.has(signed.id))
       throw new Error("The client replaced a published list without approval");
     charlie.service.start([url], "explicit-test-change");
     await wait(
       "explicit inbox reconciliation",
-      () => charlie.service.getInboxStatus() === "published",
+      () => charlie.relays.getInboxStatus() === "published",
     );
     if (events.has(signed.id))
       throw new Error("The relay did not replace the old inbox list");
@@ -717,7 +782,7 @@ async function runScenario(tlsDirectory: string) {
       await testOpenLater(alice, bob, url, events);
 
     console.log(
-      "TLS relay verified encrypted messaging and edits, call signaling with chats disabled, chat pause and catch-up, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, reconnect, and stable recipient and sender-copy retries.",
+      "TLS relay verified encrypted messaging and edits, independent first-contact and RTC signaling with chat stopped, chat pause and catch-up, NIP-42 inbox reads, write refusal, inbox publication and reconciliation, sender deduplication, reconnect, and stable recipient and sender-copy retries.",
     );
   } finally {
     alice.service.stop();

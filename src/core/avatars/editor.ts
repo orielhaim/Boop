@@ -10,7 +10,7 @@ import {
   replaces,
   updateProfileFields,
 } from "./protocol";
-import { verifiedEvent } from "../messaging/nip17";
+import { verifiedEvent } from "../nostr/gift-wrap";
 import type { AvatarDisk, createAvatars } from "./service";
 
 type Avatars = ReturnType<typeof createAvatars>;

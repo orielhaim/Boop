@@ -24,10 +24,16 @@ bun scripts/test-chat-relay.ts --timelock
 bun scripts/test-media-files.ts
 ```
 
-The relay integration test uses OpenSSL on PATH and connects to Quicknet when run with `--timelock`. The media integration test uses temporary files on the host.
+The relay integration test uses OpenSSL on PATH and connects to Quicknet when run with `--timelock`. It exchanges a call invitation and RTC answer with both chat runtimes stopped. The media integration test uses temporary files on the host.
 
 `src/db/schema.ts` defines tables and indexes. The initial SQL also defines the SQLite triggers for delivery grants, translation invalidation, and tombstone cleanup. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. If you change trigger SQL in the baseline, run `bun scripts/bundle-migrations.ts` again.
 
 ## Delayed-message dependency
 
 Open Later uses the vendored `tlock-js` 1.0.0 build from [upstream PR #52](https://github.com/drand/tlock-js/pull/52). The archive is from commit `b311ee25c26dcf86f347049e37d05fed0394889e` and has SHA-256 `25fd6819942da96832adc8c6470e2c253783e7c6d8b1c0bd96e5082adf0b159d`. Keep Quicknet chain and beacon validation in `src/core/messaging/special-messages/timelock.ts`.
+
+## MarmotKit release inputs
+
+For native integration work, run `bun scripts/fetch-marmotkit.ts android` or `bun scripts/fetch-marmotkit.ts ios`. The script verifies the pinned 0.18.0 archive and source commit and extracts matching bindings and libraries under `.expo/marmotkit`. The iOS archive also contains the SDK privacy manifest. The published iOS artifacts require iOS 18 or later. See the [0.18.0 distribution guide](https://github.com/marmot-protocol/mdk/blob/v0.18.0/crates/marmot-uniffi/DISTRIBUTION.md).
+
+The current app build still uses NIP-17 for persistent messages. The downloaded archives are inputs for the native integration.

@@ -18,12 +18,12 @@ import {
   type InviteSignal,
   parseCallSignal,
 } from "../src/core/calling/signals";
+import { unwrapPrivateEvent } from "../src/core/messaging/nip17";
+import { unsignedRumor, wrapRumor } from "../src/core/nostr/gift-wrap";
 import {
+  unwrapCallSignal,
   callReplyRelayTag,
-  createRumor,
-  unwrapPrivateEvent,
-  wrapRumor,
-} from "../src/core/messaging/nip17";
+} from "../src/core/calling/signaling-service";
 
 const caller = new NDKPrivateKeySigner("01".repeat(32));
 const callee = new NDKPrivateKeySigner("02".repeat(32));
@@ -49,7 +49,7 @@ function invitation(now: number): InviteSignal {
 test("signed NIP-59 call rumor reaches only its intended inbox, expires, and stays outside chat", async () => {
   const invite = invitation(Date.now());
   const replyRelay = "wss://relay.example/";
-  const rumor = createRumor({
+  const rumor = unsignedRumor({
     kind: callSignalKind,
     pubkey: invite.senderKey,
     content: JSON.stringify(invite),
@@ -63,12 +63,13 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
   expect(wrapped.rawEvent().kind).toBe(1059);
   expect(wrapped.rawEvent().content).not.toContain(invite.roomId);
   expect(JSON.stringify(wrapped.rawEvent())).not.toContain(replyRelay);
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toMatchObject({
-    type: "call",
+  expect(await unwrapCallSignal(wrapped.rawEvent(), callee)).toMatchObject({
+    id: rumor.id,
     signal: invite,
     replyRelays: [replyRelay],
   });
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), third)).toBeNull();
+  expect(await unwrapCallSignal(wrapped.rawEvent(), third)).toBeNull();
+  expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toBeNull();
   const envelope = {
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,

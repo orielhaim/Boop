@@ -3,7 +3,8 @@
 - Run `bun install --frozen-lockfile`, `bun fmt .`, `bun run lint`, `bun run typecheck`, and `bun test`.
 - Read the installed Expo major version in `package.json`. Check the [matching SDK reference](https://docs.expo.dev/versions/v58.0.0/) and [Expo documentation index](https://docs.expo.dev/llms.txt) before changing Expo or React Native APIs. Use `bunx expo install` for Expo packages.
 - Use Expo Router for routes in `src/app`. Put shared UI in `src/components`. Configure generated native projects in `app.json` and `plugins`. Use a development build for native modules.
-- Use `src/services/local.ts` as the composition root for the protected session. It creates one messaging runtime, call controller, SQLite connection, and media SDK. Keep durable state in `src/db`.
+- Use `src/services/local.ts` as the composition root for the protected session. It creates the relay service, call-signaling service, call controller, messaging runtime, SQLite connection, and media SDK. Keep durable application state in `src/db`.
+- Keep call signaling in `src/core/calling/signaling-service.ts`. Encrypt kind `24880` control events with NIP-44/NIP-59 using the active Nostr identity. First-contact calls use relay inbox discovery and can run with chats stopped.
 - Use the installed Chat Kit APIs for chat presentation and the shared repository for history and outbox operations. Keep local message IDs and original timestamps stable through relay acknowledgments and edits. Commit revision or unlock state with the visible body.
 - Verify the NIP-59 Seal before testing the blocked sender. Recheck authorization at dispatch. Keep saved contacts, message approvals, successful local initiation, and video consent independent. Promote requests and grant approval in one transaction.
 - Keep private keys in SecureStore. Encrypt exports with NIP-49. Verify a staged replacement before switching the SQLite pin and clearing identity-owned state. Fail closed on a key mismatch.

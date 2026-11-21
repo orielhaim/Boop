@@ -5,7 +5,6 @@ import {
   type SharedLocation,
 } from "./location";
 import { BlossomError } from "../media/blossom";
-import { parseServerOrigins, serverListKind } from "../media/servers";
 import {
   fileMessageKind,
   fileTags,
@@ -14,23 +13,12 @@ import {
 import type { AttachmentMedia } from "../media/service";
 import type { NDKRelay, NDKSigner } from "@nostr-dev-kit/ndk";
 import type { MessagingRepository } from "@/db/messaging";
-import { type CallSignal, callSignalKind } from "../calling/signals";
 import { publicKeySchema } from "../identity/keys";
-import {
-  type InboxPublication,
-  inboxHandoffMs,
-  inboxPublicationKey,
-  type RelayConfiguration,
-  readPublication,
-  sameRelays,
-} from "../nostr/config";
-import { createMessagingRelays } from "../nostr/messaging-relays";
+import type { RelayService } from "../nostr/relay-service";
 import { messagingMetric } from "./diagnostics";
 import { createInboxIngestion, inboxCatchup } from "./inbox-sync";
 import {
-  callReplyRelayTag,
   createRumor,
-  inboxListKind,
   maxMessageLength,
   messageEditKind,
   messageEditText,
@@ -52,21 +40,7 @@ import {
 } from "./special-messages/timelock";
 import { createUnlockScheduler } from "./special-messages/unlock-scheduler";
 
-export type MessagingStatus = "disabled" | "connecting" | "online" | "offline";
-export type RelayState = {
-  status:
-    | "connected"
-    | "connecting"
-    | "disconnected"
-    | "auth-required"
-    | "rejected"
-    | "unavailable";
-  lastConnected?: number;
-  inboxVerified?: boolean;
-  lastWrite?: "accepted" | "rejected";
-};
-export type InboxStatus =
-  "idle" | "validating" | "published" | "conflict" | "unverified" | "pending";
+export type { RelayStatus as MessagingStatus } from "../nostr/relay-service";
 type SendInput = {
   location?: SharedLocation;
   peerKey: string;
@@ -74,9 +48,6 @@ type SendInput = {
   replyTo: string | null;
   unlockAt?: number;
 };
-const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
-const offlineProbeDelay = 60_000;
-
 export function createMessagingService({
   signer,
   chat,
@@ -85,6 +56,7 @@ export function createMessagingService({
   createId,
   privacy,
   media,
+  relays,
 }: {
   signer: NDKSigner;
   chat: MessagingRepository;
@@ -92,9 +64,10 @@ export function createMessagingService({
   writeState: (key: string, value: string) => void;
   createId: () => string;
   media?: AttachmentMedia;
+  relays: RelayService;
   privacy?: Pick<
     import("@/core/privacy").Privacy,
-    "isBlocked" | "canReceiveCall" | "messagePermission" | "queue"
+    "isBlocked" | "messagePermission" | "queue"
   >;
 }) {
   const publicKey = signer.userSync.pubkey;
@@ -156,82 +129,25 @@ export function createMessagingService({
     unlocks.setActive(active);
     if (active) void flush();
   }
-  const transport = createMessagingRelays(signer);
+  const { transport, connectedRelays, discoveryRelays } = relays;
   const listeners = new Set<() => void>();
-  const callListeners = new Set<(signal: CallSignal) => void>();
-  const replyRoutes = new Map<
-    string,
-    { expiresAt: number; relays: string[] }
+  const watchers = new Map<
+    NDKRelay,
+    { close: () => void; refresh: () => void }
   >();
-  let requestCatchup: (() => void) | undefined;
-  let status: MessagingStatus = "disabled";
-  let generation = 0;
-  let configured: NDKRelay[] = [];
-  let connectionKey = "";
-  let configuration: RelayConfiguration = {
-    general: [],
-    inbox: [],
-    discovery: [],
-    intent: null,
-  };
-  const connections = new Map<
-    string,
-    {
-      relay: NDKRelay;
-      inbox: boolean;
-      close: () => void;
-      reconnect: () => void;
-      refreshInbox: () => void;
-    }
-  >();
-  const diagnostics = new Map<string, RelayState>();
   const syncing = new Map<string, "syncing" | "synced" | "failed">();
   let inboxSync: "idle" | "syncing" | "failed" = "idle";
-  let snapshot: Readonly<Record<string, RelayState>> = {};
-  let publication = readPublication(readState(inboxPublicationKey));
-  let publicationStatus: InboxStatus = "idle";
-  let publishingList = false;
-  let publicationRetries = 0;
-  let needsPublication = false;
-  let revision = 0;
-  let publicationTimer: ReturnType<typeof setTimeout> | undefined;
-  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
-  const verified = new Set<string>();
-  const previousTargets = new Set<string>();
+  let requestCatchup: (() => void) | undefined;
+  let disconnect: (() => void) | undefined;
+  let generation = 0;
+  let onlineRelays = new Set<NDKRelay>();
   let running = false;
   let flushRequested = false;
   const ingestion = createInboxIngestion(
-    (wrapped) =>
-      unwrapPrivateEvent(wrapped, signer, privacy?.isBlocked, !chatsEnabled),
+    (wrapped) => unwrapPrivateEvent(wrapped, signer, privacy?.isBlocked),
     (event) => {
-      if (privacy?.isBlocked(event.peerKey)) return;
-      if (event.type !== "call" && !chatsEnabled) return;
-      if (event.type === "call") {
-        if (event.recipientKey !== publicKey) return;
-        const { signal, replyRelays } = event;
-        if (
-          signal.type === "call.invite" &&
-          privacy &&
-          (!privacy.canReceiveCall(signal.senderKey) ||
-            signal.conference?.roster.some(privacy.isBlocked))
-        )
-          return;
-        if (
-          (signal.type === "call.invite" || signal.type === "call.rtc") &&
-          replyRelays.length
-        ) {
-          const key = `${signal.callId}:${signal.senderKey}`;
-          if (!replyRoutes.has(key) && replyRoutes.size >= 32) {
-            const oldest = replyRoutes.keys().next().value;
-            if (oldest !== undefined) replyRoutes.delete(oldest);
-          }
-          replyRoutes.set(key, {
-            expiresAt: signal.expiresAt,
-            relays: replyRelays,
-          });
-        }
-        for (const listener of callListeners) listener(signal);
-      } else if (event.type === "edit") {
+      if (!chatsEnabled || privacy?.isBlocked(event.peerKey)) return;
+      if (event.type === "edit") {
         if (
           event.senderKey !== publicKey &&
           privacy &&
@@ -289,12 +205,6 @@ export function createMessagingService({
     },
   );
 
-  function updateStatus(next: MessagingStatus) {
-    if (next === status) return;
-    status = next;
-    for (const listener of listeners) listener();
-  }
-
   function reportSync(url: string, phase?: "syncing" | "synced" | "failed") {
     if (phase) syncing.set(url, phase);
     else syncing.delete(url);
@@ -311,348 +221,79 @@ export function createMessagingService({
 
   function getHistoryReady() {
     return (
-      Boolean(connectionKey) &&
+      Boolean(disconnect) &&
       chatsEnabled &&
       inboxSync === "idle" &&
-      (!configuration.inbox.length || [...syncing.values()].includes("synced"))
+      (!relays.configuration().inbox.length ||
+        [...syncing.values()].includes("synced"))
     );
   }
 
-  function connectedRelays() {
-    return configured.filter(transport.connected);
-  }
-
-  function discoveryRelays() {
-    const urls = new Set([
-      ...configuration.general,
-      ...configuration.discovery,
-    ]);
-    return connectedRelays().filter(
-      (relay) => urls.has(relay.url) || connections.get(relay.url)?.inbox,
+  function syncWatches() {
+    const wanted = new Set(
+      chatsEnabled && disconnect ? relays.inboxRelays() : [],
     );
+    for (const [relay, watcher] of watchers) {
+      if (wanted.has(relay)) continue;
+      watchers.delete(relay);
+      watcher.close();
+    }
+    for (const relay of wanted)
+      if (!watchers.has(relay)) watchers.set(relay, watchInbox(relay));
   }
 
-  function report(url: string, patch: Partial<RelayState>) {
-    diagnostics.set(url, {
-      status: "disconnected",
-      ...diagnostics.get(url),
-      ...patch,
-    });
-    snapshot = Object.fromEntries(diagnostics);
-    for (const listener of listeners) listener();
-  }
-
-  function reportInbox(next: InboxStatus) {
-    if (next === publicationStatus) return;
-    publicationStatus = next;
-    for (const listener of listeners) listener();
-  }
-
-  function syncConnections() {
-    const inbox = new Set(configuration.inbox);
-    if (inbox.size) {
-      for (const url of publication?.urls ?? []) inbox.add(url);
-      for (const url of previousTargets) inbox.add(url);
-      for (const item of publication?.previous ?? [])
-        if (item.until > Date.now()) inbox.add(item.url);
-    }
-    const wanted = new Set([
-      ...configuration.general,
-      ...configuration.discovery,
-      ...inbox,
-    ]);
-    for (const [url, connection] of connections) {
-      if (wanted.has(url) && connection.inbox === inbox.has(url)) continue;
-      connection.close();
-      connections.delete(url);
-      if (!wanted.has(url)) report(url, { status: "disconnected" });
-    }
-    const added: { relay: NDKRelay; inbox: boolean }[] = [];
-    for (const url of wanted) {
-      if (!connections.has(url))
-        added.push({
-          relay: transport.addConfigured(url, inbox.has(url)),
-          inbox: inbox.has(url),
-        });
-    }
-    configured = [...connections.values()]
-      .map(({ relay }) => relay)
-      .concat(added.map(({ relay }) => relay));
-    for (const { relay, inbox } of added) {
-      connections.set(relay.url, {
-        relay,
-        inbox,
-        ...connectRelay(relay, generation, inbox),
+  function start() {
+    if (!disconnect) {
+      disconnect = relays.subscribe(() => {
+        syncWatches();
+        const connected = connectedRelays();
+        const added = connected.some((relay) => !onlineRelays.has(relay));
+        if (added && !onlineRelays.size) unlocks.reconnect();
+        onlineRelays = new Set(connected);
+        if (added) void flush();
+        for (const listener of listeners) listener();
       });
     }
-    if (!configured.length) updateStatus("disabled");
-    else if (!connectedRelays().length) updateStatus("connecting");
-    if (handoffTimer) clearTimeout(handoffTimer);
-    const nextExpiry = Math.min(
-      ...(publication?.previous ?? [])
-        .map(({ until }) => until)
-        .filter((until) => until > Date.now()),
-    );
-    if (Number.isFinite(nextExpiry))
-      handoffTimer = setTimeout(syncConnections, nextExpiry - Date.now() + 1);
-  }
-
-  function schedulePublication(delay = 350) {
-    if (publicationTimer) clearTimeout(publicationTimer);
-    publicationTimer = setTimeout(() => void publishInbox(), delay);
-  }
-
-  async function publishInbox() {
-    if (publishingList) {
-      needsPublication = true;
-      return;
-    }
-    if (!configuration.inbox.length) return;
-    if (!discoveryRelays().length) {
-      if (configuration.intent) reportInbox("pending");
-      return;
-    }
-    const expected = revision;
-    const active = () => expected === revision;
-    const { inbox, intent } = configuration;
-    if (inbox.length > 3) {
-      reportInbox("unverified");
-      return;
-    }
-    const discovery = [
-      ...new Set([
-        ...discoveryRelays(),
-        ...connectedRelays().filter((relay) => inbox.includes(relay.url)),
-      ]),
-    ];
-    publishingList = true;
-    try {
-      const { inbox: remote, complete } = await transport.lookupLists(
-        publicKey,
-        discovery,
-        [inboxListKind],
-      );
-      if (!active()) return;
-      const remoteUrls = remote
-        ? transport.safeTargets(remote.tags, "inbox")
-        : [];
-      const confirmed = remote && sameRelays(inbox, remoteUrls);
-      const explicit =
-        intent && intent !== "initial" && intent !== publication?.intent;
-      const externalChange =
-        remote &&
-        !confirmed &&
-        (!publication || remote.created_at >= publication.eventTime);
-      if (externalChange) {
-        previousTargets.clear();
-        for (const url of remoteUrls) previousTargets.add(url);
-        syncConnections();
-      }
-      if (externalChange && !explicit) {
-        reportInbox("conflict");
-        return;
-      }
-      if (!confirmed && !intent) {
-        reportInbox("idle");
-        return;
-      }
-      if (!confirmed && !complete) {
-        reportInbox("pending");
-        return;
-      }
-      if (
-        confirmed &&
-        publication &&
-        sameRelays(publication.urls, inbox) &&
-        publication.eventTime === remote.created_at &&
-        publication.intent === intent
-      ) {
-        reportInbox("published");
-        return;
-      }
-      const candidates = connectedRelays().filter((relay) =>
-        inbox.includes(relay.url),
-      );
-      if (candidates.length !== inbox.length) {
-        reportInbox("pending");
-        return;
-      }
-      reportInbox("validating");
-      const checks = await Promise.all(
-        candidates.map(async (relay) => {
-          if (verified.has(relay.url)) return true;
-          const pass = await transport
-            .verifyInbox(relay, active)
-            .catch(() => false);
-          if (active()) {
-            if (pass) verified.add(relay.url);
-            report(relay.url, { inboxVerified: pass });
-          }
-          return pass;
-        }),
-      );
-      if (!active()) return;
-      if (!checks.every(Boolean)) {
-        reportInbox("unverified");
-        return;
-      }
-      const eventTime = confirmed
-        ? remote.created_at
-        : Math.max(
-            Math.floor(Date.now() / 1_000),
-            (remote?.created_at ?? 0) + 1,
-            (publication?.eventTime ?? 0) + 1,
-          );
-      if (!confirmed) {
-        const accepted = await transport.advertise(
-          discovery,
-          inbox,
-          eventTime,
-          active,
-        );
-        if (!active()) return;
-        const published = accepted
-          ? (await transport.lookupLists(publicKey, discovery, [inboxListKind]))
-              .inbox
-          : null;
-        if (!active()) return;
-        if (
-          !published ||
-          !sameRelays(inbox, transport.safeTargets(published.tags, "inbox")) ||
-          published.created_at < eventTime
-        ) {
-          reportInbox("pending");
-          return;
-        }
-      }
-      const until = Date.now() + inboxHandoffMs;
-      const previous = new Map(
-        (publication?.previous ?? [])
-          .filter((item) => item.until > Date.now())
-          .map((item) => [item.url, item]),
-      );
-      for (const url of [...(publication?.urls ?? []), ...previousTargets]) {
-        if (!inbox.includes(url)) previous.set(url, { url, until });
-      }
-      const next: InboxPublication = {
-        urls: [...inbox],
-        eventTime,
-        intent,
-        previous: [...previous.values()]
-          .filter((item) => !inbox.includes(item.url))
-          .slice(-12),
-      };
-      writeState(inboxPublicationKey, JSON.stringify(next));
-      publication = next;
-      previousTargets.clear();
-      reportInbox("published");
-      syncConnections();
-    } catch {
-      if (active()) reportInbox("pending");
-    } finally {
-      publishingList = false;
-      if (needsPublication) {
-        needsPublication = false;
-        schedulePublication();
-      } else if (
-        active() &&
-        (publicationStatus === "pending" ||
-          publicationStatus === "unverified") &&
-        publicationRetries < 2
-      ) {
-        schedulePublication(5_000 * ++publicationRetries);
-      }
-    }
+    syncWatches();
   }
 
   function stop(background = false) {
     requestCatchup?.();
     setUnlockActive(false, background);
     generation++;
-    replyRoutes.clear();
-    revision++;
-    if (publicationTimer) clearTimeout(publicationTimer);
-    if (handoffTimer) clearTimeout(handoffTimer);
-    needsPublication = false;
-    for (const connection of connections.values()) connection.close();
-    connections.clear();
-    configured = [];
-    connectionKey = "";
-    transport.closePeerRelays();
-    for (const url of diagnostics.keys())
-      report(url, { status: "disconnected" });
-    updateStatus("disabled");
+    disconnect?.();
+    disconnect = undefined;
+    onlineRelays.clear();
+    syncWatches();
   }
 
-  function start(next: RelayConfiguration) {
-    const key = JSON.stringify(next);
-    if (connectionKey === key) return;
-    const historyWasReady = getHistoryReady();
-    connectionKey = key;
-    configuration = next;
-    publicationRetries = 0;
-    revision++;
-    reportInbox("idle");
-    syncConnections();
-    schedulePublication();
-    if (historyWasReady !== getHistoryReady())
-      for (const listener of listeners) listener();
-  }
-
-  function connectRelay(relay: NDKRelay, session: number, inbox: boolean) {
-    let attempts = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    let syncTimeout: ReturnType<typeof setTimeout> | undefined;
+  function watchInbox(relay: NDKRelay) {
     let closeWatch: (() => void) | undefined;
+    let syncTimeout: ReturnType<typeof setTimeout> | undefined;
     let watch = 0;
     let live = true;
-    const active = () => live && session === generation;
+    const active = () => live;
     const syncKey = `chat.sync.v2.${publicKey}.${relay.url}`;
-
-    function attemptConnection() {
-      if (!active() || transport.connected(relay)) return;
-      clearTimeout(retryTimer);
-      const burstDelay = retryDelays[attempts];
-      if (burstDelay !== undefined) attempts++;
-      const delay = burstDelay ?? offlineProbeDelay;
-      report(relay.url, {
-        status: burstDelay === undefined ? "unavailable" : "connecting",
-      });
-      retryTimer = setTimeout(() => {
-        if (!active() || transport.connected(relay)) return;
-        updateStatus(connectedRelays().length ? "online" : "offline");
-        // A connection can remain stuck in CONNECTING after a failed handshake.
-        // Close it before giving the next scheduled attempt a fresh socket.
-        if (delay >= 8_000) {
-          relay.connectivity.resetReconnectionState();
-          relay.disconnect();
-        }
-        attemptConnection();
-      }, delay);
-      void transport.connect(relay);
-    }
-
-    function watchInbox() {
-      if (!active() || !inbox || !transport.connected(relay)) return;
+    function refresh() {
+      if (!active() || !chatsEnabled || !transport.connected(relay)) return;
       closeWatch?.();
       clearTimeout(syncTimeout);
       const token = ++watch;
-      const syncingChats = chatsEnabled;
       const current = () => active() && token === watch;
-      const catchup = syncingChats
-        ? inboxCatchup(Math.floor(Date.now() / 1_000), readState(syncKey))
-        : undefined;
+      const catchup = inboxCatchup(
+        Math.floor(Date.now() / 1_000),
+        readState(syncKey),
+      );
       const started = Date.now();
       let receiveSucceeded = true;
       let storedComplete = false;
-      reportSync(relay.url, syncingChats ? "syncing" : undefined);
-      if (syncingChats)
-        syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
+      reportSync(relay.url, "syncing");
+      syncTimeout = setTimeout(() => reportSync(relay.url, "failed"), 20_000);
       closeWatch = transport.watchInbox(
         relay,
-        catchup?.since,
+        catchup.since,
         (id, wrapped) => {
-          if (!current() || (!syncingChats && !storedComplete)) return;
+          if (!current()) return;
           ingestion.receive(
             id,
             wrapped,
@@ -665,7 +306,6 @@ export function createMessagingService({
         },
         () => {
           storedComplete = true;
-          if (!catchup) return;
           void ingestion
             .drained()
             .then(() => {
@@ -686,81 +326,19 @@ export function createMessagingService({
               if (active() && token === watch) reportSync(relay.url, "failed");
             });
         },
-        syncingChats ? undefined : 0,
       );
     }
 
-    function onConnect() {
-      if (!active()) return;
-      if (retryTimer) clearTimeout(retryTimer);
-      attempts = 0;
-      if (inbox) watchInbox();
-      report(relay.url, { status: "connected", lastConnected: Date.now() });
-      const wasOnline = status === "online";
-      updateStatus("online");
-      if (!wasOnline) unlocks.reconnect();
-      schedulePublication();
-      // Retry discovered/queued sends only when a relay is actually reachable.
-      void flush();
-    }
-
-    function onDisconnect() {
-      if (!active()) return;
-      watch++;
-      clearTimeout(syncTimeout);
-      reportSync(relay.url);
-      report(relay.url, { status: "disconnected" });
-      closeWatch?.();
-      closeWatch = undefined;
-      if (retryTimer) clearTimeout(retryTimer);
-      relay.connectivity.resetReconnectionState();
-      updateStatus(connectedRelays().length ? "online" : "offline");
-      retryTimer = setTimeout(
-        attemptConnection,
-        retryDelays[attempts] ?? offlineProbeDelay,
-      );
-    }
-
-    const onAuth = () => report(relay.url, { status: "auth-required" });
-    const onAuthed = () => {
-      report(relay.url, { status: "connected" });
-      watchInbox();
-      schedulePublication();
-    };
-    const onRejected = () => report(relay.url, { status: "rejected" });
-    const onWrite = () => report(relay.url, { lastWrite: "accepted" });
-    const onWriteFailed = () => report(relay.url, { lastWrite: "rejected" });
-    relay.on("connect", onConnect);
-    relay.on("disconnect", onDisconnect);
-    relay.on("auth", onAuth);
-    relay.on("authed", onAuthed);
-    relay.on("auth:failed", onRejected);
-    relay.on("published", onWrite);
-    relay.on("publish:failed", onWriteFailed);
-    if (transport.connected(relay)) onConnect();
-    else attemptConnection();
+    relay.on("authed", refresh);
+    refresh();
     return {
-      refreshInbox: watchInbox,
-      reconnect() {
-        attempts = 0;
-        if (retryTimer) clearTimeout(retryTimer);
-        if (!transport.connected(relay)) attemptConnection();
-        else if (syncing.get(relay.url) === "failed") watchInbox();
-      },
+      refresh,
       close() {
         live = false;
-        if (retryTimer) clearTimeout(retryTimer);
         clearTimeout(syncTimeout);
-        reportSync(relay.url);
         closeWatch?.();
-        relay.off("connect", onConnect);
-        relay.off("disconnect", onDisconnect);
-        relay.off("auth", onAuth);
-        relay.off("authed", onAuthed);
-        relay.off("auth:failed", onRejected);
-        relay.off("published", onWrite);
-        relay.off("publish:failed", onWriteFailed);
-        transport.unconfigure(relay);
+        relay.off("authed", refresh);
+        reportSync(relay.url);
       },
     };
   }
@@ -791,67 +369,12 @@ export function createMessagingService({
     return "accepted";
   }
 
-  async function sendCall(signal: CallSignal, active: () => boolean) {
-    const session = generation;
-    const live = () =>
-      active() &&
-      session === generation &&
-      Date.now() < signal.expiresAt &&
-      !privacy?.isBlocked(signal.recipientKey);
-    if (!live() || connectedRelays().length === 0) return false;
-    const replyRoute = replyRoutes.get(
-      `${signal.callId}:${signal.recipientKey}`,
-    );
-    const replyTargets =
-      replyRoute && replyRoute.expiresAt > Date.now()
-        ? transport.safeTargets(
-            replyRoute.relays.map((url) => ["relay", url]),
-            "inbox",
-          )
-        : [];
-    const tags = [["p", signal.recipientKey]];
-    if (signal.type === "call.invite" || signal.type === "call.rtc") {
-      const listening = [...connections.values()]
-        .filter(({ relay, inbox }) => inbox && transport.connected(relay))
-        .map(({ relay }) => relay.url);
-      for (const url of listening.slice(0, 3))
-        tags.push([callReplyRelayTag, url]);
-    }
-    const rumor = createRumor({
-      kind: callSignalKind,
-      pubkey: publicKey,
-      content: JSON.stringify(signal),
-      tags,
-      created_at: signal.createdAt / 1_000,
-    });
-    const envelope = await transport.wrap(rumor, signal.recipientKey);
-    if (!live()) return false;
-    if (replyTargets.length) {
-      const started = performance.now();
-      const accepted = await transport.publish(envelope, replyTargets, live);
-      messagingMetric("call reply via invitation", {
-        ms: performance.now() - started,
-        accepted,
-        answer: signal.type === "call.accept",
-      });
-      if (accepted) return true;
-    }
-    if (!live()) return false;
-    const urls = await transport.findCallInbox(
-      signal.callId,
-      signal.recipientKey,
-      discoveryRelays(),
-    );
-    if (!urls.length) return false;
-    return live() && transport.publish(envelope, urls, live);
-  }
-
   async function storeSenderCopy(rumor: Rumor, active: () => boolean) {
     try {
       if (!active()) return false;
       const copy = await transport.wrap(rumor, publicKey);
       if (!active()) return false;
-      const inbox = publication?.urls ?? configuration.inbox.slice(0, 3);
+      const inbox = relays.senderCopyRelays();
       return await transport.publish(copy, inbox, active);
     } catch {
       return false;
@@ -1177,7 +700,7 @@ export function createMessagingService({
         writeMs: performance.now() - writeStarted,
         contentBytes: content.length,
       });
-    if (status === "offline" && configured.length) startAgain();
+    if (relays.getStatus() === "offline") startAgain();
     void flush();
     return id;
   }
@@ -1224,7 +747,7 @@ export function createMessagingService({
     const edit = parseEditRumor(rumor, publicKey);
     if (!edit || !chat.enqueueEdit(target.id, edit, JSON.stringify(rumor)))
       throw new Error("edit-unavailable");
-    if (status === "offline" && configured.length) startAgain();
+    if (relays.getStatus() === "offline") startAgain();
     void flush();
   }
 
@@ -1232,7 +755,7 @@ export function createMessagingService({
     if (!chatsEnabled || !unlockActive || privacy?.isBlocked(peerKey))
       throw new Error("edit-unavailable");
     chat.retryEdit(peerKey, id);
-    if (status === "offline" && configured.length) startAgain();
+    if (relays.getStatus() === "offline") startAgain();
     void flush();
   }
 
@@ -1277,7 +800,7 @@ export function createMessagingService({
       )
         throw new Error("media-storage");
     });
-    if (status === "offline" && configured.length) startAgain();
+    if (relays.getStatus() === "offline") startAgain();
     void flush();
     return id;
   }
@@ -1309,14 +832,15 @@ export function createMessagingService({
       !chat.setStatus(id, "pending", null, peerKey)
     )
       return;
-    if (!connectedRelays().length && configured.length) startAgain();
+    if (relays.getStatus() === "offline") startAgain();
     void flush();
   }
 
   function startAgain() {
-    publicationRetries = 0;
-    for (const connection of connections.values()) connection.reconnect();
-    schedulePublication();
+    relays.reconnect();
+    for (const [relay, watcher] of watchers) {
+      if (syncing.get(relay.url) === "failed") watcher.refresh();
+    }
   }
 
   function catchupRequest(peerKey: string) {
@@ -1328,9 +852,7 @@ export function createMessagingService({
       session === generation &&
       chatSession === chatGeneration &&
       !privacy?.isBlocked(peerKey);
-    const inboxes = [...connections.values()]
-      .filter(({ relay, inbox }) => inbox && transport.connected(relay))
-      .slice(0, 3);
+    const inboxes = relays.inboxRelays().slice(0, 3);
     if (!inboxes.length || !live()) return;
     const close: (() => void)[] = [];
     function stopCatchup() {
@@ -1341,7 +863,7 @@ export function createMessagingService({
     const timer = setTimeout(stopCatchup, 5_000);
     requestCatchup = stopCatchup;
     const since = Math.floor(Date.now() / 1_000) - 3 * 86_400;
-    for (const { relay } of inboxes) {
+    for (const relay of inboxes) {
       let remaining = 96;
       close.push(
         transport.watchInbox(
@@ -1355,8 +877,7 @@ export function createMessagingService({
               live,
               () => undefined,
               false,
-              (opened) =>
-                opened.senderKey === peerKey && opened.type !== "call",
+              (opened) => opened.senderKey === peerKey,
             );
           },
           () => undefined,
@@ -1419,20 +940,6 @@ export function createMessagingService({
       .catch(() => undefined);
   }
 
-  let lastMediaList = 0;
-  const listRelays = () => {
-    const targets = new Set([
-      ...configuration.general,
-      ...configuration.discovery,
-    ]);
-    return configured
-      .filter((relay) => targets.has(relay.url) && transport.connected(relay))
-      .slice(0, 8);
-  };
-  async function readMediaList() {
-    return transport.lookupLists(publicKey, listRelays(), [serverListKind]);
-  }
-
   return {
     getChatsEnabled: () => chatsEnabled,
     setChatsEnabled(enabled: boolean) {
@@ -1442,70 +949,12 @@ export function createMessagingService({
       chatGeneration++;
       requestCatchup?.();
       updateUnlocks();
-      for (const connection of connections.values()) connection.refreshInbox();
+      syncWatches();
       if (enabled) void flush();
       for (const listener of listeners) listener();
     },
     start,
     stop,
-    profileRelayKey: () =>
-      discoveryRelays()
-        .slice(0, 4)
-        .map((relay) => relay.url)
-        .join(","),
-    watchProfiles(
-      authors: string[],
-      onEvent: (event: unknown, author: string) => void,
-      onEose: () => void,
-    ) {
-      const relays = discoveryRelays().slice(0, 4);
-      return relays.length
-        ? transport.watchProfiles(relays, authors, onEvent, onEose)
-        : null;
-    },
-    async discoverBlossomServers() {
-      const { general, complete } = await readMediaList();
-      if (!complete && !general) throw new Error("media-list-unavailable");
-      return parseServerOrigins(general?.tags ?? []);
-    },
-    async publishBlossomServers(origins: string[]) {
-      const session = generation;
-      const active = () => session === generation && unlockAllowed;
-      const selected = parseServerOrigins(
-        origins.map((origin) => ["server", origin]),
-      );
-      if (!selected.length || !active()) return false;
-      const { general, complete } = await readMediaList();
-      if (!complete || !active()) return false;
-      const now = Math.floor(Date.now() / 1_000);
-      const timestamp = Math.max(
-        now,
-        (general?.created_at ?? 0) + 1,
-        lastMediaList + 1,
-      );
-      if (timestamp > now + 60) return false;
-      lastMediaList = timestamp;
-      const event = await transport.publishReplaceable(
-        serverListKind,
-        "",
-        selected.map((origin) => ["server", origin]),
-        timestamp,
-        configuration.general,
-        active,
-      );
-      return Boolean(event);
-    },
-    publishProfile(content: string, createdAt: number) {
-      const session = generation;
-      return transport.publishReplaceable(
-        0,
-        content,
-        [],
-        createdAt,
-        configuration.general,
-        () => session === generation,
-      );
-    },
     reconnect: startAgain,
     catchupRequest,
     setUnlockActive,
@@ -1514,8 +963,6 @@ export function createMessagingService({
       setUnlockActive(false);
       setUnlockActive(true);
     },
-    getRelayStates: () => snapshot,
-    getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,
     getHistoryReady,
     send,
@@ -1526,16 +973,7 @@ export function createMessagingService({
     pauseAttachment,
     retry,
     toggleReaction,
-    sendCall,
-    prepareCallRoute: (callId: string, recipient: string) =>
-      transport.findCallInbox(callId, recipient, discoveryRelays()),
-    subscribeCalls: (listener: (signal: CallSignal) => void) => {
-      callListeners.add(listener);
-      return () => {
-        callListeners.delete(listener);
-      };
-    },
-    getStatus: () => status,
+    getStatus: relays.getStatus,
     subscribeStatus: (listener: () => void) => {
       listeners.add(listener);
       return () => {
