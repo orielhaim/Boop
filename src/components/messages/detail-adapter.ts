@@ -15,6 +15,7 @@ export interface DetailMessage extends IMessage {
   originalText?: string;
   locked?: MessageRecord["locked"];
   timeLock?: true;
+  voice?: MessageRecord["voice"];
 }
 
 export type Participants = { self: User; peer: User };
@@ -31,9 +32,14 @@ export function toQuote(
   row: QuoteSource,
   participants: Participants,
   lockedLabel = "",
+  voiceLabel = "",
 ): ReplyMessage {
   const text =
-    row.contentType === "timelock" && !row.body ? lockedLabel : row.body;
+    row.contentType === "attachment"
+      ? voiceLabel
+      : row.contentType === "timelock" && !row.body
+        ? lockedLabel
+        : row.body;
   return { _id: row.id, text, user: author(row, participants) };
 }
 
@@ -43,6 +49,7 @@ export function toDetailMessage(
   participants: Participants,
   unavailable: string,
   lockedLabel = "",
+  voiceLabel = "",
 ): DetailMessage {
   const groups = new Map<string, string[]>();
   for (const reaction of row.reactions) {
@@ -62,6 +69,9 @@ export function toDetailMessage(
     direction: row.direction,
     text: row.body,
     locked: row.locked,
+    voice: row.voice,
+    isMediaUnread:
+      row.direction === "incoming" && !!row.voice && !row.voice.listened,
     timeLock: row.contentType === "timelock" ? true : undefined,
     user: author(row, participants),
     createdAt: row.sentAt,
@@ -72,7 +82,7 @@ export function toDetailMessage(
     isFailed: row.status === "failed",
     replyMessage: row.replyTo
       ? source && source.deletedAt === null
-        ? toQuote(source, participants, lockedLabel)
+        ? toQuote(source, participants, lockedLabel, voiceLabel)
         : { _id: row.replyTo, text: unavailable, user: { _id: "" } }
       : undefined,
     reactions: reactions.length ? reactions : undefined,
@@ -86,6 +96,10 @@ export function equalDetailMessage(a: DetailMessage, b: DetailMessage) {
     a.direction === b.direction &&
     a.text === b.text &&
     a.timeLock === b.timeLock &&
+    a.voice?.durationMs === b.voice?.durationMs &&
+    a.voice?.listened === b.voice?.listened &&
+    a.voice?.kind === b.voice?.kind &&
+    a.voice?.waveform?.join(",") === b.voice?.waveform?.join(",") &&
     a.locked?.requestedAt === b.locked?.requestedAt &&
     a.locked?.roundTime === b.locked?.roundTime &&
     a.locked?.error === b.locked?.error &&

@@ -85,6 +85,13 @@
       "when": 1795179766152,
       "tag": "0011_panoramic_snowbird",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795278735472,
+      "tag": "0012_medical_sphinx",
+      "breakpoints": true
     }
   ]
 }

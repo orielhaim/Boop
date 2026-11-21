@@ -15,7 +15,7 @@ import { Action, Empty, Icon, Ink, Screen } from "@/components/ui/kit";
 import { PeerActions } from "@/components/ui/peer-actions";
 import { usePrivacy } from "@/components/ui/privacy-actions";
 import { namespaces, resolveLanguage } from "@/i18n";
-import { formatDateTime } from "@/i18n/format";
+import { formatDateTime, formatDuration } from "@/i18n/format";
 import { useChatsEnabled, useLocal } from "@/services/local";
 import { space, useTheme } from "@/theme";
 
@@ -68,6 +68,12 @@ function MessageInbox() {
           t("messages:lockedPreview", {
             time: formatDateTime(time, resolveLanguage(locale)),
           }),
+        (duration) =>
+          duration == null
+            ? t("messages:voiceMessage")
+            : t("messages:voicePreview", {
+                duration: formatDuration(duration / 1000),
+              }),
       ),
     [identity.publicKey, locale, t],
   );

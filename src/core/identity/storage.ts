@@ -12,6 +12,7 @@ import {
   conversations,
   messageReactions,
   messageRequests,
+  attachmentCache,
   messages,
   settings,
 } from "@/db/schema";
@@ -106,6 +107,7 @@ async function recoverSwitch<TResult>(
         db.transaction((tx) => {
           tx.delete(messageReactions).run();
           tx.delete(messages).run();
+          tx.delete(attachmentCache).run();
           tx.delete(conversations).run();
           tx.delete(contacts).run();
           tx.delete(avatarCache).run();

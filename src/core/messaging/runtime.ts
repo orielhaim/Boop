@@ -1,3 +1,11 @@
+import { BlossomError } from "../media/blossom";
+import { parseServerOrigins, serverListKind } from "../media/servers";
+import {
+  fileMessageKind,
+  fileTags,
+  type VoiceMetadata,
+} from "../media/protocol";
+import type { AttachmentMedia } from "../media/service";
 import type { NDKRelay, NDKSigner } from "@nostr-dev-kit/ndk";
 import type { MessagingRepository } from "@/db/messaging";
 import { type CallSignal, callSignalKind } from "../calling/signals";
@@ -66,12 +74,14 @@ export function createMessagingService({
   writeState,
   createId,
   privacy,
+  media,
 }: {
   signer: NDKSigner;
   chat: MessagingRepository;
   readState: (key: string) => string | null;
   writeState: (key: string, value: string) => void;
   createId: () => string;
+  media?: AttachmentMedia;
   privacy?: Pick<
     import("@/core/privacy").Privacy,
     "isBlocked" | "canReceiveCall" | "messagePermission" | "queue"
@@ -131,6 +141,8 @@ export function createMessagingService({
     unlockActive = active;
     unlockGeneration++;
     unlocks.setActive(active);
+    media?.setActive(active);
+    if (active) void flush();
   }
   const transport = createMessagingRelays(signer);
   const listeners = new Set<() => void>();
@@ -175,6 +187,7 @@ export function createMessagingService({
   const verified = new Set<string>();
   const previousTargets = new Set<string>();
   let running = false;
+  let flushRequested = false;
   const ingestion = createInboxIngestion(
     (wrapped) =>
       unwrapPrivateEvent(wrapped, signer, privacy?.isBlocked, !chatsEnabled),
@@ -229,6 +242,7 @@ export function createMessagingService({
           recipientKey: event.recipientKey,
           sentAt: event.sentAt,
           body: event.type === "message" ? event.body : "",
+          attachment: event.type === "attachment" ? event.file : undefined,
           timeLock: event.type === "timelock" ? event.special : undefined,
           replyTo: event.replyTo,
           direction:
@@ -798,18 +812,22 @@ export function createMessagingService({
 
   async function storeSenderCopy(rumor: Rumor, active: () => boolean) {
     try {
-      if (!active()) return;
+      if (!active()) return false;
       const copy = await transport.wrap(rumor, publicKey);
-      if (!active()) return;
+      if (!active()) return false;
       const inbox = publication?.urls ?? configuration.inbox.slice(0, 3);
-      await transport.publish(copy, inbox, active);
+      return await transport.publish(copy, inbox, active);
     } catch {
-      // Acceptance on the recipient's inbox remains valid if our copy fails.
+      return false;
     }
   }
 
   async function flush() {
-    if (!chatsEnabled || running || !connectedRelays().length) return;
+    if (!chatsEnabled || !connectedRelays().length) return;
+    if (running) {
+      flushRequested = true;
+      return;
+    }
     running = true;
     const session = generation;
     const chatSession = chatGeneration;
@@ -817,32 +835,132 @@ export function createMessagingService({
       session === generation && chatSession === chatGeneration;
     let interrupted = false;
     try {
+      for (const item of unlockActive ? chat.pendingAttachmentCopies() : []) {
+        if (!active() || !unlockActive) break;
+        if (!item.rumorJson || privacy?.isBlocked(item.peerKey)) continue;
+        const copy = parseRumor(JSON.parse(item.rumorJson));
+        if (
+          copy?.pubkey === publicKey &&
+          copy.id === item.eventId &&
+          (await storeSenderCopy(
+            copy,
+            () =>
+              active() &&
+              unlockActive &&
+              !privacy?.isBlocked(item.peerKey) &&
+              Boolean(chat.message(item.peerKey, item.id)),
+          ))
+        )
+          chat.finishAttachmentCopy(item.id);
+      }
       while (active() && connectedRelays().length && !interrupted) {
-        const pending = chat.pending(16);
+        const pending = chat.pending(16, unlockActive);
         if (!pending.length) break;
         for (const message of pending) {
           if (!active() || !connectedRelays().length) break;
           if (!chat.message(message.peerKey, message.id)) continue;
           try {
-            const rumor = message.rumorJson
+            const isFile = message.contentType === "attachment";
+            if (isFile && !unlockActive) continue;
+            const live = () =>
+              active() &&
+              (!isFile || unlockActive) &&
+              !privacy?.isBlocked(message.peerKey) &&
+              Boolean(chat.message(message.peerKey, message.id));
+            let rumor = message.rumorJson
               ? parseRumor(JSON.parse(message.rumorJson))
               : null;
+            let expectedId = message.eventId;
+            if (isFile && !expectedId && media) {
+              const record = chat.attachment(message.peerKey, message.id);
+              if (!record || !live()) {
+                chat.setStatus(message.id, "failed", "blocked");
+                continue;
+              }
+              let url: string;
+              try {
+                url = await media.upload(message.peerKey, message.id, live);
+              } catch (error) {
+                if (live()) {
+                  chat.setStatus(
+                    message.id,
+                    "failed",
+                    error instanceof BlossomError
+                      ? `media-${error.code}`
+                      : "media-upload",
+                  );
+                }
+                if (!unlockActive || !active()) interrupted = true;
+                if (interrupted) break;
+                continue;
+              }
+              if (!live()) {
+                if (!active() || !unlockActive) {
+                  interrupted = true;
+                  break;
+                }
+                continue;
+              }
+              const tags = [
+                ["p", message.peerKey],
+                ...fileTags({ ...record.file, url }),
+              ];
+              if (message.replyTo)
+                tags.push(["e", message.replyTo, "", "reply"]);
+              rumor = createRumor({
+                kind: fileMessageKind,
+                pubkey: publicKey,
+                content: url,
+                tags,
+                created_at: Math.floor(message.sentAt / 1_000),
+              });
+              if (
+                !chat.finalizeAttachment(
+                  message.peerKey,
+                  message.id,
+                  rumor.id,
+                  url,
+                  JSON.stringify(rumor),
+                )
+              )
+                continue;
+              expectedId = rumor.id;
+            }
             if (
               !rumor ||
               rumor.pubkey !== publicKey ||
-              rumor.id !== message.eventId
+              rumor.id !== expectedId
             ) {
               chat.setStatus(message.id, "failed", "invalid-message");
               continue;
             }
-            const result = await publishRumor(rumor, message.peerKey, active);
+            const result = await publishRumor(
+              rumor,
+              message.peerKey,
+              isFile ? live : active,
+            );
             if (result === "interrupted") {
+              if (
+                isFile &&
+                active() &&
+                unlockActive &&
+                connectedRelays().length &&
+                !live()
+              ) {
+                if (privacy?.isBlocked(message.peerKey))
+                  chat.setStatus(message.id, "failed", "blocked");
+                continue;
+              }
               interrupted = true;
               break;
             }
             if (result === "accepted") {
               chat.setStatus(message.id, "sent");
-              await storeSenderCopy(rumor, active);
+              if (
+                (await storeSenderCopy(rumor, isFile ? live : active)) &&
+                isFile
+              )
+                chat.finishAttachmentCopy(message.id);
             } else if (active()) {
               chat.setStatus(message.id, "failed", result);
             }
@@ -856,7 +974,10 @@ export function createMessagingService({
       // A persistence failure leaves rows pending for the next flush.
     } finally {
       running = false;
-      if (!active()) void flush();
+      if (!active() || flushRequested) {
+        flushRequested = false;
+        void flush();
+      }
     }
   }
 
@@ -937,11 +1058,68 @@ export function createMessagingService({
     return id;
   }
 
+  async function sendVoice({
+    peerKey,
+    uri,
+    voice,
+    replyTo,
+  }: {
+    peerKey: string;
+    uri: string;
+    voice: VoiceMetadata;
+    replyTo: string | null;
+  }) {
+    if (!media) throw new Error("media-unavailable");
+    const id = createId();
+    const sentAt = Math.floor(Date.now() / 1_000) * 1_000;
+    await media.stageRecording(uri, voice, (attachment) => {
+      if (
+        !chatsEnabled ||
+        !unlockActive ||
+        privacy?.isBlocked(peerKey) ||
+        !publicKeySchema.safeParse(peerKey).success ||
+        peerKey === publicKey
+      )
+        throw new Error("media-unavailable");
+      const quoted = replyTo ? chat.message(peerKey, replyTo) : undefined;
+      if (replyTo && !quoted?.eventId) throw new Error("unavailable-reply");
+      if (
+        !chat.enqueue({
+          id,
+          peerKey,
+          eventId: null,
+          sentAt,
+          attachment,
+          replyTo: quoted?.eventId ?? null,
+          senderKey: publicKey,
+          recipientKey: peerKey,
+          direction: "outgoing",
+          body: "",
+        })
+      )
+        throw new Error("media-storage");
+    });
+    if (status === "offline" && configured.length) startAgain();
+    void flush();
+    return id;
+  }
+
+  function cancelVoice(peerKey: string, id: string) {
+    const record = chat.attachment(peerKey, id);
+    if (!record || !["pending", "failed"].includes(record.status)) return;
+    chat.deleteMessages(peerKey, [id]);
+    media?.cancelUpload(id, record.file.hash);
+  }
+
   function retry(peerKey: string, id: string) {
     if (!chatsEnabled) return;
     if (privacy?.isBlocked(peerKey)) return;
     const message = chat.message(peerKey, id);
-    if (message?.status !== "failed" || !message.rumorJson || message.deletedAt)
+    if (
+      message?.status !== "failed" ||
+      (!message.rumorJson && message.contentType !== "attachment") ||
+      message.deletedAt
+    )
       return;
     chat.setStatus(message.id, "pending");
     if (!connectedRelays().length && configured.length) startAgain();
@@ -1050,6 +1228,20 @@ export function createMessagingService({
       .catch(() => undefined);
   }
 
+  let lastMediaList = 0;
+  const listRelays = () => {
+    const targets = new Set([
+      ...configuration.general,
+      ...configuration.discovery,
+    ]);
+    return configured
+      .filter((relay) => targets.has(relay.url) && transport.connected(relay))
+      .slice(0, 8);
+  };
+  async function readMediaList() {
+    return transport.lookupLists(publicKey, listRelays(), [serverListKind]);
+  }
+
   return {
     getChatsEnabled: () => chatsEnabled,
     setChatsEnabled(enabled: boolean) {
@@ -1081,21 +1273,43 @@ export function createMessagingService({
         : null;
     },
     async discoverBlossomServers() {
-      const { general } = await transport.lookupLists(
-        publicKey,
-        discoveryRelays().slice(0, 4),
-        [10063],
+      const { general, complete } = await readMediaList();
+      if (!complete && !general) throw new Error("media-list-unavailable");
+      return parseServerOrigins(general?.tags ?? []);
+    },
+    async publishBlossomServers(origins: string[]) {
+      const session = generation;
+      const active = () => session === generation && unlockAllowed;
+      const selected = parseServerOrigins(
+        origins.map((origin) => ["server", origin]),
       );
-      return (
-        general?.tags
-          .flatMap(([kind, url]) => (kind === "server" && url ? [url] : []))
-          .slice(0, 8) ?? []
+      if (!selected.length || !active()) return false;
+      const { general, complete } = await readMediaList();
+      if (!complete || !active()) return false;
+      const now = Math.floor(Date.now() / 1_000);
+      const timestamp = Math.max(
+        now,
+        (general?.created_at ?? 0) + 1,
+        lastMediaList + 1,
       );
+      if (timestamp > now + 60) return false;
+      lastMediaList = timestamp;
+      const event = await transport.publishReplaceable(
+        serverListKind,
+        "",
+        selected.map((origin) => ["server", origin]),
+        timestamp,
+        configuration.general,
+        active,
+      );
+      return Boolean(event);
     },
     publishProfile(content: string, createdAt: number) {
       const session = generation;
-      return transport.publishProfile(
+      return transport.publishReplaceable(
+        0,
         content,
+        [],
         createdAt,
         configuration.general,
         () => session === generation,
@@ -1113,6 +1327,8 @@ export function createMessagingService({
     getInboxStatus: () => publicationStatus,
     getInboxSync: () => inboxSync,
     send,
+    sendVoice,
+    cancelVoice,
     retry,
     toggleReaction,
     sendCall,

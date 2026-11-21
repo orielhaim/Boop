@@ -62,6 +62,17 @@ Use Bun 1.4.4 or later and run `bun fmt` for formatting.
 - Keep pending requests out of normal messages and unread, translation, and unlock processing. Promote the original message and grant approval in one SQLite transaction.
 - Use NIP-49 for exports. Never share or write plaintext private-key documents. Stage and verify a new SecureStore slot before changing the SQLite identity pin or resetting identity-owned data. Resolve the switch before constructing signer-bound services, and never generate a replacement key on a mismatch.
 
+## Media
+
+- Use the shared internal Media SDK in `src/core/media` for new HTTP media transfers, Blossom authorization and server selection, and persistent binary cache mechanics. Keep profile and attachment authorization with their owning feature. Use only enabled, explicitly configured origins or the recommended defaults the user can see in Media Servers.
+- Keep BUD-03 imports local until enabled and publish server origins only after explicit confirmation. Keep encryption and NIP-17 publication outside the binary transport.
+
+## Received attachments
+
+- No received attachment may trigger an HTTP media request without explicit user action. This includes GET, HEAD, prefetch, probes, and remote player initialization from any background, history, preview, request, quote, or visible-message path.
+- Only the explicit Download control for a live, accepted attachment may dispatch a media GET. Validate the HTTPS socket destination, size, hash, authentication tag, and format before saving it. Give Chat Kit only approved local audio files. Keep profile photos under their separate policy.
+- Keep voice recording and playback within the focused, foreground, unlocked conversation. Yield audio to the call controller. Keep plaintext playback files in private, non-backed-up temporary storage.
+
 ## Profile photos
 
 - Resolve profile photos through the protected session's avatar service. Render only an approved local file or a generated avatar. Pass local files only to native notification and background artwork APIs.

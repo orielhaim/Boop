@@ -1,3 +1,4 @@
+import { parseServerOrigins, serverListKind } from "../src/core/media/servers";
 import { parseProfile } from "../src/core/avatars/protocol";
 import { expect, spyOn, test } from "bun:test";
 import {
@@ -143,7 +144,7 @@ test("ringing and answer share an in-flight verified inbox lookup within one cal
   }
 });
 
-test("a signed profile publishes only after relay acknowledgment and is discovered live", async () => {
+test("signed profile and Blossom list publication use acknowledged relay events", async () => {
   const signer = new NDKPrivateKeySigner("01".repeat(32));
   const author = signer.pubkey;
   const watched = Promise.withResolvers<void>();
@@ -151,6 +152,7 @@ test("a signed profile publishes only after relay acknowledgment and is discover
   const transport = createMessagingRelays(signer);
   let subscriptionId: string | undefined;
   let accepts = true;
+  let mediaList: unknown;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -164,10 +166,20 @@ test("a signed profile publishes only after relay acknowledgment and is discover
         if (!Array.isArray(frame)) return;
         if (frame[0] === "REQ" && typeof frame[1] === "string") {
           subscriptionId = frame[1];
-          expect(frame[2]).toMatchObject({ kinds: [0], authors: [author] });
+          const filters = frame[2];
+          if (filters?.kinds?.[0] === serverListKind) {
+            expect(filters).toMatchObject({
+              kinds: [serverListKind],
+              authors: [author],
+            });
+            if (mediaList)
+              ws.send(JSON.stringify(["EVENT", subscriptionId, mediaList]));
+          } else
+            expect(filters).toMatchObject({ kinds: [0], authors: [author] });
           ws.send(JSON.stringify(["EOSE", subscriptionId]));
         }
         if (frame[0] === "EVENT") {
+          if (accepts && frame[1].kind === serverListKind) mediaList = frame[1];
           ws.send(
             JSON.stringify([
               "OK",
@@ -202,8 +214,10 @@ test("a signed profile publishes only after relay acknowledgment and is discover
       watched.resolve,
     );
     await watched.promise;
-    const event = await transport.publishProfile(
+    const event = await transport.publishReplaceable(
+      0,
       content,
+      [],
       timestamp,
       [url],
       () => true,
@@ -213,8 +227,35 @@ test("a signed profile publishes only after relay acknowledgment and is discover
     expect(parseProfile(remote, author)?.eventId).toBe(event?.id);
     accepts = false;
     expect(
-      await transport.publishProfile("{}", timestamp + 1, [url], () => true),
+      await transport.publishReplaceable(
+        0,
+        "{}",
+        [],
+        timestamp + 1,
+        [url],
+        () => true,
+      ),
     ).toBeNull();
+    close?.();
+    close = undefined;
+    accepts = true;
+    const origins = ["https://second.example.com", "https://first.example.com"];
+    const published = await transport.publishReplaceable(
+      serverListKind,
+      "",
+      origins.map((origin) => ["server", origin]),
+      timestamp,
+      [url],
+      () => true,
+    );
+    const discovered = await transport.lookupLists(
+      author,
+      [relay],
+      [serverListKind],
+    );
+    expect(discovered.complete).toBe(true);
+    expect(discovered.general?.id).toBe(published?.id);
+    expect(parseServerOrigins(discovered.general?.tags ?? [])).toEqual(origins);
   } finally {
     close?.();
     transport.unconfigure(relay);

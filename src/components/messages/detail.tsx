@@ -1,3 +1,13 @@
+import { randomUUID } from "expo-crypto";
+import { isUploadFailure } from "@/core/media/blossom";
+import { voiceRecordingPrefix } from "@/core/media/files";
+import { File } from "expo-file-system";
+import {
+  maxVoiceDuration,
+  minVoiceDuration,
+  voiceMime,
+} from "@/core/media/protocol";
+import { VoiceMessage } from "./voice-message";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   Bubble,
@@ -81,6 +91,14 @@ const viewabilityConfig = {
 };
 const autoText = { textAlign: "auto", writingDirection: "auto" } as const;
 const emptySendSlot = () => null;
+function discardVoiceRecording(uri: string) {
+  try {
+    const file = new File(uri);
+    if (file.exists) file.delete();
+  } catch {
+    // The recording is in the platform cache.
+  }
+}
 const renderTranslatedText: NonNullable<
   ChatProps<DetailMessage>["renderMessageText"]
 > = (props) => <MessageText {...props} url={false} />;
@@ -127,7 +145,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const [openedAt] = useState(() => (__DEV__ ? performance.now() : 0));
   const measuredFirstMessages = useRef(false);
   const { t } = useTranslation(namespaces);
-  const { chat, identity, messaging, history, conversations, lock } =
+  const { chat, identity, messaging, history, conversations, lock, calling } =
     useLocal();
   const {
     available: stressEnabled,
@@ -138,6 +156,27 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const name = nameOrAddress(contact?.name, peerKey);
   const avatar = useAvatar(peerKey);
   const focused = useIsFocused();
+  const callActive = useCallback(() => {
+    const call = calling.store.getState().call;
+    return Boolean(call && call.phase !== "ended");
+  }, [calling]);
+  const inCall = useSyncExternalStore(calling.store.subscribe, callActive);
+  const activeUnlocked = useSyncExternalStore(lock.subscribe, () => {
+    const state = lock.getState();
+    return state.active && !state.locked;
+  });
+  const allowVoice = focused && !blocked && activeUnlocked && !inCall;
+  const canUseAudioSession = useCallback(() => {
+    const gate = lock.getState();
+    const call = calling.store.getState().call;
+    return (
+      focused &&
+      !blocked &&
+      gate.active &&
+      !gate.locked &&
+      (!call || call.phase === "ended")
+    );
+  }, [focused, blocked, lock, calling]);
   const {
     theme,
     darkTheme,
@@ -209,6 +248,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     participants,
     t("messages:unavailableQuote"),
     t("messages:lockedMessage"),
+    t("messages:voiceMessage"),
   );
   const [detached, setDetached] = useState(initiallyDetached);
   const positioned =
@@ -234,6 +274,27 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   >(
     (props) => {
       const message = props.currentMessage;
+      if (message?.voice) {
+        return (
+          <Bubble
+            {...props}
+            renderCustomView={() => (
+              <VoiceMessage
+                key={message._id}
+                message={message}
+                peer={peerKey}
+                enabled={allowVoice}
+                rtl={rtl}
+                color={
+                  message.direction === "outgoing"
+                    ? colors.outgoingInk
+                    : colors.text
+                }
+              />
+            )}
+          />
+        );
+      }
       if (message?.locked) {
         const sealed = message.locked;
         return (
@@ -303,6 +364,8 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
       );
     },
     [
+      allowVoice,
+      peerKey,
       colors.accent,
       colors.outgoingInk,
       colors.text,
@@ -319,7 +382,12 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         ? chat.message(peerKey, saved.draftReplyTo)
         : undefined;
       const quote = target
-        ? toQuote(target, participants, t("messages:lockedMessage"))
+        ? toQuote(
+            target,
+            participants,
+            t("messages:lockedMessage"),
+            t("messages:voiceMessage"),
+          )
         : null;
       return { text: saved?.draft ?? "", quote };
     } catch {
@@ -576,10 +644,124 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
     (props: ComponentProps<typeof Composer>) => (
       <View style={[styles.composerControls, rtl && styles.rtlControls]}>
         <Composer {...props} />
-        {renderSend({ text: props.text, onSend: props.onSend })}
+        {props.text?.trim()
+          ? renderSend({ text: props.text, onSend: props.onSend })
+          : null}
       </View>
     ),
     [renderSend, rtl],
+  );
+
+  const onSendVoice = useCallback<
+    NonNullable<ChatProps<DetailMessage>["onSend"]>
+  >(
+    (messages) => {
+      const take = messages[0];
+      if (!take?.audio) return;
+      const uri = take.audio;
+      if (!canUseAudioSession() || sendBusy.current) {
+        discardVoiceRecording(uri);
+        return;
+      }
+      sendBusy.current = true;
+      flushDraft();
+      setSending(true);
+      setNotice(undefined);
+      const samples = take.waveform;
+      const waveform = samples?.length
+        ? Array.from({ length: Math.min(64, samples.length) }, (_, i) => {
+            const width = samples.length / Math.min(64, samples.length);
+            const bucket = samples.slice(
+              Math.floor(i * width),
+              Math.floor((i + 1) * width),
+            );
+            return Math.round(Math.max(0, Math.min(1, ...bucket)) * 100);
+          })
+        : undefined;
+      const target = take.replyMessage ?? composition.current.quote;
+      void messaging
+        .sendVoice({
+          peerKey,
+          uri,
+          replyTo: target ? String(target._id) : null,
+          voice: {
+            kind: "voice",
+            mime: voiceMime,
+            durationMs: Math.round((take.duration ?? 0) * 1_000),
+            waveform,
+          },
+        })
+        .then(() => {
+          pendingDraft.current = null;
+          composition.current = { text: "", quote: null };
+          setQuote(null);
+          setDetached(false);
+          const id = loadLatest();
+          if (id) setJump({ id, highlight: false });
+        })
+        .catch(() => {
+          setNotice(t("messages:voiceRecordingFailed"));
+          if (target) {
+            composition.current = { ...composition.current, quote: target };
+            setQuote(target);
+            saveDraft(composition.current.text, target);
+          }
+        })
+        .finally(() => {
+          sendBusy.current = false;
+          setSending(false);
+        });
+    },
+    [
+      canUseAudioSession,
+      flushDraft,
+      messaging,
+      peerKey,
+      loadLatest,
+      saveDraft,
+      t,
+    ],
+  );
+
+  const audioRecording = useMemo<ChatProps<DetailMessage>["audioRecording"]>(
+    () =>
+      !allowVoice || sending
+        ? false
+        : {
+            isEnabled: true,
+            minDurationMs: minVoiceDuration,
+            maxDurationMs: maxVoiceDuration,
+            previewAtLimit: true,
+            canUseAudioSession,
+            canReleaseAudioSession: () => !callActive(),
+            recordingFileName: () => `${voiceRecordingPrefix}${randomUUID()}`,
+            onDiscardRecording: discardVoiceRecording,
+            onPermissionDenied: () =>
+              Alert.alert(
+                t("messages:voiceMessage"),
+                t("messages:voiceMicrophone"),
+                [
+                  { text: t("common:cancel"), style: "cancel" },
+                  {
+                    text: t("security:permissions"),
+                    onPress: () => {
+                      void Linking.openSettings();
+                    },
+                  },
+                ],
+              ),
+            onTooShort: () => setNotice(t("messages:voiceTooShort")),
+            onError: () => setNotice(t("messages:voiceRecordingFailed")),
+          },
+    [allowVoice, sending, t, canUseAudioSession, callActive],
+  );
+  const mediaPlayback = useMemo<ChatProps<DetailMessage>["mediaPlayback"]>(
+    () => ({
+      isAutoPlayNextEnabled: false,
+      isNowPlayingBarEnabled: true,
+      onMediaRead: (message) => chat.markListened(peerKey, String(message._id)),
+    }),
+    [chat, peerKey],
   );
 
   const renderToolbar = useCallback(
@@ -853,9 +1035,10 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
   const actionsForMessage = useCallback(
     (message: DetailMessage, defaults: MessageMenuItem[]) => {
       const original = message.originalText;
-      const actions = message.locked
-        ? defaults.filter(({ key }) => key !== "copy")
-        : [...defaults];
+      const actions =
+        message.locked || message.voice
+          ? defaults.filter(({ key }) => key !== "copy")
+          : [...defaults];
       if (original !== undefined)
         actions.push(
           {
@@ -910,13 +1093,25 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
             },
           });
       }
+      if (message.voice && (message.pending || message.isFailed))
+        actions.push({
+          key: "cancel-voice",
+          label: t("messages:voiceCancelSend"),
+          onPress: () => messaging.cancelVoice(peerKey, message._id),
+        });
       if (!message.isFailed) return actions;
-      const detail =
-        message.failure === "no-inbox"
-          ? t("messages:noInbox")
-          : message.failure === "invalid-message"
-            ? t("messages:invalidMessage")
-            : t("messages:relayRejected");
+      const uploadFailure = message.failure?.startsWith("media-")
+        ? message.failure.slice(6)
+        : undefined;
+      const detail = isUploadFailure(uploadFailure)
+        ? t(`settings:mediaFailure_${uploadFailure}`)
+        : message.failure === "media-upload"
+          ? t("messages:voiceUploadFailed")
+          : message.failure === "no-inbox"
+            ? t("messages:noInbox")
+            : message.failure === "invalid-message"
+              ? t("messages:invalidMessage")
+              : t("messages:relayRejected");
       return [
         ...actions,
         {
@@ -926,7 +1121,7 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         },
       ];
     },
-    [t, chat, locale, peerKey, refresh],
+    [t, chat, locale, peerKey, refresh, messaging],
   );
 
   const reactions = useMemo<ChatProps<DetailMessage>["reactions"]>(
@@ -952,9 +1147,11 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
         updateQuote({
           _id: message._id,
           user: message.user,
-          text: message.locked
-            ? t("messages:lockedMessage")
-            : (message.originalText ?? message.text),
+          text: message.voice
+            ? t("messages:voiceMessage")
+            : message.locked
+              ? t("messages:lockedMessage")
+              : (message.originalText ?? message.text),
         }),
       onClear: () => updateQuote(null),
       onPress: jumpToQuote,
@@ -1174,7 +1371,9 @@ export function DetailConversation({ peerKey }: { peerKey: string }) {
           messageTextProps={messageTextProps}
           renderBubble={renderTranslatedBubble}
           attachments={false}
-          audioRecording={false}
+          audioRecording={audioRecording}
+          onSend={onSendVoice}
+          mediaPlayback={mediaPlayback}
           videoRecording={false}
           emojiKeyboard
         />

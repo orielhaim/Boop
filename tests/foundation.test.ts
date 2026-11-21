@@ -86,12 +86,14 @@ test("migration creates the app tables and enforces event and contact uniqueness
       .values()
       .flat(),
   ).toEqual([
+    "attachment_cache",
     "avatar_cache",
     "blocked_identities",
     "call_history",
     "communication_grants",
     "contacts",
     "conversations",
+    "message_attachments",
     "message_reactions",
     "message_requests",
     "message_timelocks",
@@ -269,6 +271,7 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
     "appearance",
     "calls",
     "chats",
+    "chats/media",
     "chats/models",
     "chats/target",
     "chats/translation",

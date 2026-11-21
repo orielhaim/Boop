@@ -1,3 +1,4 @@
+import type { SealedAttachment, VoiceMetadata } from "@/core/media/protocol";
 import {
   and,
   asc,
@@ -7,6 +8,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -25,6 +27,7 @@ const {
   contacts,
   messageReactions,
   messageTimeLocks,
+  messageAttachments,
   blockedIdentities,
   communicationGrants,
   messageRequests,
@@ -52,6 +55,7 @@ type LockedPresentation = Pick<
 export type MessageRecord = MessageRow & {
   reactions: Reaction[];
   locked?: LockedPresentation;
+  voice?: VoiceMetadata & { listened: boolean };
 };
 type PendingUnlock = {
   messageId: string;
@@ -67,6 +71,7 @@ export type MessageInput = Pick<
   recipientKey: string;
   rumorJson?: string;
   timeLock?: TimeLockContent;
+  attachment?: SealedAttachment & { url?: string };
 };
 type ReactionInput = Reaction & {
   eventId: string;
@@ -107,6 +112,10 @@ function conversationQuery<TResult>(
       name: contacts.name,
       preview: latest.body,
       lockedUntil: messageTimeLocks.requestedAt,
+      voiceDuration: sql<
+        number | null
+      >`json_extract(${messageAttachments.file}, '$.durationMs')`,
+      lastMessageType: latest.contentType,
       translatedPreview,
       lastMessageAt: latest.sentAt,
       lastMessageId: latest.id,
@@ -116,6 +125,7 @@ function conversationQuery<TResult>(
     .from(conversations)
     .leftJoin(contacts, eq(conversations.peerKey, contacts.publicKey))
     .leftJoin(latest, eq(latest.id, lastId))
+    .leftJoin(messageAttachments, eq(messageAttachments.messageId, latest.id))
     .leftJoin(
       messageTimeLocks,
       and(
@@ -238,7 +248,30 @@ export function createMessagingRepository<TResult>(
           .all()
       : [];
     const locks = new Map(locked.map(({ id, ...row }) => [id, row]));
+    const fileIds = rows
+      .filter((row) => row.contentType === "attachment")
+      .map((row) => row.id);
+    const voices = fileIds.length
+      ? db
+          .select()
+          .from(messageAttachments)
+          .where(inArray(messageAttachments.messageId, fileIds))
+          .all()
+      : [];
+    const voiceById = new Map(
+      voices.map(({ messageId, file, listened }) => [
+        messageId,
+        {
+          kind: file.kind,
+          mime: file.mime,
+          durationMs: file.durationMs,
+          waveform: file.waveform,
+          listened,
+        },
+      ]),
+    );
     return rows.map((row) => ({
+      voice: voiceById.get(row.id),
       locked: locks.get(row.id),
       ...row,
       reactions: grouped.get(row.eventId ?? row.id) ?? [],
@@ -264,15 +297,15 @@ export function createMessagingRepository<TResult>(
     outgoing: boolean,
     clearDraft: boolean,
   ) {
-    const { timeLock, ...record } = input;
+    const { timeLock, attachment, ...record } = input;
     ensureRoom(tx, input.peerKey, input.sentAt);
     const isUnread = input.direction === "incoming";
     const stored = tx
       .insert(messages)
       .values({
         ...record,
-        contentType: timeLock ? "timelock" : "text",
-        body: timeLock ? "" : record.body,
+        contentType: attachment ? "attachment" : timeLock ? "timelock" : "text",
+        body: timeLock || attachment ? "" : record.body,
         status: outgoing ? "pending" : isUnread ? "received" : "synced",
         isUnread,
       })
@@ -281,6 +314,12 @@ export function createMessagingRepository<TResult>(
       .get();
     // A duplicate sender copy says nothing about acceptance by the recipient's relays.
     if (!stored) return false;
+    if (attachment) {
+      const { url, ...file } = attachment;
+      tx.insert(messageAttachments)
+        .values({ messageId: stored.id, file, url })
+        .run();
+    }
     if (timeLock) {
       const { ciphertext, chainHash, unlockRound, requestedAt, roundTime } =
         timeLock;
@@ -687,7 +726,7 @@ export function createMessagingRepository<TResult>(
                 liveMessage(peerKey),
                 sql`${messages.isUnread} = 1`,
                 or(
-                  eq(messages.contentType, "text"),
+                  ne(messages.contentType, "timelock"),
                   sql`${messages.body} <> ''`,
                 ),
                 inArray(messages.id, unique.slice(start, start + 200)),
@@ -944,6 +983,92 @@ export function createMessagingRepository<TResult>(
       return inserted;
     },
 
+    attachment(peerKey: string, id: string) {
+      const row = messageRow(peerKey, id);
+      if (!row || row.contentType !== "attachment") return;
+      const stored = db
+        .select()
+        .from(messageAttachments)
+        .where(eq(messageAttachments.messageId, row.id))
+        .get();
+      if (stored)
+        return {
+          ...stored,
+          peerKey,
+          direction: row.direction,
+          status: row.status,
+        };
+    },
+
+    hasAttachment(hash: string, pendingOnly = false) {
+      return Boolean(
+        db
+          .select({ id: messages.id })
+          .from(messageAttachments)
+          .innerJoin(messages, eq(messages.id, messageAttachments.messageId))
+          .where(
+            and(
+              isNull(messages.deletedAt),
+              pendingOnly
+                ? inArray(messages.status, ["pending", "failed"])
+                : undefined,
+              sql`json_extract(${messageAttachments.file}, '$.hash') = ${hash}`,
+            ),
+          )
+          .get(),
+      );
+    },
+
+    markListened(peerKey: string, id: string) {
+      const row = messageRow(peerKey, id);
+      if (!row || row.direction !== "incoming") return;
+      const updated = db
+        .update(messageAttachments)
+        .set({ listened: true })
+        .where(
+          and(
+            eq(messageAttachments.messageId, row.id),
+            eq(messageAttachments.listened, false),
+          ),
+        )
+        .returning({ id: messageAttachments.messageId })
+        .get();
+      if (updated) changed({ history: [peerKey] });
+    },
+
+    finalizeAttachment(
+      peerKey: string,
+      id: string,
+      eventId: string,
+      url: string,
+      rumorJson: string,
+    ) {
+      const committed = db.transaction((tx) => {
+        const updated = tx
+          .update(messages)
+          .set({ eventId, rumorJson })
+          .where(
+            and(
+              liveMessage(peerKey),
+              eq(messages.id, id),
+              eq(messages.status, "pending"),
+              eq(messages.contentType, "attachment"),
+              isNull(messages.eventId),
+            ),
+          )
+          .returning({ id: messages.id })
+          .get();
+        if (!updated) return false;
+        tx.update(messageAttachments)
+          .set({ url })
+          .where(eq(messageAttachments.messageId, id))
+          .run();
+        return true;
+      });
+      if (committed) changed({ history: [peerKey] });
+      return committed;
+    },
+
     receive(input: MessageInput) {
       return storeMessage(input, false, false);
     },
@@ -975,12 +1100,48 @@ export function createMessagingRepository<TResult>(
       return storeMessage(input, true, options.clearDraft ?? true);
     },
 
-    pending(limit = 25) {
+    pendingAttachmentCopies() {
       return db
         .select()
         .from(messages)
         .where(
-          and(sql`${messages.status} = 'pending'`, isNull(messages.deletedAt)),
+          and(
+            eq(messages.status, "sent"),
+            eq(messages.contentType, "attachment"),
+            isNotNull(messages.rumorJson),
+            isNull(messages.deletedAt),
+          ),
+        )
+        .orderBy(asc(messages.sentAt), asc(messages.id))
+        .limit(16)
+        .all();
+    },
+
+    finishAttachmentCopy(id: string) {
+      db.update(messages)
+        .set({ rumorJson: null })
+        .where(
+          and(
+            eq(messages.id, id),
+            eq(messages.status, "sent"),
+            eq(messages.contentType, "attachment"),
+          ),
+        )
+        .run();
+    },
+
+    pending(limit = 25, includeAttachments = true) {
+      return db
+        .select()
+        .from(messages)
+        .where(
+          and(
+            sql`${messages.status} = 'pending'`,
+            isNull(messages.deletedAt),
+            includeAttachments
+              ? undefined
+              : sql`${messages.contentType} <> 'attachment'`,
+          ),
         )
         .orderBy(asc(messages.sentAt), asc(messages.id))
         .limit(pageLimit(limit))
@@ -997,7 +1158,11 @@ export function createMessagingRepository<TResult>(
         .set({
           status,
           failure,
-          ...(status === "sent" ? { rumorJson: null } : {}),
+          ...(status === "sent"
+            ? {
+                rumorJson: sql`CASE WHEN ${messages.contentType} = 'attachment' THEN ${messages.rumorJson} ELSE NULL END`,
+              }
+            : {}),
         })
         .where(
           and(

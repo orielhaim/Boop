@@ -59,7 +59,7 @@ export default function EditProfile() {
     } catch (error) {
       setNotice(
         error instanceof BlossomError
-          ? t(`settings:photoUpload_${error.code}`)
+          ? t(`settings:mediaFailure_${error.code}`)
           : t("settings:photoRelayFailed"),
       );
     }

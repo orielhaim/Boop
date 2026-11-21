@@ -4,7 +4,7 @@ import { contactByKey, preference } from "@/db/queries";
 import { avatarCache, contacts, nostrProfiles } from "@/db/schema";
 import type * as schema from "@/db/schema";
 import type { Privacy } from "../privacy";
-import { defaultBlossomServer } from "./blossom-protocol";
+import { cacheEvictions } from "../media/cache-policy";
 import {
   blossomHash,
   parseProfile,
@@ -58,6 +58,7 @@ export function createAvatars<Result>(
   relays: ProfileRelays,
   disk: AvatarDisk,
   native: AvatarTransport | null,
+  mirrorOrigins?: (from: string) => string[],
 ) {
   const visible = new Map<string, number>();
   const jobs = new Map<string, { id: string; source: string }>();
@@ -125,21 +126,16 @@ export function createAvatars<Result>(
       .from(avatarCache)
       .orderBy(asc(avatarCache.accessedAt))
       .all();
-    let size = rows.reduce((sum, row) => sum + row.size, 0);
-    let count = rows.length;
-    for (const row of rows) {
-      if (
-        size <= maxDiskBytes &&
-        count <= maxDiskRecords &&
-        Date.now() - row.accessedAt < 60 * day
-      )
-        continue;
+    const { evict } = cacheEvictions(rows, {
+      maxBytes: maxDiskBytes,
+      maxEntries: maxDiskRecords,
+      expiresBefore: Date.now() - 60 * day,
+    });
+    for (const row of evict) {
       db.delete(avatarCache)
         .where(eq(avatarCache.publicKey, row.publicKey))
         .run();
       disk.removeCached(row.filename);
-      size -= row.size;
-      count--;
       changed(row.publicKey);
     }
     if (!sweep) return;
@@ -217,22 +213,13 @@ export function createAvatars<Result>(
       try {
         size = await native.download(id, source, target, hash ?? null);
       } catch (error) {
-        const first = preference(db, "media.primary") || defaultBlossomServer;
-        const backup = preference(db, "media.backup");
-        const candidate =
-          url.origin === first ? backup : url.origin === backup ? first : null;
-        const mirror = candidate && publicImageUrl(candidate);
-        if (
-          !current() ||
-          !hash ||
-          !mirror ||
-          preference(db, "media.mirror") !== "true"
-        )
-          throw error;
+        const mirror =
+          hash && current() ? mirrorOrigins?.(url.origin).at(0) : undefined;
+        if (!hash || !mirror) throw error;
         job.id = disk.newId();
         size = await native.download(
           job.id,
-          new URL(`/${hash}`, mirror.origin).href,
+          new URL(`/${hash}`, mirror).href,
           target,
           hash,
         );

@@ -45,7 +45,11 @@ function RequestConversation({ publicKey }: { publicKey: string | null }) {
         _id: message.id,
         createdAt: message.sentAt,
         user: { _id: message.senderKey, name },
-        text: message.timeLock ? t("security:requestLocked") : message.body,
+        text: message.attachment
+          ? t("messages:voiceMessage")
+          : message.timeLock
+            ? t("security:requestLocked")
+            : message.body,
       }))
     : [];
 

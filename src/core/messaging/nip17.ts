@@ -1,3 +1,8 @@
+import {
+  fileMessageKind,
+  parseFileMessage,
+  type VoiceAttachment,
+} from "../media/protocol";
 import type NDK from "@nostr-dev-kit/ndk";
 import {
   giftWrap,
@@ -42,6 +47,7 @@ const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
 const rumorSchema = event.extend({
   kind: z.union([
     z.literal(messageKind),
+    z.literal(fileMessageKind),
     z.literal(timeLockKind),
     z.literal(reactionKind),
     z.literal(callSignalKind),
@@ -59,6 +65,7 @@ export type PrivateEvent = {
   recipientKey: string;
   sentAt: number;
 } & (
+  | { type: "attachment"; file: VoiceAttachment; replyTo: string | null }
   | { type: "message"; body: string; replyTo: string | null }
   | {
       type: "timelock";
@@ -194,6 +201,12 @@ function privateEvent(rumor: Rumor, myKey: string): PrivateEvent | null {
     const special = parseTimeLock(JSON.parse(rumor.content));
     if (!special || special.requestedAt <= base.sentAt) return null;
     return { ...base, type: "timelock", special, replyTo: target ?? null };
+  }
+  if (rumor.kind === fileMessageKind) {
+    const file = parseFileMessage(rumor.content, rumor.tags);
+    return file
+      ? { ...base, type: "attachment", file, replyTo: target ?? null }
+      : null;
   }
   if (!rumor.content.trim() || rumor.content.length > 16_000) return null;
   return {

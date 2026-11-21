@@ -434,17 +434,19 @@ export function createMessagingRelays(signer: NDKSigner) {
         (event) => onEvent(event.rawEvent(), event.pubkey),
         onEose,
       ),
-    async publishProfile(
+    async publishReplaceable(
+      kind: number,
       content: string,
+      tags: string[][],
       createdAt: number,
       relays: readonly string[],
       active: () => boolean,
     ) {
       const event = new NDKEvent(undefined, {
-        kind: 0,
+        kind,
         content,
         created_at: createdAt,
-        tags: [],
+        tags,
       });
       await event.sign(signer);
       return (await publish(event, relays, active)) ? event.rawEvent() : null;

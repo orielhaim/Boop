@@ -1,0 +1,418 @@
+diff --git a/lib/MessageAudio.d.ts b/lib/MessageAudio.d.ts
+index 04c855531c79b516493453c09e6ae2947732d654..fa14adbbfa53de6122626db0b9dc40059e9fe25c 100644
+--- a/lib/MessageAudio.d.ts
++++ b/lib/MessageAudio.d.ts
+@@ -1,4 +1,5 @@
+ import React from 'react';
+ import { IMessage, MessageAudioProps } from './Models';
+-export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, }: Partial<MessageAudioProps<TMessage>>): React.JSX.Element | null;
++export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, autoPlay, onPlaybackEnded, }: Partial<MessageAudioProps<TMessage>> & { autoPlay?: boolean; onPlaybackEnded?: () => void }): React.JSX.Element | null;
+ //# sourceMappingURL=MessageAudio.d.ts.map
++export declare const VoiceWaveform: (props: { waveform?: number[]; color: string; playedColor?: string; progress?: number; onSeek?: (fraction: number) => void }) => React.JSX.Element;
+diff --git a/lib/MessageAudio.js b/lib/MessageAudio.js
+index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb90ee0cdaa 100644
+--- a/lib/MessageAudio.js
++++ b/lib/MessageAudio.js
+@@ -15,6 +15,33 @@ import { TRANSCRIBE_SLOT_WIDTH, VOICE_BUTTON_SIZE, VOICE_COLUMN_GAP, VOICE_META_
+ import { WaveformPlayer, isWaveformAvailable } from './components/WaveformPlayer';
+ import { useThemedStyles } from './hooks/useTheme';
+ import { getExpoAudio } from './optional';
++import { Bars } from './components/WaveformPlayer/Bars';
++import { barCountForWidth, barHeight, levelsFromWaveform } from './components/voiceWaveform';
++
++export const VoiceWaveform = ({ waveform, color, playedColor, progress = 0, onSeek }) => {
++  const [width, setWidth] = useState(0);
++  const count = barCountForWidth(width);
++  const heights = React.useMemo(() => (waveform?.length
++    ? levelsFromWaveform(waveform, count)
++    : Array(count).fill(0)).map(barHeight), [waveform, count]);
++  const track = <View pointerEvents="none" style={{ width, height: WAVEFORM_HEIGHT, justifyContent: 'center', direction: 'ltr' }}>
++    <Bars heights={heights} color={color} width={width} />
++    {playedColor && <View style={{ position: 'absolute', left: 0, width: width * progress, overflow: 'hidden' }}>
++      <Bars heights={heights} color={playedColor} width={width} />
++    </View>}
++  </View>;
++  const onLayout = (event) => setWidth(event.nativeEvent.layout.width);
++  if (!onSeek) return <View accessible={false} onLayout={onLayout}>{track}</View>;
++  return <Pressable accessibilityRole="adjustable" onLayout={onLayout}
++    onPress={(event) => width > 0 && onSeek(Math.max(0, Math.min(1, event.nativeEvent.locationX / width)))}
++    accessibilityValue={{ min: 0, max: 100, now: Math.round(progress * 100) }}
++    accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
++    onAccessibilityAction={(event) => onSeek(Math.max(0, Math.min(1,
++      progress + (event.nativeEvent.actionName === 'increment' ? 0.05 : -0.05)
++    )))}>
++    {track}
++  </Pressable>;
++};
+ // Optional inline player. Resolved through the optional-peer registry (`src/optional`) so the bundle
+ // works whether or not the consumer installed `expo-audio` (Metro treats
+ // try/catch-wrapped requires as optional dependencies). When present, audio
+@@ -35,7 +62,9 @@ const ExpoAudioPlayer = t0 => {
+     duration: durationProp,
+     message,
+     isViewOnce: t1,
+-    transcription
++    transcription,
++    autoPlay,
++    onPlaybackEnded
+   } = t0;
+   const isViewOnce = t1 === undefined ? false : t1;
+   const player = expoAudio.useAudioPlayer(uri);
+@@ -99,10 +128,6 @@ const ExpoAudioPlayer = t0 => {
+       player.setPlaybackRate?.(rate);
+       player.play();
+       claimPlayback(playerId, onStop);
+-      if (position === "left" && isMediaUnread) {
+-        setIsHeard(true);
+-        markReadRef.current();
+-      }
+     };
+     $[6] = isMediaUnread;
+     $[7] = markReadRef;
+@@ -117,6 +142,21 @@ const ExpoAudioPlayer = t0 => {
+     t4 = $[14];
+   }
+   const play = t4;
++  useEffect(() => {
++    if (position === "left" && isMediaUnread && status?.playing && !isHeard) {
++      setIsHeard(true);
++      markReadRef.current();
++    }
++  }, [position, isMediaUnread, status?.playing, isHeard, markReadRef]);
++  useEffect(() => {
++    if (status?.didJustFinish) onPlaybackEnded?.();
++  }, [status?.didJustFinish, onPlaybackEnded]);
++  const autoPlayStarted = useRef(false);
++  useEffect(() => {
++    if (!autoPlay || !status?.isLoaded || autoPlayStarted.current) return;
++    autoPlayStarted.current = true;
++    play(false);
++  }, [autoPlay, play, status?.isLoaded]);
+   let t5;
+   if ($[15] !== currentTime || $[16] !== duration || $[17] !== pause || $[18] !== play || $[19] !== status?.didJustFinish || $[20] !== status?.playing) {
+     t5 = () => {
+@@ -402,6 +442,11 @@ const ExpoAudioPlayer = t0 => {
+   } else {
+     t38 = $[94];
+   }
++  const waveformTrack = message?.waveform ? <View style={styles.trackArea}>
++    <VoiceWaveform waveform={message.waveform} color={styles.track.backgroundColor}
++      playedColor={styles.trackFill.backgroundColor} progress={fill}
++      onSeek={duration > 0 ? (fraction) => void player.seekTo(duration * fraction) : undefined} />
++  </View> : t38;
+   let t39;
+   if ($[95] !== styles.playCircle || $[96] !== styles.transcribeSlot || $[97] !== transcribe.isLoading || $[98] !== transcribe.isOpen || $[99] !== transcribe.isVisible || $[100] !== transcribe.onPress) {
+     t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} /></View>;
+@@ -416,10 +461,10 @@ const ExpoAudioPlayer = t0 => {
+     t39 = $[101];
+   }
+   let t40;
+-  if ($[102] !== styles.trackRow || $[103] !== t38 || $[104] !== t39) {
+-    t40 = <View style={styles.trackRow}>{t38}{t39}</View>;
++  if ($[102] !== styles.trackRow || $[103] !== waveformTrack || $[104] !== t39) {
++    t40 = <View style={styles.trackRow}>{waveformTrack}{t39}</View>;
+     $[102] = styles.trackRow;
+-    $[103] = t38;
++    $[103] = waveformTrack;
+     $[104] = t39;
+     $[105] = t40;
+   } else {
+@@ -524,7 +569,9 @@ export function MessageAudio(t0) {
+     currentMessage,
+     position: t1,
+     containerStyle,
+-    audioStyle
++    audioStyle,
++    autoPlay,
++    onPlaybackEnded
+   } = t0;
+   const position = t1 === undefined ? "left" : t1;
+   const uri = currentMessage?.audio;
+@@ -541,7 +588,7 @@ export function MessageAudio(t0) {
+   }
+   let t3;
+   if ($[2] !== audioStyle || $[3] !== currentMessage || $[4] !== position || $[5] !== uri) {
+-    t3 = isWaveformAvailable ? <WaveformPlayer uri={uri} position={position} duration={currentMessage?.duration} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : isExpoAudioAvailable ? <ExpoAudioPlayer uri={uri} position={position} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} duration={currentMessage?.duration} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View style={styles.metaSpacer}><MediaCard kind="audio" uri={uri} position={position} style={audioStyle} /></View>;
++    t3 = isWaveformAvailable ? <WaveformPlayer uri={uri} position={position} duration={currentMessage?.duration} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : isExpoAudioAvailable ? <ExpoAudioPlayer autoPlay={autoPlay} onPlaybackEnded={onPlaybackEnded} uri={uri} position={position} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} duration={currentMessage?.duration} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View style={styles.metaSpacer}><MediaCard kind="audio" uri={uri} position={position} style={audioStyle} /></View>;
+     $[2] = audioStyle;
+     $[3] = currentMessage;
+     $[4] = position;
+diff --git a/lib/Models.d.ts b/lib/Models.d.ts
+index 9047ce232bd66320cd34cb767eaf904c77a57167..0c8497a86c5988e9d259ddd9925ec30ce9084b2a 100644
+--- a/lib/Models.d.ts
++++ b/lib/Models.d.ts
+@@ -217,6 +217,11 @@ export interface MessageLocationProps<TMessage extends IMessage> {
+  * `expo-audio` peer dependency; when it is absent the mic button is hidden.
+  */
+ export interface AudioRecordingProps {
++    canUseAudioSession?: () => boolean;
++    canReleaseAudioSession?: () => boolean;
++    recordingFileName?: () => string;
++    onDiscardRecording?: (uri: string) => void;
++    previewAtLimit?: boolean;
+     /**
+      * Show the "view once" toggle above the lock while a take is locked.
+      * A take sent with it on arrives in `onSend` with `isViewOnce: true`.
+diff --git a/lib/components/RecordButton/useRecordGesture.js b/lib/components/RecordButton/useRecordGesture.js
+index 5db7c3f17dca5bf48c768211998435dc9674764f..ab817808c0e05455bc8ae0d7c2aaf58f3ca91290 100644
+--- a/lib/components/RecordButton/useRecordGesture.js
++++ b/lib/components/RecordButton/useRecordGesture.js
+@@ -100,10 +100,11 @@ export function useRecordGesture(t0) {
+     t4 = $[12];
+   }
+   const jsSlideProgress = t4;
+-  const t5 = onTap ? HOLD_DELAY_MS : 0;
++  const t5 = HOLD_DELAY_MS;
+   let t6;
+   if ($[13] !== isTakeSV || $[14] !== jsStart) {
+     t6 = () => {
++      "worklet";
+       isTakeSV.set(1);
+       runOnJS(jsStart)();
+     };
+@@ -116,6 +117,7 @@ export function useRecordGesture(t0) {
+   let t7;
+   if ($[16] !== cancelSign || $[17] !== fingerUp || $[18] !== isTakeSV || $[19] !== jsFinish || $[20] !== jsLock || $[21] !== jsSlideProgress || $[22] !== lastReported || $[23] !== lockDistance || $[24] !== lockHide || $[25] !== lockHideTarget || $[26] !== lockedSV || $[27] !== slideDistance || $[28] !== slideProgress || $[29] !== slideProgressValue) {
+     t7 = event => {
++      "worklet";
+       if (isTakeSV.value === 0 || lockedSV.value > 0) {
+         return;
+       }
+@@ -170,6 +172,7 @@ export function useRecordGesture(t0) {
+   let t8;
+   if ($[31] !== isTakeSV || $[32] !== jsFinish || $[33] !== jsLock || $[34] !== lockedSV || $[35] !== slideProgress) {
+     t8 = event_0 => {
++      "worklet";
+       if (isTakeSV.value === 0) {
+         return;
+       }
+@@ -238,6 +241,7 @@ export function useRecordGesture(t0) {
+   let t12;
+   if ($[45] === Symbol.for("react.memo_cache_sentinel")) {
+     t12 = () => {
++      "worklet";
+       runOnJS(jsTap)();
+     };
+     $[45] = t12;
+diff --git a/lib/components/VoiceMessageInput/recorder.js b/lib/components/VoiceMessageInput/recorder.js
+index da09a9ba6faf240fafae8d490394ca3f96d48b4b..bff65ec022dce68b1570222776023589c2abe334 100644
+--- a/lib/components/VoiceMessageInput/recorder.js
++++ b/lib/components/VoiceMessageInput/recorder.js
+@@ -31,10 +31,10 @@ export const releaseRecorder = recorder => {
+     // already released
+   }
+ };
+-export const stopRecorderQuietly = recorder => {
++export const stopRecorderQuietly = (recorder, discard) => {
+   try {
+     const stopped = recorder?.stop();
+-    stopped?.catch?.(() => {});
++    stopped?.then?.(() => { if (recorder.uri) discard?.(recorder.uri); })?.catch?.(() => {});
+   } catch {
+     // already stopped
+   }
+@@ -45,10 +45,10 @@ export const stopRecorderQuietly = recorder => {
+ // makes every voice note played afterwards sound muffled.
+ export const releaseAudioSession = () => {
+   try {
+-    expoAudio.setAudioModeAsync?.({
++    void expoAudio.setAudioModeAsync?.({
+       allowsRecording: false,
+       playsInSilentMode: true
+-    });
++    })?.catch?.(() => {});
+   } catch {
+     // best-effort; the session is not worth failing a send over
+   }
+diff --git a/lib/components/VoiceMessageInput/useLazyRecorder.js b/lib/components/VoiceMessageInput/useLazyRecorder.js
+index 0a22745f201fa6090cefb72e1983fd19ab29df78..69895dd2afacebdbc6ab1d2a24b1646d7fe0f32c 100644
+--- a/lib/components/VoiceMessageInput/useLazyRecorder.js
++++ b/lib/components/VoiceMessageInput/useLazyRecorder.js
+@@ -34,8 +34,10 @@ export function useLazyRecorder() {
+   let t3;
+   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
+     t2 = () => () => {
+-      releaseRecorder(recorderRef.current);
++      const recorder = recorderRef.current;
+       recorderRef.current = null;
++      // Let the take cleanup stop and discard the recording before release.
++      setTimeout(() => releaseRecorder(recorder), 250);
+     };
+     t3 = [];
+     $[2] = t2;
+diff --git a/lib/components/VoiceMessageInput/useTakePreviewActions.js b/lib/components/VoiceMessageInput/useTakePreviewActions.js
+index a1328a60adeb27ac63d7df8ec9818ae43ce25e31..96d4a98bea1fb49a07cc2b4bcd3f9b8c3c9e3b9d 100644
+--- a/lib/components/VoiceMessageInput/useTakePreviewActions.js
++++ b/lib/components/VoiceMessageInput/useTakePreviewActions.js
+@@ -30,6 +30,8 @@ export function useTakePreviewActions(t0) {
+   if ($[0] !== clipsRef || $[1] !== preview || $[2] !== setPreview || $[3] !== stopTake) {
+     t1 = () => {
+       if (preview) {
++        config?.onDiscardRecording?.(preview.uri);
++        for (const clip of clipsRef.current) if (clip.uri !== preview.uri) config?.onDiscardRecording?.(clip.uri);
+         clipsRef.current = [];
+         setPreview(null);
+         return;
+@@ -117,7 +119,8 @@ export function useTakePreviewActions(t0) {
+         clipsRef.current = [];
+         onSend?.({
+           audio: preview.uri,
+-          duration: Math.round(preview.durationMs / 1000),
++          duration: preview.durationMs / 1000,
++          waveform: preview.levels,
+           ...viewOnceFields(isViewOnceRef.current)
+         }, false);
+         return;
+diff --git a/lib/components/VoiceMessageInput/useVoiceTake.js b/lib/components/VoiceMessageInput/useVoiceTake.js
+index 108ce6d68646df40ee5517aa991c98c3b43f7f44..de0cededb47d8dcb9384ff4297837c2bb420025c 100644
+--- a/lib/components/VoiceMessageInput/useVoiceTake.js
++++ b/lib/components/VoiceMessageInput/useVoiceTake.js
+@@ -67,6 +67,12 @@ export function useVoiceTake(t0, ref) {
+   const toggleViewOnce = t3;
+   const startedAtRef = useRef(0);
+   const isRecordingRef = useRef(false);
++  const ownsAudioSession = useRef(false);
++  const releaseOwnedAudioSession = () => {
++    if (!ownsAudioSession.current) return;
++    ownsAudioSession.current = false;
++    if (config?.canReleaseAudioSession?.() !== false) releaseAudioSession();
++  };
+   const timerRef = useRef(null);
+   let t4;
+   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
+@@ -160,7 +166,7 @@ export function useVoiceTake(t0, ref) {
+         return;
+       }
+       isRecordingRef.current = false;
+-      const duration = Date.now() - startedAtRef.current;
++      const duration = Math.min(Date.now() - startedAtRef.current, maxDurationMs - baseElapsedRef.current);
+       clearTimer();
+       setIsRecording(false);
+       setCancelArmed(false);
+@@ -175,10 +181,13 @@ export function useVoiceTake(t0, ref) {
+         const uri = recorder.uri;
+         const earlier = clipsRef.current;
+         if (outcome === "cancel" || !uri) {
++          if (uri) config?.onDiscardRecording?.(uri);
++          for (const clip of earlier) config?.onDiscardRecording?.(clip.uri);
+           clipsRef.current = [];
+           return;
+         }
+         if (!earlier.length && duration <= minDurationMs) {
++          config?.onDiscardRecording?.(uri);
+           config?.onTooShort?.();
+           return;
+         }
+@@ -202,7 +211,8 @@ export function useVoiceTake(t0, ref) {
+         clipsRef.current = [];
+         onSend?.({
+           audio: joined,
+-          duration: Math.round(durationMs / 1000),
++          duration: durationMs / 1000,
++          waveform: clipsLevels(clips),
+           ...viewOnceFields(isViewOnceRef.current)
+         }, false);
+       })().catch(error => {
+@@ -211,7 +221,7 @@ export function useVoiceTake(t0, ref) {
+       }).finally(() => {
+         setIsJoining(false);
+         setIsLocked(false);
+-        releaseAudioSession();
++        releaseOwnedAudioSession();
+       });
+     };
+     $[16] = config;
+@@ -258,13 +268,19 @@ export function useVoiceTake(t0, ref) {
+           config?.onPermissionDenied?.();
+           return;
+         }
++        if (startTokenRef.current !== token || config?.canUseAudioSession?.() === false) return;
++        ownsAudioSession.current = true;
+         await expoAudio.setAudioModeAsync?.({
+           allowsRecording: true,
+           playsInSilentMode: true
+         });
++        if (startTokenRef.current !== token || config?.canUseAudioSession?.() === false) return;
+         const recorder_0 = getRecorder();
+-        await recorder_0.prepareToRecordAsync(recorderOptions);
+-        if (startTokenRef.current !== token) {
++        await recorder_0.prepareToRecordAsync(config?.recordingFileName
++          ? { ...recorderOptions, fileName: config.recordingFileName() }
++          : recorderOptions);
++        if (startTokenRef.current !== token || config?.canUseAudioSession?.() === false) {
++          stopRecorderQuietly(recorder_0, config?.onDiscardRecording);
+           return;
+         }
+         recorder_0.record();
+@@ -278,7 +294,12 @@ export function useVoiceTake(t0, ref) {
+         clearTimer();
+         timerRef.current = setInterval(() => {
+           const ms = baseElapsedRef.current + Date.now() - startedAtRef.current;
+-          const next = normalizeMetering(recorder_0.getStatus?.()?.metering);
++          const status = recorder_0.getStatus?.();
++          if (status?.mediaServicesDidReset || status?.isRecording === false && ms - baseElapsedRef.current > 500) {
++            stopTakeRef.current("cancel");
++            return;
++          }
++          const next = normalizeMetering(status?.metering);
+           allLevelsRef.current.push(next);
+           const previous = levelsRef.current;
+           const kept = previous.length >= LEVEL_HISTORY ? previous.slice(previous.length - LEVEL_HISTORY + 1) : previous;
+@@ -286,7 +307,7 @@ export function useVoiceTake(t0, ref) {
+           meter.level.set(next);
+           meter.elapsed.set(ms);
+           if (ms >= maxDurationMs) {
+-            stopTakeRef.current("send");
++            stopTakeRef.current(config?.previewAtLimit ? "preview" : "send");
+           }
+         }, 100);
+       })().catch(error_0 => {
+@@ -296,7 +317,7 @@ export function useVoiceTake(t0, ref) {
+         setIsRecording(false);
+         setIsLocked(false);
+         clearTimer();
+-        releaseAudioSession();
++        releaseOwnedAudioSession();
+       }).finally(() => {
+         setIsResuming(false);
+         if (startTokenRef.current === token) {
+@@ -327,9 +348,11 @@ export function useVoiceTake(t0, ref) {
+       pendingFinishRef.current = null;
+       if (isRecordingRef.current) {
+         isRecordingRef.current = false;
+-        stopRecorderQuietly(recorderRef.current);
++        stopRecorderQuietly(recorderRef.current, config?.onDiscardRecording);
+       }
+-      releaseAudioSession();
++      releaseOwnedAudioSession();
++      for (const clip of clipsRef.current) config?.onDiscardRecording?.(clip.uri);
++      clipsRef.current = [];
+       onStateChange?.(IDLE_STATE);
+     };
+     t14 = [clearTimer, onStateChange, recorderRef];
+diff --git a/lib/index.d.ts b/lib/index.d.ts
+index bda3053d7379d3ff2d8c75b106e1a5a2630d9aa6..f41fbfcaf8cbe68db0e1c5890bf25bcc98fc6c39 100644
+--- a/lib/index.d.ts
++++ b/lib/index.d.ts
+@@ -53,7 +53,7 @@ export { Time } from './Time';
+ export { ChatAvatar } from './ChatAvatar';
+ export { ChatHeader } from './ChatHeader';
+ export type { ChatHeaderProps } from './ChatHeader';
+-export { MessageAudio } from './MessageAudio';
++export { MessageAudio, VoiceWaveform } from './MessageAudio';
+ export { MessageVideo } from './MessageVideo';
+ export { MessageReply } from './components/MessageReply';
+ export { ReplyPreview } from './components/ReplyPreview';
+diff --git a/lib/index.js b/lib/index.js
+index c7958761ee01a492015656d21e4ab7e818450d46..6fe13eaf46da5ac95fbabf4cf6eafe13190061d1 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -47,7 +47,7 @@ export { Send } from './Send';
+ export { Time } from './Time';
+ export { ChatAvatar } from './ChatAvatar';
+ export { ChatHeader } from './ChatHeader';
+-export { MessageAudio } from './MessageAudio';
++export { MessageAudio, VoiceWaveform } from './MessageAudio';
+ export { MessageVideo } from './MessageVideo';
+ export { MessageReply } from './components/MessageReply';
+ export { ReplyPreview } from './components/ReplyPreview';

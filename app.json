@@ -117,7 +117,16 @@
             "extraProguardRules": "# Jitsi WebRTC 155 ships the unused Dav1d JNI shim without its decoder. Require R8 to discard the shim.\n-dontwarn org.webrtc.Dav1dDecoder$Natives\n-checkdiscard class org.webrtc.Dav1dDecoderJni"
           }
         }
-      ]
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,

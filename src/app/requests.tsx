@@ -29,7 +29,11 @@ export default function Requests() {
         _id: latest.id,
         createdAt: latest.sentAt,
         user: { _id: publicKey, name: title },
-        text: latest.timeLock ? t("security:requestLocked") : latest.body,
+        text: latest.attachment
+          ? t("messages:voiceMessage")
+          : latest.timeLock
+            ? t("security:requestLocked")
+            : latest.body,
       },
     };
   });

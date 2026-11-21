@@ -1,6 +1,7 @@
+import { createMediaSdk } from "@/core/media";
+import { createAttachmentMedia } from "@/core/media/service";
 import { File } from "expo-file-system";
 import { uploadAvatar } from "@/core/avatars/blossom";
-import { avatarDisk, nativeAvatarTransport } from "@/core/avatars/native";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
 import { asc } from "drizzle-orm";
@@ -75,6 +76,12 @@ async function start() {
     seedRelays(db, fresh);
     const chat = createMessagingRepository(db);
     const privacy = createPrivacy(db, chat, identity.publicKey);
+    const mediaSdk = createMediaSdk(db, signer);
+    const attachments = createAttachmentMedia(
+      chat,
+      privacy.isBlocked,
+      mediaSdk,
+    );
     const history = createHistoryLoader(chat);
     const conversations = createConversationFeed(chat, history, () =>
       translationPreviewTarget(db),
@@ -85,28 +92,25 @@ async function start() {
       signer,
       chat,
       privacy,
+      media: attachments,
     });
-    const { disk, localDirectory } = avatarDisk(identity.publicKey);
+    const { disk, localDirectory } = mediaSdk.profileFiles;
     const avatars = createAvatars(
       db,
       identity.publicKey,
       privacy,
       messaging,
       disk,
-      nativeAvatarTransport,
+      mediaSdk.profileDownload,
+      mediaSdk.profileMirrors,
     );
     const profileEditor = createProfileEditor(
       db,
       identity.publicKey,
       avatars,
       disk,
-      (origin, filename, signal) =>
-        uploadAvatar(
-          signer,
-          origin,
-          new File(localDirectory, filename),
-          signal,
-        ),
+      (filename, signal) =>
+        uploadAvatar(mediaSdk, new File(localDirectory, filename), signal),
       messaging,
     );
     privacy.subscribe(avatars.invalidate);
@@ -194,6 +198,7 @@ async function start() {
     });
     privacy.subscribeBlock((key) => {
       calling.peerBlocked(key);
+      attachments.block(key);
       messaging.invalidateBlockedPeer();
     });
     messaging.subscribeCalls((message) => {
@@ -215,6 +220,8 @@ async function start() {
       ),
       identity,
       avatars,
+      attachments,
+      mediaSdk,
       profileEditor,
       privacy,
       chat,

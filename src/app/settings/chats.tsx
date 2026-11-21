@@ -14,6 +14,11 @@ export default function ChatSettings() {
           icon="language"
           onPress={() => router.push("/settings/chats/translation")}
         />
+        <SettingsRow
+          title={t("messages:storageMedia")}
+          icon="storage"
+          onPress={() => router.push("/settings/chats/media")}
+        />
       </SettingsGroup>
     </Screen>
   );

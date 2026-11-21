@@ -12,6 +12,7 @@ export function createConversationListAdapter(
   ownKey: string,
   translationLabel: (text: string) => string,
   lockedLabel?: (time: number) => string,
+  voiceLabel?: (duration: number | null) => string,
 ) {
   const items = new WeakMap<ConversationSummary, ConversationListItem>();
   return (row: ConversationSummary) => {
@@ -22,6 +23,7 @@ export function createConversationListAdapter(
       ownKey,
       translationLabel,
       lockedLabel,
+      voiceLabel,
     );
     items.set(row, next);
     return next;
@@ -33,6 +35,7 @@ export function toConversationListItem(
   ownKey: string,
   translationLabel?: (text: string) => string,
   lockedLabel?: (time: number) => string,
+  voiceLabel?: (duration: number | null) => string,
 ): ConversationListItem {
   const address = toNpub(row.peerKey);
   const author = row.lastMessageDirection === "outgoing" ? ownKey : row.peerKey;
@@ -49,12 +52,14 @@ export function toConversationListItem(
         ? {
             _id: row.lastMessageId,
             text:
-              row.lockedUntil != null
-                ? (lockedLabel?.(row.lockedUntil) ?? "")
-                : row.translatedPreview
-                  ? (translationLabel?.(row.translatedPreview) ??
-                    row.translatedPreview)
-                  : (row.preview ?? ""),
+              row.lastMessageType === "attachment"
+                ? (voiceLabel?.(row.voiceDuration) ?? "")
+                : row.lockedUntil != null
+                  ? (lockedLabel?.(row.lockedUntil) ?? "")
+                  : row.translatedPreview
+                    ? (translationLabel?.(row.translatedPreview) ??
+                      row.translatedPreview)
+                    : (row.preview ?? ""),
             createdAt: row.lastMessageAt,
             user: { _id: author },
             pending: row.lastMessageStatus === "pending",

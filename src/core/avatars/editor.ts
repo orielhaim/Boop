@@ -2,7 +2,7 @@ import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import type * as schema from "@/db/schema";
 import { preference, setPreference } from "@/db/queries";
-import { blossomServer, defaultBlossomServer } from "./blossom-protocol";
+import type { MediaUploadResult } from "../media/uploads";
 import {
   maxProfileBytes,
   parseProfile,
@@ -45,11 +45,7 @@ export function createProfileEditor<Result>(
   owner: string,
   avatars: Pick<Avatars, "profile" | "ingest" | "notify">,
   disk: Pick<AvatarDisk, "newId" | "local" | "copyLocal" | "removeLocal">,
-  upload: (
-    origin: string,
-    file: string,
-    signal: AbortSignal,
-  ) => Promise<string>,
+  upload: (file: string, signal: AbortSignal) => Promise<MediaUploadResult>,
   relays: Relays,
 ) {
   const listeners = new Set<() => void>();
@@ -63,11 +59,6 @@ export function createProfileEditor<Result>(
     avatars.notify(owner);
   };
   const pinned = () => preference(db, "identity.publicKey") === owner;
-  const primary = () =>
-    blossomServer(preference(db, "media.primary") ?? "") ??
-    defaultBlossomServer;
-  const backup = () => blossomServer(preference(db, "media.backup") ?? "");
-  const mirror = () => preference(db, "media.mirror") === "true";
   const readDraft = () => {
     try {
       return draftSchema.parse(
@@ -158,29 +149,6 @@ export function createProfileEditor<Result>(
       if (draft?.photo.kind !== "upload") return;
       return disk.local(draft.photo.file);
     },
-    configuration: () => ({
-      primary: primary(),
-      backup: backup(),
-      mirror: mirror(),
-    }),
-    configure(nextPrimary: string, nextBackup: string, mirrorEnabled: boolean) {
-      const first = blossomServer(nextPrimary);
-      const second = nextBackup.trim() ? blossomServer(nextBackup) : null;
-      if (
-        !first ||
-        (nextBackup.trim() && !second) ||
-        first === second ||
-        (mirrorEnabled && !second)
-      )
-        return false;
-      db.transaction((tx) => {
-        setPreference(tx, "media.primary", first);
-        setPreference(tx, "media.backup", second ?? "");
-        setPreference(tx, "media.mirror", String(mirrorEnabled));
-      });
-      notify();
-      return true;
-    },
     prepare(source: string, name?: string) {
       if (!pinned() || abort) throw new Error("Profile editor unavailable");
       const file = `${disk.newId()}.jpg`;
@@ -223,37 +191,17 @@ export function createProfileEditor<Result>(
         notify();
         if (draft.photo.kind === "upload" && !draft.photo.url) {
           const file = draft.photo.file;
-          const first = primary();
-          const second = backup();
-          const useMirror = mirror();
-          let origin = first;
-          let url: string;
-          try {
-            url = await upload(first, file, signal);
-          } catch (error) {
-            if (!second || !valid()) throw error;
-            origin = second;
-            url = await upload(second, file, signal);
-          }
+          const { url, mirror } = await upload(file, signal);
           if (!valid()) return "cancelled";
           draft = { ...draft, photo: { ...draft.photo, url } };
           write(draft);
-          if (useMirror && second) {
-            try {
-              await upload(origin === first ? second : first, file, signal);
-            } catch {
-              if (!valid()) return "cancelled";
-              draft = {
-                ...draft,
-                photo: {
-                  kind: "upload",
-                  file,
-                  url,
-                  mirrorFailed: true,
-                },
-              };
-              write(draft);
-            }
+          if (mirror && !(await mirror)) {
+            if (!valid()) return "cancelled";
+            draft = {
+              ...draft,
+              photo: { kind: "upload", file, url, mirrorFailed: true },
+            };
+            write(draft);
           }
         }
         if (!(await refresh(signal)))

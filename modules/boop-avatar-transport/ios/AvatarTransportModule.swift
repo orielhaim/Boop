@@ -7,7 +7,7 @@ import Network
 import UniformTypeIdentifiers
 
 private enum AvatarTransferError: Error {
-  case unavailable, destination, response, image, size, hash
+  case unavailable, destination, response, image, size, hash, missing
 }
 
 public final class AvatarTransportModule: Module {
@@ -16,6 +16,7 @@ public final class AvatarTransportModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopAvatarTransport")
+    Events("attachmentProgress")
 
     Function("available") {
       if #available(iOS 17.0, *) { return true }
@@ -33,7 +34,7 @@ public final class AvatarTransportModule: Module {
       self.getJob(id)?.cancel()
     }
 
-    AsyncFunction("download") { (id: String, url: String, output: String, hash: String?, promise: Promise) in
+    AsyncFunction("download") { (id: String, url: String, output: String, hash: String?, attachmentLimit: Int?, promise: Promise) in
       guard let job = self.getJob(id) else {
         promise.reject("AVATAR_UNAVAILABLE", "Avatar operation missing")
         return
@@ -42,8 +43,14 @@ public final class AvatarTransportModule: Module {
         defer { self.removeJob(id) }
         do {
           guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
-          let size = try await downloadAvatar(url, output, hash, job)
+          let size = try await downloadMedia(url, output, hash, attachmentLimit, job) { received, total in
+            self.sendEvent("attachmentProgress", ["id": id, "received": received, "total": total])
+          }
           promise.resolve(size)
+        } catch AvatarTransferError.missing {
+          promise.reject("MEDIA_MISSING", "Media not found")
+        } catch AvatarTransferError.hash {
+          promise.reject("MEDIA_INTEGRITY", "Media hash mismatch")
         } catch {
           promise.reject("AVATAR_DOWNLOAD", "Avatar download failed")
         }
@@ -95,7 +102,15 @@ private let imageTypes = Set(["image/jpeg", "image/png", "image/webp"])
 private let maxBytes = 2 * 1024 * 1024
 
 @available(iOS 17.0, *)
-private func downloadAvatar(_ input: String, _ output: String, _ hash: String?, _ job: DownloadJob) async throws -> Int {
+private func downloadMedia(
+  _ input: String, _ output: String, _ hash: String?, _ attachmentLimit: Int?, _ job: DownloadJob,
+  _ progress: (Int, Int64) -> Void
+) async throws -> Int {
+  let limit = attachmentLimit ?? maxBytes
+  let avatar = attachmentLimit == nil
+  guard avatar || ((17...(8 * 1024 * 1024)).contains(limit) &&
+    hash?.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil)
+  else { throw AvatarTransferError.destination }
   try job.check()
   guard let url = URL(string: input), url.scheme == "https",
         let host = url.host, url.user == nil, url.password == nil,
@@ -103,10 +118,10 @@ private func downloadAvatar(_ input: String, _ output: String, _ hash: String?, 
         host.range(of: #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"#, options: .regularExpression) != nil,
         host.range(of: #"\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$"#, options: .regularExpression) == nil,
         let destination = URL(string: output), destination.isFileURL,
-        destination.pathExtension == "jpg",
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        destination.pathExtension == (avatar ? "jpg" : "bin"),
+        let directory = FileManager.default.urls(for: avatar ? .documentDirectory : .cachesDirectory, in: .userDomainMask).first
   else { throw AvatarTransferError.destination }
-  let root = documents.appendingPathComponent("avatar-cache").resolvingSymlinksInPath()
+  let root = directory.appendingPathComponent(avatar ? "avatar-cache" : "attachment-work").resolvingSymlinksInPath()
   let target = destination.resolvingSymlinksInPath()
   guard target.path.hasPrefix(root.path + "/") else { throw AvatarTransferError.destination }
 
@@ -130,21 +145,33 @@ private func downloadAvatar(_ input: String, _ output: String, _ hash: String?, 
   let session = URLSession(configuration: configuration, delegate: NoAvatarRedirect(), delegateQueue: nil)
   defer { session.invalidateAndCancel() }
   var request = URLRequest(url: url)
-  request.setValue("image/jpeg, image/png, image/webp", forHTTPHeaderField: "Accept")
+  request.setValue(avatar ? "image/jpeg, image/png, image/webp" : "*/*", forHTTPHeaderField: "Accept")
   request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
   try job.check()
   let (stream, response) = try await session.bytes(for: request)
+  if !avatar && (response as? HTTPURLResponse)?.statusCode == 404 {
+    throw AvatarTransferError.missing
+  }
   guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-        let mime = response.mimeType, imageTypes.contains(mime),
-        response.expectedContentLength <= maxBytes
+        avatar == false || imageTypes.contains(response.mimeType ?? ""),
+        response.expectedContentLength <= limit
   else { throw AvatarTransferError.response }
   var data = Data()
   for try await byte in stream {
-    guard data.count < maxBytes else { throw AvatarTransferError.size }
+    guard data.count < limit else { throw AvatarTransferError.size }
     data.append(byte)
+    if !avatar && response.expectedContentLength > 0 && data.count % (64 * 1024) == 0 {
+      progress(data.count, response.expectedContentLength)
+    }
   }
   if let hash, SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() != hash {
     throw AvatarTransferError.hash
+  }
+  if !avatar {
+    try Task.checkCancellation()
+    guard data.count >= 17 else { throw AvatarTransferError.size }
+    try data.write(to: target, options: [.withoutOverwriting])
+    return data.count
   }
   let options = [kCGImageSourceShouldCache: false] as CFDictionary
   guard let source = CGImageSourceCreateWithData(data as CFData, options),

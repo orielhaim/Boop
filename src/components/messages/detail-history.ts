@@ -40,6 +40,7 @@ function createProjector(
   participants: Participants,
   unavailable: string,
   lockedLabel: string,
+  voiceLabel: string,
 ) {
   let previous = emptyMessages;
   return (messages: ReturnType<Repository["history"]>["messages"]) => {
@@ -55,6 +56,7 @@ function createProjector(
         participants,
         unavailable,
         lockedLabel,
+        voiceLabel,
       );
       const prior = previousById.get(item._id);
       return prior && equalDetailMessage(prior, item) ? prior : item;
@@ -123,6 +125,7 @@ export function useDetailHistory(
   participants: Participants,
   unavailable: string,
   lockedLabel: string,
+  voiceLabel: string,
 ) {
   const [initial] = useState(() => {
     try {
@@ -164,8 +167,15 @@ export function useDetailHistory(
   const [scope, setScope] = useState(initial.scope);
   const rows = useMemo(
     () =>
-      createProjector(chat, peerKey, participants, unavailable, lockedLabel),
-    [chat, peerKey, participants, unavailable, lockedLabel],
+      createProjector(
+        chat,
+        peerKey,
+        participants,
+        unavailable,
+        lockedLabel,
+        voiceLabel,
+      ),
+    [chat, peerKey, participants, unavailable, lockedLabel, voiceLabel],
   );
   const getSnapshot = useMemo(
     () => createHistorySnapshot(chat, history, peerKey, scope, rows, initial),

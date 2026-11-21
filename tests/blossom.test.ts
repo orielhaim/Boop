@@ -14,7 +14,12 @@ import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
 import migrations from "../src/db/migrations/bundle";
 import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
-import { putAvatar } from "../src/core/avatars/blossom-protocol";
+import {
+  type BlossomHttp,
+  createBlossomClient,
+} from "../src/core/media/blossom";
+import { createMediaSettings } from "../src/core/media/servers";
+import { createMediaUploads } from "../src/core/media/uploads";
 import { updateProfileFields } from "../src/core/avatars/protocol";
 
 const origin = "https://blossom.example.com";
@@ -39,6 +44,20 @@ const response = (overrides = {}) =>
       ...overrides,
     },
     { status: 201 },
+  );
+
+const putAvatar = (
+  signer: NDKPrivateKeySigner,
+  origin: string,
+  bytes: Uint8Array<ArrayBuffer>,
+  signal: AbortSignal,
+  http: BlossomHttp,
+) =>
+  createBlossomClient(signer, http).put(
+    origin,
+    { bytes, size: bytes.length, mime: "image/jpeg", hash: digest(bytes) },
+    signal,
+    { preflight: false },
   );
 
 test("upload signs the exact host and hash, then reads the blob back without credentials", async () => {
@@ -245,19 +264,50 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   avatars.ingest(published, owner);
   const attempts: string[] = [];
   const backup = "https://backup.example.com";
+  const prefs = new Map<string, string>();
+  const settings = createMediaSettings({
+    read: (key) => prefs.get(key) ?? null,
+    write: (key, value) => {
+      prefs.set(key, value);
+    },
+  });
+  settings.save({
+    mirror: true,
+    servers: [origin, backup].map((server) => ({
+      origin: server,
+      enabled: true,
+      roles: ["profile"],
+    })),
+  });
+  const uploads = createMediaUploads(
+    signer,
+    {
+      sha256,
+      async request(path, options) {
+        if (options.method === "HEAD")
+          return new Response(null, { status: 200 });
+        if (path.endsWith("/mirror")) {
+          attempts.push(new URL(path).origin);
+          return new Response(null, { status: 402 });
+        }
+        if (options.method === "PUT") {
+          attempts.push(new URL(path).origin);
+          return response();
+        }
+        return new Response(photo);
+      },
+    },
+    settings,
+    () => {},
+  );
   const editor = createProfileEditor(
     db,
     owner,
     avatars,
     disk,
-    async (server) => {
-      attempts.push(server);
-      if (server === backup) throw new Error("Mirror offline");
-      return url;
-    },
+    (_file, signal) => uploads.upload("profile", photo, { signal }),
     relays,
   );
-  expect(editor.configure(origin, backup, true)).toBe(true);
   editor.prepare("file:///cropped.jpg");
   expect(attempts).toEqual([]);
   const draft = editor.preview();

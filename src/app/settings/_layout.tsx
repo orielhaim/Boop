@@ -48,6 +48,10 @@ export default function SettingsLayout() {
           name="chats/models"
           options={{ title: t("translation:manageModels") }}
         />
+        <Stack.Screen
+          name="chats/media"
+          options={{ title: t("messages:storageMedia") }}
+        />
       </Stack.Protected>
       <Stack.Screen name="privacy" options={{ title: t("settings:privacy") }} />
       <Stack.Screen

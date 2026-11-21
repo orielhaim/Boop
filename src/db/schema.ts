@@ -68,7 +68,9 @@ export const messages = sqliteTable(
       .notNull()
       .default(false),
     rumorJson: text("rumor_json"),
-    contentType: text("content_type", { enum: ["text", "timelock"] })
+    contentType: text("content_type", {
+      enum: ["text", "timelock", "attachment"],
+    })
       .notNull()
       .default("text"),
   },
@@ -117,6 +119,30 @@ export const messageTimeLocks = sqliteTable(
       .on(table.retryAt, table.unlockRound, table.messageId)
       .where(sql`${table.retryAt} IS NOT NULL`),
   ],
+);
+
+export const messageAttachments = sqliteTable("message_attachments", {
+  messageId: text("message_id")
+    .primaryKey()
+    .notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  file: text({ mode: "json" })
+    .$type<import("@/core/media/protocol").SealedAttachment>()
+    .notNull(),
+  url: text(),
+  listened: integer({ mode: "boolean" }).notNull().default(false),
+});
+
+export const attachmentCache = sqliteTable(
+  "attachment_cache",
+  {
+    owner: text().notNull(),
+    hash: text().notNull(),
+    source: text({ enum: ["sent", "download"] }).notNull(),
+    size: integer().notNull(),
+    accessedAt: integer("accessed_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.owner, table.hash, table.source] })],
 );
 
 export const messageTranslations = sqliteTable(
