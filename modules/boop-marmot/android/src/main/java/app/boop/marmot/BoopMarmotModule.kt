@@ -232,7 +232,6 @@ class BoopMarmotModule : Module() {
           "convergenceParked" to (details.mlsState.convergenceParked || recovery.automaticRecoveryFailed),
           "historyIncomplete" to recovery.historyMayBeIncomplete,
           "relayChangesOutstanding" to ((delivery?.owedRelayUrls?.size ?: 0) + (delivery?.refusedRelays?.size ?: 0)),
-          "retention" to details.group.disappearingMessageSecs.toDouble(),
           "membership" to details.group.selfMembership.name.lowercase(),
           "pendingInvitation" to details.group.pendingConfirmation,
           "kind" to chat?.conversationKind?.name?.lowercase(),
@@ -294,9 +293,6 @@ class BoopMarmotModule : Module() {
         }
         file.baseFile.canonicalPath
       }
-    }
-    AsyncFunction("updateRetention") Coroutine { group: String, seconds: Int ->
-      withSession { it.kit.updateMessageRetention(it.account, group, seconds.toULong()); Unit }
     }
     AsyncFunction("inviteMembers") Coroutine { group: String, members: List<String> ->
       withSession { session ->

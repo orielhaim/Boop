@@ -164,7 +164,6 @@ public final class BoopMarmotModule: Module {
           "convergenceParked": details.mlsState.convergenceParked || recovery.automaticRecoveryFailed,
           "historyIncomplete": recovery.historyMayBeIncomplete,
           "relayChangesOutstanding": (delivery?.owedRelayUrls.count ?? 0) + (delivery?.refusedRelays.count ?? 0),
-          "retention": Double(details.group.disappearingMessageSecs),
           "membership": wireName(details.group.selfMembership),
           "pendingInvitation": details.group.pendingConfirmation,
           "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
@@ -230,10 +229,6 @@ public final class BoopMarmotModule: Module {
         }
         return file.path
       }
-    }
-    AsyncFunction("updateRetention") { (group: String, seconds: Int) async throws in
-      guard let duration = UInt64(exactly: seconds) else { throw problem("InvalidRetention") }
-      try await self.withAccount { _ = try await $0.updateMessageRetention(accountRef: $1, groupIdHex: group, disappearingMessageSecs: duration) }
     }
     AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool) async throws -> [Document] in
       try await self.withAccount { kit, account in

@@ -397,7 +397,12 @@ export function MarmotGroupDetailsScreen({
   }>();
   const [showRelays, setShowRelays] = useState(false);
   const [showMediaServers, setShowMediaServers] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [profileDraft, setProfileDraft] = useState<{
+    name?: string;
+    description?: string;
+  }>({});
   const picker = useAvatarPicker();
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
@@ -448,14 +453,16 @@ export function MarmotGroupDetailsScreen({
     router.canGoBack() ? router.back() : router.replace(conversationRoute(id));
 
   async function update(task: () => Promise<void>, leave = false) {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     try {
       await task();
       if (leave) router.back();
       else setDetails(await load());
+      return true;
     } catch (reason) {
       Alert.alert(translateError(reason));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -488,20 +495,29 @@ export function MarmotGroupDetailsScreen({
 
   if (editing && canEdit && picker.image)
     return (
-      <AvatarCropScreen
-        source={picker.image}
-        onCancel={picker.clear}
-        onSave={(file) => {
-          picker.clear();
-          void update(async () => {
-            try {
-              await marmot.updateGroupImage(id, imagePath(file));
-            } finally {
-              cleanImage(file);
-            }
-          });
-        }}
-      />
+      <>
+        <Stack.Screen
+          options={{
+            headerShown: true,
+            title: t("settings:photoChange"),
+            headerRight: undefined,
+          }}
+        />
+        <AvatarCropScreen
+          source={picker.image}
+          onCancel={picker.clear}
+          onSave={(file) => {
+            picker.clear();
+            void update(async () => {
+              try {
+                await marmot.updateGroupImage(id, imagePath(file));
+              } finally {
+                cleanImage(file);
+              }
+            });
+          }}
+        />
+      </>
     );
 
   const title = details?.pendingInvitation
@@ -759,27 +775,61 @@ export function MarmotGroupDetailsScreen({
       />
     </>
   );
+  const editedName = profileDraft.name ?? details.name;
+  const editedDescription = profileDraft.description ?? details.description;
+  const changedName =
+    profileDraft.name !== undefined && editedName.trim() !== details.name.trim()
+      ? editedName.trim()
+      : null;
+  const changedDescription =
+    profileDraft.description !== undefined &&
+    editedDescription.trim() !== details.description.trim()
+      ? editedDescription.trim()
+      : null;
+  const canSaveProfile =
+    !busy &&
+    !picker.busy &&
+    !!editedName.trim() &&
+    (changedName !== null || changedDescription !== null);
+
+  function saveProfile() {
+    if (!canSaveProfile) return;
+    void update(() =>
+      marmot.updateGroup(id, changedName, changedDescription),
+    ).then((saved) => {
+      if (saved) setProfileDraft({});
+    });
+  }
+
   return (
     <Screen topInset={!editing}>
       <Stack.Screen
-        options={{ headerShown: editing, title: editing ? title : "" }}
+        options={{
+          headerShown: editing,
+          title: editing ? title : "",
+          headerShadowVisible: false,
+          headerRight:
+            editing && isGroup
+              ? () => (
+                  <Action
+                    size="sm"
+                    disabled={!canSaveProfile}
+                    onPress={saveProfile}
+                  >
+                    {t("messages:marmot.save")}
+                  </Action>
+                )
+              : undefined,
+        }}
       />
       {editing ? (
         <>
-          {notice}
-          <GroupProfileFields
-            key={JSON.stringify([
-              details.name,
-              details.description,
-              details.retention,
-            ])}
-            details={details}
-            busy={busy}
-            update={update}
-            photo={
-              isGroup ? (
-                <View style={styles.photoEdit}>
+          {isGroup && (
+            <SettingsGroup>
+              <View style={styles.profileFields}>
+                <View style={styles.editorIdentity}>
                   <EditableAvatar
+                    showLabel
                     disabled={busy || picker.busy}
                     onPick={(source) => void picker.pick(source)}
                     onRemove={
@@ -791,24 +841,122 @@ export function MarmotGroupDetailsScreen({
                         : undefined
                     }
                   >
-                    {avatar}
+                    <GlassAvatar
+                      name={editedName || groupName}
+                      src={imageUri}
+                      size="lg"
+                    />
                   </EditableAvatar>
-                  {picker.error && <Ink kind="caption">{picker.error}</Ink>}
+                  <View style={styles.grow}>
+                    <GlassInput
+                      label={t("messages:marmot.groupName")}
+                      value={editedName}
+                      onChangeText={(name) =>
+                        setProfileDraft((draft) => ({ ...draft, name }))
+                      }
+                      maxLength={128}
+                      editable={!busy}
+                    />
+                  </View>
                 </View>
-              ) : undefined
-            }
-          />
-          {isGroup && roster}
-          {details.mediaV2 && details.lifecycle === "stable" && (
-            <GroupMediaSettings
-              key={details.mediaEndpoints.join(",")}
-              details={details}
-              busy={busy}
-              update={update}
-            />
+                {picker.busy && (
+                  <Ink kind="caption" muted accessibilityLiveRegion="polite">
+                    {t("settings:photoProcessing")}
+                  </Ink>
+                )}
+                {picker.error && (
+                  <Ink kind="caption" accessibilityRole="alert">
+                    {picker.error}
+                  </Ink>
+                )}
+              </View>
+              <View style={styles.profileFields}>
+                <GlassInput
+                  label={t("messages:marmot.groupDescription")}
+                  value={editedDescription}
+                  onChangeText={(description) =>
+                    setProfileDraft((draft) => ({ ...draft, description }))
+                  }
+                  multiline
+                  maxLength={512}
+                  editable={!busy}
+                />
+              </View>
+            </SettingsGroup>
+          )}
+          {notice}
+          {isGroup && (
+            <SettingsGroup>
+              <SettingsRow
+                title={t("messages:marmot.manageMembers")}
+                icon="person"
+                value={String(details.members.length)}
+                expanded={showMembers}
+                onPress={() => setShowMembers((value) => !value)}
+                trailing={
+                  <Icon
+                    name={showMembers ? "collapse" : "expand"}
+                    size={18}
+                    color={colors.muted}
+                  />
+                }
+              />
+            </SettingsGroup>
+          )}
+          {isGroup && showMembers && roster}
+          {(details.relays.length > 0 || details.mediaV2) && (
+            <SettingsGroup title={t("messages:marmot.groupConnections")}>
+              {details.relays.length > 0 && (
+                <SettingsRow
+                  title={t("messages:marmot.relayList")}
+                  icon="connection"
+                  value={String(details.relays.length)}
+                  expanded={showRelays}
+                  onPress={() => setShowRelays((value) => !value)}
+                  trailing={
+                    <Icon
+                      name={showRelays ? "collapse" : "expand"}
+                      size={18}
+                      color={colors.muted}
+                    />
+                  }
+                />
+              )}
+              {showRelays && details.relays.length > 0 && (
+                <EndpointList urls={details.relays} />
+              )}
+              {details.mediaV2 && (
+                <SettingsRow
+                  title={t("messages:marmot.groupMediaServers")}
+                  icon="storage"
+                  value={String(details.mediaEndpoints.length)}
+                  expanded={showMediaServers}
+                  onPress={() => setShowMediaServers((value) => !value)}
+                  trailing={
+                    <Icon
+                      name={showMediaServers ? "collapse" : "expand"}
+                      size={18}
+                      color={colors.muted}
+                    />
+                  }
+                />
+              )}
+              {details.mediaV2 &&
+                showMediaServers &&
+                (details.lifecycle === "stable" ? (
+                  <GroupMediaSettings
+                    key={details.mediaEndpoints.join(",")}
+                    details={details}
+                    busy={busy}
+                    update={update}
+                  />
+                ) : (
+                  <EndpointList urls={details.mediaEndpoints} />
+                ))}
+            </SettingsGroup>
           )}
           {(details.canEnableDisbanding || details.canDisband) && (
-            <SettingsGroup>
+            <SettingsGroup title={t("messages:marmot.groupLifecycle")}>
               {details.canEnableDisbanding && (
                 <SettingsRow
                   title={t("messages:marmot.enableDisbanding")}
@@ -915,17 +1063,6 @@ export function MarmotGroupDetailsScreen({
                 })}
               />
             ) : null}
-            <SettingsRow
-              icon="history"
-              title={t("messages:marmot.disappearingMessages")}
-              value={
-                details.retention
-                  ? t("messages:marmot.retentionValue", {
-                      count: details.retention,
-                    })
-                  : t("common:off")
-              }
-            />
             {details.relays.length > 0 && (
               <SettingsRow
                 icon="connection"
@@ -1133,7 +1270,7 @@ function GroupMediaSettings({
 }: {
   details: MarmotGroupDetails;
   busy: boolean;
-  update: (task: () => Promise<void>) => Promise<void>;
+  update: (task: () => Promise<void>) => Promise<boolean>;
 }) {
   const { t } = useTranslation(namespaces);
   const [entry, setEntry] = useState(details.mediaEndpoints.join("\n"));
@@ -1145,117 +1282,27 @@ function GroupMediaSettings({
     origins.length <= 8 &&
     origins.every((origin): origin is string => origin !== null);
   return (
-    <SettingsGroup title={t("messages:marmot.groupMediaServers")}>
-      <View style={styles.form}>
-        <GlassInput
-          label={t("messages:marmot.groupMediaServers")}
-          value={entry}
-          onChangeText={setEntry}
-          autoCapitalize="none"
-          multiline
-        />
-        <Action
-          size="sm"
-          disabled={
-            busy || !valid || entry === details.mediaEndpoints.join("\n")
-          }
-          onPress={() => {
-            if (valid)
-              void update(() =>
-                marmot.updateGroupMedia(details.id, [...new Set(origins)]),
-              );
-          }}
-        >
-          {t("messages:marmot.save")}
-        </Action>
-      </View>
-    </SettingsGroup>
-  );
-}
-
-function GroupProfileFields({
-  details,
-  busy,
-  update,
-  photo,
-}: {
-  details: MarmotGroupDetails;
-  busy: boolean;
-  update: (task: () => Promise<void>) => Promise<void>;
-  photo?: ReactNode;
-}) {
-  const { t } = useTranslation(namespaces);
-  const [name, setName] = useState(details.name);
-  const [description, setDescription] = useState(details.description);
-  const [duration, setDuration] = useState(String(details.retention));
-  return (
-    <>
-      {photo && (
-        <SettingsGroup>
-          <View style={styles.form}>
-            {photo}
-            <GlassInput
-              label={t("messages:marmot.groupName")}
-              value={name}
-              onChangeText={setName}
-              maxLength={128}
-            />
-            <GlassInput
-              label={t("messages:marmot.groupDescription")}
-              value={description}
-              onChangeText={setDescription}
-              multiline
-              maxLength={512}
-            />
-            <Action
-              size="sm"
-              disabled={
-                busy ||
-                !name.trim() ||
-                (name === details.name && description === details.description)
-              }
-              onPress={() =>
-                void update(() =>
-                  marmot.updateGroup(
-                    details.id,
-                    name.trim(),
-                    description.trim(),
-                  ),
-                )
-              }
-            >
-              {t("messages:marmot.save")}
-            </Action>
-          </View>
-        </SettingsGroup>
-      )}
-      <SettingsGroup title={t("messages:marmot.disappearingMessages")}>
-        <View style={styles.form}>
-          <GlassInput
-            label={t("messages:marmot.retention")}
-            value={duration}
-            onChangeText={setDuration}
-            keyboardType="number-pad"
-            maxLength={10}
-          />
-          <Action
-            size="sm"
-            disabled={
-              busy ||
-              !/^\d+$/.test(duration) ||
-              Number(duration) === details.retention
-            }
-            onPress={() =>
-              void update(() =>
-                marmot.updateRetention(details.id, Number(duration)),
-              )
-            }
-          >
-            {t("messages:marmot.save")}
-          </Action>
-        </View>
-      </SettingsGroup>
-    </>
+    <View style={styles.form}>
+      <GlassInput
+        label={t("messages:marmot.blossomOrigins")}
+        value={entry}
+        onChangeText={setEntry}
+        autoCapitalize="none"
+        multiline
+      />
+      <Action
+        size="sm"
+        disabled={busy || !valid || entry === details.mediaEndpoints.join("\n")}
+        onPress={() => {
+          if (valid)
+            void update(() =>
+              marmot.updateGroupMedia(details.id, [...new Set(origins)]),
+            );
+        }}
+      >
+        {t("messages:marmot.save")}
+      </Action>
+    </View>
   );
 }
 
@@ -1347,7 +1394,8 @@ const styles = StyleSheet.create({
   },
   notice: { padding: space.md, gap: space.xs },
   form: { padding: space.lg, gap: space.md },
-  photoEdit: { alignItems: "center", gap: space.xs },
+  profileFields: { padding: space.lg, gap: space.sm },
+  editorIdentity: { flexDirection: "row", alignItems: "center", gap: space.md },
   endpoints: {
     gap: space.xs,
     paddingHorizontal: space.lg,

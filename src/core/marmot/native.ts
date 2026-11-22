@@ -235,7 +235,6 @@ const groupDetails = z.object({
   historyIncomplete: z.boolean(),
   relayChangesOutstanding: z.number().nonnegative(),
   relays: z.array(z.string()),
-  retention: z.number().int().nonnegative(),
   membership: z.string(),
   pendingInvitation: z.boolean(),
   kind: z.string().nullish(),
@@ -438,7 +437,6 @@ type Bridge = {
     name: string | null,
     description: string | null,
   ): Promise<void>;
-  updateRetention(group: string, seconds: number): Promise<void>;
   inviteMembers(group: string, members: string[]): Promise<unknown>;
   changeMember(
     group: string,
@@ -816,11 +814,6 @@ export const marmot = {
     name: string | null,
     description: string | null,
   ) => native().updateGroup(group, name, description),
-  updateRetention: (group: string, seconds: number) =>
-    native().updateRetention(
-      group,
-      z.number().int().min(0).max(2_147_483_647).parse(seconds),
-    ),
   async inviteMembers(group: string, members: string[]) {
     return z
       .array(memberOutcome)
