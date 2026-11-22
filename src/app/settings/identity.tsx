@@ -53,6 +53,12 @@ export default function Identity() {
             onPress={() => router.push("./identity/devices")}
           />
         )}
+        {chats && (
+          <SettingsRow
+            title={t("messages:marmot.backups")}
+            onPress={() => router.push("./identity/backup")}
+          />
+        )}
       </SettingsGroup>
       <SettingsGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>

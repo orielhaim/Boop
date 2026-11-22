@@ -6,22 +6,79 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed")
+    Events("windowChanged", "windowClosed", "attachmentProgress")
 
-    AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String]) async throws -> String in
-      try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery) }
+    AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?) async throws -> String in
+      try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin) }
     }
     AsyncFunction("closeAccount") { () async throws in
       try await protocolCall { try await self.runtime.close() }
     }
+    AsyncFunction("catchUp") { () async throws in
+      try await self.withAccount { kit, _ in try await kit.catchUpAccounts() }
+    }
     AsyncFunction("accountReadiness") { () async throws -> String in
       try await self.withAccount { try wireName($0.accountSetupReadiness(accountRef: $1)) }
     }
-    AsyncFunction("openChatList") { (id: String, view: String) async throws -> Document in
-      try await protocolCall { try await self.runtime.openChatList(id: id, view: view) }
+    AsyncFunction("diagnostics") { () async throws -> Document in
+      try await self.withAccount { kit, account in
+        let relays = try await kit.relayHealth()
+        let keys = try await kit.keyPackageMaintenanceStatus(accountRef: account)
+        return ["account": account, "readiness": try wireName(kit.accountSetupReadiness(accountRef: account)),
+          "relays": Int(relays.totalRelays), "connected": Int(relays.connected),
+          "keyPackages": try kit.localAccountKeyPackages(accountRef: account).count,
+          "keyPhase": bridgeValue(keys.map { wireName($0.phase) }), "published": bridgeValue(keys.map { Int($0.acceptedFanoutTargets) }),
+          "refreshOverdue": try await kit.keyPackageRefreshOverdue(accountRef: account)]
+      }
+    }
+    AsyncFunction("rotateKeys") { () async throws in
+      try await self.withAccount { _ = try await $0.rotateKeyPackage(accountRef: $1) }
+    }
+    AsyncFunction("backupState") { () async throws -> Document in
+      try await self.withAccount { kit, account in
+        let settings = try await kit.backupSettings(accountRef: account)
+        let restore = try await kit.backupRestoreStatus(accountRef: account)
+        return ["enabled": settings.enabled, "thisDeviceWrites": settings.thisDeviceWrites,
+          "phase": wireName(restore.phase), "operation": bridgeValue(restore.operation),
+          "imported": Double(restore.importedEvents), "failed": Double(restore.failedArchives) + Double(restore.failedBundles)]
+      }
+    }
+    AsyncFunction("beginBackup") { () async throws -> Document in
+      try await self.withAccount { kit, account in
+        let setup = try await kit.beginRecoveryWords(accountRef: account)
+        return ["words": setup.words, "positions": setup.confirmPositions.map(Int.init)]
+      }
+    }
+    AsyncFunction("backupAction") { (action: String, words: [String]) async throws in
+      try await self.withAccount { kit, account in
+        switch action {
+        case "confirm": try await kit.confirmRecoveryWords(accountRef: account, answers: words)
+        case "cancel": try await kit.cancelRecoveryWords(accountRef: account)
+        case "disable": try await kit.turnOffBackups(accountRef: account)
+        case "restore":
+          guard words.count == 1 else { throw problem("InvalidBackupAction") }
+          _ = try await kit.beginBackupRestore(accountRef: account, words: words[0])
+        case "cancelRestore":
+          guard words.count == 1 else { throw problem("InvalidBackupAction") }
+          _ = try await kit.cancelBackupRestore(accountRef: account, operation: words[0])
+        default: throw problem("InvalidBackupAction")
+        }
+      }
+    }
+    AsyncFunction("backupConditions") { (wifi: Bool, charging: Bool) async throws in
+      try await self.withAccount { try await $0.setRuntimeBackupBackgroundConditions(wifi: wifi, charging: charging) }
+    }
+    AsyncFunction("backupNow") { () async throws -> String in
+      try await self.withAccount { try await wireName($0.runDueBackupPass(accountRef: $1)) }
+    }
+    AsyncFunction("openChatList") { (id: String, view: String, invitations: Bool, search: String?) async throws -> Document in
+      try await protocolCall { try await self.runtime.openChatList(id: id, view: view, invitations: invitations, search: search) }
     }
     AsyncFunction("openAttention") { (id: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openAttention(id: id) }
+    }
+    AsyncFunction("openGroupState") { (id: String, group: String) async throws -> Document in
+      try await protocolCall { try await self.runtime.openGroupState(id: id, group: group) }
     }
     AsyncFunction("openConversation") { (id: String, group: String, target: String?) async throws -> Document in
       try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target) }
@@ -33,6 +90,13 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("closeWindow") { (id: String) async in
       await self.runtime.closeWindow(id)
+    }
+    AsyncFunction("windowSnapshot") { (id: String) async throws -> Document in
+      try await protocolCall {
+        let window = try await self.runtime.window(id)
+        guard let snapshot = window.initial() else { throw problem("WindowClosed") }
+        return snapshot
+      }
     }
     AsyncFunction("pageWindow") { (id: String, generation: String, sequence: String, direction: String) async throws -> Document in
       try await protocolCall {
@@ -56,9 +120,12 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("startDirect") { (peer: String) async throws -> String in
       try await self.withAccount { try await $0.startDirectConversation(accountRef: $1, peerAccountId: peer) }
     }
-    AsyncFunction("createGroup") { (name: String, description: String?, members: [String]) async throws -> Document in
+    AsyncFunction("createGroup") { (name: String, description: String?, members: [String], image: String?) async throws -> Document in
       try await self.withAccount { kit, account in
-        let result = try await kit.createGroupDetailed(accountRef: account, name: name, memberRefs: members, description: description)
+        let initial = try image.map { path in
+          InitialGroupImageFfi(plaintext: try groupImageInput(path), mediaType: "image/jpeg", sourceUrl: nil, dim: nil, thumbhash: nil)
+        }
+        let result = try await kit.createGroupWithInitialImageDetailed(accountRef: account, name: name, memberRefs: members, description: description, initialImage: initial)
         return ["groupId": bridgeValue(result.created?.groupIdHex), "members": result.memberOutcomes.map { member -> Document in
           ["account": member.accountIdHex, "status": wireName(member.status), "devices": Int(member.selectedDeviceCount)]
         }]
@@ -75,12 +142,25 @@ public final class BoopMarmotModule: Module {
         let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
         let policy = try await kit.groupManagementState(accountRef: account, groupIdHex: group)
         let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
+        let delivery = try await kit.groupCommitDelivery(accountRef: account, groupIdHex: group)
+        let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
+        let chat = try kit.chatListRow(accountRef: account, groupIdHex: group)
         let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
         return [
           "id": group, "name": details.group.name, "description": details.group.description,
           "inviter": bridgeValue(details.group.welcomerAccountIdHex), "relays": details.group.relays,
+          "image": bridgeValue(details.group.imageHashHex), "epoch": String(details.mlsState.epoch),
+          "mediaV2": details.group.encryptedMedia.version == .v2,
+          "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
+          "unrecoverable": details.mlsState.unrecoverable,
+          "convergenceParked": details.mlsState.convergenceParked || recovery.automaticRecoveryFailed,
+          "historyIncomplete": recovery.historyMayBeIncomplete,
+          "relayChangesOutstanding": (delivery?.owedRelayUrls.count ?? 0) + (delivery?.refusedRelays.count ?? 0),
           "retention": Double(details.group.disappearingMessageSecs),
           "membership": wireName(details.group.selfMembership),
+          "pendingInvitation": details.group.pendingConfirmation,
+          "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
+          "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
           "lifecycle": wireName(policy.lifecycleState), "commit": bridgeValue(pending.map { wireName($0.state) }),
           "isAdmin": policy.isSelfAdmin, "canInvite": policy.canInvite, "canLeave": policy.canLeave,
           "canCancelLeave": policy.canCancelLeave, "canDisband": policy.canDisband,
@@ -100,9 +180,62 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws in
       try await self.withAccount { _ = try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description) }
     }
+    AsyncFunction("updateGroupImage") { (group: String, path: String?) async throws in
+      try await self.withAccount { kit, account in
+        if let path {
+          _ = try await kit.updateGroupImage(accountRef: account, groupIdHex: group, plaintext: groupImageInput(path), mediaType: "image/jpeg")
+        } else {
+          _ = try await kit.clearGroupImage(accountRef: account, groupIdHex: group)
+        }
+      }
+    }
+    AsyncFunction("updateGroupMedia") { (group: String, origins: [String]) async throws in
+      try await self.withAccount { kit, account in
+        _ = try await kit.replaceEncryptedMediaBlobEndpoints(accountRef: account, groupIdHex: group, endpoints: origins.map {
+          AppBlobEndpointFfi(locatorKind: "blossom", baseUrl: $0)
+        })
+      }
+    }
+    AsyncFunction("groupImage") { (group: String, hash: String, fetch: Bool) async throws -> String? in
+      try await self.withAccount { kit, account in
+        guard hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw problem("InvalidMedia") }
+        let details = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
+        guard !details.pendingConfirmation, details.selfMembership == .member, details.imageHashHex == hash else { throw problem("MediaUnavailable") }
+        let manager = FileManager.default
+        let cache = try manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let folder = cache.appendingPathComponent("marmot-group-images").appendingPathComponent(account)
+        let file = folder.appendingPathComponent(hash + ".jpg")
+        if !manager.fileExists(atPath: file.path) {
+          guard fetch else { return nil }
+          let bytes = try await kit.downloadGroupBlossomImage(accountRef: account, groupIdHex: group)
+          let current = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
+          guard !bytes.isEmpty, bytes.count <= maxGroupImage, current.selfMembership == .member, current.imageHashHex == hash else {
+            throw problem("MediaUnavailable")
+          }
+          try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+          try bytes.write(to: file, options: [.atomic, .completeFileProtection])
+        }
+        return file.path
+      }
+    }
     AsyncFunction("updateRetention") { (group: String, seconds: Int) async throws in
       guard let duration = UInt64(exactly: seconds) else { throw problem("InvalidRetention") }
       try await self.withAccount { _ = try await $0.updateMessageRetention(accountRef: $1, groupIdHex: group, disappearingMessageSecs: duration) }
+    }
+    AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool) async throws -> [Document] in
+      try await self.withAccount { kit, account in
+        let query = TimelineMessageQueryFfi(groupIdHex: group, search: text, sender: nil, since: nil, until: nil, attachmentType: media ? 5 : 0, cursorGroupId: nil, before: nil, beforeMessageId: nil, after: nil, afterMessageId: nil, limit: 40)
+        return try kit.timelineMessages(accountRef: account, query: query).messages.filter { !$0.deleted }.map {
+          ["id": $0.messageIdHex, "sender": $0.sender, "text": $0.plaintext, "sentAt": Double($0.timelineAt)]
+        }
+      }
+    }
+    AsyncFunction("editHistory") { (group: String, message: String, before: Double?, id: String?) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let page = try kit.messageEditHistory(accountRef: account, groupIdHex: group, targetMessageIdHex: message, beforeEditedAt: before.flatMap { UInt64(exactly: $0) }, beforeMessageIdHex: id, limit: 25)
+        let versions: [Document] = page.versions.map { ["id": $0.messageIdHex, "text": $0.plaintext, "at": Double($0.editedAt)] }
+        return ["more": page.hasMoreBefore, "versions": versions]
+      }
     }
     AsyncFunction("inviteMembers") { (group: String, members: [String]) async throws -> [Document] in
       try await self.withAccount { kit, account in
@@ -160,6 +293,8 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("sendMedia") { (group: String, files: [[String: String]], caption: String?, token: String, server: String?, reply: String?) async throws -> String in
       try await self.withAccount { kit, account in
+        let state = try await kit.groupDetails(accountRef: account, groupIdHex: group)
+        guard state.group.encryptedMedia.version == .v2 else { throw problem("MediaNotConfigured") }
         let base = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
         guard !files.isEmpty, files.count <= 16 else { throw problem("InvalidMedia") }
         let inputs = try files.map { file -> MediaFileUploadAttachmentRequestFfi in
@@ -179,28 +314,49 @@ public final class BoopMarmotModule: Module {
         return accepted.messageIdHex
       }
     }
-    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32) async throws in
+    AsyncFunction("attachmentStatus") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.state == .ready
+      }
+    }
+    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
+      try await self.withAccount { kit, account in
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        let before = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first
+        let reference: String?
+        switch before?.state {
+        case .ready: return
+        case .removed, .cleanedBySetting, .previouslyAcquiredUnavailable, .completedUnretained:
+          reference = try await kit.downloadAttachmentAgain(accountRef: account, groupIdHex: group, target: target)
+        case .failed, .retryExhausted, .cancelled, .storageBlocked, .paused:
+          if let existing = before?.reference, try await kit.controlAttachment(accountRef: account, reference: existing, control: .retry) {
+            reference = existing
+          } else {
+            reference = nil
+          }
+        default:
+          reference = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
+        }
+        guard let reference else { throw problem("MediaUnavailable") }
         let updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])
-        _ = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
         try await withThrowingTaskGroup(of: Void.self) { tasks in
-          tasks.addTask {
-            var snapshot = try await updates.next()
+          tasks.addTask { [weak self] in
             while true {
-              switch snapshot?.items.first?.state {
+              guard let item = try await updates.next()?.items.first, item.reference == reference else { throw problem("MediaUnavailable") }
+              self?.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) })])
+              switch item.state {
               case .ready: return
-              case .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable:
+              case .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
+                   .retryExhausted, .cancelled, .storageBlocked, .cleanedBySetting, .completedUnretained:
                 throw problem("MediaUnavailable")
-              default:
-                guard let next = try await updates.next() else { throw problem("MediaUnavailable") }
-                snapshot = next
+              default: break
               }
             }
           }
           tasks.addTask {
             try await Task.sleep(for: .seconds(180))
-            throw problem("MediaUnavailable")
+            throw problem("MediaTimeout")
           }
           defer { tasks.cancelAll() }
           _ = try await tasks.next()
@@ -242,6 +398,9 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("markRead") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try $0.markTimelineMessageRead(accountRef: $1, groupIdHex: group, messageIdHex: id) }
+    }
+    AsyncFunction("markUnread") { (group: String) async throws in
+      try await self.withAccount { _ = try $0.setChatManuallyUnread(accountRef: $1, groupIdHex: group, manuallyUnread: true) }
     }
     AsyncFunction("setArchived") { (group: String, archived: Bool) async throws in
       try await self.withAccount { _ = try await $0.setGroupArchived(accountRef: $1, groupIdHex: group, archived: archived) }
@@ -292,7 +451,7 @@ public final class BoopMarmotModule: Module {
           },
           "devices": devices.map { device -> Document in
             ["slot": device.slotIdHex, "current": device.isThisDevice, "label": device.label,
-              "platform": device.platform, "client": device.client]
+              "platform": device.platform, "client": device.client, "removalPending": device.removalPending]
           },
         ]
       }
@@ -327,6 +486,22 @@ public final class BoopMarmotModule: Module {
   }
 }
 
+private let maxGroupImage = 4 * 1024 * 1024
+
+private func groupImageInput(_ path: String) throws -> Data {
+  let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
+  let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+  let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+  guard file.path.hasPrefix(home), values.isRegularFile == true, let size = values.fileSize, (1...maxGroupImage).contains(size) else {
+    throw problem("InvalidMediaPath")
+  }
+  let input = try FileHandle(forReadingFrom: file)
+  defer { try? input.close() }
+  let bytes = try input.read(upToCount: maxGroupImage + 1) ?? Data()
+  guard (1...maxGroupImage).contains(bytes.count) else { throw problem("InvalidMedia") }
+  return bytes
+}
+
 private actor Runtime {
   struct Account {
     let key: String
@@ -343,7 +518,7 @@ private actor Runtime {
     return active
   }
 
-  func open(key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String]) async throws -> String {
+  func open(key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?) async throws -> String {
     guard !changingAccount else { throw problem("AccountBusy") }
     if let active {
       guard active.key == key else { throw problem("IdentityMismatch") }
@@ -362,9 +537,12 @@ private actor Runtime {
     try directory.setResourceValues(resources)
     let root = directory.appendingPathComponent(key, isDirectory: true)
     let store = AccountCredential(account: key, secret: secret, marker: root.appendingPathComponent("boop-credential"))
+    var deployment = marmotDeploymentNeutral()
+    deployment.groupImageEndpoint = mediaOrigin
+    deployment.newGroupMediaEndpoints = mediaOrigin.map { [$0] } ?? []
     let kit = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: general, options: MarmotOptions(
       clientName: "Boop", devicePlatform: "iOS", secretStore: store,
-      attachmentAcquisitionMode: .hostManaged, deployment: marmotDeploymentNeutral()
+      attachmentAcquisitionMode: .hostManaged, deployment: deployment
     ))
     do {
       let known = try kit.listAccounts()
@@ -399,11 +577,16 @@ private actor Runtime {
     return window
   }
 
-  func openChatList(id: String, view: String) async throws -> Document {
+  func openChatList(id: String, view: String, invitations: Bool, search: String?) async throws -> Document {
     let account = try account()
     let views: [String: ChatListViewFfi] = ["chats": .chats, "archived": .archived, "left": .left, "unread": .unread]
     guard let selected = views[view] else { throw problem("InvalidView") }
-    let handle = try await account.kit.openChatListWindow(accountRef: account.key, view: selected, initialRows: 40)
+    let pending = ChatListFilterNodeFfi.condition(condition: .pendingInvite)
+    let filter: [ChatListFilterNodeFfi]
+    if invitations { filter = [pending] }
+    else if let search { filter = [.all(children: [1, 2]), .not(child: 3), .text(text: search), pending] }
+    else { filter = [.not(child: 1), pending] }
+    let handle = try await account.kit.openChatListQueryWindow(accountRef: account.key, query: ChatListViewQueryFfi(view: selected, filter: filter), initialRows: 40)
     return try await install(.chatList(handle), id: id, account: account)
   }
 
@@ -411,6 +594,11 @@ private actor Runtime {
     let account = try account()
     let handle = try await account.kit.subscribeAccountAttention()
     return try await install(.attention(handle, account.key), id: id, account: account)
+  }
+  func openGroupState(id: String, group: String) async throws -> Document {
+    let account = try account()
+    let handle = try await account.kit.subscribeGroupState(accountRef: account.key, groupIdHex: group)
+    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle)), id: id, account: account)
   }
 
   func openConversation(id: String, group: String, target: String?) async throws -> Document {
@@ -437,9 +625,15 @@ private actor Runtime {
     guard observers[id] == nil else { return }
     observers[id] = Task {
       do {
+        var previous: Document?
         while !Task.isCancelled, let snapshot = try await window.next() {
           guard !Task.isCancelled else { return }
-          notify("windowChanged", ["id": id, "snapshot": snapshot])
+          if let previous, let delta = windowDelta(previous, snapshot) {
+            notify("windowChanged", ["id": id, "delta": delta])
+          } else {
+            notify("windowChanged", ["id": id, "snapshot": snapshot])
+          }
+          previous = snapshot
         }
         if !Task.isCancelled { notify("windowClosed", ["id": id, "code": "WindowClosed"]) }
       } catch {
@@ -518,7 +712,14 @@ func problem(_ code: String) -> Exception {
 
 private func errorCode(_ error: Error) -> String {
   if let error = error as? Exception { return error.code }
-  if let error = error as? MarmotKitError { return Mirror(reflecting: error).children.first?.label ?? "MarmotFailure" }
+  if let error = error as? MarmotKitError {
+    if case .Runtime(let details) = error, details == "device group refused: device_link_pending" {
+      return "DeviceLinkPending"
+    }
+    if let label = Mirror(reflecting: error).children.first?.label { return label }
+    let name = String(describing: error).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+    return name.isEmpty ? "MarmotFailure" : String(name)
+  }
   return "NativeFailure"
 }
 

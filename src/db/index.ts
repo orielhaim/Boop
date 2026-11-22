@@ -6,6 +6,12 @@ import * as schema from "./schema";
 
 export type Database = Awaited<ReturnType<typeof openDatabase>>;
 
+export class IncompatibleDatabaseError extends Error {
+  constructor() {
+    super("Boop requires a fresh database. See DEVELOPMENT.md.");
+  }
+}
+
 export async function openDatabase() {
   const sqlite = openDatabaseSync("boop.db", { enableChangeListener: true });
   try {
@@ -19,7 +25,7 @@ export async function openDatabase() {
         "SELECT 1 FROM sqlite_schema WHERE type = 'table' LIMIT 1",
       )
     )
-      throw new Error("Boop requires a fresh database. See DEVELOPMENT.md.");
+      throw new IncompatibleDatabaseError();
     const db = drizzle(sqlite, { schema });
     await migrate(db, migrations);
     return db;

@@ -58,8 +58,7 @@ export type CallRecord = {
 export type CallView = Pick<
   CallRecord,
   "id" | "peerKey" | "direction" | "startedAt"
-> &
-  (
+> & { groupId?: string } & (
     | {
         phase: "outgoing" | "ringing" | "incoming" | "connecting" | "ending";
         inviteCount?: number;
@@ -76,7 +75,10 @@ export type CallView = Pick<
     | { phase: "ended"; outcome: Outcome; reason?: CallFailure }
   );
 type Attempt = {
-  base: Pick<CallRecord, "id" | "peerKey" | "direction" | "startedAt">;
+  base: Pick<
+    CallView,
+    "id" | "peerKey" | "direction" | "startedAt" | "groupId"
+  >;
   invite: InviteDraft;
   abort: AbortController;
   timer?: ReturnType<typeof setTimeout>;
@@ -136,6 +138,7 @@ export function createCallController({
   hasRecord,
   tone,
   isBlocked = () => false,
+  authorizeGroup,
   now = Date.now,
   connectTimeout = 28_000,
 }: {
@@ -152,6 +155,7 @@ export function createCallController({
   hasRecord?: (callId: string, invitationId?: string) => boolean;
   tone: (mode: "incoming" | "ringing" | "silent") => void;
   isBlocked?: (key: string) => boolean;
+  authorizeGroup?: (group: string, peers: string[]) => Promise<boolean>;
   now?: () => number;
   connectTimeout?: number;
 }) {
@@ -164,6 +168,13 @@ export function createCallController({
   const seen = new Map<string, number>();
   let active: Attempt | undefined;
   let available = false;
+
+  function groupAllowed(group: string, peers: string[]) {
+    return (
+      authorizeGroup?.(group, peers).catch(() => false) ??
+      Promise.resolve(false)
+    );
+  }
 
   const publish = (signal: CallSignal, live = () => available) =>
     send(signal, live).catch(() => false);
@@ -272,6 +283,7 @@ export function createCallController({
         direction === "incoming" ? invite.senderKey : invite.recipientKey,
       direction,
       startedAt: now(),
+      ...(invite.groupId ? { groupId: invite.groupId } : {}),
     };
     const attempt: Attempt = {
       base,
@@ -305,6 +317,22 @@ export function createCallController({
 
   async function connect(attempt: Attempt, answering: boolean) {
     if (active !== attempt || now() >= attempt.invite.expiresAt) return;
+    if (attempt.invite.groupId) {
+      const roster = attempt.invite.conference?.roster ?? [
+        attempt.base.peerKey,
+      ];
+      const allowed = await groupAllowed(attempt.invite.groupId, roster);
+      if (
+        active !== attempt ||
+        now() >= attempt.invite.expiresAt ||
+        store.getState().call?.phase === "connecting"
+      )
+        return;
+      if (!allowed) {
+        finish(attempt, "failed", "inviteFailed");
+        return;
+      }
+    }
     const { signal } = attempt.abort;
     const { base } = attempt;
     clearTimeout(attempt.timer);
@@ -459,6 +487,17 @@ export function createCallController({
   }
 
   function receive(signal: CallSignal) {
+    if (signal.type === "call.invite" && signal.groupId) {
+      void groupAllowed(
+        signal.groupId,
+        signal.conference?.roster ?? [signal.senderKey],
+      ).then((allowed) => {
+        if (allowed) receiveAuthorized(signal);
+      });
+    } else receiveAuthorized(signal);
+  }
+
+  function receiveAuthorized(signal: CallSignal) {
     const receivedAt = now();
     if (
       isBlocked(signal.senderKey) ||
@@ -542,17 +581,26 @@ export function createCallController({
       if (signal.type === "call.accept" && phase !== "connecting") {
         updateInvitation(pending, "connecting");
         const attempt = active;
-        void active.media?.conference
-          ?.authorize(signal.invitationId)
-          .catch(() => false)
-          .then((allowed) => {
-            if (
-              !allowed &&
-              active === attempt &&
-              attempt.invitation?.signal === pending
-            )
-              settleInvitation(attempt, "unavailable", true);
-          });
+        const invitationId = signal.invitationId;
+        void (async () => {
+          const allowed =
+            (!pending.groupId ||
+              (await groupAllowed(pending.groupId, [
+                pending.recipientKey,
+                ...(pending.conference?.roster ?? []),
+              ]))) &&
+            active === attempt &&
+            attempt.invitation?.signal === pending &&
+            (await attempt.media?.conference
+              ?.authorize(invitationId)
+              .catch(() => false));
+          if (
+            !allowed &&
+            active === attempt &&
+            attempt.invitation?.signal === pending
+          )
+            settleInvitation(attempt, "unavailable", true);
+        })();
       }
       if (signal.type === "call.reject") settleInvitation(active, "declined");
       if (signal.type === "call.busy") settleInvitation(active, "busy");
@@ -649,14 +697,16 @@ export function createCallController({
       void attempt.notifyHangup?.().catch(() => undefined);
       finish(attempt, "failed", "systemInterrupted");
     },
-    async dial(peerKey: string) {
+    async dial(peerKey: string, groupId?: string) {
       if (
         active ||
         isBlocked(peerKey) ||
         !publicKeySchema.safeParse(peerKey).success ||
-        peerKey === localKey
+        peerKey === localKey ||
+        (groupId && !(await groupAllowed(groupId, [peerKey]))) ||
+        active
       )
-        return;
+        return false;
       const createdAt = Math.floor(now() / 1_000) * 1_000;
       const invite: InviteDraft = {
         version: 1,
@@ -668,6 +718,7 @@ export function createCallController({
         createdAt,
         expiresAt: createdAt + inviteLifetime,
         roomId: randomId(),
+        ...(groupId ? { groupId } : {}),
       };
       callMetric("call_started");
       const attempt = begin(invite, "outgoing");
@@ -675,17 +726,21 @@ export function createCallController({
       const offer = await prepareInvite(invite, attempt.abort.signal).catch(
         () => null,
       );
-      if (!live()) return;
+      if (!live()) return false;
       if (offer) {
         const message = { ...invite, offer };
         attempt.invite = message;
         callMetric("invite_publish_started");
-        const accepted = await publish(message, live);
+        const accepted =
+          (!groupId || (await groupAllowed(groupId, [peerKey]))) &&
+          live() &&
+          (await publish(message, live));
         callMetric("invite_publish_finished", { accepted });
-        if (accepted) return;
+        if (accepted) return true;
       }
       if (live() && store.getState().call?.phase === "outgoing")
         finish(attempt, "failed", "inviteFailed");
+      return false;
     },
     async invite(key: string) {
       const attempt = active;
@@ -730,6 +785,17 @@ export function createCallController({
       updateInvitation(invite, "inviting");
       const live = () =>
         available && active === attempt && attempt.invitation === pending;
+      if (
+        invite.groupId &&
+        !(await groupAllowed(invite.groupId, [
+          key,
+          ...(invite.conference?.roster ?? []),
+        ]))
+      ) {
+        if (live()) settleInvitation(attempt, "unavailable", true);
+        return false;
+      }
+      if (!live()) return false;
       const reserved =
         invite.conference &&
         (await media
@@ -746,7 +812,16 @@ export function createCallController({
         ? await prepareInvite(invite, attempt.abort.signal).catch(() => null)
         : null;
       if (!live()) return false;
-      if (!offer || !(await publish({ ...invite, offer }, live))) {
+      if (
+        !offer ||
+        (invite.groupId &&
+          !(await groupAllowed(invite.groupId, [
+            key,
+            ...(invite.conference?.roster ?? []),
+          ]))) ||
+        !live() ||
+        !(await publish({ ...invite, offer }, live))
+      ) {
         if (live()) settleInvitation(attempt, "unavailable", true);
         return false;
       }

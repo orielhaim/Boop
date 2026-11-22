@@ -1,3 +1,13 @@
+import {
+  addBatteryStateListener,
+  BatteryState,
+  getBatteryStateAsync,
+} from "expo-battery";
+import {
+  addNetworkStateListener,
+  getNetworkStateAsync,
+  NetworkStateType,
+} from "expo-network";
 import { createMediaSdk } from "@/core/media";
 import { createNativeLinkPreviews } from "@/core/messaging/native-link-previews";
 import { File } from "expo-file-system";
@@ -117,21 +127,24 @@ async function start() {
         uploadAvatar(mediaSdk, new File(localDirectory, filename), signal),
       publicMetadata,
     );
-    const marmotSession = createMarmotSession(async (configuration) => {
-      const state = await initializeMarmotIdentity(
-        db,
-        identity.publicKey,
-        configuration,
-      );
-      try {
-        for (const key of privacy.blockedKeys())
-          await marmot.setBlocked(key, true);
-      } catch (failure) {
-        await marmot.closeAccount();
-        throw failure;
-      }
-      return state;
-    });
+    const marmotSession = createMarmotSession(
+      async (configuration, mediaOrigin) => {
+        const state = await initializeMarmotIdentity(
+          db,
+          identity.publicKey,
+          configuration,
+          mediaOrigin,
+        );
+        try {
+          for (const key of privacy.blockedKeys())
+            await marmot.setBlocked(key, true);
+        } catch (failure) {
+          await marmot.closeAccount();
+          throw failure;
+        }
+        return state;
+      },
+    );
     let previousBlocks = new Set(privacy.blockedKeys());
     privacy.subscribe(() => {
       const current = new Set(privacy.blockedKeys());
@@ -222,6 +235,24 @@ async function start() {
     const calling = createCallController({
       localKey: identity.publicKey,
       isBlocked: privacy.isBlocked,
+      async authorizeGroup(group, peers) {
+        if (!chatPreferences.enabled() || peers.some(privacy.isBlocked))
+          return false;
+        await marmotSession.ready();
+        const details = await marmot.groupDetails(group);
+        if (
+          details.membership !== "member" ||
+          details.pendingInvitation ||
+          details.unrecoverable ||
+          details.lifecycle !== "stable"
+        )
+          return false;
+        const current = new Set(details.members.map((member) => member.id));
+        return (
+          current.has(identity.publicKey) &&
+          peers.every((peer) => current.has(peer) && !privacy.isBlocked(peer))
+        );
+      },
       randomId: randomCallId,
       openMedia: media.open,
       prepareMedia: initializeCallingRuntime,
@@ -320,6 +351,7 @@ export function LocalSessionLifecycle() {
     avatars,
     marmotSession,
     chatPreferences,
+    mediaSdk,
   } = useLocal();
   useEffect(() => {
     const databasePath =
@@ -334,10 +366,47 @@ export function LocalSessionLifecycle() {
     let queued = false;
     let mounted = true;
     let relaysChanged = false;
+    let conditionsRevision = 0;
+    function updateBackupConditions() {
+      const revision = ++conditionsRevision;
+      if (!chatPreferences.enabled()) return;
+      void marmotSession
+        .ready()
+        .then(async () => {
+          if (!mounted || revision !== conditionsRevision) return;
+          const eligible = AppState.currentState === "active";
+          if (!eligible) {
+            await marmot.backupConditions(false, false);
+            return;
+          }
+          const [network, battery] = await Promise.all([
+            getNetworkStateAsync(),
+            getBatteryStateAsync(),
+          ]);
+          if (
+            mounted &&
+            revision === conditionsRevision &&
+            AppState.currentState === "active"
+          ) {
+            await marmot.backupConditions(
+              network.type === NetworkStateType.WIFI &&
+                network.isConnected === true,
+              battery === BatteryState.CHARGING ||
+                battery === BatteryState.FULL ||
+                battery === BatteryState.NOT_CHARGING,
+            );
+          }
+        })
+        .catch(() => undefined);
+    }
     function connectMessaging() {
-      if (!chatPreferences.enabled()) void marmotSession.stop();
+      if (!chatPreferences.enabled())
+        void marmotSession.stop().catch(() => undefined);
       else if (AppState.currentState === "active")
-        void marmotSession.start(configuredRelays(rows, intent));
+        void marmotSession.start(
+          configuredRelays(rows, intent),
+          mediaSdk.configured("attachment")[0]?.origin ?? null,
+        );
     }
     function connect() {
       callSignaling.start();
@@ -382,9 +451,15 @@ export function LocalSessionLifecycle() {
       if (state === "active") {
         calling.setForeground(true);
         connect();
+        if (chatPreferences.enabled())
+          void marmotSession
+            .ready()
+            .then(marmot.catchUp)
+            .catch(() => undefined);
       } else if (state === "background" && !lock.getState().authenticating) {
         background();
       }
+      updateBackupConditions();
     };
     const unsubscribeLock = lock.subscribe(() => {
       updateUnlocks();
@@ -405,15 +480,23 @@ export function LocalSessionLifecycle() {
     update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
     const unsubscribeChats = chatPreferences.subscribe(connectMessaging);
+    const unsubscribeMedia = mediaSdk.subscribe(connectMessaging);
+    const unsubscribeAccount = marmotSession.subscribe(updateBackupConditions);
+    const battery = addBatteryStateListener(updateBackupConditions);
+    const network = addNetworkStateListener(updateBackupConditions);
     return () => {
       mounted = false;
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
       unsubscribeChats();
+      unsubscribeMedia();
+      unsubscribeAccount();
+      battery.remove();
+      network.remove();
       subscription.remove();
       dbChanges.remove();
       avatars.setActive(false);
-      void marmotSession.stop();
+      void marmotSession.stop().catch(() => undefined);
       callSignaling.stop();
       relays.stop();
     };
@@ -426,6 +509,7 @@ export function LocalSessionLifecycle() {
     avatars,
     marmotSession,
     chatPreferences,
+    mediaSdk,
   ]);
   return null;
 }

@@ -40,6 +40,14 @@ export default function SettingsLayout() {
       <Stack.Screen name="calls" options={{ title: t("settings:calls") }} />
       <Stack.Protected guard={chatsEnabled}>
         <Stack.Screen
+          name="identity/backup"
+          options={{ title: t("messages:marmot.backups") }}
+        />
+        <Stack.Screen
+          name="chats/health"
+          options={{ title: t("messages:marmot.health") }}
+        />
+        <Stack.Screen
           name="identity/devices"
           options={{ title: t("messages:marmot.devices") }}
         />

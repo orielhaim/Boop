@@ -1,9 +1,20 @@
-import { ChatList, type ChatListItem } from "@kesha-antonov/react-native-chat";
+import {
+  ChatList,
+  ChatListCell,
+  type ChatListCellProps,
+  type ChatListItem,
+} from "@kesha-antonov/react-native-chat";
 import { router, Stack } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { Action, Empty, Screen } from "@/components/ui/kit";
+import { useAvatar } from "@/core/avatars/use-avatar";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
 import { namespaces } from "@/i18n";
@@ -11,19 +22,26 @@ import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
 import { useMarmotWindow } from "./marmot-window";
+import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
 
-export function conversationRoute(group: string, details = false) {
+export function conversationRoute(
+  group: string,
+  view?: "details" | "call" | "search" | "media",
+) {
   return {
     pathname: "/chat/[key]" as const,
-    params: { key: `marmot-${group}`, ...(details ? { details: "1" } : {}) },
+    params: { key: `marmot-${group}`, ...(view ? { view } : {}) },
   };
 }
+
+type ChatRow = ChatListItem & { id: string; peer?: string; image?: string };
 
 function asChat(
   row: MarmotChatRow,
   fallback: string,
   invitationTitle: string,
-): ChatListItem & { id: string } {
+  preview: string | undefined,
+): ChatRow {
   return {
     id: row.id,
     title: row.invited
@@ -31,18 +49,24 @@ function asChat(
       : row.title ||
         (row.peer ? `${toNpub(row.peer).slice(0, 15)}…` : fallback),
     kind: row.kind === "group" ? "group" : "private",
+    peer: row.invited ? undefined : (row.peer ?? undefined),
+    image:
+      row.invited || row.membership !== "member"
+        ? undefined
+        : (row.image ?? undefined),
     isArchived: row.archived,
     isMuted: row.muted,
     isPinned: row.pinned,
-    unreadCount: row.unread,
+    unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
+    draft: row.invited ? undefined : (row.draft ?? undefined),
     lastMessage:
-      row.invited || row.preview == null
+      row.invited || preview == null
         ? undefined
         : {
-            _id: row.id,
-            text: row.preview,
+            _id: row.previewId ?? row.id,
+            text: preview,
             createdAt: row.updatedAt * 1_000,
-            user: { _id: row.peer ?? row.id },
+            user: { _id: row.previewSender ?? row.id },
           },
   };
 }
@@ -53,23 +77,44 @@ export function MarmotInbox({
   invitations?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity } = useLocal();
+  const { identity, privacy, chatPreferences } = useLocal();
+  useSyncExternalStore(privacy.subscribe, privacy.revision);
   const kit = useChatAppearance();
   const [archived, setArchived] = useState(false);
+  const [search, setSearch] = useState<string | null>(null);
+  const term = useDeferredValue(search);
   const open = useCallback(
-    () => marmot.openChatList(archived ? "archived" : "chats"),
-    [archived],
+    () =>
+      marmot.openChatList(archived ? "archived" : "chats", {
+        invitations,
+        search: term ?? undefined,
+      }),
+    [archived, invitations, term],
   );
+  const openInvites = useCallback(
+    () => marmot.openChatList("chats", { invitations: true }),
+    [],
+  );
+  const pending = useMarmotWindow(openInvites, !invitations && !archived);
   const { snapshot, window, error, retry } = useMarmotWindow(open);
   const fallback = t("messages:marmot.group");
   const invitationTitle = t("messages:marmot.inviteRequired");
-  const chats = useMemo(
-    () =>
-      snapshot?.rows
-        .filter((row) => row.invited === invitations)
-        .map((row) => asChat(row, fallback, invitationTitle)) ?? [],
-    [snapshot, invitations, fallback, invitationTitle],
-  );
+  const chats =
+    snapshot?.rows
+      .filter((row) => !row.peer || !privacy.isBlocked(row.peer))
+      .map((row) => {
+        const preview =
+          (row.previewSender && privacy.isBlocked(row.previewSender)) ||
+          (row.previewId &&
+            chatPreferences.hidden(row.id).includes(row.previewId))
+            ? undefined
+            : row.previewKind === 24881
+              ? t("messages:lockedMessage")
+              : row.previewKind === 24883
+                ? t("messages:marmot.locationPreview")
+                : (row.preview ?? undefined);
+        return asChat(row, fallback, invitationTitle, preview);
+      }) ?? [];
   const page = () => {
     if (snapshot?.hasMoreAfter)
       void window?.page("forward").catch(() => undefined);
@@ -91,27 +136,40 @@ export function MarmotInbox({
           <Action onPress={retry}>{t("common:retry")}</Action>
         </Empty>
       ) : (
-        <ChatList
+        <ChatList<ChatRow>
           {...kit}
           chats={chats}
           user={{ _id: identity.publicKey }}
           isLoading={!snapshot}
           isTopInsetApplied={false}
           isSortEnabled={false}
+          isSearchEnabled={!invitations}
+          filterChat={() => true}
+          onSearchChange={setSearch}
+          renderChat={(props) => <MarmotChatCell {...props} />}
           isArchiveOpen={archived}
           onArchiveOpenChange={setArchived}
           onPressChat={(row) => router.push(conversationRoute(row.id))}
           onPressNewChat={
             invitations ? undefined : () => router.push("/connect")
           }
-          onPinChats={(selection, pinned) =>
-            update(selection, (id) => marmot.setPinned(id, pinned))
+          onPinChats={
+            invitations
+              ? undefined
+              : (selection, pinned) =>
+                  update(selection, (id) => marmot.setPinned(id, pinned))
           }
-          onMuteChats={(selection, muted) =>
-            update(selection, (id) => marmot.setMuted(id, muted))
+          onMuteChats={
+            invitations
+              ? undefined
+              : (selection, muted) =>
+                  update(selection, (id) => marmot.setMuted(id, muted))
           }
-          onArchiveChats={(selection, value) =>
-            update(selection, (id) => marmot.setArchived(id, value))
+          onArchiveChats={
+            invitations
+              ? undefined
+              : (selection, value) =>
+                  update(selection, (id) => marmot.setArchived(id, value))
           }
           listProps={{
             onEndReached: page,
@@ -131,6 +189,7 @@ export function MarmotInbox({
                   </Action>
                   <Action size="sm" onPress={() => router.push("/requests")}>
                     {t("messages:marmot.invitations")}
+                    {pending.snapshot?.rows.length ? " •" : ""}
                   </Action>
                 </View>
               ),
@@ -138,6 +197,17 @@ export function MarmotInbox({
         />
       )}
     </Screen>
+  );
+}
+
+function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
+  const avatar = useAvatar(props.chat.peer);
+  const groupAvatar = useMarmotGroupAvatar(props.chat.id, props.chat.image);
+  return (
+    <ChatListCell
+      {...props}
+      chat={{ ...props.chat, avatar: avatar ?? groupAvatar }}
+    />
   );
 }
 

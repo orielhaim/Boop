@@ -1,10 +1,17 @@
-import { router, Stack, useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { router, Stack } from "expo-router";
+import type { File } from "expo-file-system";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
+import { useStore } from "zustand";
+import { EditableAvatar } from "@/components/avatars/editable-avatar";
+import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
+import { GlassAvatar } from "@/components/glassyui/glass-avatar";
+import { Action, Avatar, Empty, Ink, Screen } from "@/components/ui/kit";
+
 import { parsePublicKey } from "@/core/identity/keys";
+import { blossomServer } from "@/core/media/blossom";
 import {
   marmot,
   type MarmotGroupDetails,
@@ -15,7 +22,7 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
-import { marmotErrorCode } from "./marmot-window";
+import { marmotErrorCode, useMarmotWindow } from "./marmot-window";
 
 export function useMarmotError() {
   const { t } = useTranslation(namespaces);
@@ -25,6 +32,20 @@ export function useMarmotError() {
       return t("messages:marmot.pendingCommit");
     if (code === "NoUsableRelay" || code === "Publish")
       return t("messages:marmot.relayError");
+    if (code === "IdentityMismatch" || code === "SecretNotFound")
+      return t("messages:marmot.identityMismatch");
+    if (code === "GroupRemoved" || code === "AccountSignedOut")
+      return t("messages:marmot.noLongerMember");
+    if (code === "GroupInviteNotPending")
+      return t("messages:marmot.inviteGone");
+    if (code === "MediaNotConfigured")
+      return t("messages:marmot.mediaUnavailableForChat");
+    if (
+      code === "MediaAttachmentRejected" ||
+      code === "MediaUnfetchable" ||
+      code === "MediaUnavailable"
+    )
+      return t("messages:marmot.mediaReferenceUnavailable");
     if (code.includes("KeyPackage")) return t("messages:marmot.missingPackage");
     return t("messages:marmot.operationError");
   };
@@ -53,9 +74,22 @@ function failureList(outcomes: MarmotMemberOutcome[]) {
     .join("\n");
 }
 
+function imagePath(file: File) {
+  if (!file.uri.startsWith("file:///")) throw new Error("InvalidMediaPath");
+  return decodeURIComponent(file.uri.slice(7));
+}
+
+function cleanImage(file: File | null) {
+  try {
+    file?.delete();
+  } catch {
+    // A cache file can already have been reclaimed by the OS.
+  }
+}
+
 export function NewMarmotGroup() {
   const { t } = useTranslation(namespaces);
-  const { db, identity, marmotSession, privacy } = useLocal();
+  const { db, identity, marmotSession, privacy, mediaSdk } = useLocal();
   const translateError = useMarmotError();
   const [addresses, setAddresses] = useState("");
   const [name, setName] = useState("");
@@ -63,6 +97,9 @@ export function NewMarmotGroup() {
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [photo, setPhoto] = useState<File | null>(null);
+  const picker = useAvatarPicker();
+  useEffect(() => () => cleanImage(photo), [photo]);
   const saved = db
     .select()
     .from(contacts)
@@ -71,11 +108,15 @@ export function NewMarmotGroup() {
 
   async function create() {
     const keys = resolveAddresses(addresses, identity.publicKey);
-    if (!keys || keys.some(privacy.isBlocked)) {
+    if (!keys) {
       setError(t("contacts:invalidAddress"));
       return;
     }
     const members = [...new Set([...keys, ...selected])];
+    if (members.some(privacy.isBlocked)) {
+      setError(t("messages:marmot.blocked"));
+      return;
+    }
     if (members.length < 2 || !name.trim()) return;
     setBusy(true);
     setError("");
@@ -85,6 +126,7 @@ export function NewMarmotGroup() {
         name.trim(),
         description.trim() || null,
         members,
+        photo ? imagePath(photo) : null,
       );
       const unavailable = failureList(result.members);
       if (!result.groupId) {
@@ -107,9 +149,36 @@ export function NewMarmotGroup() {
     }
   }
 
+  if (picker.image)
+    return (
+      <AvatarCropScreen
+        source={picker.image}
+        onCancel={picker.clear}
+        onSave={(file) => {
+          setPhoto(file);
+          picker.clear();
+        }}
+      />
+    );
+
   return (
     <Screen>
       <Stack.Screen options={{ title: t("messages:marmot.newGroup") }} />
+      {!mediaSdk.configured("attachment").length && (
+        <Ink>{t("messages:marmot.textOnlyGroup")}</Ink>
+      )}
+      <EditableAvatar
+        disabled={busy || picker.busy}
+        onPick={(source) => void picker.pick(source)}
+        onRemove={photo ? () => setPhoto(null) : undefined}
+      >
+        <GlassAvatar
+          name={name || t("messages:marmot.group")}
+          src={photo?.uri}
+          size="xl"
+        />
+      </EditableAvatar>
+      {picker.error && <Ink>{picker.error}</Ink>}
       <GlassInput
         label={t("messages:marmot.groupName")}
         value={name}
@@ -157,33 +226,51 @@ export function NewMarmotGroup() {
   );
 }
 
-export function MarmotGroupDetailsScreen({ id }: { id: string }) {
+export function MarmotGroupDetailsScreen({
+  id,
+  showCall = false,
+}: {
+  id: string;
+  showCall?: boolean;
+}) {
   const { t } = useTranslation(namespaces);
-  const { identity, marmotSession, privacy } = useLocal();
+  const { identity, marmotSession, privacy, calling } = useLocal();
+  const call = useStore(calling.store, (state) => state.call);
   const translateError = useMarmotError();
   const [details, setDetails] = useState<MarmotGroupDetails>();
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [selectPeer, setSelectPeer] = useState(showCall);
+  const [image, setImage] = useState<{ hash: string; uri: string }>();
+  const picker = useAvatarPicker();
+  useSyncExternalStore(privacy.subscribe, privacy.revision);
+  const mayViewPhoto =
+    privacy.photoPolicy() !== "nobody" && details?.membership === "member";
 
   const load = useCallback(
     () => marmotSession.ready().then(() => marmot.groupDetails(id)),
     [id, marmotSession],
   );
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      void load()
-        .then((data) => {
-          if (active) setDetails(data);
-        })
-        .catch(() => {
-          if (active) setError(true);
-        });
-      return () => {
-        active = false;
-      };
-    }, [load]),
-  );
+  const watch = useCallback(() => marmot.openGroupState(id), [id]);
+  const state = useMarmotWindow(watch);
+  const revision = state.snapshot?.sequence;
+  useEffect(() => {
+    if (revision === undefined) return;
+    let active = true;
+    void load()
+      .then((data) => {
+        if (active) {
+          setDetails(data);
+          setError(false);
+        }
+      })
+      .catch(() => {
+        if (active) setError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [load, revision]);
 
   async function update(task: () => Promise<void>, leave = false) {
     if (busy) return;
@@ -210,22 +297,198 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
     ]);
   }
 
+  async function loadImage() {
+    const hash = details?.image;
+    if (!hash || !mayViewPhoto || busy) return;
+    await update(async () => {
+      const path = await marmot.groupImage(id, hash, true);
+      if (path && privacy.photoPolicy() !== "nobody")
+        setImage({ hash, uri: `file://${path}` });
+    });
+  }
+
+  if (picker.image)
+    return (
+      <AvatarCropScreen
+        source={picker.image}
+        onCancel={picker.clear}
+        onSave={(file) => {
+          picker.clear();
+          void update(async () => {
+            try {
+              await marmot.updateGroupImage(id, imagePath(file));
+            } finally {
+              cleanImage(file);
+            }
+          });
+        }}
+      />
+    );
+
+  const imageUri =
+    mayViewPhoto && image?.hash === details?.image ? image?.uri : undefined;
+  const groupName = details?.name || t("messages:marmot.group");
+  const canEditImage = details?.isAdmin && details.membership === "member";
+  const activeCall =
+    call?.groupId === id && call.phase !== "ended" ? call : undefined;
+
   return (
     <Screen>
       <Stack.Screen options={{ title: t("messages:marmot.details") }} />
-      {error ? (
-        <Empty
-          detail=""
-          icon="chat"
-          title={t("messages:marmot.accountError")}
-        />
+      {error || state.error ? (
+        <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
+          <Action onPress={state.retry}>{t("common:retry")}</Action>
+        </Empty>
       ) : details ? (
         <>
-          <Ink kind="title">{details.name || t("messages:marmot.group")}</Ink>
+          <EditableAvatar
+            disabled={!canEditImage || busy || picker.busy}
+            onPick={(source) => void picker.pick(source)}
+            onRemove={
+              details.image
+                ? () =>
+                    confirm(t("settings:photoRemove"), () =>
+                      marmot.updateGroupImage(id, null),
+                    )
+                : undefined
+            }
+          >
+            <GlassAvatar name={groupName} src={imageUri} size="xl" />
+          </EditableAvatar>
+          {picker.error && <Ink>{picker.error}</Ink>}
+          {details.image && mayViewPhoto && !imageUri && (
+            <Action size="sm" disabled={busy} onPress={() => void loadImage()}>
+              {t("messages:marmot.viewGroupPhoto")}
+            </Action>
+          )}
+          <Ink kind="title">{groupName}</Ink>
           {details.description ? <Ink>{details.description}</Ink> : null}
+          {details.createdAt ? (
+            <Ink kind="caption">
+              {t("messages:marmot.createdAt", {
+                date: new Date(details.createdAt * 1_000).toLocaleDateString(),
+              })}
+            </Ink>
+          ) : null}
+          {__DEV__ && (
+            <Ink kind="caption">
+              {t("messages:marmot.groupSession", {
+                epoch: details.epoch,
+                state: details.lifecycle,
+              })}
+            </Ink>
+          )}
+          {details.membership === "member" && (
+            <View style={styles.actions}>
+              <Action
+                size="sm"
+                onPress={() => router.push(conversationRoute(id, "search"))}
+              >
+                {t("messages:marmot.searchConversation")}
+              </Action>
+              <Action
+                size="sm"
+                onPress={() => router.push(conversationRoute(id, "media"))}
+              >
+                {t("messages:marmot.mediaAndFiles")}
+              </Action>
+              <Action
+                size="sm"
+                disabled={busy}
+                onPress={() =>
+                  void update(() => marmot.setMuted(id, !details.muted))
+                }
+              >
+                {t(
+                  details.muted
+                    ? "messages:marmot.unmuteConversation"
+                    : "messages:marmot.muteConversation",
+                )}
+              </Action>
+              <Action
+                size="sm"
+                disabled={busy}
+                onPress={() =>
+                  void update(() => marmot.setArchived(id, !details.archived))
+                }
+              >
+                {t(
+                  details.archived
+                    ? "messages:marmot.unarchiveConversation"
+                    : "messages:marmot.archiveConversation",
+                )}
+              </Action>
+              <Action
+                size="sm"
+                disabled={!activeCall && details.lifecycle !== "stable"}
+                onPress={() => {
+                  if (activeCall) {
+                    router.push({
+                      pathname: "/call/[key]",
+                      params: {
+                        key: activeCall.peerKey,
+                        callId: activeCall.id,
+                      },
+                    });
+                  } else {
+                    setSelectPeer((previous) => !previous);
+                  }
+                }}
+              >
+                {t(
+                  activeCall
+                    ? "messages:marmot.returnToCall"
+                    : "calls:startCall",
+                )}
+              </Action>
+            </View>
+          )}
+          {selectPeer &&
+            !activeCall &&
+            details.membership === "member" &&
+            details.lifecycle === "stable" && (
+              <View>
+                <Ink>{t("messages:marmot.chooseCallMember")}</Ink>
+                {details.members
+                  .filter(
+                    (member) => !member.self && !privacy.isBlocked(member.id),
+                  )
+                  .map((member) => (
+                    <Action
+                      key={member.id}
+                      size="sm"
+                      onPress={() => {
+                        router.push({
+                          pathname: "/call/[key]",
+                          params: { key: member.id, group: id },
+                        });
+                      }}
+                    >
+                      {member.name || member.npub}
+                    </Action>
+                  ))}
+              </View>
+            )}
           {details.commit ? (
             <Ink>{t("messages:marmot.pendingCommit")}</Ink>
           ) : null}
+          {details.relayChangesOutstanding > 0 && (
+            <Ink>{t("messages:marmot.groupRelayPending")}</Ink>
+          )}
+          {details.historyIncomplete && (
+            <Ink>{t("messages:marmot.groupHistoryIncomplete")}</Ink>
+          )}
+          {details.unrecoverable && (
+            <Ink>{t("messages:marmot.groupRecoveryRequired")}</Ink>
+          )}
+          {details.convergenceParked && !details.unrecoverable && (
+            <Action
+              disabled={busy}
+              onPress={() => void update(() => marmot.retryConversation(id))}
+            >
+              {t("messages:marmot.retrySynchronization")}
+            </Action>
+          )}
           {details.isAdmin && details.membership === "member" && (
             <GroupProfileFields
               key={`${details.name}:${details.description}:${details.retention}`}
@@ -239,7 +502,7 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
           </Ink>
           {details.members.map((member) => (
             <View key={member.id} style={styles.member}>
-              <Ink>{member.name || member.npub}</Ink>
+              <GroupMemberName member={member} />
               {member.admin ? (
                 <Ink kind="caption">{t("messages:marmot.admin")}</Ink>
               ) : null}
@@ -318,6 +581,23 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
               ))}
             </>
           )}
+          {details.mediaV2 ? (
+            <GroupMediaSettings
+              key={details.mediaEndpoints.join(",")}
+              details={details}
+              editable={
+                details.isAdmin &&
+                details.membership === "member" &&
+                details.lifecycle === "stable"
+              }
+              busy={busy}
+              update={update}
+            />
+          ) : (
+            <Ink kind="caption">
+              {t("messages:marmot.mediaUnavailableForChat")}
+            </Ink>
+          )}
           {details.canLeave && (
             <Action
               disabled={busy}
@@ -368,9 +648,95 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
               {t("messages:marmot.disband")}
             </Action>
           )}
+          {details.membership !== "member" && (
+            <Action
+              disabled={busy}
+              onPress={() =>
+                confirm(
+                  t("messages:marmot.forgetGroup"),
+                  () => marmot.changeMembership(id, "forget"),
+                  true,
+                )
+              }
+            >
+              {t("messages:marmot.forgetGroup")}
+            </Action>
+          )}
         </>
       ) : null}
     </Screen>
+  );
+}
+
+function GroupMediaSettings({
+  details,
+  editable,
+  busy,
+  update,
+}: {
+  details: MarmotGroupDetails;
+  editable: boolean;
+  busy: boolean;
+  update: (task: () => Promise<void>) => Promise<void>;
+}) {
+  const { t } = useTranslation(namespaces);
+  const [entry, setEntry] = useState(details.mediaEndpoints.join("\n"));
+  const origins = entry
+    .split(/[\s,]+/u)
+    .filter(Boolean)
+    .map(blossomServer);
+  const valid =
+    origins.length <= 8 &&
+    origins.every((origin): origin is string => origin !== null);
+  return (
+    <View>
+      <Ink kind="title">{t("messages:marmot.groupMediaServers")}</Ink>
+      {editable ? (
+        <>
+          <GlassInput
+            label={t("messages:marmot.groupMediaServers")}
+            value={entry}
+            onChangeText={setEntry}
+            autoCapitalize="none"
+            multiline
+          />
+          <Action
+            size="sm"
+            disabled={
+              busy || !valid || entry === details.mediaEndpoints.join("\n")
+            }
+            onPress={() => {
+              if (valid)
+                void update(() =>
+                  marmot.updateGroupMedia(details.id, [...new Set(origins)]),
+                );
+            }}
+          >
+            {t("messages:marmot.save")}
+          </Action>
+        </>
+      ) : (
+        details.mediaEndpoints.map((url) => (
+          <Ink kind="caption" key={url}>
+            {url}
+          </Ink>
+        ))
+      )}
+    </View>
+  );
+}
+
+function GroupMemberName({
+  member,
+}: {
+  member: MarmotGroupDetails["members"][number];
+}) {
+  const name = member.name || member.npub;
+  return (
+    <View style={styles.memberName}>
+      <Avatar publicKey={member.id} name={name} size="sm" />
+      <Ink>{name}</Ink>
+    </View>
   );
 }
 
@@ -471,5 +837,6 @@ function InviteMemberField({
 
 const styles = StyleSheet.create({
   member: { gap: space.xs, marginBottom: space.sm },
+  memberName: { flexDirection: "row", alignItems: "center", gap: space.sm },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
 });

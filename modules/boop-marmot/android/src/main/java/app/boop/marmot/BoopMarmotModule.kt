@@ -21,9 +21,9 @@ class BoopMarmotModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed")
+    Events("windowChanged", "windowClosed", "attachmentProgress")
 
-    AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String> ->
+    AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String? ->
       lifecycle.withLock {
         protocol {
           val current = session
@@ -32,24 +32,81 @@ class BoopMarmotModule : Module() {
             current.readiness()
           } else {
             val context = appContext.reactContext ?: throw problem("ContextUnavailable")
-            val opened = open(context, key, secret, nsec, general, inbox, discovery)
+            val (opened, readiness) = open(context, key, secret, nsec, general, inbox, discovery, mediaOrigin)
             session = opened
-            opened.readiness()
+            readiness
           }
         }
       }
     }
 
     AsyncFunction("closeAccount").Coroutine<Unit> { shutdown() }
+    AsyncFunction("catchUp").Coroutine<Unit> { withSession { it.kit.catchUpAccounts() } }
     AsyncFunction("accountReadiness").Coroutine<String> {
       withSession { it.readiness() }
     }
+    AsyncFunction("diagnostics").Coroutine<Document> {
+      withSession {
+        val relays = it.kit.relayHealth()
+        val keys = it.kit.keyPackageMaintenanceStatus(it.account)
+        mapOf("account" to it.account, "readiness" to it.readiness(),
+          "relays" to relays.totalRelays.toInt(), "connected" to relays.connected.toInt(),
+          "keyPackages" to it.kit.localAccountKeyPackages(it.account).size,
+          "keyPhase" to keys?.phase?.name?.lowercase(), "published" to keys?.acceptedFanoutTargets?.toInt(),
+          "refreshOverdue" to it.kit.keyPackageRefreshOverdue(it.account))
+      }
+    }
+    AsyncFunction("rotateKeys").Coroutine<Unit> {
+      withSession { it.kit.rotateKeyPackage(it.account); Unit }
+    }
+    AsyncFunction("backupState").Coroutine<Document> {
+      withSession {
+        val settings = it.kit.backupSettings(it.account)
+        val restore = it.kit.backupRestoreStatus(it.account)
+        mapOf("enabled" to settings.enabled, "thisDeviceWrites" to settings.thisDeviceWrites,
+          "phase" to restore.phase.name.lowercase(), "operation" to restore.operation,
+          "imported" to restore.importedEvents.toDouble(),
+          "failed" to (restore.failedArchives + restore.failedBundles).toDouble())
+      }
+    }
+    AsyncFunction("beginBackup").Coroutine<Document> {
+      withSession {
+        val setup = it.kit.beginRecoveryWords(it.account)
+        mapOf("words" to setup.words, "positions" to setup.confirmPositions.map(UInt::toInt))
+      }
+    }
+    AsyncFunction("backupAction") Coroutine { action: String, words: List<String> ->
+      withSession {
+        when (action) {
+          "confirm" -> it.kit.confirmRecoveryWords(it.account, words)
+          "cancel" -> it.kit.cancelRecoveryWords(it.account)
+          "disable" -> it.kit.turnOffBackups(it.account)
+          "restore" -> it.kit.beginBackupRestore(it.account, words.single())
+          "cancelRestore" -> it.kit.cancelBackupRestore(it.account, words.single())
+          else -> throw problem("InvalidBackupAction")
+        }
+        Unit
+      }
+    }
+    AsyncFunction("backupConditions") Coroutine { wifi: Boolean, charging: Boolean ->
+      withSession { it.kit.setRuntimeBackupBackgroundConditions(wifi, charging) }
+    }
+    AsyncFunction("backupNow").Coroutine<String> {
+      withSession { it.kit.runDueBackupPass(it.account).name.lowercase() }
+    }
 
-    AsyncFunction("openChatList") Coroutine { id: String, view: String ->
+    AsyncFunction("openChatList") Coroutine { id: String, view: String, invitations: Boolean, search: String? ->
       lifecycle.withLock {
         protocol {
           val active = requireSession()
-          val handle = active.kit.openChatListWindow(active.account, ChatListViewFfi.valueOf(view.uppercase()), 40u)
+          val selected = ChatListViewFfi.valueOf(view.uppercase())
+          val pending = ChatListFilterNodeFfi.Condition(ChatListConditionFfi.PENDING_INVITE)
+          val filter = when {
+            invitations -> listOf(pending)
+            search != null -> listOf(ChatListFilterNodeFfi.All(listOf(1u, 2u)), ChatListFilterNodeFfi.Not(3u), ChatListFilterNodeFfi.Text(search), pending)
+            else -> listOf(ChatListFilterNodeFfi.Not(1u), pending)
+          }
+          val handle = active.kit.openChatListQueryWindow(active.account, ChatListViewQueryFfi(selected, filter), 40u)
           install(id, ChatListWindow(handle))
         }
       }
@@ -59,6 +116,14 @@ class BoopMarmotModule : Module() {
         protocol {
           val active = requireSession()
           install(id, AttentionWindow(active.kit.subscribeAccountAttention(), active.account))
+        }
+      }
+    }
+    AsyncFunction("openGroupState") Coroutine { id: String, group: String ->
+      lifecycle.withLock {
+        protocol {
+          val active = requireSession()
+          install(id, GroupStateWindow(id, active.kit.subscribeGroupState(active.account, group)))
         }
       }
     }
@@ -77,9 +142,13 @@ class BoopMarmotModule : Module() {
         val window = windows[id] ?: throw problem("WindowClosed")
         if (window.job == null) window.job = observer.launch {
           try {
+            var previous: Document? = null
             while (isActive) {
               val value = window.next() ?: break
-              sendEvent("windowChanged", mapOf("id" to id, "snapshot" to value))
+              val delta = previous?.let { windowDelta(it, value) }
+              sendEvent("windowChanged", if (delta == null) mapOf("id" to id, "snapshot" to value)
+                else mapOf("id" to id, "delta" to delta))
+              previous = value
             }
             sendEvent("windowClosed", mapOf("id" to id, "code" to "WindowClosed"))
           } catch (e: CancellationException) {
@@ -92,6 +161,9 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("closeWindow") Coroutine { id: String ->
       lifecycle.withLock { windows.remove(id)?.stop() }
+    }
+    AsyncFunction("windowSnapshot") Coroutine { id: String ->
+      withWindow(id) { it.initial() ?: throw problem("WindowClosed") }
     }
     AsyncFunction("pageWindow") Coroutine { id: String, generation: String, sequence: String, direction: String ->
       withWindow(id) { it.page(generation, sequence.toULong(), direction) }
@@ -108,9 +180,10 @@ class BoopMarmotModule : Module() {
     AsyncFunction("startDirect") Coroutine { peer: String ->
       withSession { it.kit.startDirectConversation(it.account, peer) }
     }
-    AsyncFunction("createGroup") Coroutine { name: String, description: String?, members: List<String> ->
+    AsyncFunction("createGroup") Coroutine { name: String, description: String?, members: List<String>, image: String? ->
       withSession {
-        val result = it.kit.createGroupDetailed(it.account, name, members, description)
+        val initial = image?.let { path -> InitialGroupImageFfi(groupImageInput(path), "image/jpeg", null, null, null) }
+        val result = it.kit.createGroupWithInitialImageDetailed(it.account, name, members, description, initial)
         mapOf("groupId" to result.created?.groupIdHex, "members" to result.memberOutcomes.map { member ->
           mapOf("account" to member.accountIdHex, "status" to member.status.name.lowercase(), "devices" to member.selectedDeviceCount.toInt())
         })
@@ -128,12 +201,25 @@ class BoopMarmotModule : Module() {
         val details = it.kit.groupDetails(it.account, group)
         val policy = it.kit.groupManagementState(it.account, group)
         val pending = it.kit.groupPendingCommit(it.account, group)
+        val delivery = it.kit.groupCommitDelivery(it.account, group)
+        val recovery = it.kit.groupRecoveryStatus(it.account, group)
+        val chat = it.kit.chatListRow(it.account, group)
         val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
         mapOf(
           "id" to group, "name" to details.group.name, "description" to details.group.description,
           "inviter" to details.group.welcomerAccountIdHex, "relays" to details.group.relays,
+          "image" to details.group.imageHashHex, "epoch" to details.mlsState.epoch.toString(),
+          "mediaV2" to (details.group.encryptedMedia.version == EncryptedMediaVersionFfi.V2),
+          "mediaEndpoints" to details.group.encryptedMedia.defaultBlobEndpoints.map { endpoint -> endpoint.baseUrl },
+          "unrecoverable" to details.mlsState.unrecoverable,
+          "convergenceParked" to (details.mlsState.convergenceParked || recovery.automaticRecoveryFailed),
+          "historyIncomplete" to recovery.historyMayBeIncomplete,
+          "relayChangesOutstanding" to ((delivery?.owedRelayUrls?.size ?: 0) + (delivery?.refusedRelays?.size ?: 0)),
           "retention" to details.group.disappearingMessageSecs.toDouble(),
           "membership" to details.group.selfMembership.name.lowercase(),
+          "pendingInvitation" to details.group.pendingConfirmation,
+          "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
+          "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
           "lifecycle" to policy.lifecycleState.name.lowercase(), "commit" to pending?.state?.name?.lowercase(),
           "isAdmin" to policy.isSelfAdmin, "canInvite" to policy.canInvite, "canLeave" to policy.canLeave,
           "canCancelLeave" to policy.canCancelLeave, "canDisband" to policy.canDisband,
@@ -152,6 +238,41 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("updateGroup") Coroutine { group: String, name: String?, description: String? ->
       withSession { it.kit.updateGroupProfile(it.account, group, name, description); Unit }
+    }
+    AsyncFunction("updateGroupImage") Coroutine { group: String, path: String? ->
+      withSession {
+        if (path == null) it.kit.clearGroupImage(it.account, group)
+        else it.kit.updateGroupImage(it.account, group, groupImageInput(path), "image/jpeg")
+        Unit
+      }
+    }
+    AsyncFunction("updateGroupMedia") Coroutine { group: String, origins: List<String> ->
+      withSession {
+        it.kit.replaceEncryptedMediaBlobEndpoints(it.account, group, origins.map { origin -> AppBlobEndpointFfi("blossom", origin) })
+        Unit
+      }
+    }
+    AsyncFunction("groupImage") Coroutine { group: String, hash: String, fetch: Boolean ->
+      withSession {
+        if (!hash.matches(HEX)) throw problem("InvalidMedia")
+        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
+        val details = it.kit.groupDetails(it.account, group).group
+        if (details.pendingConfirmation || details.selfMembership != SelfMembershipFfi.MEMBER || details.imageHashHex != hash) throw problem("MediaUnavailable")
+        val folder = File(context.cacheDir, "marmot-group-images/${it.account}")
+        folder.mkdirs()
+        val file = AtomicFile(File(folder, "$hash.jpg"))
+        if (!file.baseFile.isFile) {
+          if (!fetch) return@withSession null
+          val bytes = it.kit.downloadGroupBlossomImage(it.account, group)
+          val current = it.kit.groupDetails(it.account, group).group
+          if (bytes.isEmpty() || bytes.size > MAX_GROUP_IMAGE || current.selfMembership != SelfMembershipFfi.MEMBER ||
+            current.imageHashHex != hash) throw problem("MediaUnavailable")
+          val output = file.startWrite()
+          try { output.write(bytes); file.finishWrite(output) }
+          catch (error: Exception) { file.failWrite(output); throw error }
+        }
+        file.baseFile.canonicalPath
+      }
     }
     AsyncFunction("updateRetention") Coroutine { group: String, seconds: Int ->
       withSession { it.kit.updateMessageRetention(it.account, group, seconds.toULong()); Unit }
@@ -215,6 +336,7 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("sendMedia") Coroutine { group: String, files: List<Map<String, String>>, caption: String?, token: String, server: String?, reply: String? ->
       withSession {
+        if (it.kit.groupDetails(it.account, group).group.encryptedMedia.version != EncryptedMediaVersionFfi.V2) throw problem("MediaNotConfigured")
         val context = appContext.reactContext ?: throw problem("ContextUnavailable")
         val base = File(context.applicationInfo.dataDir).canonicalFile.toPath()
         if (files.isEmpty() || files.size > 16) throw problem("InvalidMedia")
@@ -231,25 +353,49 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
+    AsyncFunction("attachmentStatus") Coroutine { group: String, id: String, source: String, index: Int ->
+      withSession {
+        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+        it.kit.attachmentTransferSnapshot(it.account, group, listOf(target)).items.firstOrNull()?.state == AttachmentTransferStateFfi.READY
+      }
+    }
+    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
       withSession { active ->
         val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
-        active.kit.subscribeAttachmentTransfers(active.account, group, listOf(target)).use { updates ->
-          active.kit.requestExplicitAttachment(active.account, group, target)
-          withTimeout(180_000) {
-            var snapshot = updates.next()
+        val before = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+        val reference = when (before?.state) {
+          AttachmentTransferStateFfi.READY -> return@withSession
+          AttachmentTransferStateFfi.REMOVED, AttachmentTransferStateFfi.CLEANED_BY_SETTING,
+          AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
+            active.kit.downloadAttachmentAgain(active.account, group, target)
+          AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
+          AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED,
+          AttachmentTransferStateFfi.PAUSED -> before.reference?.takeIf {
+            active.kit.controlAttachment(active.account, it, AttachmentControlFfi.RETRY)
+          }
+          else -> active.kit.requestExplicitAttachment(active.account, group, target)
+        } ?: throw problem("MediaUnavailable")
+        val finished = withTimeoutOrNull(180_000) {
+          active.kit.subscribeAttachmentTransfers(active.account, group, listOf(target)).use { updates ->
             while (true) {
-              val status = snapshot?.items?.firstOrNull()?.state
-              when (status) {
+              val item = updates.next()?.items?.firstOrNull() ?: throw problem("MediaUnavailable")
+              if (item.reference != reference) throw problem("MediaUnavailable")
+              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble()))
+              when (item.state) {
                 AttachmentTransferStateFfi.READY -> break
                 AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
                 AttachmentTransferStateFfi.POLICY_BLOCKED, AttachmentTransferStateFfi.REMOVED,
-                AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE -> throw problem("MediaUnavailable")
-                else -> snapshot = updates.next() ?: throw problem("MediaUnavailable")
+                AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
+                AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED,
+                AttachmentTransferStateFfi.CLEANED_BY_SETTING, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
+                  throw problem("MediaUnavailable")
+                else -> Unit
               }
             }
           }
+          true
         }
+        if (finished != true) throw problem("MediaTimeout")
       }
     }
     AsyncFunction("openAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
@@ -276,6 +422,24 @@ class BoopMarmotModule : Module() {
     AsyncFunction("editMessage") Coroutine { group: String, id: String, content: String ->
       withSession { it.kit.editMessage(it.account, group, id, content); Unit }
     }
+    AsyncFunction("searchConversation") Coroutine { group: String, text: String?, media: Boolean ->
+      withSession {
+        val query = TimelineMessageQueryFfi(group, text, null, null, null,
+          attachmentType = if (media) 5u else 0u, cursorGroupId = null, before = null,
+          beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
+        it.kit.timelineMessages(it.account, query).messages.filterNot { row -> row.deleted }.map { row ->
+          mapOf("id" to row.messageIdHex, "sender" to row.sender, "text" to row.plaintext, "sentAt" to row.timelineAt.toDouble())
+        }
+      }
+    }
+    AsyncFunction("editHistory") Coroutine { group: String, message: String, before: Double?, id: String? ->
+      withSession {
+        val page = it.kit.messageEditHistory(it.account, group, message, before?.toULong(), id, 25u)
+        mapOf("more" to page.hasMoreBefore, "versions" to page.versions.map { row ->
+          mapOf("id" to row.messageIdHex, "text" to row.plaintext, "at" to row.editedAt.toDouble())
+        })
+      }
+    }
     AsyncFunction("deleteMessage") Coroutine { group: String, id: String ->
       withSession { it.kit.deleteMessage(it.account, group, id); Unit }
     }
@@ -288,6 +452,9 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("markRead") Coroutine { group: String, id: String ->
       withSession { it.kit.markTimelineMessageRead(it.account, group, id); Unit }
+    }
+    AsyncFunction("markUnread") Coroutine { group: String ->
+      withSession { it.kit.setChatManuallyUnread(it.account, group, true); Unit }
     }
     AsyncFunction("setArchived") Coroutine { group: String, archived: Boolean ->
       withSession { it.kit.setGroupArchived(it.account, group, archived); Unit }
@@ -338,7 +505,7 @@ class BoopMarmotModule : Module() {
           },
           "devices" to active.kit.linkedDevices(active.account).map { device ->
             mapOf("slot" to device.slotIdHex, "current" to device.isThisDevice, "label" to device.label,
-              "platform" to device.platform, "client" to device.client)
+              "platform" to device.platform, "client" to device.client, "removalPending" to device.removalPending)
           },
         )
       }
@@ -403,8 +570,8 @@ class BoopMarmotModule : Module() {
 
   private suspend fun open(
     context: Context, key: String, secret: String, nsec: String,
-    general: List<String>, inbox: List<String>, discovery: List<String>,
-  ): Session {
+    general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?,
+  ): Pair<Session, String> {
     if (!key.matches(HEX) || !secret.matches(HEX)) throw problem("IdentityMismatch")
     initializeBindings(context)
     val root = File(context.noBackupFilesDir, "marmot/$key")
@@ -412,7 +579,7 @@ class BoopMarmotModule : Module() {
     val kit = Marmot.newWithConfiguration(root.canonicalPath, general, MarmotOptions(
       clientName = "Boop", devicePlatform = "Android", secretStore = store,
       attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
-      deployment = marmotDeploymentNeutral(),
+      deployment = marmotDeploymentNeutral().copy(groupImageEndpoint = mediaOrigin, newGroupMediaEndpoints = listOfNotNull(mediaOrigin)),
     ))
     try {
       val known = kit.listAccounts()
@@ -423,7 +590,8 @@ class BoopMarmotModule : Module() {
         val account = kit.login(nsec, general, discovery, inbox)
         if (account.accountIdHex != key || account.label != key) throw problem("IdentityMismatch")
       }
-      return Session(key, kit)
+      val opened = Session(key, kit)
+      return opened to opened.readiness()
     } catch (error: Throwable) {
       withContext(NonCancellable) {
         try { kit.shutdownAndClose() } catch (_: Exception) {} finally { kit.close() }
@@ -432,8 +600,21 @@ class BoopMarmotModule : Module() {
     }
   }
 
+  private fun groupImageInput(path: String): ByteArray {
+    val context = appContext.reactContext ?: throw problem("ContextUnavailable")
+    val file = File(path).canonicalFile
+    if (!file.toPath().startsWith(File(context.applicationInfo.dataDir).canonicalFile.toPath()) ||
+      !file.isFile || file.length() !in 1L..MAX_GROUP_IMAGE.toLong()) throw problem("InvalidMediaPath")
+    return file.inputStream().use { stream ->
+      val bytes = stream.readNBytes(MAX_GROUP_IMAGE + 1)
+      if (bytes.size !in 1..MAX_GROUP_IMAGE) throw problem("InvalidMedia")
+      bytes
+    }
+  }
+
   companion object {
     private val HEX = Regex("[a-f0-9]{64}")
+    private const val MAX_GROUP_IMAGE = 4 * 1024 * 1024
     private var initialized = false
     @Synchronized private fun initializeBindings(context: Context) {
       if (initialized) return
@@ -487,6 +668,7 @@ private class AccountCredential(
 
 internal fun problem(code: String) = CodedException(code, code, null)
 internal fun errorCode(error: Exception) = when (error) {
+  is MarmotKitException.Runtime -> if (error.details == "device group refused: device_link_pending") "DeviceLinkPending" else "Runtime"
   is MarmotKitException -> error.javaClass.simpleName
   is CodedException -> error.code
   else -> "NativeFailure"

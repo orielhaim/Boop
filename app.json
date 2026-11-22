@@ -150,8 +150,7 @@
           "granularPermissions": [],
           "isAccessMediaLocationEnabled": false
         }
-      ],
-      "@kesha-antonov/react-native-background-downloader"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -127,6 +127,7 @@ function pair(
   connectTimeout?: number,
   acceptAcknowledgment?: Promise<boolean>,
   backgroundAudio = false,
+  authorizeGroup?: (group: string, peers: string[]) => Promise<boolean>,
 ) {
   const events: CallSignal[] = [];
   const records: CallRecord[] = [];
@@ -137,6 +138,7 @@ function pair(
   const build = (localKey: string) =>
     createCallController({
       localKey,
+      authorizeGroup,
       randomId: () => id(nonce++),
       prepareInvite: async () => invitation(clock).offer,
       send: async (signal) => {
@@ -188,6 +190,48 @@ function pair(
     },
   };
 }
+
+test("a group call rechecks Marmot membership before answering while first-contact calls remain independent", async () => {
+  const group = id(99);
+  const members = new Set([caller.pubkey, callee.pubkey]);
+  const { a, b, deliver, events } = pair(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    async (requestedGroup, peers) =>
+      requestedGroup === group && peers.every((peer) => members.has(peer)),
+  );
+  try {
+    expect(await a.dial(third.pubkey, group)).toBe(false);
+    expect(events).toEqual([]);
+    expect(await a.dial(callee.pubkey, group)).toBe(true);
+    expect(events[0]).toMatchObject({ type: "call.invite", groupId: group });
+    deliver();
+    await Bun.sleep(0);
+    expect(b.store.getState().call).toMatchObject({
+      phase: "incoming",
+      groupId: group,
+    });
+    members.delete(caller.pubkey);
+    b.accept();
+    await Bun.sleep(0);
+    expect(b.store.getState().call).toMatchObject({
+      phase: "ended",
+      outcome: "failed",
+    });
+    expect(events.some((event) => event.type === "call.accept")).toBe(false);
+    a.end();
+    events.length = 0;
+    expect(await a.dial(callee.pubkey)).toBe(true);
+    deliver();
+    expect(b.store.getState().call).toMatchObject({ phase: "incoming" });
+    expect(b.store.getState().call?.groupId).toBeUndefined();
+  } finally {
+    a.end();
+    b.end();
+  }
+});
 
 test("answer starts transport while waiting for relay acknowledgment and closes it when publication fails", async () => {
   const acknowledgment = Promise.withResolvers<boolean>();

@@ -25,6 +25,17 @@ bun scripts/test-call-relay.ts
 
 The call-signaling integration test uses OpenSSL on PATH and a local TLS relay. It checks first-contact invitations, replay suppression, and encrypted RTC replies without starting Marmot.
 
+### Android Marmot relay test
+
+Start the MDK-compatible test relay with `bun scripts/marmot-test-relay.ts`. This requires Cargo. The relay prints its ephemeral port. With an Android emulator attached, forward that port and run the module's instrumentation suite from `android`. Replace `19310` with the printed port.
+
+```sh
+adb reverse tcp:19310 tcp:19310
+./gradlew :boop-marmot:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64 -Pandroid.testInstrumentationRunnerArguments.relay=ws://127.0.0.1:19310
+```
+
+Pass `-Pandroid.testInstrumentationRunnerArguments.blossom=<https-origin>` to include the encrypted media round trip. Use a Blossom origin you have permission to test. The test uploads synthetic bytes, checks that the receiver remains in `NOT_REQUESTED` before the explicit action, and verifies the retained plaintext handoff. Test identities, credentials, and native stores are independent of the app.
+
 `src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. Preserve the baseline's `PRAGMA user_version` when regenerating it.
 
 ## Messaging and identity
@@ -33,7 +44,9 @@ The local Expo module opens the SQLCipher-backed MarmotKit account for the activ
 
 Received message attachments use MarmotKit's host-managed acquisition policy. The attachment action explicitly requests the download and leases the verified local file for presentation. The selected attachment Blossom origin is passed to MarmotKit. Profile photo upload and link previews use the separate Boop media path. First-contact WebRTC signaling uses authenticated kind `24880` control messages through the dedicated Nostr transport.
 
-Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone.
+Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone. Messaging Backup is opt-in and restores available history only into conversations the device already belongs to.
+
+MDK signs the configured attachment Blossom origin into newly created conversations. If the attachment server list is empty, MDK creates a text-only group. Encrypted group images use the configured group-image endpoint. Members need a common image server because the group state carries no origin. Normal attachment references carry their own encrypted blob locators.
 
 ## Delayed-message dependency
 

@@ -12,10 +12,19 @@ const windowRevision = z.object({
   hasMoreBefore: z.boolean(),
   hasMoreAfter: z.boolean(),
 });
+const identifiedRow = z.looseObject({ id: z.string() });
+const windowDelta = z.object({
+  base: windowRevision.shape.sequence,
+  field: z.enum(["rows", "messages"]),
+  metadata: windowRevision.loose(),
+  order: z.array(z.string()).max(200),
+  changed: z.array(identifiedRow).max(200),
+});
 const chatRow = z.object({
   id: z.string(),
   title: z.string().nullish(),
   peer: z.string().nullish(),
+  image: z.string().nullish(),
   kind: z.enum(["unknown", "direct", "group"]),
   lifecycle: z.string(),
   membership: z.string(),
@@ -24,8 +33,13 @@ const chatRow = z.object({
   muted: z.boolean(),
   archived: z.boolean(),
   unread: z.number().nonnegative(),
+  manualUnread: z.boolean(),
   updatedAt: z.number().nonnegative(),
   preview: z.string().nullish(),
+  previewKind: z.number().nullish(),
+  previewId: z.string().nullish(),
+  previewSender: z.string().nullish(),
+  draft: z.string().nullish(),
 });
 
 const message = z.object({
@@ -84,10 +98,14 @@ const attentionSnapshot = windowRevision.extend({
   kind: z.literal("attention"),
   count: z.number().nullish(),
 });
+const groupStateSnapshot = windowRevision.extend({
+  kind: z.literal("groupState"),
+});
 const conversationSnapshot = windowRevision.extend({
   kind: z.literal("conversation"),
   title: z.string().nullish(),
   peer: z.string().nullish(),
+  image: z.string().nullish(),
   lifecycle: z.string(),
   memberCount: z.number().nullish(),
   invited: z.boolean(),
@@ -107,6 +125,44 @@ const readiness = z.enum([
   "network_ready",
   "recovery_required",
 ]);
+const diagnostics = z.object({
+  account: z.string(),
+  readiness,
+  relays: z.number(),
+  connected: z.number(),
+  keyPackages: z.number(),
+  keyPhase: z.string().nullish(),
+  published: z.number().nullish(),
+  refreshOverdue: z.boolean(),
+});
+const backupState = z.object({
+  enabled: z.boolean(),
+  thisDeviceWrites: z.boolean(),
+  phase: z.enum([
+    "idle",
+    "discovering",
+    "restoring",
+    "complete",
+    "partial",
+    "unavailable",
+    "cancelled",
+  ]),
+  operation: z.string().nullish(),
+  imported: z.number(),
+  failed: z.number(),
+});
+const recoveryWords = z.object({
+  words: z.array(z.string()),
+  positions: z.tuple([
+    z.number().positive().int(),
+    z.number().positive().int(),
+  ]),
+});
+export type MarmotDiagnostics = z.infer<typeof diagnostics>;
+export type MarmotBackupState = z.infer<typeof backupState>;
+export type MarmotRecoveryWords = z.infer<typeof recoveryWords>;
+type BackupAction =
+  "confirm" | "cancel" | "disable" | "restore" | "cancelRestore";
 const memberOutcome = z.object({
   account: z.string(),
   status: z.string(),
@@ -116,14 +172,41 @@ const groupCreation = z.object({
   groupId: z.string().nullish(),
   members: z.array(memberOutcome),
 });
+const searchResult = z.object({
+  id: z.string(),
+  sender: z.string(),
+  text: z.string(),
+  sentAt: z.number(),
+});
+const editHistory = z.object({
+  more: z.boolean(),
+  versions: z
+    .array(z.object({ id: z.string(), text: z.string(), at: z.number() }))
+    .max(25),
+});
+export type MarmotSearchResult = z.infer<typeof searchResult>;
+export type MarmotEditHistory = z.infer<typeof editHistory>;
 const groupDetails = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string(),
   inviter: z.string().nullish(),
+  image: z.string().nullish(),
+  epoch: z.string(),
+  mediaV2: z.boolean(),
+  mediaEndpoints: z.array(z.string()),
+  unrecoverable: z.boolean(),
+  convergenceParked: z.boolean(),
+  historyIncomplete: z.boolean(),
+  relayChangesOutstanding: z.number().nonnegative(),
   relays: z.array(z.string()),
   retention: z.number().int().nonnegative(),
   membership: z.string(),
+  pendingInvitation: z.boolean(),
+  createdAt: z.number().nullish(),
+  muted: z.boolean(),
+  archived: z.boolean(),
+  canEdit: z.boolean(),
   lifecycle: z.string(),
   commit: z.string().nullish(),
   isAdmin: z.boolean(),
@@ -188,6 +271,7 @@ const deviceState = z.object({
       label: z.string(),
       platform: z.string(),
       client: z.string(),
+      removalPending: z.boolean(),
     }),
   ),
 });
@@ -196,7 +280,16 @@ export type MarmotDeviceAction =
   "start" | "match" | "cancel" | "link" | "decline" | "remove";
 
 type Events = {
-  windowChanged: (event: { id: string; snapshot: unknown }) => void;
+  attachmentProgress: (event: {
+    transfer: string;
+    received: number;
+    total?: number | null;
+  }) => void;
+  windowChanged: (event: {
+    id: string;
+    snapshot?: unknown;
+    delta?: unknown;
+  }) => void;
   windowClosed: (event: { id: string; code: string }) => void;
 };
 
@@ -212,11 +305,26 @@ type Bridge = {
     general: readonly string[],
     inbox: readonly string[],
     discovery: readonly string[],
+    mediaOrigin: string | null,
   ): Promise<unknown>;
   closeAccount(): Promise<void>;
+  catchUp(): Promise<void>;
   accountReadiness(): Promise<unknown>;
-  openChatList(id: string, view: MarmotChatView): Promise<unknown>;
+  diagnostics(): Promise<unknown>;
+  rotateKeys(): Promise<void>;
+  backupState(): Promise<unknown>;
+  beginBackup(): Promise<unknown>;
+  backupAction(action: BackupAction, words: string[]): Promise<void>;
+  backupConditions(wifi: boolean, charging: boolean): Promise<void>;
+  backupNow(): Promise<string>;
+  openChatList(
+    id: string,
+    view: MarmotChatView,
+    invitations: boolean,
+    search: string | null,
+  ): Promise<unknown>;
   openAttention(id: string): Promise<unknown>;
+  openGroupState(id: string, group: string): Promise<unknown>;
   openConversation(
     id: string,
     group: string,
@@ -224,6 +332,7 @@ type Bridge = {
   ): Promise<unknown>;
   observeWindow(id: string): Promise<void>;
   closeWindow(id: string): Promise<void>;
+  windowSnapshot(id: string): Promise<unknown>;
   pageWindow(
     id: string,
     generation: string,
@@ -247,9 +356,28 @@ type Bridge = {
     name: string,
     description: string | null,
     members: string[],
+    image: string | null,
   ): Promise<unknown>;
   respondToInvitation(group: string, accept: boolean): Promise<void>;
   groupDetails(group: string): Promise<unknown>;
+  groupImage(
+    group: string,
+    hash: string,
+    fetch: boolean,
+  ): Promise<string | null>;
+  updateGroupImage(group: string, path: string | null): Promise<void>;
+  updateGroupMedia(group: string, origins: string[]): Promise<void>;
+  searchConversation(
+    group: string,
+    text: string | null,
+    media: boolean,
+  ): Promise<unknown>;
+  editHistory(
+    group: string,
+    message: string,
+    before: number | null,
+    id: string | null,
+  ): Promise<unknown>;
   updateGroup(
     group: string,
     name: string | null,
@@ -284,11 +412,18 @@ type Bridge = {
     server: string | null,
     reply: string | null,
   ): Promise<string>;
+  attachmentStatus(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+  ): Promise<boolean>;
   downloadAttachment(
     group: string,
     id: string,
     source: string,
     index: number,
+    transfer: string,
   ): Promise<void>;
   openAttachment(
     group: string,
@@ -308,6 +443,7 @@ type Bridge = {
     remove: boolean,
   ): Promise<void>;
   markRead(group: string, id: string): Promise<void>;
+  markUnread(group: string): Promise<void>;
   setArchived(group: string, archived: boolean): Promise<void>;
   setPinned(group: string, pinned: boolean): Promise<void>;
   setMuted(group: string, muted: boolean): Promise<void>;
@@ -350,6 +486,7 @@ export async function openMarmotAccount(
   key: string,
   secret: string,
   relays: RelayConfiguration,
+  mediaOrigin: string | null,
 ) {
   const bytes = hexToBytes(secret);
   try {
@@ -362,6 +499,7 @@ export async function openMarmotAccount(
         relays.general,
         relays.inbox,
         relays.discovery,
+        mediaOrigin,
       ),
     );
   } finally {
@@ -378,10 +516,13 @@ async function openWindow<S extends Revision, Direction extends string>(
   const listeners = new Set<() => void>();
   let state: WindowState<S> = { status: "closed", code: "WindowClosed" };
   let closing: Promise<void> | undefined;
+  let wantedSequence = 0n;
+  let resyncing = false;
   const changed = bridge.addListener("windowChanged", (event) => {
     if (event.id !== id) return;
     try {
-      install(event.snapshot);
+      if (event.delta !== undefined) applyDelta(event.delta);
+      else install(event.snapshot);
     } catch {
       terminate("InvalidWindowProjection");
     }
@@ -404,6 +545,53 @@ async function openWindow<S extends Revision, Direction extends string>(
     if (BigInt(next.sequence) <= BigInt(current.sequence)) return;
     state = { status: "ready", snapshot: next };
     emit();
+  }
+  function applyDelta(value: unknown) {
+    if (state.status !== "ready") return;
+    const delta = windowDelta.parse(value);
+    const current = state.snapshot;
+    if (delta.metadata.generation !== current.generation) {
+      terminate("WindowGenerationChanged");
+      return;
+    }
+    if (BigInt(delta.metadata.sequence) <= BigInt(current.sequence)) return;
+    if (delta.base !== current.sequence) {
+      wantedSequence = BigInt(delta.metadata.sequence);
+      refresh();
+      return;
+    }
+    const prior =
+      delta.field === "rows" && "rows" in current
+        ? current.rows
+        : delta.field === "messages" && "messages" in current
+          ? current.messages
+          : undefined;
+    const rows = z.array(identifiedRow).max(200).parse(prior);
+    const indexed = new Map(
+      [...rows, ...delta.changed].map((row) => [row.id, row]),
+    );
+    install({
+      ...delta.metadata,
+      [delta.field]: delta.order.map((id) => indexed.get(id)),
+    });
+  }
+  function refresh() {
+    if (resyncing || state.status !== "ready") return;
+    resyncing = true;
+    void bridge
+      .windowSnapshot(id)
+      .then((next) => {
+        install(next);
+        if (
+          state.status === "ready" &&
+          BigInt(state.snapshot.sequence) < wantedSequence
+        )
+          terminate("WindowGenerationChanged");
+      })
+      .catch(() => terminate("WindowClosed"))
+      .finally(() => {
+        resyncing = false;
+      });
   }
   function close() {
     changed.remove();
@@ -453,19 +641,49 @@ async function openWindow<S extends Revision, Direction extends string>(
 }
 
 export const marmot = {
+  async diagnostics() {
+    return diagnostics.parse(await native().diagnostics());
+  },
+  rotateKeys: () => native().rotateKeys(),
+  async backupState() {
+    return backupState.parse(await native().backupState());
+  },
+  async beginBackup() {
+    return recoveryWords.parse(await native().beginBackup());
+  },
+  backupAction: (action: BackupAction, words: string[] = []) =>
+    native().backupAction(action, words),
+  backupConditions: (wifi: boolean, charging: boolean) =>
+    native().backupConditions(wifi, charging),
+  backupNow: () => native().backupNow(),
   async getReadiness() {
     return readiness.parse(await native().accountReadiness());
   },
   closeAccount: () => native().closeAccount(),
-  openChatList: (view: MarmotChatView) =>
+  catchUp: () => native().catchUp(),
+  openChatList: (
+    view: MarmotChatView,
+    options?: { invitations?: boolean; search?: string },
+  ) =>
     openWindow<MarmotChatList, "forward" | "backward">(
-      (bridge, id) => bridge.openChatList(id, view),
+      (bridge, id) =>
+        bridge.openChatList(
+          id,
+          view,
+          options?.invitations ?? false,
+          options?.search?.trim().slice(0, 128) || null,
+        ),
       chatListSnapshot,
     ),
   openAttention: () =>
     openWindow<z.infer<typeof attentionSnapshot>, never>(
       (bridge, id) => bridge.openAttention(id),
       attentionSnapshot,
+    ),
+  openGroupState: (group: string) =>
+    openWindow<z.infer<typeof groupStateSnapshot>, never>(
+      (bridge, id) => bridge.openGroupState(id, group),
+      groupStateSnapshot,
     ),
   openConversation: (group: string, target?: string) =>
     openWindow<MarmotConversation, "older" | "newer">(
@@ -477,9 +695,10 @@ export const marmot = {
     name: string,
     description: string | null,
     members: string[],
+    image: string | null = null,
   ) {
     return groupCreation.parse(
-      await native().createGroup(name, description, members),
+      await native().createGroup(name, description, members, image),
     );
   },
   respondToInvitation: (group: string, accept: boolean) =>
@@ -487,6 +706,32 @@ export const marmot = {
   async groupDetails(group: string) {
     return groupDetails.parse(await native().groupDetails(group));
   },
+  groupImage: (group: string, hash: string, fetch = false) =>
+    native().groupImage(group, hash, fetch),
+  async searchConversation(group: string, text: string | null, media: boolean) {
+    return z
+      .array(searchResult)
+      .max(40)
+      .parse(await native().searchConversation(group, text, media));
+  },
+  async editHistory(
+    group: string,
+    message: string,
+    before?: { at: number; id: string },
+  ) {
+    return editHistory.parse(
+      await native().editHistory(
+        group,
+        message,
+        before?.at ?? null,
+        before?.id ?? null,
+      ),
+    );
+  },
+  updateGroupImage: (group: string, path: string | null) =>
+    native().updateGroupImage(group, path),
+  updateGroupMedia: (group: string, origins: string[]) =>
+    native().updateGroupMedia(group, origins),
   updateGroup: (
     group: string,
     name: string | null,
@@ -528,12 +773,31 @@ export const marmot = {
     server: string | null,
     reply: string | null,
   ) => native().sendMedia(group, files, caption, token, server, reply),
-  downloadAttachment: (
+  attachmentStatus: (
     group: string,
     id: string,
     source: string,
     index: number,
-  ) => native().downloadAttachment(group, id, source, index),
+  ) => native().attachmentStatus(group, id, source, index),
+  async downloadAttachment(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+    onProgress: (received: number, total?: number) => void,
+  ) {
+    const bridge = native();
+    const transfer = randomUUID();
+    const listener = bridge.addListener("attachmentProgress", (event) => {
+      if (event.transfer === transfer)
+        onProgress(event.received, event.total ?? undefined);
+    });
+    try {
+      await bridge.downloadAttachment(group, id, source, index, transfer);
+    } finally {
+      listener.remove();
+    }
+  },
   async openAttachment(
     group: string,
     id: string,
@@ -554,6 +818,7 @@ export const marmot = {
   reactToMessage: (group: string, id: string, emoji: string, remove: boolean) =>
     native().reactToMessage(group, id, emoji, remove),
   markRead: (group: string, id: string) => native().markRead(group, id),
+  markUnread: (group: string) => native().markUnread(group),
   setArchived: (group: string, archived: boolean) =>
     native().setArchived(group, archived),
   setPinned: (group: string, pinned: boolean) =>

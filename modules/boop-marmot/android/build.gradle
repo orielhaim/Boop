@@ -17,10 +17,13 @@ android {
   sourceSets.main.java.srcDir(sdk.toPath().resolve('kotlin').toFile())
   sourceSets.main.jniLibs.srcDir(sdk.toPath().resolve('jniLibs').toFile())
   defaultConfig.consumerProguardFiles('marmot.pro')
+  defaultConfig.testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
 }
 
 tasks.named('preBuild') { dependsOn prepareMarmotKit }
 
 dependencies {
   implementation 'net.java.dev.jna:jna:5.18.1@aar'
+  androidTestImplementation 'androidx.test:runner:1.7.0'
+  androidTestImplementation 'junit:junit:4.13.2'
 }

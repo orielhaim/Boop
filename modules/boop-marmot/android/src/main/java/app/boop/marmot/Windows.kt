@@ -6,6 +6,26 @@ import kotlinx.coroutines.cancelAndJoin
 
 internal typealias Document = Map<String, Any?>
 
+internal fun windowDelta(previous: Document, current: Document): Document? {
+  val field = when (current["kind"]) {
+    "chatList" -> "rows"
+    "conversation" -> "messages"
+    else -> return null
+  }
+  if (previous["generation"] != current["generation"]) return null
+  fun rows(snapshot: Document): Map<String, Map<*, *>> =
+    (snapshot[field] as List<*>).filterIsInstance<Map<*, *>>().associateBy { it["id"] as String }
+  val old = rows(previous)
+  val next = rows(current)
+  return mapOf(
+    "base" to previous["sequence"],
+    "field" to field,
+    "metadata" to (current - field),
+    "order" to next.keys.toList(),
+    "changed" to next.filter { (id, row) -> old[id] != row }.values.toList(),
+  )
+}
+
 internal abstract class NativeWindow {
   var job: Job? = null
   abstract fun initial(): Document?
@@ -47,6 +67,19 @@ internal class AttentionWindow(private val handle: AccountAttentionSubscription,
   }
 }
 
+internal class GroupStateWindow(private val generation: String, private val handle: GroupStateSubscription) : NativeWindow() {
+  private val sequence = java.util.concurrent.atomic.AtomicLong(0)
+  override fun initial() = handle.snapshot()?.let { current() }
+  override suspend fun next() = handle.next()?.let { sequence.incrementAndGet(); current() }
+  override suspend fun page(generation: String, sequence: ULong, direction: String): Document = throw problem("InvalidWindow")
+  override suspend fun anchor(generation: String, sequence: ULong, target: String): Document = throw problem("InvalidWindow")
+  override suspend fun release() = handle.close()
+  private fun current(): Document = mapOf(
+    "kind" to "groupState", "generation" to generation, "sequence" to sequence.get().toString(),
+    "hasMoreBefore" to false, "hasMoreAfter" to false,
+  )
+}
+
 internal class ConversationWindow(private val handle: ConversationWindowSubscription) : NativeWindow() {
   override fun initial() = handle.snapshot()?.let(::project)
   override suspend fun next() = handle.next()?.let(::project)
@@ -75,6 +108,7 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
       "id" to chat.groupIdHex,
       "title" to row.presentation.literal(),
       "peer" to row.presentation.peerId,
+      "image" to chat.avatar?.imageHashHex,
       "kind" to chat.conversationKind.name.lowercase(),
       "lifecycle" to chat.lifecycleState.name.lowercase(),
       "membership" to chat.selfMembership.name.lowercase(),
@@ -83,8 +117,13 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
       "muted" to chat.muted,
       "archived" to chat.archived,
       "unread" to chat.unreadCount.toDouble(),
+      "manualUnread" to chat.manuallyMarkedUnread,
       "updatedAt" to chat.activitySortAt.toDouble(),
-      "preview" to chat.lastMessage?.plaintext,
+      "preview" to chat.lastMessage?.takeUnless { it.deleted }?.plaintext,
+      "previewKind" to chat.lastMessage?.kind?.toDouble(),
+      "previewId" to chat.lastMessage?.messageIdHex,
+      "previewSender" to chat.lastMessage?.sender,
+      "draft" to (row.preview as? SelectedChatPreviewFfi.Draft)?.draft?.text,
     )
   },
 )
@@ -97,6 +136,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "hasMoreAfter" to snapshot.hasMoreAfter,
   "title" to snapshot.header.selected.literal(),
   "peer" to snapshot.header.selected.peerId,
+  "image" to (snapshot.header.selected.avatar as? SelectedAvatarFfi.EncryptedGroupImage)?.image?.imageHashHex,
   "lifecycle" to snapshot.header.lifecycle.name.lowercase(),
   "memberCount" to snapshot.header.memberCount?.toDouble(),
   "invited" to snapshot.pendingConfirmation,
@@ -104,8 +144,10 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "firstUnread" to snapshot.readState.firstUnreadMessageIdHex,
   "draft" to snapshot.draft.draft?.let { mapOf("text" to it.content, "replyTo" to it.replyToMessageIdHex) },
   "identities" to snapshot.identities.map { mapOf("id" to it.accountIdHex, "name" to it.displayName) },
-  "messages" to snapshot.messages.map { message ->
+  "messages" to snapshot.messages.mapNotNull { message ->
     val row = message.timeline
+    val system = row.groupSystem?.takeIf { it.provenance == GroupSystemEventProvenanceFfi.AUTHENTICATED_GROUP_STATE }
+    if (system == null && row.poll == null && row.kind !in setOf(9uL, 1111uL, 24881uL, 24883uL)) return@mapNotNull null
     mapOf(
       "id" to row.messageIdHex,
       "token" to row.clientToken,
@@ -119,7 +161,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
         mapOf("emoji" to it.emoji, "count" to it.count.toDouble(), "users" to it.reactors, "own" to it.viewerReacted)
       },
       "attachments" to row.media.mapNotNull { media ->
-        (media as? MediaAttachmentOutcomeFfi.Accepted)?.let {
+        (media as? MediaAttachmentOutcomeFfi.Accepted)?.takeIf { it.reference.version == EncryptedMediaVersionFfi.V2 }?.let {
           mapOf("index" to it.attachmentIndex.toInt(), "name" to it.reference.fileName, "type" to it.reference.mediaType,
             "thumbhash" to it.reference.thumbhash, "dimensions" to it.reference.dim)
         }
@@ -134,7 +176,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       "edited" to (row.edit != null),
       "confirmed" to (row.sourceMessageIdHex != null || row.recipientConfirmed),
       "invalidated" to (row.invalidationStatus != null),
-      "systemType" to row.groupSystem?.systemType,
+      "systemType" to system?.systemType,
     )
   },
 )

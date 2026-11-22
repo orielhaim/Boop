@@ -23,6 +23,10 @@ export function useMarmotWindow<Snapshot, Direction>(
   enabled = true,
 ) {
   const { marmotSession, lock } = useLocal();
+  const accountRevision = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.revision,
+  );
   const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
   const isFocused = useIsFocused() && enabled;
   const [retry, setRetry] = useState(0);
@@ -61,7 +65,7 @@ export function useMarmotWindow<Snapshot, Direction>(
       cancelled = true;
       void active?.close().catch(() => undefined);
     };
-  }, [isFocused, locked, marmotSession, open, retry]);
+  }, [accountRevision, isFocused, locked, marmotSession, open, retry]);
 
   return {
     window,

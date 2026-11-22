@@ -29,8 +29,14 @@ export async function initializeMarmotIdentity(
   db: Database,
   key: string,
   relays: RelayConfiguration,
+  mediaOrigin: string | null,
 ) {
-  return openMarmotAccount(key, await storedSecret(db, storage), relays);
+  return openMarmotAccount(
+    key,
+    await storedSecret(db, storage),
+    relays,
+    mediaOrigin,
+  );
 }
 
 export async function initializeIdentity(db: Database) {

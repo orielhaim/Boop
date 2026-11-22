@@ -1,11 +1,12 @@
 import {
   Chat,
+  type ChatHandle,
   ChatHeader,
   type IMessage,
 } from "@kesha-antonov/react-native-chat";
 import { randomUUID } from "expo-crypto";
+import { Image } from "expo-image";
 import { router, Stack, useIsFocused } from "expo-router";
-import { shareAsync } from "expo-sharing";
 import {
   useCallback,
   useEffect,
@@ -17,7 +18,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState, StyleSheet, View } from "react-native";
-import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
+import { Action, Avatar, Empty, Ink, Screen } from "@/components/ui/kit";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
@@ -35,16 +36,44 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
+import { MarmotAttachments } from "./marmot-attachments";
 import { useMarmotError } from "./marmot-group";
 import { conversationRoute } from "./marmot-inbox";
 import { MarmotLocked } from "./marmot-locked";
 import { MarmotLink } from "./marmot-link";
+import {
+  ConversationSearch,
+  ForwardMessage,
+  MessageEditHistory,
+} from "./marmot-message-tools";
 import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
 import { useMarmotWindow } from "./marmot-window";
 import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
+import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
 
 const locationKind = 24883;
+const systemLabels = {
+  member_added: "messages:marmot.eventMemberAdded",
+  member_removed: "messages:marmot.eventMemberRemoved",
+  member_left: "messages:marmot.eventMemberLeft",
+  admin_added: "messages:marmot.eventAdminAdded",
+  admin_removed: "messages:marmot.eventAdminRemoved",
+  group_renamed: "messages:marmot.eventGroupRenamed",
+  group_avatar_changed: "messages:marmot.eventGroupAvatar",
+  disappearing_timer_changed: "messages:marmot.eventRetention",
+  group_disbanded: "messages:marmot.eventDisbanded",
+} as const;
+function systemLabel(type: string) {
+  if (Object.hasOwn(systemLabels, type))
+    return systemLabels[type as keyof typeof systemLabels];
+  return "messages:marmot.eventGroupChanged";
+}
+function subscribeForeground(listener: () => void) {
+  const subscription = AppState.addEventListener("change", listener);
+  return () => subscription.remove();
+}
+const isForeground = () => AppState.currentState === "active";
 
 export function OpenMarmotDirect({ peer }: { peer: string }) {
   const { t } = useTranslation(namespaces);
@@ -114,11 +143,19 @@ function localUpload(uri: string, name: string, type: string): MarmotUpload {
   return { path: decodeURIComponent(uri.slice(7)), name, type };
 }
 
-export function MarmotConversationScreen({ id }: { id: string }) {
+export function MarmotConversationScreen({
+  id,
+  initialPanel,
+}: {
+  id: string;
+  initialPanel?: "search" | "media";
+}) {
   const { t } = useTranslation(namespaces);
-  const { identity, privacy, mediaSdk, lock, marmotViewport } = useLocal();
+  const { identity, privacy, mediaSdk, lock, marmotViewport, chatPreferences } =
+    useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
+  const foreground = useSyncExternalStore(subscribeForeground, isForeground);
   const open = useCallback(() => marmot.openConversation(id), [id]);
   const { snapshot, window, error, retry } = useMarmotWindow(open);
   const kit = useChatAppearance(true);
@@ -131,10 +168,22 @@ export function MarmotConversationScreen({ id }: { id: string }) {
   const [poll, setPoll] = useState(false);
   const [laterError, setLaterError] = useState<string>();
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
+  const [panel, setPanel] = useState<
+    "search" | "media" | "edits" | "forward" | null
+  >(initialPanel ?? null);
+  const [selected, setSelected] = useState<MarmotMessage>();
+  const [jump, setJump] = useState<string>();
+  const [highlight, setHighlight] = useState("");
+  const [pinOffset, setPinOffset] = useState(0);
+  const chatRef = useRef<ChatHandle | null>(null);
   const lastRead = useRef<string | undefined>(undefined);
   const draftWrites = useRef(Promise.resolve());
   const peer = snapshot?.peer;
   const avatar = useAvatar(snapshot?.invited ? undefined : peer);
+  const groupAvatar = useMarmotGroupAvatar(
+    id,
+    snapshot?.invited ? undefined : snapshot?.image,
+  );
   const self = identity.publicKey;
   const blocked = Boolean(peer && privacy.isBlocked(peer));
   const title = snapshot?.invited
@@ -144,25 +193,34 @@ export function MarmotConversationScreen({ id }: { id: string }) {
   const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
   const people = snapshot?.identities;
+  const pins = useSyncExternalStore(chatPreferences.subscribe, () =>
+    chatPreferences.pinned(id),
+  );
+  const hidden = useSyncExternalStore(chatPreferences.subscribe, () =>
+    chatPreferences.hidden(id),
+  );
   const blockedKeys = privacy.blockedKeys().join(",");
   const messages = useMemo(() => {
-    const hidden = new Set(blockedKeys.split(","));
+    const blocked = new Set(blockedKeys.split(","));
+    const omitted = new Set(hidden);
     const names = new Map(people?.map((person) => [person.id, person.name]));
     const user = (key: string) => ({ _id: key, name: names.get(key) });
     return (rows ?? [])
-      .filter((row) => !hidden.has(row.sender))
+      .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
       .map((row): ChatMessage => ({
         _id: row.id,
         direction: row.sender === self ? "outgoing" : "incoming",
         createdAt: row.sentAt * 1_000,
         user: user(row.sender),
-        text: row.deleted
-          ? deleted
-          : row.eventKind === timeLockKind ||
-              row.eventKind === locationKind ||
-              row.poll
-            ? ""
-            : row.text,
+        text: row.systemType
+          ? t(systemLabel(row.systemType))
+          : row.deleted
+            ? deleted
+            : row.eventKind === timeLockKind ||
+                row.eventKind === locationKind ||
+                row.poll
+              ? ""
+              : row.text,
         location:
           row.eventKind === locationKind && !row.deleted
             ? locationFromText(row.text)
@@ -171,6 +229,7 @@ export function MarmotConversationScreen({ id }: { id: string }) {
         sent: row.sender === self && row.confirmed,
         isFailed: row.sender === self && row.invalidated,
         isEdited: row.edited,
+        isPinned: pins.includes(row.id),
         system: Boolean(row.systemType),
         replyMessage: row.replyPreview
           ? {
@@ -189,7 +248,7 @@ export function MarmotConversationScreen({ id }: { id: string }) {
         row,
       }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
-  }, [rows, people, deleted, blockedKeys, self]);
+  }, [rows, people, deleted, blockedKeys, hidden, pins, self, t]);
   const locallyInitiated = Boolean(
     peer &&
     rows?.some(
@@ -202,12 +261,24 @@ export function MarmotConversationScreen({ id }: { id: string }) {
       privacy.noteInitiatedMessage(peer);
   }, [peer, locallyInitiated, blocked, privacy]);
   useLayoutEffect(() => {
-    if (!snapshot || snapshot.invited || !focused || blocked) return;
+    if (!snapshot || snapshot.invited || !focused || !foreground || blocked)
+      return;
     return marmotViewport.update(
       id,
-      snapshot.messages.filter((row) => visible.has(row.id)),
+      snapshot.messages.filter(
+        (row) => visible.has(row.id) && !hidden.includes(row.id),
+      ),
     );
-  }, [id, snapshot, focused, blocked, visible, marmotViewport]);
+  }, [
+    id,
+    snapshot,
+    focused,
+    foreground,
+    blocked,
+    visible,
+    hidden,
+    marmotViewport,
+  ]);
   const visibleIds = useMemo(() => [...visible], [visible]);
   const translated = useMessageTranslations(
     messages,
@@ -217,6 +288,26 @@ export function MarmotConversationScreen({ id }: { id: string }) {
   );
 
   const showError = (reason: unknown) => Alert.alert(translateError(reason));
+  function moveTo(message: string, query = "") {
+    if (hidden.includes(message)) return;
+    setPanel(null);
+    setHighlight(query);
+    setJump(message);
+    if (!messages.some((row) => row._id === message)) {
+      void window?.jump(message).catch((reason) => {
+        setJump(undefined);
+        showError(reason);
+      });
+    }
+  }
+  useEffect(() => {
+    if (!jump || !messages.some((row) => row._id === jump)) return;
+    const task = requestAnimationFrame(() => {
+      chatRef.current?.scrollToMessage(jump, { isHighlighted: true });
+      setJump(undefined);
+    });
+    return () => cancelAnimationFrame(task);
+  }, [jump, messages]);
   const canSend = Boolean(snapshot?.canSend && !blocked && !snapshot.invited);
   const canDispatch = () =>
     canSend &&
@@ -287,9 +378,31 @@ export function MarmotConversationScreen({ id }: { id: string }) {
     }
     const target = reply?._id ?? null;
     run(async () => {
+      const prepared = await Promise.all(
+        files.map(async (file) => {
+          if (file.thumbhash || !file.type.startsWith("image/")) return file;
+          try {
+            const image = await Image.loadAsync(`file://${file.path}`, {
+              maxWidth: 96,
+              maxHeight: 96,
+            });
+            return {
+              ...file,
+              thumbhash: await Image.generateThumbhashAsync(image),
+            };
+          } catch {
+            return file;
+          }
+        }),
+      );
+      if (
+        !canDispatch() ||
+        mediaSdk.configured("attachment")[0]?.origin !== server
+      )
+        return;
       await marmot.sendMedia(
         id,
-        files,
+        prepared,
         caption?.trim() || null,
         randomUUID(),
         server,
@@ -346,7 +459,9 @@ export function MarmotConversationScreen({ id }: { id: string }) {
         {...kit}
         title={title}
         avatar={
-          peer && !snapshot.invited ? { id: peer, uri: avatar } : undefined
+          snapshot.invited
+            ? undefined
+            : { id: peer ?? id, uri: peer ? avatar : groupAvatar }
         }
         onBack={() => router.back()}
         onPressTitle={
@@ -358,7 +473,7 @@ export function MarmotConversationScreen({ id }: { id: string }) {
                       pathname: "/contact/[key]",
                       params: { key: peer },
                     })
-                  : router.push(conversationRoute(id, true))
+                  : router.push(conversationRoute(id, "details"))
         }
         renderRight={() =>
           peer && !blocked && !snapshot.invited ? (
@@ -367,6 +482,13 @@ export function MarmotConversationScreen({ id }: { id: string }) {
               onPress={() =>
                 router.push({ pathname: "/call/[key]", params: { key: peer } })
               }
+            >
+              {t("calls:startCall")}
+            </Action>
+          ) : !peer && !snapshot.invited && snapshot.canSend ? (
+            <Action
+              size="sm"
+              onPress={() => router.push(conversationRoute(id, "call"))}
             >
               {t("calls:startCall")}
             </Action>
@@ -383,6 +505,72 @@ export function MarmotConversationScreen({ id }: { id: string }) {
         />
       ) : (
         <>
+          <View style={styles.tools}>
+            <Action size="sm" onPress={() => setPanel("search")}>
+              {t("messages:marmot.searchConversation")}
+            </Action>
+            {peer && !blocked && (
+              <Action
+                size="sm"
+                onPress={() => router.push(conversationRoute(id, "details"))}
+              >
+                {t("messages:marmot.conversationDetails")}
+              </Action>
+            )}
+            {!blocked && (
+              <Action
+                size="sm"
+                onPress={() =>
+                  void marmot
+                    .markUnread(id)
+                    .then(() => router.back())
+                    .catch(showError)
+                }
+              >
+                {t("messages:marmot.markUnread")}
+              </Action>
+            )}
+            {pins.length > 0 && (
+              <Action
+                size="sm"
+                onPress={() => {
+                  const position = pinOffset % pins.length;
+                  const message = pins[position];
+                  if (message) moveTo(message);
+                  setPinOffset(position + 1);
+                }}
+              >
+                {t(
+                  pins.length === 1
+                    ? "messages:pinnedMessage"
+                    : "messages:pinnedMessages",
+                )}
+              </Action>
+            )}
+          </View>
+          {(panel === "search" || panel === "media") && (
+            <ConversationSearch
+              group={id}
+              media={panel === "media"}
+              onSelect={moveTo}
+              onClose={() => setPanel(null)}
+            />
+          )}
+          {panel === "edits" && selected && (
+            <MessageEditHistory
+              group={id}
+              message={selected.id}
+              onClose={() => setPanel(null)}
+            />
+          )}
+          {panel === "forward" && selected && (
+            <ForwardMessage
+              group={id}
+              row={selected}
+              canDispatch={canDispatch}
+              onClose={() => setPanel(null)}
+            />
+          )}
           {snapshot.hasMoreAfter && (
             <Action size="sm" onPress={() => void page("newer")}>
               {t("messages:latest")}
@@ -392,8 +580,21 @@ export function MarmotConversationScreen({ id }: { id: string }) {
             <Chat<ChatMessage>
               {...kit}
               messages={translated.displayed}
+              chatRef={chatRef}
+              highlightText={highlight}
               user={{ _id: self }}
               isGroupChat={!peer}
+              renderAvatar={
+                !peer
+                  ? ({ currentMessage }) => (
+                      <Avatar
+                        publicKey={String(currentMessage.user._id)}
+                        name={currentMessage.user.name ?? t("common:unknown")}
+                        size="sm"
+                      />
+                    )
+                  : undefined
+              }
               forceRTL={kit.rtl}
               firstUnreadMessageId={snapshot.firstUnread ?? undefined}
               initialText={snapshot.draft?.text}
@@ -512,6 +713,51 @@ export function MarmotConversationScreen({ id }: { id: string }) {
                   ? (row) => run(() => marmot.deleteMessage(id, row._id))
                   : undefined
               }
+              onPinMessage={(message) => {
+                if (
+                  message.row &&
+                  !message.row.deleted &&
+                  !message.row.systemType
+                ) {
+                  chatPreferences.setPin(id, message._id, !message.isPinned);
+                }
+              }}
+              onForwardMessage={(message) => {
+                setSelected(message.row);
+                setPanel("forward");
+              }}
+              messageActions={(message, defaults) => {
+                const row = message.row;
+                if (!row || row.deleted || row.systemType) return [];
+                const forwardable = [9, 1111, locationKind].includes(
+                  row.eventKind,
+                );
+                const textEditable =
+                  (row.eventKind === 9 || row.eventKind === 1111) &&
+                  !row.attachments.length;
+                const actions = defaults.filter(
+                  (action) =>
+                    (action.key !== "forward" || forwardable) &&
+                    (action.key !== "edit" || textEditable) &&
+                    (action.key !== "delete" || row.sender === self),
+                );
+                if (row.edited)
+                  actions.push({
+                    key: "editHistory",
+                    label: t("messages:editHistory"),
+                    onPress() {
+                      setSelected(row);
+                      setPanel("edits");
+                    },
+                  });
+                actions.push({
+                  key: "deleteLocal",
+                  label: t("messages:marmot.removeForMe"),
+                  destructive: true,
+                  onPress: () => chatPreferences.hide(id, row.id),
+                });
+                return actions;
+              }}
               onRetryMessage={
                 canSend
                   ? () => run(() => marmot.retryConversation(id))
@@ -522,8 +768,7 @@ export function MarmotConversationScreen({ id }: { id: string }) {
                 message: reply,
                 onReply: setReply,
                 onClear: () => setReply(null),
-                onPress: (target) =>
-                  void window?.jump(String(target._id)).catch(showError),
+                onPress: (target) => moveTo(String(target._id)),
               }}
               reactions={{
                 isEnabled: canSend,
@@ -559,7 +804,9 @@ export function MarmotConversationScreen({ id }: { id: string }) {
                     />
                   );
                 return row.attachments.length ? (
-                  <MarmotAttachments group={id} row={row} />
+                  focused && foreground && !blocked ? (
+                    <MarmotAttachments group={id} row={row} />
+                  ) : null
                 ) : row.eventKind === 9 || row.eventKind === 1111 ? (
                   <>
                     <MarmotLink
@@ -717,63 +964,13 @@ function MarmotInvitation({
   );
 }
 
-function MarmotAttachments({
-  group,
-  row,
-}: {
-  group: string;
-  row: MarmotMessage;
-}) {
-  const { t } = useTranslation(namespaces);
-  const { privacy } = useLocal();
-  const [busy, setBusy] = useState<number>();
-  async function open(index: number) {
-    if (!row.sourceId || privacy.isBlocked(row.sender) || busy !== undefined)
-      return;
-    const source = row.sourceId;
-    setBusy(index);
-    try {
-      let file = await marmot.openAttachment(group, row.id, source, index);
-      if (!file) {
-        if (privacy.isBlocked(row.sender)) return;
-        await marmot.downloadAttachment(group, row.id, source, index);
-        file = await marmot.openAttachment(group, row.id, source, index);
-      }
-      if (!file) throw new Error("MediaUnavailable");
-      try {
-        if (!privacy.isBlocked(row.sender))
-          await shareAsync(`file://${file.path}`, { mimeType: file.type });
-      } finally {
-        await marmot.releaseAttachment(file.lease);
-      }
-    } catch {
-      Alert.alert(t("messages:mediaOpenFailed"));
-    } finally {
-      setBusy(undefined);
-    }
-  }
-  return (
-    <View style={styles.media}>
-      {row.attachments.map((item) => (
-        <View key={item.index}>
-          <Ink kind="caption">{item.name}</Ink>
-          <Action
-            size="sm"
-            disabled={busy !== undefined}
-            onPress={() => void open(item.index)}
-          >
-            {busy === item.index
-              ? t("common:checking")
-              : t("messages:marmot.download")}
-          </Action>
-        </View>
-      ))}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   chat: { flex: 1 },
+  tools: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.xs,
+    paddingHorizontal: space.sm,
+  },
   invitation: { padding: space.md, gap: space.sm },
-  media: { padding: space.sm, gap: space.xs },
 });

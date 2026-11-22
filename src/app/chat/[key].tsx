@@ -14,18 +14,28 @@ import { namespaces } from "@/i18n";
 
 export default function ChatRoute() {
   const { t } = useTranslation(namespaces);
-  const { key, details } = useLocalSearchParams<{
+  const { key, view } = useLocalSearchParams<{
     key?: string;
-    details?: string;
+    view?: string;
   }>();
   if (key === "new-group") return <NewMarmotGroup />;
   if (typeof key === "string") {
     const group = /^marmot-([a-f0-9]{2,512})$/u.exec(key)?.[1];
     if (group)
-      return details === "1" ? (
-        <MarmotGroupDetailsScreen key={group} id={group} />
+      return view === "details" || view === "call" ? (
+        <MarmotGroupDetailsScreen
+          key={group}
+          id={group}
+          showCall={view === "call"}
+        />
       ) : (
-        <MarmotConversationScreen key={group} id={group} />
+        <MarmotConversationScreen
+          key={group}
+          id={group}
+          initialPanel={
+            view === "search" || view === "media" ? view : undefined
+          }
+        />
       );
     const peer = parsePublicKey(key);
     if (peer) return <OpenMarmotDirect key={peer} peer={peer} />;

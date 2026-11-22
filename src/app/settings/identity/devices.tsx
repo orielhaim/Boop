@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
+import { marmotErrorCode } from "@/components/messages/marmot-window";
 import {
   SettingsDescription,
   SettingsGroup,
@@ -72,8 +73,14 @@ export default function LinkedDevices() {
       );
       setSnapshot(await read());
       setError(false);
-    } catch {
-      Alert.alert(t("messages:marmot.linkFailed"));
+    } catch (error) {
+      Alert.alert(
+        t(
+          marmotErrorCode(error) === "DeviceLinkPending"
+            ? "messages:marmot.deviceLinkPending"
+            : "messages:marmot.linkFailed",
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -106,10 +113,12 @@ export default function LinkedDevices() {
                 detail={
                   device.current
                     ? t("messages:marmot.currentDevice")
-                    : undefined
+                    : device.removalPending
+                      ? t("messages:marmot.deviceRemoving")
+                      : undefined
                 }
                 onPress={
-                  device.current
+                  device.current || device.removalPending
                     ? undefined
                     : () =>
                         Alert.alert(

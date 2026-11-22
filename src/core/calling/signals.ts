@@ -37,6 +37,10 @@ export const callSignal = z.discriminatedUnion("type", [
     ...base,
     type: z.literal("call.invite"),
     roomId: opaqueId,
+    groupId: z
+      .string()
+      .regex(/^(?:[a-f0-9]{2}){1,256}$/u)
+      .optional(),
     conference: conferenceInvite.optional(),
     offer: rtcOffer,
   }),
