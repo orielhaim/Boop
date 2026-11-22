@@ -32,7 +32,7 @@ import { useMentionMembers } from "./use-mention-members";
 
 export function conversationRoute(
   group: string,
-  view?: "details" | "call" | "search" | "media",
+  view?: "details" | "edit" | "call" | "search" | "media",
 ) {
   return {
     pathname: "/chat/[key]" as const,

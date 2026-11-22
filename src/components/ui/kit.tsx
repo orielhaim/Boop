@@ -48,6 +48,9 @@ const icons = {
   subtract: { ios: "minus", android: "remove" },
   addPerson: { ios: "person.badge.plus", android: "person_add" },
   search: { ios: "magnifyingglass", android: "search" },
+  media: { ios: "photo.on.rectangle", android: "perm_media" },
+  bell: { ios: "bell", android: "notifications_none" },
+  bellOff: { ios: "bell.slash", android: "notifications_off" },
   more: { ios: "ellipsis", android: "more_horiz" },
   back: { ios: "arrow.left", android: "arrow_back" },
   previous: { ios: "chevron.left", android: "chevron_left" },
@@ -260,17 +263,25 @@ export function Screen({
   children,
   scroll = true,
   tab = false,
+  topInset = false,
   onScroll,
 }: {
   children: ReactNode;
   scroll?: boolean;
   tab?: boolean;
+  topInset?: boolean;
   onScroll?: React.ComponentProps<typeof Animated.ScrollView>["onScroll"];
 }) {
   const { colors } = useTheme();
   return (
     <ScreenInsets
-      edges={tab ? ["top", "left", "right"] : ["left", "right", "bottom"]}
+      edges={
+        tab
+          ? ["top", "left", "right"]
+          : topInset
+            ? ["top", "left", "right", "bottom"]
+            : ["left", "right", "bottom"]
+      }
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
       {scroll && onScroll ? (

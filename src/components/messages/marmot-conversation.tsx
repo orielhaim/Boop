@@ -64,6 +64,7 @@ import {
 import { createAttachmentPresentation } from "@/core/marmot/attachment-presentation";
 import {
   marmot,
+  type MarmotConversation,
   type MarmotGroupDetails,
   type MarmotMessage,
   type MarmotUpload,
@@ -95,6 +96,7 @@ import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
 import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
+import { rememberGroupProfile } from "./group-details-cache";
 
 const locationKind = 24883;
 const systemLabels = {
@@ -215,12 +217,35 @@ export function MarmotConversationScreen({
     marmotViewport,
     chatPreferences,
     db,
+    marmotSession,
   } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
   const foreground = useSyncExternalStore(subscribeForeground, isForeground);
+  const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
+  const accountRevision = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.revision,
+  );
   const open = useCallback(() => marmot.openConversation(id), [id]);
-  const { snapshot, window, error, retry } = useMarmotWindow(open);
+  const {
+    snapshot: liveSnapshot,
+    window,
+    error,
+    retry,
+  } = useMarmotWindow(open);
+  const [profileTransition, setProfileTransition] = useState<{
+    revision: number;
+    snapshot: MarmotConversation;
+  }>();
+  const snapshot =
+    liveSnapshot ??
+    (!focused &&
+    foreground &&
+    !locked &&
+    profileTransition?.revision === accountRevision
+      ? profileTransition.snapshot
+      : undefined);
   const kit = useChatAppearance(true);
   const material = conversationMaterials[kit.colorScheme];
   const translateError = useMarmotError();
@@ -701,19 +726,33 @@ export function MarmotConversationScreen({
     }
   }
 
-  if (error || !snapshot)
+  function openProfile(view: "details" | "call") {
+    if (!liveSnapshot || liveSnapshot.invited || !focused || locked) return;
+    setProfileTransition({ revision: accountRevision, snapshot: liveSnapshot });
+    rememberGroupProfile(
+      marmotSession,
+      id,
+      title,
+      !peer && liveSnapshot.image && groupAvatar
+        ? { hash: liveSnapshot.image, uri: groupAvatar }
+        : undefined,
+    );
+    router.push(conversationRoute(id, view));
+  }
+
+  if (error)
     return (
       <Screen>
         <Stack.Screen options={{ title }} />
-        <Empty
-          detail=""
-          icon="chat"
-          title={
-            error ? t("messages:marmot.accountError") : t("common:checking")
-          }
-        >
-          {error && <Action onPress={retry}>{t("common:retry")}</Action>}
+        <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
+          <Action onPress={retry}>{t("common:retry")}</Action>
         </Empty>
+      </Screen>
+    );
+  if (!snapshot)
+    return (
+      <Screen scroll={false} topInset>
+        <Stack.Screen options={{ headerShown: false }} />
       </Screen>
     );
 
@@ -752,7 +791,7 @@ export function MarmotConversationScreen({
         if (canDispatch()) setPanel(action);
         break;
       case "call":
-        if (!peer && canDispatch()) router.push(conversationRoute(id, "call"));
+        if (!peer && canDispatch()) openProfile("call");
         break;
       case "pins": {
         if (!pins.length) break;
@@ -791,6 +830,7 @@ export function MarmotConversationScreen({
   return (
     <ScreenInsets
       edges={["top", "left", "right"]}
+      pointerEvents={liveSnapshot ? "auto" : "none"}
       style={[styles.screen, { backgroundColor: kit.colors.background }]}
     >
       <Stack.Screen options={{ headerShown: false }} />
@@ -858,9 +898,7 @@ export function MarmotConversationScreen({
               router.canGoBack() ? router.back() : router.replace("/messages")
             }
             onPressTitle={
-              snapshot.invited
-                ? undefined
-                : () => router.push(conversationRoute(id, "details"))
+              snapshot.invited ? undefined : () => openProfile("details")
             }
             renderRight={
               snapshot.invited

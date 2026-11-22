@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { marmot, type MarmotGroupDetails } from "@/core/marmot/native";
 import { contactByKey } from "@/db/queries";
 import { useLocal } from "@/services/local-context";
+import { loadGroupDetails } from "./group-details-cache";
 import { useMarmotWindow } from "./marmot-window";
 
 export function useMentionMembers(group: string, enabled: boolean) {
-  const { db } = useLocal();
+  const { db, marmotSession } = useLocal();
   const watch = useCallback(() => marmot.openGroupState(group), [group]);
   const { snapshot, error, retry } = useMarmotWindow(watch, enabled);
   const revision = snapshot && `${snapshot.generation}:${snapshot.sequence}`;
@@ -18,7 +19,7 @@ export function useMentionMembers(group: string, enabled: boolean) {
   useEffect(() => {
     if (revision === undefined) return;
     let active = true;
-    void marmot.groupDetails(group).then(
+    void loadGroupDetails(marmotSession, group).then(
       (details) => {
         if (active) setResult({ revision, attempt, members: details.members });
       },
@@ -29,7 +30,7 @@ export function useMentionMembers(group: string, enabled: boolean) {
     return () => {
       active = false;
     };
-  }, [attempt, group, revision]);
+  }, [attempt, group, marmotSession, revision]);
   const current =
     result?.revision === revision && result?.attempt === attempt
       ? result

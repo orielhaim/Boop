@@ -1,5 +1,7 @@
 import { router } from "expo-router";
 import {
+  type ComponentProps,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -8,24 +10,26 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, StyleSheet, View } from "react-native";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { useStore } from "zustand";
-import { Action, Icon, Ink } from "@/components/ui/kit";
+import { Action, Card, Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { discoverGroupCall } from "@/core/calling/group-presence";
 import { marmot } from "@/core/marmot/native";
 import { useMarmotWindow } from "./marmot-window";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import { useTheme } from "@/theme";
+import { space, useTheme } from "@/theme";
 
 export function MarmotActiveCall({
   group,
   members,
   canStart,
+  profileActions,
 }: {
   group: string;
   members?: readonly { id: string; name?: string | null; label?: string }[];
   canStart: boolean;
+  profileActions?: ReactNode;
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
@@ -117,27 +121,41 @@ export function MarmotActiveCall({
     state.fullGroupCall.at >= active.updatedAt;
   const isJoining = state.joining?.groupId === group;
   if (!current && !lobby && !active && !isJoining) {
-    if (!canStart) return null;
+    if (!canStart)
+      return profileActions ? (
+        <GroupShortcuts>{profileActions}</GroupShortcuts>
+      ) : null;
+    const start = {
+      disabled:
+        !announcements ||
+        Boolean(
+          state.groupLobby ||
+          state.joining ||
+          (state.call && state.call.phase !== "ended"),
+        ),
+      onPress() {
+        void calling.startGroup(group).then((started) => {
+          if (started)
+            pending.current = calling.store.getState().groupLobby?.callId;
+          else Alert.alert(t("messages:marmot.groupCallStartFailed"));
+        });
+      },
+    };
+    if (profileActions)
+      return (
+        <GroupShortcuts>
+          <GroupShortcut
+            icon="phone"
+            label={t("messages:marmot.shortcutCall")}
+            description={t("calls:startCall")}
+            {...start}
+          />
+          {profileActions}
+        </GroupShortcuts>
+      );
     return (
       <View style={styles.row}>
-        <Action
-          size="sm"
-          disabled={
-            !announcements ||
-            Boolean(
-              state.groupLobby ||
-              state.joining ||
-              (state.call && state.call.phase !== "ended"),
-            )
-          }
-          onPress={() => {
-            void calling.startGroup(group).then((started) => {
-              if (started)
-                pending.current = calling.store.getState().groupLobby?.callId;
-              else Alert.alert(t("messages:marmot.groupCallStartFailed"));
-            });
-          }}
-        >
+        <Action size="sm" {...start}>
           {t("calls:startCall")}
         </Action>
       </View>
@@ -153,58 +171,118 @@ export function MarmotActiveCall({
     .map((key) => roster.get(key))
     .filter(Boolean);
   return (
-    <View style={[styles.row, { backgroundColor: colors.accentSoft }]}>
-      <Icon name="audio" color={colors.accent} />
-      <View style={styles.label}>
-        <Ink>{t("messages:marmot.activeGroupCall")}</Ink>
-        {names.length > 0 && (
-          <Ink kind="caption" numberOfLines={1}>
-            {names.join(", ")}
-          </Ink>
-        )}
-      </View>
-      <Action
-        size="sm"
-        disabled={
-          !current &&
-          (isJoining ||
-            !!full ||
-            Boolean(state.groupLobby && !lobby) ||
-            Boolean(state.call && state.call.phase !== "ended"))
-        }
-        onPress={() => {
-          if (current) {
-            router.push({
-              pathname: "/call/[key]",
-              params: { key: current.peerKey, callId: current.id },
-            });
-          } else if (lobby) {
-            calling.end();
-          } else if (
-            active &&
-            active.expiresAt > Date.now() &&
-            !lock.getState().locked
-          ) {
-            pending.current = active.call;
-            void calling.join(group, active.call, active.routes);
-          }
-        }}
+    <>
+      {profileActions && <GroupShortcuts>{profileActions}</GroupShortcuts>}
+      <View
+        style={[
+          styles.row,
+          Boolean(profileActions) && styles.profileRow,
+          { backgroundColor: colors.accentSoft },
+        ]}
       >
-        {current
-          ? t("messages:marmot.returnToCall")
-          : lobby
-            ? t("calls:end")
-            : full
-              ? t("messages:marmot.groupCallFull")
-              : isJoining
-                ? t("messages:marmot.joiningGroupCall")
-                : t("messages:marmot.joinGroupCall")}
-      </Action>
-    </View>
+        <Icon name="audio" color={colors.accent} />
+        <View style={styles.label}>
+          <Ink>{t("messages:marmot.activeGroupCall")}</Ink>
+          {names.length > 0 && (
+            <Ink kind="caption" numberOfLines={1}>
+              {names.join(", ")}
+            </Ink>
+          )}
+        </View>
+        <Action
+          size="sm"
+          disabled={
+            !current &&
+            (isJoining ||
+              !!full ||
+              Boolean(state.groupLobby && !lobby) ||
+              Boolean(state.call && state.call.phase !== "ended"))
+          }
+          onPress={() => {
+            if (current) {
+              router.push({
+                pathname: "/call/[key]",
+                params: { key: current.peerKey, callId: current.id },
+              });
+            } else if (lobby) {
+              calling.end();
+            } else if (
+              active &&
+              active.expiresAt > Date.now() &&
+              !lock.getState().locked
+            ) {
+              pending.current = active.call;
+              void calling.join(group, active.call, active.routes);
+            }
+          }}
+        >
+          {current
+            ? t("messages:marmot.returnToCall")
+            : lobby
+              ? t("calls:end")
+              : full
+                ? t("messages:marmot.groupCallFull")
+                : isJoining
+                  ? t("messages:marmot.joiningGroupCall")
+                  : t("messages:marmot.joinGroupCall")}
+        </Action>
+      </View>
+    </>
   );
 }
 
+export function GroupShortcut({
+  icon,
+  label,
+  description,
+  disabled,
+  onPress,
+}: {
+  icon: ComponentProps<typeof Icon>["name"];
+  label: string;
+  description: string;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={description}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={() => {
+        tapFeedback();
+        onPress();
+      }}
+      style={({ pressed }) => [
+        styles.shortcut,
+        pressed && { backgroundColor: colors.accentSoft },
+        disabled && { opacity: 0.5 },
+      ]}
+    >
+      <Icon name={icon} size={22} />
+      <Ink kind="caption" style={styles.shortcutLabel}>
+        {label}
+      </Ink>
+    </Pressable>
+  );
+}
+
+export function GroupShortcuts({ children }: { children: ReactNode }) {
+  return <Card style={styles.shortcuts}>{children}</Card>;
+}
 const styles = StyleSheet.create({
+  shortcuts: { flexDirection: "row" },
+  shortcut: {
+    flex: 1,
+    minHeight: 60,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs,
+    padding: space.sm,
+  },
+  shortcutLabel: { fontWeight: "600", textAlign: "center" },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -215,4 +293,5 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   label: { flex: 1, minWidth: 0 },
+  profileRow: { margin: 0 },
 });
