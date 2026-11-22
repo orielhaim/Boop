@@ -256,6 +256,7 @@ export const en = {
       unavailableMembers: "Unavailable invitees",
       checkingInvitees: "Checking invitees",
       inviteeAvailable: "Available to invite",
+      mentionMember: "Mention a member",
       checkAgain: "Check availability again",
       missingInboxRoute: "This address has no usable invitation relay.",
       temporarilyUnavailable:

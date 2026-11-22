@@ -101,6 +101,12 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
         carol.receives(group, alice.key, "hello group")
+        val mention = "Hello nostr:${checkNotNull(alice.kit.npub(bob.key))}"
+        alice.kit.sendTextWithClientToken(alice.key, group, mention, "group-mention")
+        bob.receives(group, alice.key, mention)
+        val mentioned = bob.kit.messages(bob.key, group, 30u, null)
+          .single { it.plaintext == mention }
+        assertTrue(mentioned.tags.any { it.values.take(2) == listOf("p", bob.key) })
         val target = bob.kit.messages(bob.key, group, 30u, null)
           .single { it.plaintext == "hello group" }.messageIdHex
         bob.kit.reportMessage(bob.key, group, target, ReportReasonFfi.SPAM, "")

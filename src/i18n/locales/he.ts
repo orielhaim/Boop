@@ -248,6 +248,7 @@ export const he = {
       unavailableMembers: "מוזמנים לא זמינים",
       checkingInvitees: "בודק זמינות מוזמנים",
       inviteeAvailable: "זמין להזמנה",
+      mentionMember: "אזכור חבר בקבוצה",
       checkAgain: "בדיקה חוזרת של הזמינות",
       missingInboxRoute: "לכתובת זו אין ממסר זמין לקבלת הזמנות.",
       temporarilyUnavailable: "הודעות לכתובת זו אינן זמינות כרגע.",

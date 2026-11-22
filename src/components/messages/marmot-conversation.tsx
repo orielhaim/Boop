@@ -47,6 +47,7 @@ import { MarmotLink } from "./marmot-link";
 import {
   ConversationSearch,
   ForwardMessage,
+  MentionMember,
   MessageEditHistory,
 } from "./marmot-message-tools";
 import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
@@ -191,7 +192,7 @@ export function MarmotConversationScreen({
   const [laterError, setLaterError] = useState<string>();
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
   const [panel, setPanel] = useState<
-    "search" | "media" | "edits" | "forward" | null
+    "search" | "media" | "edits" | "forward" | "mention" | null
   >(initialPanel ?? null);
   const [selected, setSelected] = useState<MarmotMessage>();
   const [jump, setJump] = useState<string>();
@@ -618,6 +619,25 @@ export function MarmotConversationScreen({
               onClose={() => setPanel(null)}
             />
           )}
+          {panel === "mention" && canSend && (
+            <MentionMember
+              group={id}
+              onClose={() => setPanel(null)}
+              onSelect={(npub) => {
+                if (!canDispatch()) return;
+                const current = (
+                  composer ??
+                  snapshot.draft?.text ??
+                  ""
+                ).trimEnd();
+                saveDraft(
+                  `${current ? `${current} ` : ""}nostr:${npub} `,
+                  reply?._id ?? null,
+                );
+                setPanel(null);
+              }}
+            />
+          )}
           {snapshot.hasMoreAfter && (
             <Action size="sm" onPress={() => void page("newer")}>
               {t("messages:latest")}
@@ -949,9 +969,14 @@ export function MarmotConversationScreen({
             </Action>
           )}
           {!peer && canSend && (
-            <Action size="sm" onPress={() => setPoll(true)}>
-              {t("messages:marmot.newPoll")}
-            </Action>
+            <View style={styles.tools}>
+              <Action size="sm" onPress={() => setPoll(true)}>
+                {t("messages:marmot.newPoll")}
+              </Action>
+              <Action size="sm" onPress={() => setPanel("mention")}>
+                {t("messages:marmot.mentionMember")}
+              </Action>
+            </View>
           )}
           {poll && (
             <MarmotPollComposer

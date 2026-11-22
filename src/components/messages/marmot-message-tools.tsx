@@ -3,9 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, ScrollView, View } from "react-native";
 import { Action, Ink, Search } from "@/components/ui/kit";
+import { contactByKey } from "@/db/queries";
 import {
   marmot,
   type MarmotEditHistory,
+  type MarmotGroupDetails,
   type MarmotMessage,
   type MarmotSearchResult,
 } from "@/core/marmot/native";
@@ -14,6 +16,102 @@ import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useMarmotError } from "./marmot-group";
 import { useMarmotWindow } from "./marmot-window";
+
+export function MentionMember({
+  group,
+  onSelect,
+  onClose,
+}: {
+  group: string;
+  onSelect(npub: string): void;
+  onClose(): void;
+}) {
+  const { t } = useTranslation(namespaces);
+  const { db, privacy } = useLocal();
+  const [query, setQuery] = useState("");
+  const watch = useCallback(() => marmot.openGroupState(group), [group]);
+  const { snapshot, error, retry } = useMarmotWindow(watch);
+  const revision = snapshot && `${snapshot.generation}:${snapshot.sequence}`;
+  const [result, setResult] = useState<{
+    revision: string;
+    attempt: number;
+    members?: MarmotGroupDetails["members"];
+  }>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (revision === undefined) return;
+    let active = true;
+    void marmot.groupDetails(group).then(
+      (details) => {
+        if (active) setResult({ revision, attempt, members: details.members });
+      },
+      () => {
+        if (active) setResult({ revision, attempt });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [attempt, group, revision]);
+  const current =
+    result?.revision === revision && result?.attempt === attempt
+      ? result
+      : undefined;
+  const roster = current?.members;
+  const term = query.trim().toLowerCase();
+  const members = (roster ?? [])
+    .filter((member) => !member.self && !privacy.isBlocked(member.id))
+    .map((member) => ({
+      ...member,
+      label:
+        contactByKey(db, member.id).get()?.name ?? member.name ?? member.npub,
+    }))
+    .filter(
+      ({ label, npub }) =>
+        label.toLowerCase().includes(term) || npub.includes(term),
+    );
+  return (
+    <View>
+      <Search
+        label={t("messages:marmot.mentionMember")}
+        value={query}
+        onChangeText={setQuery}
+      />
+      <Action size="sm" onPress={onClose}>
+        {t("common:close")}
+      </Action>
+      {error || (current && !roster) ? (
+        <Action
+          size="sm"
+          onPress={() => {
+            if (error) retry();
+            else setAttempt((value) => value + 1);
+          }}
+        >
+          {t("common:retry")}
+        </Action>
+      ) : roster && !members.length ? (
+        <Ink>{t("messages:marmot.noResults")}</Ink>
+      ) : null}
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        style={{ maxHeight: 160 }}
+      >
+        {members.map(({ id, npub, label }) => (
+          <Action
+            key={id}
+            size="sm"
+            onPress={() => {
+              if (!privacy.isBlocked(id)) onSelect(npub);
+            }}
+          >
+            {label}
+          </Action>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
 
 export function ConversationSearch({
   group,
