@@ -42,11 +42,13 @@ import { radius, space, spring, type, useTheme } from "@/theme";
 const icons = {
   phone: { ios: "phone.fill", android: "call" },
   chat: { ios: "bubble.left.fill", android: "chat_bubble" },
+  invitations: { ios: "envelope", android: "mail_outline" },
   person: { ios: "person.crop.circle", android: "account_circle" },
   add: { ios: "plus", android: "add" },
   subtract: { ios: "minus", android: "remove" },
   addPerson: { ios: "person.badge.plus", android: "person_add" },
   search: { ios: "magnifyingglass", android: "search" },
+  more: { ios: "ellipsis", android: "more_horiz" },
   back: { ios: "arrow.left", android: "arrow_back" },
   previous: { ios: "chevron.left", android: "chevron_left" },
   language: { ios: "globe", android: "language" },

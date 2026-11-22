@@ -1,13 +1,11 @@
 import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, ScrollView, View } from "react-native";
-import { Action, Ink, Search } from "@/components/ui/kit";
-import { contactByKey } from "@/db/queries";
+import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { Action, Ink, Row } from "@/components/ui/kit";
 import {
   marmot,
   type MarmotEditHistory,
-  type MarmotGroupDetails,
   type MarmotMessage,
   type MarmotSearchResult,
 } from "@/core/marmot/native";
@@ -16,117 +14,77 @@ import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useMarmotError } from "./marmot-group";
 import { useMarmotWindow } from "./marmot-window";
+import type { useMentionMembers } from "./use-mention-members";
 
 export function MentionMember({
-  group,
+  roster,
+  query,
   onSelect,
-  onClose,
 }: {
-  group: string;
+  roster: ReturnType<typeof useMentionMembers>;
+  query: string;
   onSelect(npub: string): void;
-  onClose(): void;
 }) {
   const { t } = useTranslation(namespaces);
-  const { db, privacy } = useLocal();
-  const [query, setQuery] = useState("");
-  const watch = useCallback(() => marmot.openGroupState(group), [group]);
-  const { snapshot, error, retry } = useMarmotWindow(watch);
-  const revision = snapshot && `${snapshot.generation}:${snapshot.sequence}`;
-  const [result, setResult] = useState<{
-    revision: string;
-    attempt: number;
-    members?: MarmotGroupDetails["members"];
-  }>();
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (revision === undefined) return;
-    let active = true;
-    void marmot.groupDetails(group).then(
-      (details) => {
-        if (active) setResult({ revision, attempt, members: details.members });
-      },
-      () => {
-        if (active) setResult({ revision, attempt });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [attempt, group, revision]);
-  const current =
-    result?.revision === revision && result?.attempt === attempt
-      ? result
-      : undefined;
-  const roster = current?.members;
+  const { privacy } = useLocal();
   const term = query.trim().toLowerCase();
-  const members = (roster ?? [])
-    .filter((member) => !member.self && !privacy.isBlocked(member.id))
-    .map((member) => ({
-      ...member,
-      label:
-        contactByKey(db, member.id).get()?.name ?? member.name ?? member.npub,
-    }))
-    .filter(
-      ({ label, npub }) =>
-        label.toLowerCase().includes(term) || npub.includes(term),
-    );
+  const members = (roster.members ?? []).filter(
+    ({ self, id, label, npub }) =>
+      !self &&
+      !privacy.isBlocked(id) &&
+      (label.toLowerCase().includes(term) || npub.includes(term)),
+  );
   return (
-    <View>
-      <Search
-        label={t("messages:marmot.mentionMember")}
-        value={query}
-        onChangeText={setQuery}
-      />
-      <Action size="sm" onPress={onClose}>
-        {t("common:close")}
-      </Action>
-      {error || (current && !roster) ? (
-        <Action
-          size="sm"
-          onPress={() => {
-            if (error) retry();
-            else setAttempt((value) => value + 1);
-          }}
-        >
+    <View
+      accessibilityLabel={t("messages:marmot.mentionSuggestions")}
+      style={styles.mentions}
+    >
+      {roster.failed ? (
+        <Action size="sm" onPress={roster.retry}>
           {t("common:retry")}
         </Action>
-      ) : roster && !members.length ? (
-        <Ink>{t("messages:marmot.noResults")}</Ink>
+      ) : roster.members && !members.length ? (
+        <Ink style={styles.mentionStatus}>{t("messages:marmot.noResults")}</Ink>
+      ) : !roster.members ? (
+        <Ink style={styles.mentionStatus}>{t("common:checking")}</Ink>
       ) : null}
       <ScrollView
         keyboardShouldPersistTaps="handled"
-        style={{ maxHeight: 160 }}
+        style={styles.mentionResults}
       >
         {members.map(({ id, npub, label }) => (
-          <Action
+          <Row
             key={id}
-            size="sm"
+            title={label}
             onPress={() => {
               if (!privacy.isBlocked(id)) onSelect(npub);
             }}
-          >
-            {label}
-          </Action>
+          />
         ))}
       </ScrollView>
     </View>
   );
 }
 
+const styles = StyleSheet.create({
+  mentions: { marginHorizontal: space.sm },
+  mentionResults: { maxHeight: 160 },
+  mentionStatus: { padding: space.sm },
+});
+
 export function ConversationSearch({
   group,
   media,
+  query,
   onSelect,
-  onClose,
 }: {
   group: string;
   media: boolean;
+  query: string;
   onSelect(id: string, query: string): void;
-  onClose(): void;
 }) {
   const { t } = useTranslation(namespaces);
   const { privacy, chatPreferences } = useLocal();
-  const [query, setQuery] = useState("");
   const [result, setResult] = useState<{
     group: string;
     media: boolean;
@@ -163,19 +121,6 @@ export function ConversationSearch({
   );
   return (
     <View>
-      <Search
-        label={t(
-          media
-            ? "messages:marmot.mediaAndFiles"
-            : "messages:marmot.searchConversation",
-        )}
-        value={query}
-        onChangeText={setQuery}
-        maxLength={128}
-      />
-      <Action size="sm" onPress={onClose}>
-        {t("common:close")}
-      </Action>
       {latest?.failed && <Ink>{t("messages:marmot.operationError")}</Ink>}
       {visible?.length === 0 && <Ink>{t("messages:marmot.noResults")}</Ink>}
       <ScrollView

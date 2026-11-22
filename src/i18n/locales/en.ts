@@ -210,7 +210,8 @@ export const en = {
         "Choose a member to call first. You can add others after they answer.",
       returnToCall: "Return to group call",
       locationPreview: "Location",
-      markUnread: "Mark unread",
+      chatOptions: "Chat options",
+      emptyGroup: "Tap the wave to say hello to the group.",
       health: "Messaging health",
       keyHealthHint:
         "Messaging keys let other people invite this device to an encrypted conversation. Boop refreshes them automatically.",
@@ -256,7 +257,7 @@ export const en = {
       unavailableMembers: "Unavailable invitees",
       checkingInvitees: "Checking invitees",
       inviteeAvailable: "Available to invite",
-      mentionMember: "Mention a member",
+      mentionSuggestions: "Group member suggestions",
       checkAgain: "Check availability again",
       missingInboxRoute: "This address has no usable invitation relay.",
       temporarilyUnavailable:

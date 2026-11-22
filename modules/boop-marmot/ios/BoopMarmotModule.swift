@@ -174,8 +174,11 @@ public final class BoopMarmotModule: Module {
           "canEnableDisbanding": policy.canEnableDisbanding,
           "members": details.members.map { member -> Document in
             let perms = actions[member.memberIdHex]
+            let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
+              ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
             return [
-              "id": member.memberIdHex, "npub": member.npub, "name": bridgeValue(member.displayName),
+              "id": member.memberIdHex, "npub": member.npub,
+              "name": name,
               "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount),
               "canPromote": perms?.canPromote ?? false, "canRemove": perms?.canRemove ?? false,
               "canDemote": perms?.canDemote ?? false,

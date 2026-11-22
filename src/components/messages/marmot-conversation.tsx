@@ -2,13 +2,18 @@ import {
   Chat,
   type ChatHandle,
   ChatHeader,
+  Composer,
   type IMessage,
+  InputToolbar,
+  MessageText,
 } from "@kesha-antonov/react-native-chat";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
 import { router, Stack, useIsFocused } from "expo-router";
 import {
+  type ComponentRef,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -18,11 +23,40 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, StyleSheet, View } from "react-native";
-import { Action, Avatar, Empty, Ink, Screen } from "@/components/ui/kit";
+import {
+  Alert,
+  AppState,
+  BackHandler,
+  Image as BackgroundImage,
+  Keyboard,
+  Pressable,
+  StyleSheet,
+  type TextInput,
+  View,
+} from "react-native";
+import { GlassSurface } from "@/components/glassyui/glass-surface";
+import { ActionMenu } from "@/components/ui/action-menu";
+import {
+  Action,
+  Avatar,
+  Empty,
+  Icon,
+  IconButton,
+  Ink,
+  Screen,
+  Search,
+} from "@/components/ui/kit";
+import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
+import {
+  editMentionText,
+  insertMention,
+  mentionAt,
+  mentionWireOffset,
+  projectMentions,
+} from "@/core/messaging/mentions";
 import {
   encryptTimeLock,
   timeLockKind,
@@ -37,8 +71,8 @@ import { contactByKey } from "@/db/queries";
 import { removeOpenedMessage } from "@/db/open-later";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import { space } from "@/theme";
-import { useChatAppearance } from "./appearance";
+import { radius, space } from "@/theme";
+import { conversationMaterials, useChatAppearance } from "./appearance";
 import { MarmotAttachments } from "./marmot-attachments";
 import { useMarmotError } from "./marmot-group";
 import { conversationRoute } from "./marmot-inbox";
@@ -55,6 +89,7 @@ import { useMarmotWindow } from "./marmot-window";
 import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
 import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { useMentionMembers } from "./use-mention-members";
 
 const locationKind = 24883;
 const systemLabels = {
@@ -182,18 +217,35 @@ export function MarmotConversationScreen({
   const open = useCallback(() => marmot.openConversation(id), [id]);
   const { snapshot, window, error, retry } = useMarmotWindow(open);
   const kit = useChatAppearance(true);
+  const material = conversationMaterials[kit.colorScheme];
   const translateError = useMarmotError();
   const [reply, setReply] = useState<ChatMessage | null>(null);
   const [paging, setPaging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [composer, setComposer] = useState<string>();
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const composerRef = useRef<ComponentRef<typeof TextInput>>(null);
   const [later, setLater] = useState(false);
-  const [poll, setPoll] = useState(false);
   const [laterError, setLaterError] = useState<string>();
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
   const [panel, setPanel] = useState<
-    "search" | "media" | "edits" | "forward" | "mention" | null
+    "search" | "media" | "edits" | "forward" | "poll" | null
   >(initialPanel ?? null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searching = panel === "search" || panel === "media";
+  const closeSearch = useCallback(() => {
+    Keyboard.dismiss();
+    setPanel(null);
+  }, []);
+  useEffect(() => {
+    if (!focused || !searching) return;
+    const back = BackHandler.addEventListener("hardwareBackPress", () => {
+      closeSearch();
+      return true;
+    });
+    return () => back.remove();
+  }, [closeSearch, focused, searching]);
   const [selected, setSelected] = useState<MarmotMessage>();
   const [jump, setJump] = useState<string>();
   const [highlight, setHighlight] = useState("");
@@ -222,6 +274,18 @@ export function MarmotConversationScreen({
     }
   }, [db, rows]);
   const people = snapshot?.identities;
+  const mentionRoster = useMentionMembers(
+    id,
+    Boolean(snapshot && !snapshot.invited && !peer),
+  );
+  const mentionNames = useMemo(() => {
+    const names = new Map<string, string>(
+      people?.map((person) => [toNpub(person.id), person.name]),
+    );
+    for (const member of mentionRoster.members ?? [])
+      names.set(member.npub, member.label);
+    return names;
+  }, [mentionRoster.members, people]);
   const pins = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.pinned(id),
   );
@@ -266,7 +330,7 @@ export function MarmotConversationScreen({
           !omitted.has(row.replyPreview.id)
             ? {
                 _id: row.replyPreview.id,
-                text: row.replyPreview.text,
+                text: projectMentions(row.replyPreview.text, mentionNames).text,
                 user: user(row.replyPreview.sender),
               }
             : undefined,
@@ -280,7 +344,7 @@ export function MarmotConversationScreen({
         row,
       }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
-  }, [rows, people, deleted, blockedKeys, hidden, pins, self, t]);
+  }, [rows, people, deleted, blockedKeys, hidden, mentionNames, pins, self, t]);
   const locallyInitiated = Boolean(
     peer &&
     rows?.some(
@@ -500,50 +564,191 @@ export function MarmotConversationScreen({
       </Screen>
     );
 
+  const menu = [
+    { id: "search", title: t("messages:marmot.searchConversation") },
+    ...(!peer && snapshot.canSend
+      ? [{ id: "call", title: t("calls:startCall") }]
+      : []),
+    ...(pins.length
+      ? [
+          {
+            id: "pins",
+            title: t(
+              pins.length === 1
+                ? "messages:pinnedMessage"
+                : "messages:pinnedMessages",
+            ),
+          },
+        ]
+      : []),
+    ...(!peer && canSend
+      ? [{ id: "poll", title: t("messages:marmot.newPoll") }]
+      : []),
+    ...(canSend && (composer ?? snapshot.draft?.text)?.trim()
+      ? [{ id: "openLater", title: t("messages:openLater") }]
+      : []),
+  ];
+
+  function selectMenuAction(action: string) {
+    switch (action) {
+      case "search":
+        setSearchQuery("");
+        setPanel("search");
+        break;
+      case "poll":
+        if (canDispatch()) setPanel(action);
+        break;
+      case "call":
+        if (!peer && canDispatch()) router.push(conversationRoute(id, "call"));
+        break;
+      case "pins": {
+        if (!pins.length) break;
+        const position = pinOffset % pins.length;
+        const message = pins[position];
+        if (message) moveTo(message);
+        setPinOffset(position + 1);
+        break;
+      }
+      case "openLater":
+        if (canDispatch()) setLater(true);
+        break;
+    }
+  }
+
+  const draftText = composer ?? snapshot.draft?.text ?? "";
+  const draftPresentation = projectMentions(draftText, mentionNames);
+  const candidate =
+    !peer && canSend && composerFocused && !searching
+      ? mentionAt(draftPresentation.text, selection)
+      : undefined;
+  const mention =
+    candidate &&
+    !draftPresentation.mentions.some(
+      (span) => span.start < candidate.end && candidate.start < span.end,
+    )
+      ? candidate
+      : undefined;
+
+  const searchLabel = t(
+    panel === "media"
+      ? "messages:marmot.mediaAndFiles"
+      : "messages:marmot.searchConversation",
+  );
+
   return (
-    <Screen scroll={false}>
+    <ScreenInsets
+      edges={["top", "left", "right"]}
+      style={[styles.screen, { backgroundColor: kit.colors.background }]}
+    >
       <Stack.Screen options={{ headerShown: false }} />
-      <ChatHeader
-        {...kit}
-        title={title}
-        avatar={
-          snapshot.invited
-            ? undefined
-            : { id: peer ?? id, uri: peer ? avatar : groupAvatar }
-        }
-        onBack={() => router.back()}
-        onPressTitle={
-          snapshot.invited
-            ? undefined
-            : () =>
-                peer
-                  ? router.push({
-                      pathname: "/contact/[key]",
-                      params: { key: peer },
-                    })
-                  : router.push(conversationRoute(id, "details"))
-        }
-        renderRight={() =>
-          peer && !blocked && !snapshot.invited ? (
-            <Action
-              size="sm"
-              onPress={() =>
-                router.push({ pathname: "/call/[key]", params: { key: peer } })
-              }
-            >
-              {t("calls:startCall")}
-            </Action>
-          ) : !peer && !snapshot.invited && snapshot.canSend ? (
-            <Action
-              size="sm"
-              onPress={() => router.push(conversationRoute(id, "call"))}
-            >
-              {t("calls:startCall")}
-            </Action>
-          ) : null
-        }
-        isTopInsetApplied={false}
+      <LinearGradient
+        pointerEvents="none"
+        colors={material.canvas}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
+        style={StyleSheet.absoluteFill}
       />
+      {!kit.reducedTransparency && (
+        <BackgroundImage
+          accessible={false}
+          source={require("../../../assets/images/chat-contours.png")}
+          resizeMode="cover"
+          style={[
+            StyleSheet.absoluteFill,
+            styles.contours,
+            { tintColor: material.contours },
+          ]}
+        />
+      )}
+      <GlassSurface
+        preset="standard"
+        elevation="none"
+        tint={material.panel}
+        style={styles.header}
+      >
+        {searching ? (
+          <View
+            style={[
+              styles.searchHeader,
+              { direction: kit.rtl ? "rtl" : "ltr" },
+            ]}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("common:close")}
+              onPress={closeSearch}
+              style={styles.menuButton}
+            >
+              <Icon name="back" color={kit.colors.text} />
+            </Pressable>
+            <View style={styles.searchField}>
+              <Search
+                accessibilityLabel={searchLabel}
+                placeholder={searchLabel}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                maxLength={128}
+                autoFocus={panel === "search"}
+              />
+            </View>
+          </View>
+        ) : (
+          <ChatHeader
+            {...kit}
+            title={title}
+            avatar={
+              snapshot.invited
+                ? undefined
+                : { id: peer ?? id, uri: peer ? avatar : groupAvatar }
+            }
+            onBack={() =>
+              router.canGoBack() ? router.back() : router.replace("/messages")
+            }
+            onPressTitle={
+              snapshot.invited
+                ? undefined
+                : () => router.push(conversationRoute(id, "details"))
+            }
+            renderRight={
+              snapshot.invited
+                ? undefined
+                : () => (
+                    <View style={styles.headerActions}>
+                      {peer && !blocked && (
+                        <IconButton
+                          icon="phone"
+                          label={t("messages:call")}
+                          onPress={() => {
+                            if (!privacy.isBlocked(peer))
+                              router.push({
+                                pathname: "/call/[key]",
+                                params: { key: peer },
+                              });
+                          }}
+                        />
+                      )}
+                      <ActionMenu
+                        label={t("messages:marmot.chatOptions")}
+                        actions={menu}
+                        onSelect={selectMenuAction}
+                      >
+                        <View
+                          style={[
+                            styles.menuButton,
+                            { backgroundColor: kit.colors.accentSoft },
+                          ]}
+                        >
+                          <Icon name="more" color={kit.colors.accent} />
+                        </View>
+                      </ActionMenu>
+                    </View>
+                  )
+            }
+            isTopInsetApplied={false}
+            style={styles.headerContent}
+          />
+        )}
+      </GlassSurface>
       {snapshot.invited ? (
         <MarmotInvitation
           id={id}
@@ -553,55 +758,15 @@ export function MarmotConversationScreen({
         />
       ) : (
         <>
-          <View style={styles.tools}>
-            <Action size="sm" onPress={() => setPanel("search")}>
-              {t("messages:marmot.searchConversation")}
-            </Action>
-            {peer && !blocked && (
-              <Action
-                size="sm"
-                onPress={() => router.push(conversationRoute(id, "details"))}
-              >
-                {t("messages:marmot.conversationDetails")}
-              </Action>
-            )}
-            {!blocked && (
-              <Action
-                size="sm"
-                onPress={() =>
-                  void marmot
-                    .markUnread(id)
-                    .then(() => router.back())
-                    .catch(showError)
-                }
-              >
-                {t("messages:marmot.markUnread")}
-              </Action>
-            )}
-            {pins.length > 0 && (
-              <Action
-                size="sm"
-                onPress={() => {
-                  const position = pinOffset % pins.length;
-                  const message = pins[position];
-                  if (message) moveTo(message);
-                  setPinOffset(position + 1);
-                }}
-              >
-                {t(
-                  pins.length === 1
-                    ? "messages:pinnedMessage"
-                    : "messages:pinnedMessages",
-                )}
-              </Action>
-            )}
-          </View>
-          {(panel === "search" || panel === "media") && (
+          {searching && (
             <ConversationSearch
               group={id}
               media={panel === "media"}
-              onSelect={moveTo}
-              onClose={() => setPanel(null)}
+              query={searchQuery}
+              onSelect={(message, term) => {
+                Keyboard.dismiss();
+                moveTo(message, term);
+              }}
             />
           )}
           {panel === "edits" && selected && (
@@ -619,25 +784,6 @@ export function MarmotConversationScreen({
               onClose={() => setPanel(null)}
             />
           )}
-          {panel === "mention" && canSend && (
-            <MentionMember
-              group={id}
-              onClose={() => setPanel(null)}
-              onSelect={(npub) => {
-                if (!canDispatch()) return;
-                const current = (
-                  composer ??
-                  snapshot.draft?.text ??
-                  ""
-                ).trimEnd();
-                saveDraft(
-                  `${current ? `${current} ` : ""}nostr:${npub} `,
-                  reply?._id ?? null,
-                );
-                setPanel(null);
-              }}
-            />
-          )}
           {snapshot.hasMoreAfter && (
             <Action size="sm" onPress={() => void page("newer")}>
               {t("messages:latest")}
@@ -646,6 +792,14 @@ export function MarmotConversationScreen({
           <View style={styles.chat}>
             <Chat<ChatMessage>
               {...kit}
+              labels={
+                peer
+                  ? kit.labels
+                  : {
+                      ...kit.labels,
+                      emptyChatText: t("messages:marmot.emptyGroup"),
+                    }
+              }
               messages={translated.displayed}
               chatRef={chatRef}
               highlightText={highlight}
@@ -666,6 +820,88 @@ export function MarmotConversationScreen({
               firstUnreadMessageId={snapshot.firstUnread ?? undefined}
               initialText={snapshot.draft?.text}
               text={composer}
+              textInputRef={composerRef}
+              textInputProps={{
+                onFocus: () => setComposerFocused(true),
+                onBlur: () => setComposerFocused(false),
+                onSelectionChange: ({ nativeEvent }) =>
+                  setSelection(nativeEvent.selection),
+              }}
+              renderComposer={(props) => {
+                const presentation = projectMentions(
+                  props.text ?? "",
+                  mentionNames,
+                );
+                return (
+                  <Composer
+                    {...props}
+                    text={presentation.text}
+                    textInputProps={{
+                      ...props.textInputProps,
+                      onChangeText: (next) =>
+                        props.textInputProps?.onChangeText?.(
+                          editMentionText(presentation, next),
+                        ),
+                    }}
+                  />
+                );
+              }}
+              renderMessageText={(props) => (
+                <MessageText
+                  {...props}
+                  currentMessage={{
+                    ...props.currentMessage,
+                    text: projectMentions(
+                      props.currentMessage.text,
+                      mentionNames,
+                    ).text,
+                  }}
+                />
+              )}
+              renderInputToolbar={(props) =>
+                canSend ? (
+                  <>
+                    {mention && !props.editMessage && (
+                      <MentionMember
+                        roster={mentionRoster}
+                        query={mention.query}
+                        onSelect={(npub) => {
+                          if (!canDispatch()) return;
+                          const inserted = insertMention(
+                            draftText,
+                            {
+                              start: mentionWireOffset(
+                                draftPresentation,
+                                mention.start,
+                              ),
+                              end: mentionWireOffset(
+                                draftPresentation,
+                                mention.end,
+                              ),
+                            },
+                            npub,
+                          );
+                          const caret = projectMentions(
+                            inserted.text.slice(0, inserted.caret),
+                            mentionNames,
+                          ).text.length;
+                          setSelection({
+                            start: caret,
+                            end: caret,
+                          });
+                          saveDraft(inserted.text, reply?._id ?? null);
+                          requestAnimationFrame(() =>
+                            composerRef.current?.setSelection(caret, caret),
+                          );
+                        }}
+                      />
+                    )}
+                    <InputToolbar {...props} />
+                  </>
+                ) : blocked ? (
+                  <Ink>{t("messages:marmot.blocked")}</Ink>
+                ) : null
+              }
               onDraftChange={(text) => saveDraft(text, reply?._id ?? null)}
               listProps={{ onViewableItemsChanged: onVisible }}
               attachments={{
@@ -719,12 +955,6 @@ export function MarmotConversationScreen({
                 isLoading: paging,
                 onPress: () => void page("older"),
               }}
-              renderInputToolbar={
-                canSend
-                  ? undefined
-                  : () =>
-                      blocked ? <Ink>{t("messages:marmot.blocked")}</Ink> : null
-              }
               onSend={
                 canSend
                   ? (batch) => {
@@ -963,25 +1193,10 @@ export function MarmotConversationScreen({
               videoRecording={canSend}
             />
           </View>
-          {canSend && (composer ?? snapshot.draft?.text)?.trim() && (
-            <Action size="sm" onPress={() => setLater(true)}>
-              {t("messages:openLater")}
-            </Action>
-          )}
-          {!peer && canSend && (
-            <View style={styles.tools}>
-              <Action size="sm" onPress={() => setPoll(true)}>
-                {t("messages:marmot.newPoll")}
-              </Action>
-              <Action size="sm" onPress={() => setPanel("mention")}>
-                {t("messages:marmot.mentionMember")}
-              </Action>
-            </View>
-          )}
-          {poll && (
+          {panel === "poll" && canSend && (
             <MarmotPollComposer
               group={id}
-              cancel={() => setPoll(false)}
+              cancel={() => setPanel(null)}
               canSend={canDispatch}
             />
           )}
@@ -998,7 +1213,7 @@ export function MarmotConversationScreen({
           )}
         </>
       )}
-    </Screen>
+    </ScreenInsets>
   );
 }
 
@@ -1102,12 +1317,36 @@ function MarmotInvitation({
 }
 
 const styles = StyleSheet.create({
-  chat: { flex: 1 },
-  tools: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: space.xs,
-    paddingHorizontal: space.sm,
+  screen: { flex: 1 },
+  contours: { width: "100%", height: "100%", opacity: 0.25 },
+  header: {
+    borderRadius: radius.card,
+    zIndex: 1,
+    marginHorizontal: space.sm,
+    marginTop: space.xs,
+    marginBottom: space.sm,
   },
+  headerContent: {
+    backgroundColor: "transparent",
+    boxShadow: "none",
+    paddingEnd: space.xs,
+    borderRadius: radius.card,
+  },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  searchHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 56,
+    paddingEnd: space.sm,
+  },
+  searchField: { flex: 1 },
+  menuButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chat: { flex: 1 },
   invitation: { padding: space.md, gap: space.sm },
 });

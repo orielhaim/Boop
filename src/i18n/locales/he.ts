@@ -205,7 +205,8 @@ export const he = {
         "יש לבחור משתתף ראשון לשיחה. אפשר להוסיף אחרים לאחר המענה.",
       returnToCall: "חזרה לשיחה הקבוצתית",
       locationPreview: "מיקום",
-      markUnread: "סימון כלא נקרא",
+      chatOptions: "אפשרויות צ׳אט",
+      emptyGroup: "לחצו על היד כדי להגיד שלום לקבוצה.",
       health: "מצב ההודעות",
       keyHealthHint:
         "מפתחות ההודעות מאפשרים להזמין את המכשיר לשיחה מוצפנת. Boop מרעננת אותם אוטומטית.",
@@ -248,7 +249,7 @@ export const he = {
       unavailableMembers: "מוזמנים לא זמינים",
       checkingInvitees: "בודק זמינות מוזמנים",
       inviteeAvailable: "זמין להזמנה",
-      mentionMember: "אזכור חבר בקבוצה",
+      mentionSuggestions: "הצעות לחברי הקבוצה",
       checkAgain: "בדיקה חוזרת של הזמינות",
       missingInboxRoute: "לכתובת זו אין ממסר זמין לקבלת הזמנות.",
       temporarilyUnavailable: "הודעות לכתובת זו אינן זמינות כרגע.",

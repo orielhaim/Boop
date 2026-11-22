@@ -179,6 +179,8 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
 }
 
 private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
+  let selected = snapshot.header.selected
+  let peer = selected.titleSource == .peerProfile || selected.titleSource == .peerFallback ? selected.peerId : nil
   let image: String?
   if case .encryptedGroupImage(let avatar, _) = snapshot.header.selected.avatar { image = avatar.imageHashHex }
   else { image = nil }
@@ -189,7 +191,7 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "hasMoreBefore": snapshot.hasMoreBefore,
     "hasMoreAfter": snapshot.hasMoreAfter,
     "title": bridgeValue(literal(snapshot.header.selected)),
-    "peer": bridgeValue(snapshot.header.selected.peerId),
+    "peer": bridgeValue(peer),
     "image": bridgeValue(image),
     "lifecycle": wireName(snapshot.header.lifecycle),
     "memberCount": bridgeValue(snapshot.header.memberCount.map(Double.init)),

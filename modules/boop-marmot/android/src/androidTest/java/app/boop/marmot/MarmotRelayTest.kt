@@ -148,6 +148,16 @@ class MarmotRelayTest {
 
         val declined = alice.kit.createGroupDetailed(alice.key, "Declined fixture", listOf(bob.key), null)
           .created?.groupIdHex ?: error("Could not create decline fixture")
+        val smallGroup = ConversationWindow(alice.kit.openConversationWindow(
+          alice.key, declined, ConversationOpenModeFfi.LATEST, null, 3u, 15_000u,
+        ))
+        try {
+          val header = checkNotNull(smallGroup.initial())
+          assertEquals("Declined fixture", header["title"])
+          assertNull(header["peer"])
+        } finally {
+          smallGroup.stop()
+        }
         await("declinable Welcome") {
           bob.kit.chatList(bob.key, false).any { it.groupIdHex == declined && it.pendingConfirmation }
         }
@@ -179,6 +189,7 @@ class MarmotRelayTest {
     val window = ConversationWindow(handle)
     try {
       val initial = checkNotNull(window.initial())
+      assertEquals(sender.key, initial["peer"])
       val initialRows = initial["messages"] as List<*>
       assertEquals(3, initialRows.size)
       val body = "new message for the bounded window"

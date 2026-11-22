@@ -135,7 +135,9 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "hasMoreBefore" to snapshot.hasMoreBefore,
   "hasMoreAfter" to snapshot.hasMoreAfter,
   "title" to snapshot.header.selected.literal(),
-  "peer" to snapshot.header.selected.peerId,
+  "peer" to snapshot.header.selected.takeIf {
+    it.titleSource == PresentationSourceFfi.PEER_PROFILE || it.titleSource == PresentationSourceFfi.PEER_FALLBACK
+  }?.peerId,
   "image" to (snapshot.header.selected.avatar as? SelectedAvatarFfi.EncryptedGroupImage)?.image?.imageHashHex,
   "lifecycle" to snapshot.header.lifecycle.name.lowercase(),
   "memberCount" to snapshot.header.memberCount?.toDouble(),

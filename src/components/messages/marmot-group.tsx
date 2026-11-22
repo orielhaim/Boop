@@ -2,7 +2,7 @@ import { router, Stack, useIsFocused } from "expo-router";
 import type { File } from "expo-file-system";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, StyleSheet, View } from "react-native";
+import { Alert, AppState, Pressable, StyleSheet, View } from "react-native";
 import { useStore } from "zustand";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
@@ -360,7 +360,7 @@ export function MarmotGroupDetailsScreen({
   showCall?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity, marmotSession, privacy, calling } = useLocal();
+  const { db, identity, marmotSession, privacy, calling } = useLocal();
   const call = useStore(calling.store, (state) => state.call);
   const translateError = useMarmotError();
   const [details, setDetails] = useState<MarmotGroupDetails>();
@@ -453,7 +453,15 @@ export function MarmotGroupDetailsScreen({
 
   const imageUri =
     mayViewPhoto && image?.hash === details?.image ? image?.uri : undefined;
-  const groupName = details?.name || t("messages:marmot.group");
+  const directPeer =
+    details?.kind === "direct"
+      ? details.members.find((member) => !member.self)
+      : undefined;
+  const groupName = directPeer
+    ? contactByKey(db, directPeer.id).get()?.name ||
+      directPeer.name ||
+      directPeer.npub
+    : details?.name || t("messages:marmot.group");
   const canEditImage =
     details?.isAdmin &&
     details.membership === "member" &&
@@ -500,20 +508,37 @@ export function MarmotGroupDetailsScreen({
         </Empty>
       ) : details ? (
         <>
-          <EditableAvatar
-            disabled={!canEditImage || busy || picker.busy}
-            onPick={(source) => void picker.pick(source)}
-            onRemove={
-              details.image
-                ? () =>
-                    confirm(t("settings:photoRemove"), () =>
-                      marmot.updateGroupImage(id, null),
-                    )
-                : undefined
-            }
-          >
-            <GlassAvatar name={groupName} src={imageUri} size="xl" />
-          </EditableAvatar>
+          {directPeer ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("contacts:openProfile", {
+                name: groupName,
+              })}
+              onPress={() =>
+                router.push({
+                  pathname: "/contact/[key]",
+                  params: { key: directPeer.id },
+                })
+              }
+            >
+              <Avatar publicKey={directPeer.id} name={groupName} size="xl" />
+            </Pressable>
+          ) : (
+            <EditableAvatar
+              disabled={!canEditImage || busy || picker.busy}
+              onPick={(source) => void picker.pick(source)}
+              onRemove={
+                details.image
+                  ? () =>
+                      confirm(t("settings:photoRemove"), () =>
+                        marmot.updateGroupImage(id, null),
+                      )
+                  : undefined
+              }
+            >
+              <GlassAvatar name={groupName} src={imageUri} size="xl" />
+            </EditableAvatar>
+          )}
           {picker.error && <Ink>{picker.error}</Ink>}
           {details.image && mayViewPhoto && !imageUri && (
             <Action size="sm" disabled={busy} onPress={() => void loadImage()}>

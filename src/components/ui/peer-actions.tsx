@@ -24,6 +24,19 @@ export function PeerActions({
     <GlassSheet open={open} onOpenChange={onOpenChange}>
       <GlassSheetContent side="bottom">
         <GlassSheetTitle>{title}</GlassSheetTitle>
+        {mode === "chat" && (
+          <Row
+            leading={<Icon name="addPerson" />}
+            title={t("messages:marmot.newGroup")}
+            onPress={() => {
+              onOpenChange(false);
+              router.push({
+                pathname: "/chat/[key]",
+                params: { key: "new-group" },
+              });
+            }}
+          />
+        )}
         <Row
           leading={<Icon name={mode === "chat" ? "chat" : "phone"} />}
           title={t("contacts:enterAddress")}

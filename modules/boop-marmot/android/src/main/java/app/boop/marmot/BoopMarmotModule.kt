@@ -235,7 +235,9 @@ class BoopMarmotModule : Module() {
           "members" to details.members.map { member ->
             val perms = actions[member.memberIdHex]
             mapOf(
-              "id" to member.memberIdHex, "npub" to member.npub, "name" to member.displayName,
+              "id" to member.memberIdHex, "npub" to member.npub,
+              "name" to (member.displayName?.takeUnless { it == member.memberIdHex }
+                ?: it.kit.defaultProfilePseudonym(member.memberIdHex)),
               "self" to member.isSelf, "admin" to member.isAdmin, "devices" to member.deviceCount.toInt(),
               "canPromote" to (perms?.canPromote ?: false), "canRemove" to (perms?.canRemove ?: false),
               "canDemote" to (perms?.canDemote ?: false),
