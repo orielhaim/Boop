@@ -129,6 +129,8 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "after removal", "after-removal")
         bob.receives(group, alice.key, "after removal")
         assertFalse(carol.kit.messages(carol.key, group, 30u, null).any { it.plaintext == "after removal" })
+        carol.close()
+        verifyNewGroupMember(alice, group, File(root, "david"), relay, blossom)
         groupPoll(alice, bob, group)
         val secondAlice = Client(File(root, "alice-linked"), relay, blossom)
         try {
@@ -230,6 +232,25 @@ class MarmotRelayTest {
     await("encrypted poll result") {
       alice.kit.timelineMessages(alice.key, query).messages.single { it.poll?.question == question }
         .poll?.options?.any { it.id == option.id && it.votes == 1uL } == true
+    }
+  }
+
+  private suspend fun verifyNewGroupMember(admin: Client, group: String, directory: File, relay: String, blossom: String?) {
+    val invitee = Client(directory, relay, blossom)
+    try {
+      invitee.start()
+      await("late invitee KeyPackage publication") {
+        invitee.kit.accountSetupReadiness(invitee.key) == AccountSetupReadinessFfi.NETWORK_READY
+      }
+      val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
+      val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
+      assertEquals(MemberResolutionStatusFfi.SELECTED, outcome.status)
+      invitee.accept(group)
+      val message = "hello after joining the group"
+      admin.kit.sendTextWithClientToken(admin.key, group, message, "late-member-message")
+      invitee.receives(group, admin.key, message)
+    } finally {
+      invitee.close()
     }
   }
 
