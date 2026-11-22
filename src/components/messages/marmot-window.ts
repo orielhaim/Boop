@@ -32,11 +32,18 @@ export function useMarmotWindow<Snapshot, Direction>(
   const [retry, setRetry] = useState(0);
   const [loaded, setLoaded] = useState<{
     open: typeof open;
+    accountRevision: number;
     window?: MarmotWindow<Snapshot, Direction>;
     error?: string;
   }>();
-  const window =
-    isFocused && !locked && loaded?.open === open ? loaded.window : undefined;
+  const current =
+    isFocused &&
+    !locked &&
+    loaded?.open === open &&
+    loaded.accountRevision === accountRevision
+      ? loaded
+      : undefined;
+  const window = current?.window;
   const state = useSyncExternalStore(
     window?.subscribe ?? subscribeEmpty,
     window?.getState ?? empty,
@@ -48,17 +55,18 @@ export function useMarmotWindow<Snapshot, Direction>(
     let active: MarmotWindow<Snapshot, Direction> | undefined;
     void marmotSession
       .ready()
-      .then(open)
+      .then(() => (cancelled ? undefined : open()))
       .then((next) => {
+        if (!next) return;
         if (cancelled) return next.close();
         active = next;
-        setLoaded({ open, window: next });
+        setLoaded({ open, accountRevision, window: next });
       })
       .catch((error) => {
         if (!cancelled) {
           const code = marmotErrorCode(error);
           if (__DEV__) console.info("[marmot] window startup", { code });
-          setLoaded({ open, error: code });
+          setLoaded({ open, accountRevision, error: code });
         }
       });
     return () => {
@@ -70,12 +78,7 @@ export function useMarmotWindow<Snapshot, Direction>(
   return {
     window,
     snapshot: state?.status === "ready" ? state.snapshot : undefined,
-    error:
-      state?.status === "closed"
-        ? state.code
-        : loaded?.open === open
-          ? loaded.error
-          : undefined,
+    error: state?.status === "closed" ? state.code : current?.error,
     retry() {
       setLoaded(undefined);
       setRetry((value) => value + 1);

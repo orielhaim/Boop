@@ -374,6 +374,10 @@ export function LocalSessionLifecycle() {
       db.select().from(relaySettings).orderBy(asc(relaySettings.url)).all();
     let rows = readRelays();
     let intent = preference(db, inboxIntentKey);
+    let configuration = configuredRelays(rows, intent);
+    const attachmentOrigin = () =>
+      mediaSdk.configured("attachment")[0]?.origin ?? null;
+    let mediaOrigin = attachmentOrigin();
     let queued = false;
     let mounted = true;
     let relaysChanged = false;
@@ -413,14 +417,10 @@ export function LocalSessionLifecycle() {
       if (!chatPreferences.enabled())
         void marmotSession.stop().catch(() => undefined);
       else if (AppState.currentState === "active")
-        void marmotSession.start(
-          configuredRelays(rows, intent),
-          mediaSdk.configured("attachment")[0]?.origin ?? null,
-        );
+        void marmotSession.start(configuration, mediaOrigin);
     }
     function connect() {
       callSignaling.start();
-      const configuration = configuredRelays(rows, intent);
       relays.start(configuration);
       connectMessaging();
     }
@@ -440,6 +440,7 @@ export function LocalSessionLifecycle() {
           if (relaysChanged) rows = readRelays();
           relaysChanged = false;
           intent = nextIntent;
+          configuration = configuredRelays(rows, intent);
           if (AppState.currentState === "active") connect();
         });
       },
@@ -489,8 +490,19 @@ export function LocalSessionLifecycle() {
     });
     update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
-    const unsubscribeChats = chatPreferences.subscribe(connectMessaging);
-    const unsubscribeMedia = mediaSdk.subscribe(connectMessaging);
+    let chatsEnabled = chatPreferences.enabled();
+    const unsubscribeChats = chatPreferences.subscribe(() => {
+      const next = chatPreferences.enabled();
+      if (next === chatsEnabled) return;
+      chatsEnabled = next;
+      connectMessaging();
+    });
+    const unsubscribeMedia = mediaSdk.subscribe(() => {
+      const next = attachmentOrigin();
+      if (next === mediaOrigin) return;
+      mediaOrigin = next;
+      connectMessaging();
+    });
     const unsubscribeAccount = marmotSession.subscribe(updateBackupConditions);
     const battery = addBatteryStateListener(updateBackupConditions);
     const network = addNetworkStateListener(updateBackupConditions);

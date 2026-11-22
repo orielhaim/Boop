@@ -20,7 +20,7 @@ const event = z.object({
   content: z.string().max(90_000),
 });
 const signedEvent = event.extend({ sig: z.string().regex(/^[0-9a-f]{128}$/) });
-export const unsignedEvent = event.extend({ sig: z.undefined().optional() });
+const unsignedEvent = event.extend({ sig: z.undefined().optional() });
 export type UnsignedEvent = z.infer<typeof unsignedEvent>;
 
 export function unsignedRumor<T extends Omit<UnsignedEvent, "id" | "sig">>(
@@ -87,7 +87,7 @@ export async function unwrapRumor(
       getEventHash(rumor) !== rumor.id
     )
       return null;
-    return { rumor, plaintextLength: plaintext.length, wrap };
+    return rumor;
   } catch {
     return null;
   }

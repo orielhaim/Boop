@@ -6,13 +6,16 @@ import { type CallSignal, callSignalKind, parseCallSignal } from "./signals";
 
 export const callReplyRelayTag = "boop:reply-relay";
 
+function providesReplyRoute(type: CallSignal["type"]) {
+  return type === "call.invite" || type === "call.rtc" || type === "call.join";
+}
+
 export async function unwrapCallSignal(
   input: unknown,
   signer: NDKSigner,
   isBlocked?: (key: string) => boolean,
 ) {
-  const opened = await unwrapRumor(input, signer, isBlocked);
-  const rumor = opened?.rumor;
+  const rumor = await unwrapRumor(input, signer, isBlocked);
   const recipientKey = signer.userSync.pubkey;
   if (!rumor || rumor.kind !== callSignalKind) return null;
   const participants = new Set(
@@ -30,14 +33,13 @@ export async function unwrapCallSignal(
     Date.now(),
   );
   if (!signal) return null;
-  const replyRelays =
-    signal.type === "call.invite" || signal.type === "call.rtc"
-      ? rumor.tags
-          .flatMap(([tag, url]) =>
-            tag === callReplyRelayTag && url ? [url] : [],
-          )
-          .slice(0, 3)
-      : [];
+  const replyRelays = providesReplyRoute(signal.type)
+    ? rumor.tags
+        .flatMap(([tag, url]) =>
+          tag === callReplyRelayTag && url ? [url] : [],
+        )
+        .slice(0, 3)
+    : [];
   return { id: rumor.id, signal, replyRelays };
 }
 
@@ -89,7 +91,8 @@ export function createCallSignalingService({
         if (expiresAt <= now) seen.delete(key);
       if (seen.size >= 4_096) return;
       seen.set(opened.id, signal.expiresAt);
-      if (replyRelays.length) {
+      const targets = safeReplyTargets(replyRelays);
+      if (targets.length) {
         const key = routeKey(signal.callId, signal.senderKey);
         if (!replyRoutes.has(key) && replyRoutes.size >= 32) {
           const oldest = replyRoutes.keys().next().value;
@@ -97,7 +100,7 @@ export function createCallSignalingService({
         }
         replyRoutes.set(key, {
           expiresAt: signal.expiresAt,
-          relays: replyRelays,
+          relays: targets,
         });
       }
       for (const listener of listeners) listener(signal);
@@ -149,7 +152,21 @@ export function createCallSignalingService({
       if (!watches.has(relay)) watches.set(relay, watch(relay));
   }
 
-  function prepareRoute(callId: string, recipient: string) {
+  function safeReplyTargets(urls: string[]) {
+    return transport.safeTargets(
+      urls.map((url) => ["relay", url]),
+      "inbox",
+    );
+  }
+
+  function replyTargets(callId: string, recipient: string) {
+    const route = replyRoutes.get(routeKey(callId, recipient));
+    return route && route.expiresAt > Date.now()
+      ? safeReplyTargets(route.relays)
+      : [];
+  }
+
+  function discoverRoute(callId: string, recipient: string) {
     return transport.findCallInbox(callId, recipient, relays.discoveryRelays());
   }
 
@@ -170,22 +187,9 @@ export function createCallSignalingService({
       !relays.connectedRelays().length
     )
       return false;
-    const replyRoute = replyRoutes.get(
-      routeKey(signal.callId, signal.recipientKey),
-    );
-    const replyTargets =
-      replyRoute && replyRoute.expiresAt > Date.now()
-        ? transport.safeTargets(
-            replyRoute.relays.map((url) => ["relay", url]),
-            "inbox",
-          )
-        : [];
+    const targets = replyTargets(signal.callId, signal.recipientKey);
     const tags = [["p", signal.recipientKey]];
-    if (
-      signal.type === "call.invite" ||
-      signal.type === "call.rtc" ||
-      signal.type === "call.join"
-    ) {
+    if (providesReplyRoute(signal.type)) {
       for (const relay of relays.inboxRelays().slice(0, 3))
         tags.push([callReplyRelayTag, relay.url]);
     }
@@ -198,10 +202,10 @@ export function createCallSignalingService({
     });
     const envelope = await transport.wrap(rumor, signal.recipientKey);
     if (!live()) return false;
-    if (replyTargets.length) {
+    if (targets.length) {
       const started = performance.now();
-      const accepted = await transport.publish(envelope, replyTargets, live);
-      callMetric("call reply via invitation", {
+      const accepted = await transport.publish(envelope, targets, live);
+      callMetric("call reply via authenticated hint", {
         ms: performance.now() - started,
         accepted,
         answer: signal.type === "call.accept",
@@ -209,7 +213,7 @@ export function createCallSignalingService({
       if (accepted) return true;
     }
     if (!live()) return false;
-    const urls = await prepareRoute(signal.callId, signal.recipientKey);
+    const urls = await discoverRoute(signal.callId, signal.recipientKey);
     return live() && urls.length > 0 && transport.publish(envelope, urls, live);
   }
 
@@ -228,7 +232,10 @@ export function createCallSignalingService({
       replyRoutes.clear();
     },
     send,
-    prepareRoute,
+    async prepareRoute(callId: string, recipient: string) {
+      if (!replyTargets(callId, recipient).length)
+        await discoverRoute(callId, recipient);
+    },
     subscribe(listener: (signal: CallSignal) => void) {
       listeners.add(listener);
       return () => {

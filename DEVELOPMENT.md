@@ -23,7 +23,7 @@ bunx expo-doctor
 bun scripts/test-call-relay.ts
 ```
 
-The call-signaling integration test uses OpenSSL on PATH and a local TLS relay. It checks first-contact invitations, replay suppression, and encrypted RTC replies without starting Marmot.
+The call-signaling integration test uses OpenSSL on PATH and local TLS relays. It checks first-contact invitations, encrypted RTC replies, and group join replies between separate inboxes. It verifies that a usable authenticated reply route skips discovery and that a rejected route falls back to the recipient's published inbox.
 
 ### Android Marmot relay test
 
@@ -45,6 +45,8 @@ An authorized HTTPS Blossom endpoint also exercises the encrypted group-image ro
 The local Expo module opens the SQLCipher-backed MarmotKit account for the active Nostr address. The SecureStore identity remains the only persistent copy of the Nostr signing key. The native credential adapter supplies that key in memory and checks the account binding before opening the device database. MDK owns MLS keys, invitations, group state, timeline projections, delivery, and retained attachments. Chat Kit reads prepared windows through `src/core/marmot/native.ts`.
 
 The enabled discovery relays are configured as MarmotKit directory indexers as well as account bootstrap relays. The 0.18.0 UniFFI directory lookup also reads the constructor's relay pool, which includes enabled general and discovery relays. The account's published relay lists still use the configured general and inbox selections. Inbox records can be available on the indexers while KeyPackages are served from the account's general relays.
+
+The protected session gives MarmotKit the relay selections and preferred attachment origin. The Nostr relay service owns inbox publication intent. Media server health and local chat presentation preferences do not reconfigure the Marmot account.
 
 Received message attachments use MarmotKit's host-managed acquisition policy. Chat Kit renders local ThumbHash previews and leases verified files for playback or export. Download and Cancel drive the native attachment job. A gallery may open retained files from its loaded window.
 

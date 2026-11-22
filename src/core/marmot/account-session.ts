@@ -1,14 +1,13 @@
-import type { RelayConfiguration } from "../nostr/config";
-import { marmot, type MarmotReadiness } from "./native";
+import { marmot, type MarmotReadiness, type MarmotRelays } from "./native";
 
 export function createMarmotSession(
   open: (
-    relays: RelayConfiguration,
+    relays: MarmotRelays,
     mediaOrigin: string | null,
   ) => Promise<MarmotReadiness>,
 ) {
   type Configuration = {
-    relays: RelayConfiguration;
+    relays: MarmotRelays;
     mediaOrigin: string | null;
   };
   let desired: Configuration | null = null;
@@ -54,8 +53,11 @@ export function createMarmotSession(
   }
 
   return {
-    start(relays: RelayConfiguration, mediaOrigin: string | null) {
-      desired = { relays, mediaOrigin };
+    start(
+      { general, inbox, discovery }: MarmotRelays,
+      mediaOrigin: string | null,
+    ) {
+      desired = { relays: { general, inbox, discovery }, mediaOrigin };
       return reconcile();
     },
     async stop() {

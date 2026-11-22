@@ -49,9 +49,6 @@ class BoopMarmotModule : Module() {
 
     AsyncFunction("closeAccount").Coroutine<Unit> { shutdown() }
     AsyncFunction("catchUp").Coroutine<Unit> { withSession { it.kit.catchUpAccounts() } }
-    AsyncFunction("accountReadiness").Coroutine<String> {
-      withSession { it.readiness() }
-    }
     AsyncFunction("diagnostics").Coroutine<Document> {
       withSession {
         val relays = it.kit.relayHealth()
@@ -703,7 +700,7 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    OnDestroy { observer.launch { shutdown(); observer.cancel() } }
+    OnDestroy { observer.launch { try { shutdown() } finally { observer.cancel() } } }
   }
 
   private fun dimensions(width: Int, height: Int): String? =

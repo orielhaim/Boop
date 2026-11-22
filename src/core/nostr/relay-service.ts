@@ -459,8 +459,6 @@ export function createRelayService({
         .map(({ relay }) => relay),
     configuration: () => configuration,
     generation: () => generation,
-    senderCopyRelays: () =>
-      publication?.urls ?? configuration.inbox.slice(0, 3),
     getStatus: () => status,
     getRelayStates: () => snapshot,
     getInboxStatus: () => publicationStatus,

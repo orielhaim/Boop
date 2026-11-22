@@ -4,9 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchFilters } from "nostr-tools/filter";
 import { z } from "zod";
-import { createCallSignalingService } from "../src/core/calling/signaling-service";
-import type { CallSignal, InviteSignal } from "../src/core/calling/signals";
-import { verifiedEvent } from "../src/core/nostr/gift-wrap";
+import {
+  callReplyRelayTag,
+  createCallSignalingService,
+} from "../src/core/calling/signaling-service";
+import {
+  type CallSignal,
+  type InviteSignal,
+  type JoinSignal,
+  callSignalKind,
+} from "../src/core/calling/signals";
+import { unsignedRumor, verifiedEvent } from "../src/core/nostr/gift-wrap";
 import { createRelayService } from "../src/core/nostr/relay-service";
 
 const filter = z.object({
@@ -55,12 +63,31 @@ function client(seed: string) {
     signaling,
     received,
     blocks,
-    start(url: string) {
+    async publishJoin(
+      signal: JoinSignal,
+      destination: string,
+      hints: string[],
+    ) {
+      const rumor = unsignedRumor({
+        kind: callSignalKind,
+        pubkey: signer.pubkey,
+        content: JSON.stringify(signal),
+        tags: [
+          ["p", signal.recipientKey],
+          ...hints.map((url) => [callReplyRelayTag, url]),
+        ],
+        created_at: signal.createdAt / 1_000,
+      });
+      const wrap = await relays.transport.wrap(rumor, signal.recipientKey);
+      if (!(await relays.transport.publish(wrap, [destination], () => true)))
+        throw new Error("Could not publish test join request");
+    },
+    start(url: string, discovery: string[] = []) {
       signaling.start();
       relays.start({
         general: [url],
         inbox: [url],
-        discovery: [],
+        discovery,
         intent: "initial",
       });
     },
@@ -80,8 +107,11 @@ async function waitFor(description: string, condition: () => boolean) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
-async function runScenario(tls: string) {
+function startRelay(tls: string) {
   const events = new Map<string, Event>();
+  const lookups: string[] = [];
+  let rejectedWrites = 0;
+  let rejectRecipient: string | undefined;
   const sockets = new Set<Bun.ServerWebSocket<Connection>>();
   const relay = Bun.serve<Connection>({
     hostname: "127.0.0.1",
@@ -123,6 +153,10 @@ async function runScenario(tls: string) {
         }
         if (command === "REQ") {
           const [_, id, ...filters] = parsed.data;
+          for (const row of filters) {
+            if (row.kinds?.includes(10050))
+              lookups.push(...(row.authors ?? []));
+          }
           if (
             filters.some(
               (row) =>
@@ -160,6 +194,17 @@ async function runScenario(tls: string) {
           send(["OK", signed.id, valid, valid ? "" : "invalid: challenge"]);
           return;
         }
+        if (
+          rejectRecipient &&
+          signed.kind === 1059 &&
+          signed.tags.some(
+            ([tag, key]) => tag === "p" && key === rejectRecipient,
+          )
+        ) {
+          rejectedWrites++;
+          send(["OK", signed.id, false, "blocked: fixture route unavailable"]);
+          return;
+        }
         events.set(signed.id, signed);
         send(["OK", signed.id, true, ""]);
         for (const peer of sockets) {
@@ -171,10 +216,33 @@ async function runScenario(tls: string) {
       },
     },
   });
+  return {
+    events,
+    lookups,
+    url: `wss://127.0.0.1:${relay.port}/`,
+    rejectCallsTo(key: string) {
+      rejectRecipient = key;
+    },
+    rejectedWrites: () => rejectedWrites,
+    withdrawInbox(key: string) {
+      const records = [...events.values()].filter(
+        (event) => event.kind === 10050 && event.pubkey === key,
+      );
+      for (const record of records) events.delete(record.id);
+      return () => {
+        for (const record of records) events.set(record.id, record);
+      };
+    },
+    stop: () => relay.stop(true),
+  };
+}
+
+async function runScenario(tls: string) {
+  const relay = startRelay(tls);
   const alice = client("01");
   const bob = client("02");
   try {
-    const url = `wss://127.0.0.1:${relay.port}/`;
+    const { url, events } = relay;
     alice.start(url);
     bob.start(url);
     await waitFor("inbox advertisements", () =>
@@ -254,13 +322,151 @@ async function runScenario(tls: string) {
   } finally {
     alice.stop();
     bob.stop();
-    await relay.stop(true);
+    await relay.stop();
+  }
+}
+
+async function runJoinScenario(tls: string) {
+  const aliceInbox = startRelay(tls);
+  const bobInbox = startRelay(tls);
+  const alice = client("01");
+  const bob = client("02");
+  try {
+    // The local fixture URLs are explicitly configured so the production
+    // private-address policy accepts them. Each client watches only its inbox.
+    alice.start(aliceInbox.url, [bobInbox.url]);
+    bob.start(bobInbox.url, [aliceInbox.url]);
+    await waitFor("separate inbox advertisements", () =>
+      [alice, bob].every(
+        ({ relays }) => relays.getInboxStatus() === "published",
+      ),
+    );
+    const createdAt = Math.floor(Date.now() / 1_000) * 1_000;
+    const request: JoinSignal = {
+      version: 1,
+      type: "call.join",
+      callId: "ac".repeat(32),
+      nonce: "04".repeat(32),
+      groupId: "06".repeat(32),
+      senderKey: bob.key,
+      recipientKey: alice.key,
+      createdAt,
+      expiresAt: createdAt + 30_000,
+    };
+    const bobLookups = () =>
+      [...aliceInbox.lookups, ...bobInbox.lookups].filter(
+        (key) => key === bob.key,
+      ).length;
+    async function reply(join: JoinSignal) {
+      await alice.signaling.prepareRoute(join.callId, bob.key);
+      const accepted = await alice.signaling.send(
+        {
+          version: 1,
+          type: "call.invite",
+          callId: join.callId,
+          groupId: join.groupId,
+          joinNonce: join.nonce,
+          nonce: "05".repeat(32),
+          roomId: "07".repeat(32),
+          senderKey: alice.key,
+          recipientKey: bob.key,
+          createdAt,
+          expiresAt: join.expiresAt,
+          offer: {
+            peerId: "A".repeat(20),
+            offerId: "O".repeat(20),
+            offer: "relayed group offer",
+          },
+        },
+        () => true,
+      );
+      if (!accepted) throw new Error("Group join reply was not published");
+      await waitFor("correlated group join reply", () =>
+        bob.received.some(
+          (event) =>
+            event.type === "call.invite" && event.joinNonce === join.nonce,
+        ),
+      );
+    }
+    const baseline = bobLookups();
+    const restoreAliceIndex = aliceInbox.withdrawInbox(bob.key);
+    const restoreBobIndex = bobInbox.withdrawInbox(bob.key);
+    if (!(await bob.signaling.send(request, () => true)))
+      throw new Error("Group join was not published");
+    await waitFor("join on Alice's inbox", () =>
+      alice.received.some((event) => event.nonce === request.nonce),
+    );
+    await reply(request);
+    if (bobLookups() !== baseline)
+      throw new Error("A usable join reply hint triggered redundant discovery");
+    restoreAliceIndex();
+    restoreBobIndex();
+
+    // The relay is trusted as a destination, but rejects this particular write.
+    aliceInbox.rejectCallsTo(bob.key);
+    const fallback = {
+      ...request,
+      callId: "ad".repeat(32),
+      nonce: "08".repeat(32),
+    };
+    await bob.publishJoin(fallback, aliceInbox.url, [
+      aliceInbox.url.replace("wss:", "ws:"),
+      aliceInbox.url,
+    ]);
+    await waitFor("join with an unavailable reply route", () =>
+      alice.received.some((event) => event.nonce === fallback.nonce),
+    );
+    await reply(fallback);
+    if (aliceInbox.rejectedWrites() !== 1 || bobLookups() <= baseline)
+      throw new Error(
+        "Unavailable join reply route did not fall back to discovery",
+      );
+    const afterFallback = bobLookups();
+    await alice.signaling.prepareRoute("af".repeat(32), bob.key);
+    if (bobLookups() <= afterFallback)
+      throw new Error("A join reply route leaked into another call");
+
+    await bob.publishJoin(request, aliceInbox.url, [bobInbox.url]);
+    await bob.publishJoin(
+      { ...request, nonce: "09".repeat(32), senderKey: alice.key },
+      aliceInbox.url,
+      [bobInbox.url],
+    );
+    await bob.publishJoin(
+      {
+        ...request,
+        nonce: "0a".repeat(32),
+        createdAt: createdAt - 60_000,
+        expiresAt: createdAt - 30_000,
+      },
+      aliceInbox.url,
+      [bobInbox.url],
+    );
+    alice.blocks.add(bob.key);
+    await bob.publishJoin(
+      { ...request, nonce: "0b".repeat(32) },
+      aliceInbox.url,
+      [bobInbox.url],
+    );
+    await Bun.sleep(250);
+    if (alice.received.length !== 2)
+      throw new Error(
+        "Replayed, forged, expired or blocked join reached listeners",
+      );
+    console.info(
+      "Verified group join replies across separate TLS inboxes with authenticated hints and discovery fallback.",
+    );
+  } finally {
+    alice.stop();
+    bob.stop();
+    await Promise.all([aliceInbox.stop(), bobInbox.stop()]);
   }
 }
 
 const directory = process.argv[2];
 if (directory) {
   await runScenario(directory);
+  await runJoinScenario(directory);
   process.exit(0);
 } else {
   const temp = await mkdtemp(join(tmpdir(), "boop-call-relay-"));

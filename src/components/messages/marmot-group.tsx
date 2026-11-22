@@ -371,9 +371,9 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
   );
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
-  const revision = state.snapshot?.sequence;
+  const { generation, sequence } = state.snapshot ?? {};
   useEffect(() => {
-    if (revision === undefined) return;
+    if (generation === undefined || sequence === undefined) return;
     let active = true;
     void load()
       .then((data) => {
@@ -388,7 +388,7 @@ export function MarmotGroupDetailsScreen({ id }: { id: string }) {
     return () => {
       active = false;
     };
-  }, [load, revision]);
+  }, [generation, load, sequence]);
 
   async function update(task: () => Promise<void>, leave = false) {
     if (busy) return;

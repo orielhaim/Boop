@@ -6,6 +6,11 @@ import { hexToBytes } from "nostr-tools/utils";
 import { z } from "zod";
 import type { RelayConfiguration } from "../nostr/config";
 
+export type MarmotRelays = Pick<
+  RelayConfiguration,
+  "general" | "inbox" | "discovery"
+>;
+
 const windowRevision = z.object({
   generation: z.string(),
   sequence: z.string().regex(/^\d{1,20}$/),
@@ -358,7 +363,6 @@ type Bridge = {
   ): Promise<unknown>;
   closeAccount(): Promise<void>;
   catchUp(): Promise<void>;
-  accountReadiness(): Promise<unknown>;
   diagnostics(): Promise<unknown>;
   rotateKeys(): Promise<void>;
   backupState(): Promise<unknown>;
@@ -557,7 +561,7 @@ const native = () => requireNativeModule<Bridge>("BoopMarmot");
 export async function openMarmotAccount(
   key: string,
   secret: string,
-  relays: RelayConfiguration,
+  relays: MarmotRelays,
   mediaOrigin: string | null,
 ) {
   const bytes = hexToBytes(secret);
@@ -728,9 +732,6 @@ export const marmot = {
   backupConditions: (wifi: boolean, charging: boolean) =>
     native().backupConditions(wifi, charging),
   backupNow: () => native().backupNow(),
-  async getReadiness() {
-    return readiness.parse(await native().accountReadiness());
-  },
   closeAccount: () => native().closeAccount(),
   catchUp: () => native().catchUp(),
   openChatList: (

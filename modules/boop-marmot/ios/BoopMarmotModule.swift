@@ -17,14 +17,10 @@ public final class BoopMarmotModule: Module {
       try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin) }
     }
     AsyncFunction("closeAccount") { () async throws in
-      self.uploadLock.withLock { self.uploads.values.forEach { $0.cancel() } }
-      try await protocolCall { try await self.runtime.close() }
+      try await protocolCall { try await self.closeAccount() }
     }
     AsyncFunction("catchUp") { () async throws in
       try await self.withAccount { kit, _ in try await kit.catchUpAccounts() }
-    }
-    AsyncFunction("accountReadiness") { () async throws -> String in
-      try await self.withAccount { try wireName($0.accountSetupReadiness(accountRef: $1)) }
     }
     AsyncFunction("diagnostics") { () async throws -> Document in
       try await self.withAccount { kit, account in
@@ -642,7 +638,14 @@ public final class BoopMarmotModule: Module {
         }
       }
     }
-    OnDestroy { [runtime] in Task { try? await runtime.close() } }
+    OnDestroy { Task { try? await self.closeAccount() } }
+  }
+
+  private func closeAccount() async throws {
+    uploadLock.withLock { uploads.values.forEach { $0.cancel() } }
+    try await runtime.close { [weak self] id in
+      self?.sendEvent("windowClosed", ["id": id, "code": "AccountClosed"])
+    }
   }
 
   private func uploadInputs(_ files: [[String: String]]) throws -> [MediaFileUploadAttachmentRequestFfi] {
@@ -746,13 +749,16 @@ private actor Runtime {
     }
   }
 
-  func close() async throws {
+  func close(notify: (String) -> Void) async throws {
     guard !changingAccount else { throw problem("AccountBusy") }
     guard let active else { return }
     changingAccount = true
     defer { changingAccount = false }
     self.active = nil
-    for id in Array(windows.keys) { await closeWindow(id) }
+    for id in Array(windows.keys) {
+      await closeWindow(id)
+      notify(id)
+    }
     try await active.kit.shutdownAndClose()
   }
 
@@ -802,7 +808,11 @@ private actor Runtime {
   }
 
   private func install(_ window: NativeWindow, id: String, account: Account) async throws -> Document {
-    guard windows[id] == nil, windows.count < 16, active?.kit === account.kit else {
+    guard active?.kit === account.kit else {
+      await window.cancel()
+      throw problem("AccountClosed")
+    }
+    guard windows[id] == nil, windows.count < 16 else {
       await window.cancel()
       throw problem("WindowLimit")
     }

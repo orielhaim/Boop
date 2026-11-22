@@ -2,8 +2,7 @@ import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import type { Database } from "@/db";
-import { openMarmotAccount } from "../marmot/native";
-import type { RelayConfiguration } from "../nostr/config";
+import { openMarmotAccount, type MarmotRelays } from "../marmot/native";
 import { encryptBackup } from "./backup";
 import { loadPinnedIdentity, stageSwitch, storedSecret } from "./storage";
 
@@ -28,7 +27,7 @@ export function stageIdentity(db: Database, secret: string) {
 export async function initializeMarmotIdentity(
   db: Database,
   key: string,
-  relays: RelayConfiguration,
+  relays: MarmotRelays,
   mediaOrigin: string | null,
 ) {
   return openMarmotAccount(
