@@ -20,6 +20,7 @@ class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val windows = mutableMapOf<String, NativeWindow>()
+  private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
 
   override fun definition() = ModuleDefinition {
@@ -338,35 +339,122 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String? ->
       withSession {
-        if (kind != 24881 && kind != 24883) throw problem("InvalidApplicationEvent")
+        if (kind !in setOf(24881, 24883, 24884, 24885)) throw problem("InvalidApplicationEvent")
         val tags = reply?.let { target -> listOf(listOf("e", target, "", "reply")) } ?: emptyList()
         it.kit.sendCustomEvent(it.account, group, kind.toULong(), tags, body)
         Unit
       }
     }
-    AsyncFunction("sendMedia") Coroutine { group: String, files: List<Map<String, String>>, caption: String?, token: String, server: String?, reply: String? ->
-      withSession {
-        if (it.kit.groupDetails(it.account, group).group.encryptedMedia.version != EncryptedMediaVersionFfi.V2) throw problem("MediaNotConfigured")
-        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
-        val base = File(context.applicationInfo.dataDir).canonicalFile.toPath()
-        if (files.isEmpty() || files.size > 16) throw problem("InvalidMedia")
-        val inputs = files.map { file ->
-          val path = File(file.getValue("path")).canonicalFile
-          if (!path.toPath().startsWith(base) || !path.isFile) throw problem("InvalidMediaPath")
-          MediaFileUploadAttachmentRequestFfi(path.path, path.length().toULong(), file.getValue("name"), file.getValue("type"), file["dimensions"], file["thumbhash"])
-        }
-        val tags = (reply?.let { id -> listOf(listOf("e", id, "", "reply")) } ?: emptyList()) +
-          inputs.mapIndexed { index, input ->
-            val file = files[index]
-            listOf("boop-media", index.toString(), input.expectedSize.toString(), file["duration"].orEmpty(),
-              file["waveform"].orEmpty().take(192), file["presentation"].orEmpty())
+    AsyncFunction("stageMediaDraft") Coroutine { group: String, files: List<Map<String, String>>, caption: String, token: String, reply: String? ->
+      withSession { active ->
+        val inputs = uploadInputs(files)
+        var draft = active.kit.selectedMessageDraft(active.account, group)
+        try {
+          if (draft.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
+          val updated = active.kit.saveMessageDraftInputsIfRevision(active.account, draft.revision, caption, reply, emptyList())
+          draft.destroy()
+          draft = updated
+          MediaFileTransferControlFfi().use { control ->
+            synchronized(uploads) {
+              if (uploads.containsKey(token)) throw problem("TransferInProgress")
+              uploads[token] = control
+            }
+            try {
+              sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to 0.0, "state" to "preparing"))
+              for ((index, input) in inputs.withIndex()) {
+                val file = files[index]
+                val presentation = if (file["presentation"] == "round") "round" else "file"
+                val waveform = file["waveform"].orEmpty().split(",").mapNotNull { it.toDoubleOrNull() }.take(64).map { it / 31 }
+                val request = MessageDraftAttachmentFileRequestFfi(
+                  "$token:${inputs.size}:$index:$presentation", input.sourcePath, input.expectedSize,
+                  input.fileName, input.mediaType, input.dim, input.thumbhash,
+                  file["duration"]?.toDoubleOrNull(), waveform,
+                )
+                val next = active.kit.stageMessageDraftAttachmentFile(active.account, draft.revision, request, control)
+                draft.destroy()
+                draft = next
+              }
+            } finally {
+              synchronized(uploads) { uploads.remove(token) }
+            }
           }
+        } finally { draft.destroy() }
+      }
+    }
+    AsyncFunction("discardMediaDraft") Coroutine { group: String ->
+      withSession { active ->
+        val selected = active.kit.selectedMessageDraft(active.account, group)
+        try {
+          val draft = selected.draft ?: return@withSession
+          active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, draft.content, draft.replyToMessageIdHex, emptyList()).destroy()
+        } finally { selected.destroy() }
+      }
+    }
+    AsyncFunction("sendMedia") Coroutine { group: String, files: List<Map<String, String>>, caption: String?, token: String, server: String?, reply: String? ->
+      withSession { active ->
+        when (val status = active.kit.localSendStatus(active.account, group, token)) {
+          is LocalSendStatusFfi.Completed -> return@withSession mapOf("id" to status.summary.messageIds.firstOrNull().orEmpty(), "blobs" to emptyList<Any>())
+          LocalSendStatusFfi.Queued, LocalSendStatusFfi.EngineOwned -> return@withSession mapOf("id" to "", "blobs" to emptyList<Any>())
+          LocalSendStatusFfi.Rejected -> throw problem("MediaSendNotAccepted")
+          null -> Unit
+        }
+        if (active.kit.groupDetails(active.account, group).group.encryptedMedia.version != EncryptedMediaVersionFfi.V2) throw problem("MediaNotConfigured")
+        val inputs = if (files.isEmpty()) emptyList() else uploadInputs(files)
+        val selected = if (files.isEmpty()) active.kit.selectedMessageDraft(active.account, group) else null
+        val draftFiles = selected?.draft?.mediaAttachments.orEmpty()
+        if (selected != null && !matchesDraftBatch(token, draftFiles)) {
+          selected.destroy()
+          throw problem("MediaDraftPending")
+        }
+        val tags = reply?.let { id -> listOf(listOf("e", id, "", "reply")) } ?: emptyList()
         MediaFileTransferControlFfi().use { control ->
-          val result = it.kit.uploadMediaFilesWithClientToken(it.account, group,
-            MediaFileUploadRequestFfi(inputs, caption, true, server, tags), control, token)
-          result.acceptance?.messageIdHex ?: throw problem("MediaSendNotAccepted")
+          synchronized(uploads) {
+            if (uploads.containsKey(token)) throw problem("TransferInProgress")
+            uploads[token] = control
+          }
+          try {
+            coroutineScope {
+              val total = (inputs.sumOf { it.expectedSize?.toLong() ?: 0L } + draftFiles.sumOf { it.plaintextSize.toLong() }) * 3.0
+              val progress = launch {
+                while (isActive) {
+                  sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to control.processedBytes().toDouble(),
+                    "total" to total, "state" to "uploading"))
+                  delay(250)
+                }
+              }
+              try {
+                val (id, uploaded) = if (selected == null) {
+                  val result = active.kit.uploadMediaFilesWithClientToken(active.account, group,
+                    MediaFileUploadRequestFfi(inputs, caption, true, server, tags), control, token)
+                  (result.acceptance?.messageIdHex ?: throw problem("MediaSendNotAccepted")) to result.upload
+                } else {
+                  val result = active.kit.uploadMessageDraftAttachments(active.account, selected.revision, draftFiles.map { it.id }, server, control)
+                  if (control.isCancelled()) throw problem("MediaCancelled")
+                  val accepted = active.kit.sendMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, token)
+                  accepted.messageIdHex to result
+                }
+                mapOf("id" to id, "blobs" to uploaded.attachments.mapNotNull { item ->
+                  item.reference.locators.firstOrNull()?.let { locator ->
+                    mapOf("url" to locator.value, "hash" to item.reference.ciphertextSha256, "size" to item.encryptedSizeBytes.toDouble())
+                  }
+                })
+              } catch (error: MarmotKitException.Runtime) {
+                if (control.isCancelled()) throw problem("MediaCancelled")
+                if (error.details == "media upload timed out" ||
+                  error.details.startsWith("blob store request failed: upload failed for all Blossom servers:"))
+                  throw problem("UploadEndpointFailed")
+                throw error
+              } finally { progress.cancelAndJoin() }
+            }
+          } finally {
+            synchronized(uploads) { uploads.remove(token) }
+            selected?.destroy()
+          }
         }
       }
+    }
+    AsyncFunction("cancelUpload") Coroutine { token: String ->
+      synchronized(uploads) { uploads[token]?.also { it.cancel() } != null }
     }
     AsyncFunction("makeVideoPoster") Coroutine { path: String ->
       protocol {
@@ -393,6 +481,13 @@ class BoopMarmotModule : Module() {
         it.kit.attachmentTransferSnapshot(it.account, group, listOf(target)).items.firstOrNull()?.state == AttachmentTransferStateFfi.READY
       }
     }
+    AsyncFunction("cancelAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
+      withSession { active ->
+        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+        val item = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+        item?.reference?.let { active.kit.controlAttachment(active.account, it, AttachmentControlFfi.CANCEL) } ?: false
+      }
+    }
     AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
       withSession { active ->
         val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
@@ -407,6 +502,9 @@ class BoopMarmotModule : Module() {
           AttachmentTransferStateFfi.PAUSED -> before.reference?.takeIf {
             active.kit.controlAttachment(active.account, it, AttachmentControlFfi.RETRY)
           }
+          AttachmentTransferStateFfi.QUEUED, AttachmentTransferStateFfi.DOWNLOADING, AttachmentTransferStateFfi.VERIFYING_CIPHERTEXT,
+          AttachmentTransferStateFfi.DECRYPTING, AttachmentTransferStateFfi.VERIFYING_PLAINTEXT,
+          AttachmentTransferStateFfi.RETRY_SCHEDULED -> before.reference
           else -> active.kit.requestExplicitAttachment(active.account, group, target)
         } ?: throw problem("MediaUnavailable")
         val finished = withTimeoutOrNull(180_000) {
@@ -414,13 +512,13 @@ class BoopMarmotModule : Module() {
             while (true) {
               val item = updates.next()?.items?.firstOrNull() ?: throw problem("MediaUnavailable")
               if (item.reference != reference) throw problem("MediaUnavailable")
-              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble()))
+              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to item.state.name.lowercase()))
               when (item.state) {
                 AttachmentTransferStateFfi.READY -> break
                 AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
                 AttachmentTransferStateFfi.POLICY_BLOCKED, AttachmentTransferStateFfi.REMOVED,
                 AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
-                AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED,
+                AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED, AttachmentTransferStateFfi.PAUSED,
                 AttachmentTransferStateFfi.CLEANED_BY_SETTING, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
                   throw problem("MediaUnavailable")
                 else -> Unit
@@ -568,6 +666,22 @@ class BoopMarmotModule : Module() {
     OnDestroy { observer.launch { shutdown(); observer.cancel() } }
   }
 
+  private fun uploadInputs(files: List<Map<String, String>>): List<MediaFileUploadAttachmentRequestFfi> {
+    val context = appContext.reactContext ?: throw problem("ContextUnavailable")
+    val base = File(context.applicationInfo.dataDir).canonicalFile.toPath()
+    if (files.isEmpty() || files.size > 16) throw problem("InvalidMedia")
+    return files.map { file ->
+      val path = File(file.getValue("path")).canonicalFile
+      if (!path.toPath().startsWith(base) || !path.isFile) throw problem("InvalidMediaPath")
+      MediaFileUploadAttachmentRequestFfi(path.path, path.length().toULong(), file.getValue("name"), file.getValue("type"), file["dimensions"], file["thumbhash"])
+    }
+  }
+
+  private fun matchesDraftBatch(token: String, draft: List<SelectedMessageDraftAttachmentFfi>) =
+    draft.isNotEmpty() && draft.withIndex().all { (index, item) ->
+      item.fileBacked && item.id.startsWith("$token:${draft.size}:$index:")
+    }
+
   private suspend fun install(id: String, window: NativeWindow): Document {
     if (id in windows || windows.size >= 16) {
       window.stop()
@@ -586,6 +700,7 @@ class BoopMarmotModule : Module() {
     lifecycle.withLock {
       val active = session ?: return@withLock
       session = null
+      synchronized(uploads) { uploads.values.forEach { it.cancel() } }
       val open = windows.toMap()
       windows.clear()
       try {

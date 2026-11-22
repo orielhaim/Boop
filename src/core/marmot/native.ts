@@ -117,7 +117,20 @@ const conversationSnapshot = windowRevision.extend({
   canSend: z.boolean(),
   firstUnread: z.string().nullish(),
   draft: z
-    .object({ text: z.string(), replyTo: z.string().nullish() })
+    .object({
+      text: z.string(),
+      replyTo: z.string().nullish(),
+      attachments: z
+        .array(
+          z.object({
+            id: z.string(),
+            size: z.number().int().positive(),
+            duration: z.number().nullish(),
+            waveform: z.array(z.number()).max(64),
+          }),
+        )
+        .max(64),
+    })
     .nullish(),
   identities: z.array(z.object({ id: z.string(), name: z.string() })),
   messages: z.array(message).max(200),
@@ -265,6 +278,18 @@ const handoff = z.object({
   type: z.string(),
   name: z.string(),
 });
+const uploadReceipt = z.object({
+  id: z.string(),
+  blobs: z
+    .array(
+      z.object({
+        url: z.string(),
+        hash: z.string().regex(/^[a-f0-9]{64}$/),
+        size: z.number().int().positive(),
+      }),
+    )
+    .max(16),
+});
 const deviceState = z.object({
   state: z.string().nullish(),
   code: z.array(z.string()),
@@ -295,6 +320,7 @@ type Events = {
     transfer: string;
     received: number;
     total?: number | null;
+    state: string;
   }) => void;
   windowChanged: (event: {
     id: string;
@@ -410,9 +436,17 @@ type Bridge = {
     reply: string | null,
   ): Promise<string>;
   saveDraft(group: string, text: string, reply: string | null): Promise<void>;
+  stageMediaDraft(
+    group: string,
+    files: MarmotUpload[],
+    caption: string,
+    token: string,
+    reply: string | null,
+  ): Promise<void>;
+  discardMediaDraft(group: string): Promise<void>;
   sendSpecial(
     group: string,
-    kind: 24881 | 24883,
+    kind: 24881 | 24883 | 24884 | 24885,
     body: string,
     reply: string | null,
   ): Promise<void>;
@@ -423,7 +457,8 @@ type Bridge = {
     token: string,
     server: string | null,
     reply: string | null,
-  ): Promise<string>;
+  ): Promise<unknown>;
+  cancelUpload(token: string): Promise<boolean>;
   attachmentStatus(
     group: string,
     id: string,
@@ -438,6 +473,12 @@ type Bridge = {
     index: number,
     transfer: string,
   ): Promise<void>;
+  cancelAttachment(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+  ): Promise<boolean>;
   openAttachment(
     group: string,
     id: string,
@@ -776,18 +817,62 @@ export const marmot = {
     native().saveDraft(group, text, reply),
   sendSpecial: (
     group: string,
-    kind: 24881 | 24883,
+    kind: 24881 | 24883 | 24884 | 24885,
     body: string,
     reply: string | null,
   ) => native().sendSpecial(group, kind, body, reply),
-  sendMedia: (
+  async sendMedia(
     group: string,
     files: MarmotUpload[],
     caption: string | null,
     token: string,
     server: string | null,
     reply: string | null,
-  ) => native().sendMedia(group, files, caption, token, server, reply),
+    progress: (fraction: number) => void,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const bridge = native();
+    const cancel = () => void bridge.cancelUpload(token).catch(() => undefined);
+    const listener = bridge.addListener("attachmentProgress", (event) => {
+      if (event.transfer !== token) return;
+      if (signal.aborted) cancel();
+      else if (event.total)
+        progress(Math.min(0.99, event.received / event.total));
+    });
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      return uploadReceipt.parse(
+        await bridge.sendMedia(group, files, caption, token, server, reply),
+      );
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      listener.remove();
+    }
+  },
+  async stageMediaDraft(
+    group: string,
+    files: MarmotUpload[],
+    caption: string,
+    token: string,
+    reply: string | null,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const bridge = native();
+    const cancel = () => void bridge.cancelUpload(token).catch(() => undefined);
+    const listener = bridge.addListener("attachmentProgress", (event) => {
+      if (event.transfer === token && signal.aborted) cancel();
+    });
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      await bridge.stageMediaDraft(group, files, caption, token, reply);
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      listener.remove();
+    }
+  },
+  discardMediaDraft: (group: string) => native().discardMediaDraft(group),
   attachmentStatus: (
     group: string,
     id: string,
@@ -800,17 +885,36 @@ export const marmot = {
     id: string,
     source: string,
     index: number,
-    onProgress: (received: number, total?: number) => void,
+    onProgress: (
+      received: number,
+      total: number | undefined,
+      state: string,
+    ) => void,
+    signal: AbortSignal,
   ) {
+    if (signal.aborted) return;
     const bridge = native();
     const transfer = randomUUID();
+    let requested = false;
+    const cancel = () => {
+      if (requested) return;
+      void bridge.cancelAttachment(group, id, source, index).then(
+        (cancelled) => {
+          requested ||= cancelled;
+        },
+        () => {},
+      );
+    };
     const listener = bridge.addListener("attachmentProgress", (event) => {
-      if (event.transfer === transfer)
-        onProgress(event.received, event.total ?? undefined);
+      if (event.transfer !== transfer) return;
+      if (signal.aborted) cancel();
+      else onProgress(event.received, event.total ?? undefined, event.state);
     });
+    signal.addEventListener("abort", cancel, { once: true });
     try {
       await bridge.downloadAttachment(group, id, source, index, transfer);
     } finally {
+      signal.removeEventListener("abort", cancel);
       listener.remove();
     }
   },

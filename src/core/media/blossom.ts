@@ -136,6 +136,17 @@ export type BlossomHttp = {
   ): Promise<BlossomResponse>;
   sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string>;
   putFile?: FilePut;
+  headUpload?: (
+    url: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) => Promise<number>;
+  mirrorCommand?: (
+    url: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+    body: string,
+  ) => Promise<{ status: number; body: string }>;
   timeoutMs?: number;
 };
 
@@ -247,23 +258,27 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
     blob: BlobInfo,
     signal: AbortSignal,
   ) {
-    const response = await http.request(`${origin}/upload`, {
-      method: "HEAD",
-      redirect: "error",
-      credentials: "omit",
-      signal,
-      headers: {
-        Authorization: authorization,
-        "X-SHA-256": blob.hash,
-        "X-Content-Type": blob.mime,
-        "X-Content-Length": String(blob.size),
-      },
-    });
-    if (response.status >= 200 && response.status < 300)
-      return "compatible" as const;
-    if ([404, 405, 501].includes(response.status))
-      return "unsupported" as const;
-    throw httpError(response.status);
+    const endpoint = `${origin}/upload`;
+    const headers = {
+      Authorization: authorization,
+      "X-SHA-256": blob.hash,
+      "X-Content-Type": blob.mime,
+      "X-Content-Length": String(blob.size),
+    };
+    const status = http.headUpload
+      ? await http.headUpload(endpoint, headers, signal)
+      : (
+          await http.request(endpoint, {
+            method: "HEAD",
+            redirect: "error",
+            credentials: "omit",
+            signal,
+            headers,
+          })
+        ).status;
+    if (status >= 200 && status < 300) return "compatible" as const;
+    if ([404, 405, 501].includes(status)) return "unsupported" as const;
+    throw httpError(status);
   }
 
   return {
@@ -378,21 +393,33 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
       if (!url || blossomHash(url) !== blob.hash)
         return Promise.reject(new BlossomError("descriptor"));
       return operation(origin, blob, signal, async (args) => {
-        const body = new TextEncoder().encode(
-          JSON.stringify({ url: url.href }),
-        );
-        const response = await http.request(`${args.origin}/mirror`, {
+        const endpoint = `${args.origin}/mirror`;
+        const content = JSON.stringify({ url: url.href });
+        const body = new TextEncoder().encode(content);
+        const headers = {
+          Authorization: args.authorization,
+          "X-SHA-256": blob.hash,
+          "Content-Type": "application/json",
+          "Content-Length": String(body.length),
+        };
+        if (http.mirrorCommand) {
+          const response = await http.mirrorCommand(
+            endpoint,
+            headers,
+            args.signal,
+            content,
+          );
+          if (response.status !== 200 && response.status !== 201)
+            throw httpError(response.status);
+          return jsonDescriptor(response.body, args.origin, blob);
+        }
+        const response = await http.request(endpoint, {
           method: "PUT",
           redirect: "error",
           credentials: "omit",
           signal: args.signal,
           body,
-          headers: {
-            Authorization: args.authorization,
-            "X-SHA-256": blob.hash,
-            "Content-Type": "application/json",
-            "Content-Length": String(body.length),
-          },
+          headers,
         });
         if (response.status !== 200 && response.status !== 201)
           throw httpError(response.status);

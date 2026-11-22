@@ -9,7 +9,7 @@ export function createChatPreferences(db: Database) {
   const listeners = new Set<() => void>();
   const messageLists = new Map<string, readonly string[]>();
   const messageIds = z.array(z.string());
-  function list(group: string, kind: "pin" | "hidden") {
+  function list(group: string, kind: "pin" | "hidden" | "listened") {
     const key = `chat.${kind}.${group}`;
     const cached = messageLists.get(key);
     if (cached) return cached;
@@ -24,15 +24,18 @@ export function createChatPreferences(db: Database) {
   }
   function setMessage(
     group: string,
-    kind: "pin" | "hidden",
+    kind: "pin" | "hidden" | "listened",
     id: string,
     present: boolean,
   ) {
     const current = list(group, kind);
     if (current.includes(id) === present) return;
-    const next = present
-      ? [...current, id]
-      : current.filter((item) => item !== id);
+    const next =
+      present && kind === "listened"
+        ? [...current.slice(-1999), id]
+        : present
+          ? [...current, id]
+          : current.filter((item) => item !== id);
     const key = `chat.${kind}.${group}`;
     setPreference(db, key, JSON.stringify(next));
     messageLists.set(key, next);
@@ -41,6 +44,9 @@ export function createChatPreferences(db: Database) {
   return {
     pinned: (group: string) => list(group, "pin"),
     hidden: (group: string) => list(group, "hidden"),
+    listened: (group: string) => list(group, "listened"),
+    markListened: (group: string, id: string) =>
+      setMessage(group, "listened", id, true),
     setPin: (group: string, id: string, present: boolean) =>
       setMessage(group, "pin", id, present),
     hide(group: string, id: string) {

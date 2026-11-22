@@ -8,6 +8,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import java.net.HttpURLConnection
 import java.util.UUID
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -16,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
+import org.json.JSONObject
 
 class MarmotRelayTest {
   @Test fun directAndGroupUseIndependentDurableAccounts() = runBlocking {
@@ -101,6 +103,20 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
         carol.receives(group, alice.key, "hello group")
+        val announcement = """{"version":1,"call":"fixture-call"}"""
+        alice.kit.sendCustomEvent(alice.key, group, 24884uL, emptyList(), announcement)
+        carol.receives(group, alice.key, announcement)
+        val presenceWindow = ConversationWindow(carol.kit.openConversationWindow(
+          carol.key, group, ConversationOpenModeFfi.LATEST, null, 30u, 15_000u
+        ))
+        try {
+          val rows = presenceWindow.initial()?.get("messages") as? List<*>
+          assertTrue(rows.orEmpty().filterIsInstance<Map<*, *>>().any {
+            it["eventKind"] == 24884 && it["sender"] == alice.key && it["text"] == announcement
+          })
+        } finally {
+          presenceWindow.stop()
+        }
         val mention = "Hello nostr:${checkNotNull(alice.kit.npub(bob.key))}"
         alice.kit.sendTextWithClientToken(alice.key, group, mention, "group-mention")
         bob.receives(group, alice.key, mention)
@@ -115,7 +131,7 @@ class MarmotRelayTest {
             it.reason == ReportReasonFfi.SPAM && it.reporter == bob.key
           }
         }
-        if (blossom != null) groupPhotoRoundTrip(alice, bob, group)
+        if (blossom?.startsWith("https://") == true) groupPhotoRoundTrip(alice, bob, group)
 
         alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
         await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
@@ -314,6 +330,21 @@ class MarmotRelayTest {
   }
 
   private suspend fun mediaRoundTrip(sender: Client, recipient: Client, group: String, blossom: String) {
+    val fixture = URI(blossom).let { it.scheme == "http" && it.host == "127.0.0.1" }
+    fun fixtureCall(path: String, method: String = "GET"): Int {
+      val connection = URI("$blossom/_fixture/$path").toURL().openConnection() as HttpURLConnection
+      try {
+        connection.connectTimeout = 3_000
+        connection.readTimeout = 3_000
+        connection.requestMethod = method
+        if (path != "stats") {
+          assertEquals(204, connection.responseCode)
+          return 0
+        }
+        return JSONObject(connection.inputStream.bufferedReader().use { it.readText() }).getInt("gets")
+      } finally { connection.disconnect() }
+    }
+    val before = if (fixture) fixtureCall("stats") else 0
     val payload = "Synthetic Boop fixture ${UUID.randomUUID()}".toByteArray()
     val path = File(sender.directory, "fixture.txt").apply { writeBytes(payload) }
     val caption = "Encrypted document fixture"
@@ -339,7 +370,19 @@ class MarmotRelayTest {
     }
     MediaFileTransferControlFfi().use { control ->
       assertNull(recipient.kit.openAttachmentHandoff(recipient.key, group, target, control))
-      assertNotNull(recipient.kit.requestExplicitAttachment(recipient.key, group, target))
+      if (fixture) {
+        assertEquals(before, fixtureCall("stats"))
+        fixtureCall("pause", "POST")
+        try {
+          val reference = checkNotNull(recipient.kit.requestExplicitAttachment(recipient.key, group, target))
+          await("HTTP starts after the explicit request") { fixtureCall("stats") > before }
+          assertTrue(recipient.kit.controlAttachment(recipient.key, reference, AttachmentControlFfi.CANCEL))
+          await("native attachment cancellation") {
+            recipient.kit.attachmentTransferSnapshot(recipient.key, group, listOf(target)).items.single().state == AttachmentTransferStateFfi.CANCELLED
+          }
+          assertTrue(recipient.kit.controlAttachment(recipient.key, reference, AttachmentControlFfi.RETRY))
+        } finally { fixtureCall("resume", "POST") }
+      } else assertNotNull(recipient.kit.requestExplicitAttachment(recipient.key, group, target))
       await("manual encrypted media download") {
         recipient.kit.attachmentTransferSnapshot(recipient.key, group, listOf(target)).items.single().state == AttachmentTransferStateFfi.READY
       }
@@ -347,6 +390,7 @@ class MarmotRelayTest {
       try { assertArrayEquals(payload, File(opened.path).readBytes()) }
       finally { recipient.kit.releaseAttachmentHandoff(opened.lease) }
     }
+    val afterDownload = if (fixture) fixtureCall("stats") else 0
     recipient.close()
     recipient.start()
     MediaFileTransferControlFfi().use { control ->
@@ -354,6 +398,37 @@ class MarmotRelayTest {
       try { assertArrayEquals(payload, File(reopened.path).readBytes()) }
       finally { recipient.kit.releaseAttachmentHandoff(reopened.lease) }
     }
+    if (fixture) assertEquals(afterDownload, fixtureCall("stats"))
+    val draftToken = "fixture-resumed-upload"
+    val draftAttachment = "fixture-retained-draft"
+    val selected = sender.kit.selectedMessageDraft(sender.key, group)
+    val updated = try {
+      sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Resumed upload", row.messageIdHex, emptyList())
+    } finally { selected.destroy() }
+    try {
+      MediaFileTransferControlFfi().use { control ->
+        sender.kit.stageMessageDraftAttachmentFile(sender.key, updated.revision,
+          MessageDraftAttachmentFileRequestFfi(draftAttachment, path.canonicalPath, path.length().toULong(),
+            path.name, "text/plain", null, null, null, emptyList()), control).destroy()
+      }
+    } finally { updated.destroy() }
+    assertTrue(path.delete())
+    sender.close()
+    sender.start()
+    val resumed = sender.kit.selectedMessageDraft(sender.key, group)
+    val accepted = try {
+      assertEquals(draftAttachment, resumed.draft?.mediaAttachments?.single()?.id)
+      val prepared = MediaFileTransferControlFfi().use { control ->
+        sender.kit.uploadMessageDraftAttachments(sender.key, resumed.revision, listOf(draftAttachment), blossom, control)
+      }
+      sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, prepared.attachments.map { it.reference }, draftToken)
+    } finally { resumed.destroy() }
+    assertNotNull(sender.kit.localSendStatus(sender.key, group, draftToken))
+    val consumed = sender.kit.selectedMessageDraft(sender.key, group)
+    try { assertNull(consumed.draft) } finally { consumed.destroy() }
+    recipient.receives(group, sender.key, "Resumed upload")
+    val delivered = recipient.kit.messages(recipient.key, group, 25u, null).filter { it.plaintext == "Resumed upload" }
+    assertEquals(listOf(accepted.messageIdHex), delivered.map { it.messageIdHex })
   }
 
   private class Client(val directory: File, private val relay: String, private val blossom: String?) {
@@ -368,7 +443,8 @@ class MarmotRelayTest {
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
         options = MarmotOptions(
-          relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
+          relayPolicy = if (blossom?.startsWith("http://127.0.0.1:") == true)
+            RelayPolicyFfi.ALLOW_LOOPBACK_RELAYS_AND_BLOBS else RelayPolicyFfi.ALLOW_LOOPBACK,
           secretStore = store,
           deployment = marmotDeploymentNeutral().copy(
             newGroupMediaEndpoints = listOf(blossom ?: "https://blossom.example.com"),

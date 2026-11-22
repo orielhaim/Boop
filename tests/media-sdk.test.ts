@@ -230,6 +230,46 @@ test("an opted-in BUD-04 failure leaves the verified primary usable", async () =
   ).rejects.toHaveProperty("code", "configuration");
 });
 
+test("private backup copies use the accepted ciphertext locator and only an enabled attachment server", async () => {
+  const { settings } = settingsFor();
+  const servers = [
+    { origin: first, enabled: true, roles: ["attachment"] as const },
+    { origin: disabled, enabled: false, roles: ["attachment"] as const },
+    { origin: foreign, enabled: true, roles: ["profile"] as const },
+    { origin: second, enabled: true, roles: ["attachment"] as const },
+  ].map(({ roles, ...server }) => ({ ...server, roles: [...roles] }));
+  settings.save({ mirror: false, servers });
+  const calls: string[] = [];
+  const url = `${first}/${hash}.bin`;
+  const report = { url, hash, size: bytes.length };
+  const sdk = createMediaUploads(
+    signer,
+    {
+      sha256,
+      async request() {
+        throw new Error("Unexpected binary request");
+      },
+      async mirrorCommand(endpoint, headers, _signal, body) {
+        calls.push(endpoint);
+        expect(JSON.parse(body)).toEqual({ url });
+        expect(headers["X-SHA-256"]).toBe(hash);
+        return { status: 201, body: await descriptor(second).text() };
+      },
+    },
+    settings,
+    () => {},
+  );
+  expect(await sdk.mirrorAttachments([report], signal(), () => true)).toBe(
+    true,
+  );
+  expect(calls).toEqual([]);
+  settings.save({ mirror: true, servers });
+  expect(await sdk.mirrorAttachments([report], signal(), () => true)).toBe(
+    true,
+  );
+  expect(calls).toEqual([`${second}/mirror`]);
+});
+
 test("both cache policies share byte accounting and retain pinned outgoing data", () => {
   const old = { id: "old", size: 20, accessedAt: 10 };
   const pending = { id: "pending", size: 30, accessedAt: 20 };

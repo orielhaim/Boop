@@ -24,6 +24,7 @@ import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
 import { marmotErrorCode, useMarmotWindow } from "./marmot-window";
+import { MarmotActiveCall } from "./marmot-active-call";
 
 export function useMarmotError() {
   const { t } = useTranslation(namespaces);
@@ -379,6 +380,11 @@ export function MarmotGroupDetailsScreen({
   );
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
+  const openConversation = useCallback(() => marmot.openConversation(id), [id]);
+  const callWindow = useMarmotWindow(
+    openConversation,
+    details?.kind === "group" && details.membership === "member",
+  );
   const revision = state.snapshot?.sequence;
   useEffect(() => {
     if (revision === undefined) return;
@@ -546,6 +552,13 @@ export function MarmotGroupDetailsScreen({
             </Action>
           )}
           <Ink kind="title">{groupName}</Ink>
+          {details.kind === "group" && details.membership === "member" && (
+            <MarmotActiveCall
+              group={id}
+              messages={callWindow.snapshot?.messages}
+              members={details.members}
+            />
+          )}
           {details.description ? <Ink>{details.description}</Ink> : null}
           {details.createdAt ? (
             <Ink kind="caption">

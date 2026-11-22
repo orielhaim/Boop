@@ -1,5 +1,6 @@
 import { randomUUID } from "expo-crypto";
-import { useCallback, useEffect, useState } from "react";
+import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { Action, Ink, Row } from "@/components/ui/kit";
@@ -229,14 +230,20 @@ export function ForwardMessage({
   const { snapshot, window, error } = useMarmotWindow(open);
   const [busy, setBusy] = useState(false);
   const translateError = useMarmotError();
+  const attempt = useRef<AbortController>(undefined);
+  const tokens = useRef(new Map<string, string>());
+  useEffect(() => () => attempt.current?.abort(), []);
   async function send(destination: string, peer: string | null | undefined) {
     if (
+      attempt.current ||
       busy ||
       !canDispatch() ||
       privacy.isBlocked(row.sender) ||
       (peer && privacy.isBlocked(peer))
     )
       return;
+    const abort = new AbortController();
+    attempt.current = abort;
     setBusy(true);
     const leases: string[] = [];
     try {
@@ -249,8 +256,6 @@ export function ForwardMessage({
       )
         return;
       if (row.attachments.length && row.sourceId) {
-        const server = mediaSdk.configured("attachment")[0]?.origin;
-        if (!server) throw new Error("NoMediaServer");
         const files = [];
         for (const item of row.attachments) {
           if (!canDispatch() || privacy.isBlocked(row.sender)) return;
@@ -271,17 +276,34 @@ export function ForwardMessage({
             type: file.type,
             dimensions: item.dimensions ?? undefined,
             thumbhash: item.thumbhash ?? undefined,
+            duration: item.duration == null ? undefined : String(item.duration),
+            waveform: item.waveform?.join(","),
+            presentation: item.round ? ("round" as const) : undefined,
           });
         }
-        if (canDispatch() && !privacy.isBlocked(row.sender))
-          await marmot.sendMedia(
-            destination,
-            files,
-            row.text || null,
-            randomUUID(),
-            server,
-            null,
-          );
+        const token = tokens.current.get(destination) ?? randomUUID();
+        tokens.current.set(destination, token);
+        if (
+          canDispatch() &&
+          !privacy.isBlocked(row.sender) &&
+          !abort.signal.aborted
+        )
+          await sendMarmotAttachment({
+            sdk: mediaSdk,
+            group: destination,
+            source: { kind: "files", files, saveDraft: false },
+            caption: row.text || null,
+            token,
+            reply: null,
+            allowed: () =>
+              !abort.signal.aborted &&
+              canDispatch() &&
+              !privacy.isBlocked(row.sender) &&
+              (!peer || !privacy.isBlocked(peer)),
+            signal: abort.signal,
+            progress: () => undefined,
+            mirrorFailed: () => Alert.alert(t("messages:mediaMirrorFailed")),
+          });
       } else if (row.eventKind === 24883) {
         await marmot.sendSpecial(destination, row.eventKind, row.text, null);
       } else if (row.eventKind === 9 || row.eventKind === 1111) {
@@ -291,11 +313,12 @@ export function ForwardMessage({
       }
       onClose();
     } catch (reason) {
-      Alert.alert(translateError(reason));
+      if (!abort.signal.aborted) Alert.alert(translateError(reason));
     } finally {
       await Promise.allSettled(
         leases.map((lease) => marmot.releaseAttachment(lease)),
       );
+      if (attempt.current === abort) attempt.current = undefined;
       setBusy(false);
     }
   }

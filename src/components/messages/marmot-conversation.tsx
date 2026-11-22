@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useAvatar } from "@/core/avatars/use-avatar";
+import { groupCallKind } from "@/core/calling/group-presence";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
 import {
@@ -61,22 +62,30 @@ import {
   encryptTimeLock,
   timeLockKind,
 } from "@/core/messaging/special-messages/timelock";
+import { createAttachmentPresentation } from "@/core/marmot/attachment-presentation";
 import {
   marmot,
   type MarmotGroupDetails,
   type MarmotMessage,
   type MarmotUpload,
 } from "@/core/marmot/native";
+import {
+  applyAttachmentMetadata,
+  pendingMediaDraft,
+} from "@/core/marmot/media-send";
+import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { contactByKey } from "@/db/queries";
 import { removeOpenedMessage } from "@/db/open-later";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
-import { MarmotAttachments } from "./marmot-attachments";
+import { MarmotActiveCall } from "./marmot-active-call";
+import { conversationPhotos, MarmotAttachments } from "./marmot-attachments";
 import { useMarmotError } from "./marmot-group";
 import { conversationRoute } from "./marmot-inbox";
 import { MarmotLocked } from "./marmot-locked";
+import { useOpenLater } from "./use-open-later";
 import { MarmotLink } from "./marmot-link";
 import {
   ConversationSearch,
@@ -222,6 +231,20 @@ export function MarmotConversationScreen({
   const [reply, setReply] = useState<ChatMessage | null>(null);
   const [paging, setPaging] = useState(false);
   const [busy, setBusy] = useState(false);
+  const sendingAttachment = useRef<AbortController>(undefined);
+  const [upload, setUpload] = useState<
+    { kind: "preparing" } | { kind: "uploading"; fraction: number }
+  >();
+  useEffect(() => {
+    if (!focused || !foreground) sendingAttachment.current?.abort();
+    const unsubscribe = lock.subscribe(() => {
+      if (lock.getState().locked) sendingAttachment.current?.abort();
+    });
+    return () => {
+      unsubscribe();
+      sendingAttachment.current?.abort();
+    };
+  }, [focused, foreground, id, lock]);
   const [composer, setComposer] = useState<string>();
   const [composerFocused, setComposerFocused] = useState(false);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
@@ -266,13 +289,10 @@ export function MarmotConversationScreen({
     : snapshot?.title ||
       (peer ? `${toNpub(peer).slice(0, 15)}…` : t("messages:marmot.group"));
   const deleted = t("messages:marmot.removedMessage");
-  const rows = snapshot?.messages;
-  useEffect(() => {
-    for (const row of rows ?? []) {
-      if (row.eventKind === timeLockKind && row.deleted)
-        removeOpenedMessage(db, row.id);
-    }
-  }, [db, rows]);
+  const rows = useMemo(
+    () => snapshot && applyAttachmentMetadata(snapshot.messages),
+    [snapshot],
+  );
   const people = snapshot?.identities;
   const mentionRoster = useMentionMembers(
     id,
@@ -292,14 +312,72 @@ export function MarmotConversationScreen({
   const hidden = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.hidden(id),
   );
+  const listened = useSyncExternalStore(chatPreferences.subscribe, () =>
+    chatPreferences.listened(id),
+  );
   const blockedKeys = privacy.blockedKeys().join(",");
+  const snapshotId = id;
+  const presentation = useMemo(
+    () =>
+      createAttachmentPresentation(marmot, ([group, id, source, index]) => {
+        const state = window?.getState();
+        const app = lock.getState();
+        if (
+          state?.status !== "ready" ||
+          !focused ||
+          !foreground ||
+          !app.active ||
+          app.locked ||
+          group !== snapshotId ||
+          state.snapshot.invited ||
+          !state.snapshot.canSend ||
+          (state.snapshot.peer && privacy.isBlocked(state.snapshot.peer)) ||
+          chatPreferences.hidden(group).includes(id)
+        )
+          return false;
+        return state.snapshot.messages.some(
+          (row) =>
+            row.id === id &&
+            row.sourceId === source &&
+            !row.deleted &&
+            !row.invalidated &&
+            (row.expiresAt == null || row.expiresAt * 1_000 > Date.now()) &&
+            !privacy.isBlocked(row.sender) &&
+            row.attachments.some((asset) => asset.index === index),
+        );
+      }),
+    [chatPreferences, focused, foreground, lock, privacy, snapshotId, window],
+  );
+  useLayoutEffect(() => () => presentation.stop(), [presentation]);
+  useLayoutEffect(() => {
+    presentation.reconcile();
+  }, [blockedKeys, hidden, presentation, snapshot]);
+  const openLater = useOpenLater(
+    window,
+    snapshot,
+    Boolean(
+      focused &&
+      foreground &&
+      snapshot?.canSend &&
+      !snapshot.invited &&
+      !blocked,
+    ),
+    hidden,
+    blockedKeys,
+  );
   const messages = useMemo(() => {
     const blocked = new Set(blockedKeys.split(","));
     const omitted = new Set(hidden);
+    const played = new Set(listened);
     const names = new Map(people?.map((person) => [person.id, person.name]));
     const user = (key: string) => ({ _id: key, name: names.get(key) });
     return (rows ?? [])
-      .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
+      .filter(
+        (row) =>
+          row.eventKind !== groupCallKind &&
+          !blocked.has(row.sender) &&
+          !omitted.has(row.id),
+      )
       .map((row): ChatMessage => ({
         _id: row.id,
         direction: row.sender === self ? "outgoing" : "incoming",
@@ -322,6 +400,15 @@ export function MarmotConversationScreen({
         sent: row.sender === self && row.confirmed,
         isFailed: row.sender === self && row.invalidated,
         isEdited: row.edited,
+        isMediaUnread:
+          row.sender !== self &&
+          !played.has(row.id) &&
+          row.attachments.some(
+            (item) =>
+              item.type.startsWith("audio/") ||
+              item.round ||
+              item.name === "video-note.mp4",
+          ),
         isPinned: pins.includes(row.id),
         system: Boolean(row.systemType),
         replyMessage:
@@ -344,13 +431,28 @@ export function MarmotConversationScreen({
         row,
       }))
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
-  }, [rows, people, deleted, blockedKeys, hidden, mentionNames, pins, self, t]);
+  }, [
+    rows,
+    people,
+    deleted,
+    blockedKeys,
+    hidden,
+    listened,
+    mentionNames,
+    pins,
+    self,
+    t,
+  ]);
   const locallyInitiated = Boolean(
     peer &&
     rows?.some(
       (row) =>
         row.token && row.sender === self && row.confirmed && !row.invalidated,
     ),
+  );
+  const gallery = useMemo(
+    () => conversationPhotos(id, messages),
+    [id, messages],
   );
   useEffect(() => {
     if (peer && locallyInitiated && !blocked)
@@ -405,12 +507,20 @@ export function MarmotConversationScreen({
     return () => cancelAnimationFrame(task);
   }, [jump, messages]);
   const canSend = Boolean(snapshot?.canSend && !blocked && !snapshot.invited);
-  const canDispatch = () =>
-    canSend &&
-    focused &&
-    AppState.currentState === "active" &&
-    !lock.getState().locked &&
-    !(peer && privacy.isBlocked(peer));
+  const pendingMedia = pendingMediaDraft(snapshot?.draft);
+  const canCompose = canSend && !pendingMedia && !upload;
+  const canDispatch = () => {
+    const state = window?.getState();
+    return Boolean(
+      state?.status === "ready" &&
+      state.snapshot.canSend &&
+      !state.snapshot.invited &&
+      focused &&
+      AppState.currentState === "active" &&
+      !lock.getState().locked &&
+      !(peer && privacy.isBlocked(peer)),
+    );
+  };
   const run = (fn: () => Promise<unknown>) => {
     if (canDispatch()) void fn().catch(showError);
   };
@@ -465,63 +575,98 @@ export function MarmotConversationScreen({
     }
   }
 
+  function submitAttachment(
+    request: Pick<
+      Parameters<typeof sendMarmotAttachment>[0],
+      "caption" | "reply" | "token"
+    >,
+    source: (
+      signal: AbortSignal,
+    ) => Promise<Parameters<typeof sendMarmotAttachment>[0]["source"]>,
+  ) {
+    if (!canDispatch() || sendingAttachment.current) return;
+    const controller = new AbortController();
+    sendingAttachment.current = controller;
+    setUpload({ kind: "preparing" });
+    void (async () => {
+      await draftWrites.current;
+      const prepared = await source(controller.signal);
+      if (!canDispatch() || controller.signal.aborted) return;
+      await sendMarmotAttachment({
+        sdk: mediaSdk,
+        group: id,
+        ...request,
+        source: prepared,
+        allowed: canDispatch,
+        progress: (fraction) => setUpload({ kind: "uploading", fraction }),
+        mirrorFailed: () => Alert.alert(t("messages:mediaMirrorFailed")),
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        setComposer("");
+        setReply(null);
+      }
+    })()
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) showError(reason);
+      })
+      .finally(() => {
+        if (sendingAttachment.current === controller) {
+          sendingAttachment.current = undefined;
+          setUpload(undefined);
+        }
+      });
+  }
+
   function sendMedia(files: MarmotUpload[], caption?: string) {
-    if (!canSend || !files.length) return;
-    const server = mediaSdk.configured("attachment")[0]?.origin;
-    if (!server) {
-      Alert.alert(t("messages:mediaUploadFailed"));
-      return;
-    }
-    const target = reply?._id ?? null;
-    run(async () => {
-      const prepared = await Promise.all(
-        files.map(async (file) => {
-          const video = file.type.startsWith("video/");
-          if (file.thumbhash || (!video && !file.type.startsWith("image/")))
-            return file;
-          let poster: File | undefined;
-          try {
-            if (video)
-              poster = new File(
-                `file://${await marmot.makeVideoPoster(file.path)}`,
-              );
-            const image = await Image.loadAsync(
-              poster?.uri ?? `file://${file.path}`,
-              {
-                maxWidth: 96,
-                maxHeight: 96,
-              },
-            );
-            return {
-              ...file,
-              thumbhash: await Image.generateThumbhashAsync(image),
-            };
-          } catch {
-            return file;
-          } finally {
+    if (!canCompose || !files.length) return;
+    submitAttachment(
+      {
+        caption:
+          caption?.trim() ||
+          (composer ?? snapshot?.draft?.text)?.trim() ||
+          null,
+        reply: reply?._id ?? snapshot?.draft?.replyTo ?? null,
+        token: randomUUID(),
+      },
+      async (signal) => {
+        const prepared = await Promise.all(
+          files.map(async (file) => {
+            signal.throwIfAborted();
+            const video = file.type.startsWith("video/");
+            if (file.thumbhash || (!video && !file.type.startsWith("image/")))
+              return file;
+            let poster: File | undefined;
             try {
-              poster?.delete();
+              if (video)
+                poster = new File(
+                  `file://${await marmot.makeVideoPoster(file.path)}`,
+                );
+              const image = await Image.loadAsync(
+                poster?.uri ?? `file://${file.path}`,
+                {
+                  maxWidth: 96,
+                  maxHeight: 96,
+                },
+              );
+              return {
+                ...file,
+                thumbhash: await Image.generateThumbhashAsync(image),
+              };
             } catch {
-              /* The OS can reclaim cache files. */
+              return file;
+            } finally {
+              try {
+                poster?.delete();
+              } catch {
+                /* The OS can reclaim cache files. */
+              }
             }
-          }
-        }),
-      );
-      if (
-        !canDispatch() ||
-        mediaSdk.configured("attachment")[0]?.origin !== server
-      )
-        return;
-      await marmot.sendMedia(
-        id,
-        prepared,
-        caption?.trim() || null,
-        randomUUID(),
-        server,
-        target,
-      );
-      setReply(null);
-    });
+          }),
+        );
+        return { kind: "files", files: prepared, saveDraft: true };
+      },
+    );
   }
 
   async function sendLater(time: number) {
@@ -758,6 +903,76 @@ export function MarmotConversationScreen({
         />
       ) : (
         <>
+          {!peer && !searching && snapshot.canSend && (
+            <MarmotActiveCall
+              group={id}
+              messages={rows}
+              members={mentionRoster.members}
+            />
+          )}
+          {upload && (
+            <View style={styles.uploadStatus}>
+              <Ink kind="caption">
+                {upload.kind === "preparing"
+                  ? t("messages:voiceUpload_checking")
+                  : t("messages:voiceUploadProgress", {
+                      percent: Math.floor(upload.fraction * 100),
+                    })}
+              </Ink>
+              <Action
+                size="sm"
+                onPress={() => sendingAttachment.current?.abort()}
+              >
+                {t("common:cancel")}
+              </Action>
+            </View>
+          )}
+          {!upload && pendingMedia && canSend && (
+            <View style={styles.uploadStatus}>
+              <Ink kind="caption">
+                {t(
+                  pendingMedia.kind === "ready"
+                    ? "messages:mediaReadyToResume"
+                    : "messages:mediaDraftIncomplete",
+                )}
+              </Ink>
+              {pendingMedia.kind === "ready" && (
+                <Action
+                  size="sm"
+                  disabled={busy}
+                  onPress={() =>
+                    submitAttachment(
+                      {
+                        caption: snapshot.draft?.text ?? null,
+                        reply: snapshot.draft?.replyTo ?? null,
+                        token: pendingMedia.token,
+                      },
+                      async () => ({
+                        kind: "draft",
+                        attachments: pendingMedia.attachments,
+                      }),
+                    )
+                  }
+                >
+                  {t("common:retry")}
+                </Action>
+              )}
+              <Action
+                size="sm"
+                disabled={busy}
+                onPress={() => {
+                  if (!canDispatch() || sendingAttachment.current) return;
+                  setBusy(true);
+                  void marmot
+                    .discardMediaDraft(id)
+                    .catch(showError)
+                    .finally(() => setBusy(false));
+                }}
+              >
+                {t("messages:mediaDiscardDraft")}
+              </Action>
+            </View>
+          )}
           {searching && (
             <ConversationSearch
               group={id}
@@ -804,6 +1019,19 @@ export function MarmotConversationScreen({
               chatRef={chatRef}
               highlightText={highlight}
               user={{ _id: self }}
+              mediaPlayback={{
+                isAutoPlayNextEnabled: false,
+                isRoundVideoAutoplayEnabled: false,
+                isFloatingRoundNoteEnabled: false,
+                isNowPlayingBarEnabled: true,
+                onMediaRead: (message) =>
+                  chatPreferences.markListened(id, String(message._id)),
+              }}
+              mediaTransfer={{
+                onDownload: (message) =>
+                  presentation.download(String(message._id)),
+                onCancel: (message) => presentation.cancel(String(message._id)),
+              }}
               isGroupChat={!peer}
               renderAvatar={
                 !peer
@@ -859,7 +1087,7 @@ export function MarmotConversationScreen({
                 />
               )}
               renderInputToolbar={(props) =>
-                canSend ? (
+                canCompose ? (
                   <>
                     {mention && !props.editMessage && (
                       <MentionMember
@@ -902,10 +1130,13 @@ export function MarmotConversationScreen({
                   <Ink>{t("messages:marmot.blocked")}</Ink>
                 ) : null
               }
-              onDraftChange={(text) => saveDraft(text, reply?._id ?? null)}
+              onDraftChange={(text) => {
+                if (!sendingAttachment.current && !pendingMedia)
+                  saveDraft(text, reply?._id ?? null);
+              }}
               listProps={{ onViewableItemsChanged: onVisible }}
               attachments={{
-                isEnabled: canSend,
+                isEnabled: canCompose,
                 isGalleryGridEnabled: false,
                 onPick: (attachments, { caption }) => {
                   try {
@@ -956,7 +1187,7 @@ export function MarmotConversationScreen({
                 onPress: () => void page("older"),
               }}
               onSend={
-                canSend
+                canCompose
                   ? (batch) => {
                       for (const item of batch) {
                         if (item.audio || item.video) {
@@ -1142,23 +1373,20 @@ export function MarmotConversationScreen({
                 if (row.eventKind === timeLockKind)
                   return (
                     <MarmotLocked
-                      key={row.id}
-                      message={row.id}
-                      content={row.text}
-                      expiresAt={row.expiresAt}
-                      active={
-                        focused &&
-                        foreground &&
-                        visible.has(row.id) &&
-                        !blocked &&
-                        !privacy.isBlocked(row.sender)
-                      }
+                      state={openLater.states?.get(row.id)}
+                      retry={() => openLater.retry(row.id)}
                       rtl={kit.rtl}
                     />
                   );
                 return row.attachments.length ? (
                   focused && foreground && !blocked ? (
-                    <MarmotAttachments group={id} row={row} />
+                    <MarmotAttachments
+                      group={id}
+                      row={row}
+                      message={currentMessage}
+                      presentation={presentation}
+                      gallery={gallery}
+                    />
                   ) : null
                 ) : row.eventKind === 9 || row.eventKind === 1111 ? (
                   <>
@@ -1189,8 +1417,8 @@ export function MarmotConversationScreen({
                   </>
                 ) : null;
               }}
-              audioRecording={canSend}
-              videoRecording={canSend}
+              audioRecording={canCompose}
+              videoRecording={canCompose}
             />
           </View>
           {panel === "poll" && canSend && (
@@ -1317,6 +1545,12 @@ function MarmotInvitation({
 }
 
 const styles = StyleSheet.create({
+  uploadStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: space.md,
+  },
   screen: { flex: 1 },
   contours: { width: "100%", height: "100%", opacity: 0.25 },
   header: {

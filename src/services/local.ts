@@ -23,6 +23,7 @@ import { createCallSignalingService } from "@/core/calling/signaling-service";
 import { createPublicMetadata } from "@/core/nostr/public-metadata";
 import { createRelayService } from "@/core/nostr/relay-service";
 import { createCallController } from "@/core/calling/controller";
+import { attachGroupCallLifecycle } from "@/core/calling/group-call-lifecycle";
 import { callTone } from "@/core/calling/native-audio";
 import {
   attachSystemPresentation,
@@ -244,6 +245,7 @@ async function start() {
         const details = await marmot.groupDetails(group);
         if (
           details.membership !== "member" ||
+          details.kind !== "group" ||
           details.pendingInvitation ||
           details.unrecoverable ||
           details.lifecycle !== "stable"
@@ -346,6 +348,7 @@ export function initializeLocal() {
 export function LocalSessionLifecycle() {
   const {
     db,
+    identity,
     relays,
     callSignaling,
     calling,
@@ -356,6 +359,12 @@ export function LocalSessionLifecycle() {
     mediaSdk,
   } = useLocal();
   useEffect(() => {
+    const stopGroupCalls = attachGroupCallLifecycle({
+      calling,
+      localKey: identity.publicKey,
+      ready: marmotSession.ready,
+      client: marmot,
+    });
     const databasePath =
       db.$client.getFirstSync<{ file: string }>(
         "SELECT file FROM pragma_database_list WHERE name = 'main'",
@@ -487,6 +496,7 @@ export function LocalSessionLifecycle() {
     const network = addNetworkStateListener(updateBackupConditions);
     return () => {
       mounted = false;
+      stopGroupCalls();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
       unsubscribeChats();
@@ -503,6 +513,7 @@ export function LocalSessionLifecycle() {
     };
   }, [
     db,
+    identity,
     relays,
     callSignaling,
     calling,

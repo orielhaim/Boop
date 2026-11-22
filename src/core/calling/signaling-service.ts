@@ -81,7 +81,7 @@ export function createCallSignalingService({
         return;
       if (
         signal.type === "call.invite" &&
-        (!canReceiveCall(signal.senderKey) ||
+        ((!signal.joinNonce && !canReceiveCall(signal.senderKey)) ||
           signal.conference?.roster.some(isBlocked))
       )
         return;
@@ -181,7 +181,11 @@ export function createCallSignalingService({
           )
         : [];
     const tags = [["p", signal.recipientKey]];
-    if (signal.type === "call.invite" || signal.type === "call.rtc") {
+    if (
+      signal.type === "call.invite" ||
+      signal.type === "call.rtc" ||
+      signal.type === "call.join"
+    ) {
       for (const relay of relays.inboxRelays().slice(0, 3))
         tags.push([callReplyRelayTag, relay.url]);
     }

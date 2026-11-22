@@ -71,6 +71,44 @@ export function createMediaUploads(
 
   return {
     health: getHealth,
+    async mirrorAttachments(
+      blobs: readonly { url: string; hash: string; size: number }[],
+      signal: AbortSignal,
+      allowed: () => boolean,
+    ) {
+      if (!settings.snapshot().mirror) return true;
+      let succeeded = true;
+      for (const blob of blobs) {
+        const source = new URL(blob.url).origin;
+        const configured = settings.configured("attachment");
+        const mirror = configured.find(
+          ({ origin }) =>
+            origin !== source &&
+            !priorRejection(origin, "attachment", blob.size),
+        );
+        if (
+          !mirror ||
+          !configured.some(({ origin }) => origin === source) ||
+          signal.aborted ||
+          !allowed() ||
+          !settings.snapshot().mirror
+        )
+          continue;
+        try {
+          await client.mirror(
+            mirror.origin,
+            blob.url,
+            { ...blob, mime: "application/octet-stream" },
+            signal,
+          );
+        } catch (error) {
+          if (error instanceof BlossomError)
+            failure(mirror.origin, "attachment", error, blob.size);
+          succeeded = false;
+        }
+      }
+      return succeeded;
+    },
     async check(
       origin: string,
       role: MediaRole,

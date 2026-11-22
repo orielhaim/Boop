@@ -1,5 +1,23 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Buffer } from "node:buffer";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  purgeExpiredOpenedMessages,
+  readOpenedMessage,
+  removeOpenedMessage,
+  saveOpenedMessage,
+} from "../src/db/open-later";
+import { setPreference } from "../src/db/queries";
+import * as schema from "../src/db/schema";
+import { initializeTestDatabase } from "./db-fixture";
+import {
+  createOpenLaterResolver,
+  type OpenLaterState,
+} from "../src/core/messaging/special-messages/open-conversation";
 import {
   createTimeLockOpener,
   encryptTimeLock,
@@ -53,6 +71,136 @@ const historical = (() => {
   if (!content) throw new Error("Go Quicknet fixture did not parse");
   return content;
 })();
+
+test("opened plaintext survives a SQLite reopen and is removed on delete or expiration", () => {
+  const directory = mkdtempSync(join(tmpdir(), "boop-open-later-"));
+  const path = join(directory, "cache.db");
+  try {
+    {
+      using sqlite = new Database(path);
+      initializeTestDatabase(sqlite);
+      const db = drizzle(sqlite, { schema });
+      saveOpenedMessage(db, "opened", body);
+      setPreference(
+        db,
+        "marmot.opened.expired",
+        JSON.stringify({ body, expiresAt: 1 }),
+      );
+    }
+    using sqlite = new Database(path);
+    const db = drizzle(sqlite, { schema });
+    expect(readOpenedMessage(db, "opened")).toBe(body);
+    expect(readOpenedMessage(db, "expired")).toBeNull();
+    removeOpenedMessage(db, "opened");
+    purgeExpiredOpenedMessages(db);
+    expect(sqlite.query("SELECT key FROM settings").all()).toEqual([]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("conversation open resolves every due loaded message, adds pages, and reopens cached messages offline", async () => {
+  let clock = roundTime - 1;
+  const text = JSON.stringify(historical);
+  const cache = new Map<string, string>();
+  const states = new Map<string, OpenLaterState>();
+  let fetches = 0;
+  const open = createTimeLockOpener(undefined, async () => {
+    fetches++;
+    return beacon;
+  });
+  const options = {
+    now: () => clock,
+    read: ({ id }: { id: string }) => cache.get(id) ?? null,
+    save: ({ id }: { id: string }, decoded: string) => {
+      cache.set(id, decoded);
+    },
+    allowed: () => true,
+    publish: (next: ReadonlyMap<string, OpenLaterState>) => {
+      states.clear();
+      for (const [id, state] of next) states.set(id, state);
+    },
+  };
+  const recent = [
+    { id: "offscreen", text },
+    { id: "visible", text },
+  ];
+  const locked = createOpenLaterResolver({ ...options, open });
+  locked.scan(recent);
+  clock = roundTime;
+  locked.scan(recent);
+  expect(fetches).toBe(0);
+  expect(states.get("offscreen")?.kind).toBe("locked");
+  locked.stop();
+
+  const opened = createOpenLaterResolver({ ...options, open });
+  opened.scan(recent);
+  opened.scan([...recent, { id: "older", text }]);
+  await waitFor(() => cache.size === 3);
+  expect(cache.get("offscreen")).toBe(body);
+  expect(cache.get("older")).toBe(body);
+  expect(fetches).toBe(1);
+  opened.stop();
+
+  const reopened = createOpenLaterResolver({
+    ...options,
+    open: async () => {
+      throw new Error("Offline");
+    },
+  });
+  reopened.scan([
+    ...recent,
+    { id: "older", text },
+    { id: "expired", text, expiresAt: roundTime / 1000 },
+  ]);
+  expect(states.get("offscreen")).toEqual({ kind: "opened", text: body });
+  expect(states.has("expired")).toBe(false);
+  reopened.stop();
+});
+
+test("Open Later errors wait for explicit retry and authorization loss discards completions", async () => {
+  let allowed = true;
+  let attempts = 0;
+  let writes = 0;
+  const message = { id: "pending", text: JSON.stringify(historical) };
+  let resolveUnlock: ((result: string) => void) | undefined;
+  let state: OpenLaterState | undefined;
+  const resolver = createOpenLaterResolver({
+    now: () => roundTime,
+    read: () => null,
+    save: () => {
+      writes++;
+    },
+    allowed: () => allowed,
+    open: async () => {
+      if (++attempts === 1) throw new TimeLockError("network");
+      return new Promise((resolve) => {
+        resolveUnlock = resolve;
+      });
+    },
+    publish: (states) => {
+      state = states.get(message.id);
+    },
+  });
+  resolver.scan([message]);
+  await waitFor(() => state?.kind === "failed");
+  resolver.scan([message]);
+  expect(attempts).toBe(1);
+  resolver.retry(message.id);
+  expect(attempts).toBe(2);
+  allowed = false;
+  resolver.scan([]);
+  resolveUnlock?.(body);
+  await Promise.resolve();
+  expect(writes).toBe(0);
+  expect(state).toBeUndefined();
+  resolver.stop();
+});
+
+async function waitFor(condition: () => boolean) {
+  for (let i = 0; i < 100 && !condition(); i++) await Bun.sleep(2);
+  expect(condition()).toBe(true);
+}
 
 test("chooses the first scheduled round at or after UTC instants", () => {
   const genesis = 1_692_803_367_000;

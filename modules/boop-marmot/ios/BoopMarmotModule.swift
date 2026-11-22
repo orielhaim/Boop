@@ -5,6 +5,8 @@ import UIKit
 
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
+  private let uploadLock = NSLock()
+  private var uploads: [String: MediaFileTransferControlFfi] = [:]
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
@@ -14,6 +16,7 @@ public final class BoopMarmotModule: Module {
       try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin) }
     }
     AsyncFunction("closeAccount") { () async throws in
+      self.uploadLock.withLock { self.uploads.values.forEach { $0.cancel() } }
       try await protocolCall { try await self.runtime.close() }
     }
     AsyncFunction("catchUp") { () async throws in
@@ -295,37 +298,118 @@ public final class BoopMarmotModule: Module {
       }
     }
     AsyncFunction("sendSpecial") { (group: String, kind: UInt64, body: String, reply: String?) async throws in
-      guard kind == 24881 || kind == 24883 else { throw problem("InvalidApplicationEvent") }
+      guard [24881, 24883, 24884, 24885].contains(kind) else { throw problem("InvalidApplicationEvent") }
       try await self.withAccount { kit, account in
         let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
         _ = try await kit.sendCustomEvent(accountRef: account, groupIdHex: group, kind: kind, tags: tags, content: body)
       }
     }
-    AsyncFunction("sendMedia") { (group: String, files: [[String: String]], caption: String?, token: String, server: String?, reply: String?) async throws -> String in
+    AsyncFunction("stageMediaDraft") { (group: String, files: [[String: String]], caption: String, token: String, reply: String?) async throws in
       try await self.withAccount { kit, account in
+        let inputs = try self.uploadInputs(files)
+        var draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+        guard draft.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
+        draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision, content: caption, replyToMessageIdHex: reply, mediaAttachments: [])
+        let control = MediaFileTransferControlFfi()
+        let registered = self.uploadLock.withLock {
+          guard self.uploads[token] == nil else { return false }
+          self.uploads[token] = control
+          return true
+        }
+        guard registered else { throw problem("TransferInProgress") }
+        defer { _ = self.uploadLock.withLock { self.uploads.removeValue(forKey: token) } }
+        self.sendEvent("attachmentProgress", ["transfer": token, "received": 0.0, "state": "preparing"])
+        for (index, input) in inputs.enumerated() {
+          let file = files[index]
+          let presentation = file["presentation"] == "round" ? "round" : "file"
+          let waveform = (file["waveform"] ?? "").split(separator: ",").prefix(64).compactMap { Double($0).map { $0 / 31 } }
+          let request = MessageDraftAttachmentFileRequestFfi(id: "\(token):\(inputs.count):\(index):\(presentation)",
+            sourcePath: input.sourcePath, expectedSize: input.expectedSize, fileName: input.fileName,
+            mediaType: input.mediaType, dim: input.dim, thumbhash: input.thumbhash,
+            durationSeconds: file["duration"].flatMap { Double($0) }, waveformSamples: waveform)
+          draft = try await kit.stageMessageDraftAttachmentFile(accountRef: account, revision: draft.revision, request: request, control: control)
+        }
+      }
+    }
+    AsyncFunction("discardMediaDraft") { (group: String) async throws in
+      try await self.withAccount { kit, account in
+        let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+        guard let draft = selected.draft else { return }
+        _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+          content: draft.content, replyToMessageIdHex: draft.replyToMessageIdHex, mediaAttachments: [])
+      }
+    }
+    AsyncFunction("sendMedia") { (group: String, files: [[String: String]], caption: String?, token: String, server: String?, reply: String?) async throws -> Document in
+      try await self.withAccount { kit, account in
+        switch try kit.localSendStatus(accountRef: account, groupIdHex: group, clientToken: token) {
+        case .completed(let summary): return ["id": summary.messageIds.first ?? "", "blobs": []]
+        case .queued, .engineOwned: return ["id": "", "blobs": []]
+        case .rejected: throw problem("MediaSendNotAccepted")
+        case nil: break
+        }
         let state = try await kit.groupDetails(accountRef: account, groupIdHex: group)
         guard state.group.encryptedMedia.version == .v2 else { throw problem("MediaNotConfigured") }
-        let base = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
-        guard !files.isEmpty, files.count <= 16 else { throw problem("InvalidMedia") }
-        let inputs = try files.map { file -> MediaFileUploadAttachmentRequestFfi in
-          guard let raw = file["path"], let name = file["name"], let type = file["type"] else { throw problem("InvalidMedia") }
-          let path = URL(fileURLWithPath: raw).resolvingSymlinksInPath().path
-          guard path.hasPrefix(base) else { throw problem("InvalidMediaPath") }
-          let attributes = try FileManager.default.attributesOfItem(atPath: path)
-          guard let size = attributes[.size] as? NSNumber, attributes[.type] as? FileAttributeType == .typeRegular else {
-            throw problem("InvalidMediaPath")
+        let inputs = files.isEmpty ? [] : try self.uploadInputs(files)
+        let selected = files.isEmpty ? try kit.selectedMessageDraft(accountRef: account, groupIdHex: group) : nil
+        let draftFiles = selected?.draft?.mediaAttachments ?? []
+        if selected != nil {
+          guard !draftFiles.isEmpty, draftFiles.enumerated().allSatisfy({ index, item in
+            item.fileBacked && item.id.hasPrefix("\(token):\(draftFiles.count):\(index):")
+          }) else { throw problem("MediaDraftPending") }
+        }
+        let control = MediaFileTransferControlFfi()
+        let registered = self.uploadLock.withLock {
+          guard self.uploads[token] == nil else { return false }
+          self.uploads[token] = control
+          return true
+        }
+        guard registered else { throw problem("TransferInProgress") }
+        let total = (inputs.reduce(0.0) { $0 + Double($1.expectedSize ?? 0) } + draftFiles.reduce(0.0) { $0 + Double($1.plaintextSize) }) * 3
+        let progress = Task { [weak self] in
+          while !Task.isCancelled {
+            self?.sendEvent("attachmentProgress", ["transfer": token, "received": Double(control.processedBytes()),
+              "total": total, "state": "uploading"])
+            try await Task.sleep(for: .milliseconds(250))
           }
-          return MediaFileUploadAttachmentRequestFfi(sourcePath: path, expectedSize: size.uint64Value, fileName: name, mediaType: type, dim: file["dimensions"], thumbhash: file["thumbhash"])
         }
-        let tags = (reply.map { [["e", $0, "", "reply"]] } ?? []) + inputs.enumerated().map { index, input in
-          let file = files[index]
-          return ["boop-media", String(index), String(input.expectedSize ?? 0), file["duration"] ?? "",
-            String((file["waveform"] ?? "").prefix(192)), file["presentation"] ?? ""]
+        defer {
+          progress.cancel()
+          _ = self.uploadLock.withLock { self.uploads.removeValue(forKey: token) }
         }
+        let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
         let request = MediaFileUploadRequestFfi(attachments: inputs, caption: caption, send: true, blossomServer: server, messageTags: tags)
-        let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: MediaFileTransferControlFfi(), clientToken: token)
-        guard let accepted = result.acceptance else { throw problem("MediaSendNotAccepted") }
-        return accepted.messageIdHex
+        do {
+          let uploaded: MediaUploadResultFfi
+          let id: String
+          if let selected {
+            uploaded = try await kit.uploadMessageDraftAttachments(accountRef: account, revision: selected.revision, attachmentIds: draftFiles.map(\.id), blossomServer: server, control: control)
+            if control.isCancelled() { throw problem("MediaCancelled") }
+            let accepted = try await kit.sendMessageDraftWithClientToken(accountRef: account, revision: selected.revision, attachments: uploaded.attachments.map(\.reference), clientToken: token)
+            id = accepted.messageIdHex
+          } else {
+            let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: control, clientToken: token)
+            guard let accepted = result.acceptance else { throw problem("MediaSendNotAccepted") }
+            id = accepted.messageIdHex
+            uploaded = result.upload
+          }
+          return ["id": id, "blobs": uploaded.attachments.compactMap { item -> Document? in
+            guard let locator = item.reference.locators.first else { return nil }
+            return ["url": locator.value, "hash": item.reference.ciphertextSha256, "size": Double(item.encryptedSizeBytes)]
+          }]
+        } catch MarmotKitError.Runtime(let details) {
+          if control.isCancelled() { throw problem("MediaCancelled") }
+          if details == "media upload timed out" || details.hasPrefix("blob store request failed: upload failed for all Blossom servers:") {
+            throw problem("UploadEndpointFailed")
+          }
+          throw MarmotKitError.Runtime(details: details)
+        }
+      }
+    }
+    AsyncFunction("cancelUpload") { (token: String) -> Bool in
+      self.uploadLock.withLock {
+        guard let control = self.uploads[token] else { return false }
+        control.cancel()
+        return true
       }
     }
     AsyncFunction("makeVideoPoster") { (path: String) async throws -> String in
@@ -352,6 +436,13 @@ public final class BoopMarmotModule: Module {
         return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.state == .ready
       }
     }
+    AsyncFunction("cancelAttachment") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
+      try await self.withAccount { kit, account in
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        guard let reference = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.reference else { return false }
+        return try await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel)
+      }
+    }
     AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
@@ -367,6 +458,8 @@ public final class BoopMarmotModule: Module {
           } else {
             reference = nil
           }
+        case .queued, .downloading, .verifyingCiphertext, .decrypting, .verifyingPlaintext, .retryScheduled:
+          reference = before?.reference
         default:
           reference = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
         }
@@ -376,11 +469,11 @@ public final class BoopMarmotModule: Module {
           tasks.addTask { [weak self] in
             while true {
               guard let item = try await updates.next()?.items.first, item.reference == reference else { throw problem("MediaUnavailable") }
-              self?.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) })])
+              self?.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) }), "state": wireName(item.state)])
               switch item.state {
               case .ready: return
               case .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
-                   .retryExhausted, .cancelled, .storageBlocked, .cleanedBySetting, .completedUnretained:
+                   .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
                 throw problem("MediaUnavailable")
               default: break
               }
@@ -513,6 +606,20 @@ public final class BoopMarmotModule: Module {
       }
     }
     OnDestroy { [runtime] in Task { try? await runtime.close() } }
+  }
+
+  private func uploadInputs(_ files: [[String: String]]) throws -> [MediaFileUploadAttachmentRequestFfi] {
+    let base = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
+    guard !files.isEmpty, files.count <= 16 else { throw problem("InvalidMedia") }
+    return try files.map { file in
+      guard let raw = file["path"], let name = file["name"], let type = file["type"] else { throw problem("InvalidMedia") }
+      let path = URL(fileURLWithPath: raw).resolvingSymlinksInPath().path
+      guard path.hasPrefix(base) else { throw problem("InvalidMediaPath") }
+      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      guard let size = attributes[.size] as? NSNumber, attributes[.type] as? FileAttributeType == .typeRegular else { throw problem("InvalidMediaPath") }
+      return MediaFileUploadAttachmentRequestFfi(sourcePath: path, expectedSize: size.uint64Value, fileName: name,
+        mediaType: type, dim: file["dimensions"], thumbhash: file["thumbhash"])
+    }
   }
 
   private func withAccount<T>(_ call: (Marmot, String) async throws -> T) async throws -> T {

@@ -2,7 +2,11 @@ import type { NDKSigner } from "@nostr-dev-kit/ndk";
 import { fetch } from "expo/fetch";
 import type { Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
-import { downloadPreviewFile, nativeAvatarTransport } from "./download-native";
+import {
+  blossomCommand,
+  downloadPreviewFile,
+  nativeAvatarTransport,
+} from "./download-native";
 import { profileFiles } from "./files";
 import { sha256 } from "./hash";
 import { createMediaSettings } from "./servers";
@@ -24,7 +28,13 @@ export function createMediaSdk(db: Database, signer: NDKSigner) {
   }
   const uploads = createMediaUploads(
     signer,
-    { request: fetch, sha256 },
+    {
+      request: fetch,
+      sha256,
+      headUpload: async (url, headers, signal) =>
+        (await blossomCommand(url, headers, signal)).status,
+      mirrorCommand: blossomCommand,
+    },
     settings,
     changed,
   );

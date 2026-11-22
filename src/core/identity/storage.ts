@@ -29,6 +29,13 @@ type IdentityDatabase<TResult> = BaseSQLiteDatabase<
   typeof schema
 >;
 
+export function isPinnedIdentity<TResult>(
+  db: IdentityDatabase<TResult>,
+  publicKey: string,
+) {
+  return preference(db, pinned) === publicKey;
+}
+
 const slot = (publicKey: string) => `${key}.${publicKey}`;
 const currentSlot = <TResult>(db: IdentityDatabase<TResult>) => {
   const saved = preference(db, activeSlot);

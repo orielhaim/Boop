@@ -1,14 +1,16 @@
 import { eq, like, sql } from "drizzle-orm";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
-import type { Database } from "./index";
 import { preference, setPreference } from "./queries";
+import type * as schema from "./schema";
 import { settings } from "./schema";
 
+type OpenLaterDb<TResult> = BaseSQLiteDatabase<"sync", TResult, typeof schema>;
 const prefix = "marmot.opened.";
 const stored = z.object({ body: z.string(), expiresAt: z.number().nullable() });
 
-export function readOpenedMessage(
-  db: Database,
+export function readOpenedMessage<TResult>(
+  db: OpenLaterDb<TResult>,
   id: string,
   expiresAt?: number | null,
 ) {
@@ -24,8 +26,8 @@ export function readOpenedMessage(
   }
 }
 
-export function saveOpenedMessage(
-  db: Database,
+export function saveOpenedMessage<TResult>(
+  db: OpenLaterDb<TResult>,
   id: string,
   body: string,
   expiresAt?: number | null,
@@ -38,13 +40,16 @@ export function saveOpenedMessage(
   );
 }
 
-export function removeOpenedMessage(db: Database, id: string) {
+export function removeOpenedMessage<TResult>(
+  db: OpenLaterDb<TResult>,
+  id: string,
+) {
   db.delete(settings)
     .where(eq(settings.key, prefix + id))
     .run();
 }
 
-export function purgeExpiredOpenedMessages(db: Database) {
+export function purgeExpiredOpenedMessages<TResult>(db: OpenLaterDb<TResult>) {
   db.delete(settings)
     .where(
       sql`${like(settings.key, prefix + "%")} AND

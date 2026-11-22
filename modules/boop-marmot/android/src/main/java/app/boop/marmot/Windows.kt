@@ -144,12 +144,17 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "invited" to snapshot.pendingConfirmation,
   "canSend" to snapshot.header.capabilities.canSend,
   "firstUnread" to snapshot.readState.firstUnreadMessageIdHex,
-  "draft" to snapshot.draft.draft?.let { mapOf("text" to it.content, "replyTo" to it.replyToMessageIdHex) },
+  "draft" to snapshot.draft.draft?.let { draft ->
+    mapOf("text" to draft.content, "replyTo" to draft.replyToMessageIdHex, "attachments" to draft.mediaAttachments.map { item ->
+      mapOf("id" to item.id, "size" to item.plaintextSize.toDouble(), "duration" to item.durationSeconds,
+        "waveform" to item.waveformSamples.take(64))
+    })
+  },
   "identities" to snapshot.identities.map { mapOf("id" to it.accountIdHex, "name" to it.displayName) },
   "messages" to snapshot.messages.mapNotNull { message ->
     val row = message.timeline
     val system = row.groupSystem?.takeIf { it.provenance == GroupSystemEventProvenanceFfi.AUTHENTICATED_GROUP_STATE }
-    if (system == null && row.poll == null && row.kind !in setOf(9uL, 1111uL, 24881uL, 24883uL)) return@mapNotNull null
+    if (system == null && row.poll == null && row.kind !in setOf(9uL, 1111uL, 24881uL, 24883uL, 24884uL, 24885uL)) return@mapNotNull null
     mapOf(
       "id" to row.messageIdHex,
       "token" to row.clientToken,

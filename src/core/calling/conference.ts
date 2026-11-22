@@ -45,6 +45,7 @@ export type Participant = {
 };
 export type ParticipantVolume = 25 | 50 | 100;
 export type ConferenceMedia = {
+  revokePeer?(key: string): void;
   reserve(request: Reservation): Promise<boolean>;
   authorize(id: string): Promise<boolean>;
   release(id: string): void;

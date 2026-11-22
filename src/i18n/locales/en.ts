@@ -209,6 +209,11 @@ export const en = {
       chooseCallMember:
         "Choose a member to call first. You can add others after they answer.",
       returnToCall: "Return to group call",
+      activeGroupCall: "Group call in progress",
+      joinGroupCall: "Join",
+      joiningGroupCall: "Joining…",
+      groupCallUnavailable: "Could not join the group call.",
+      groupCallFull: "Call is full",
       locationPreview: "Location",
       chatOptions: "Chat options",
       emptyGroup: "Tap the wave to say hello to the group.",
@@ -318,6 +323,11 @@ export const en = {
     mediaUploadPaused:
       "Upload paused. Restarting sends the file from the beginning.",
     mediaUploadFailed: "Could not upload the encrypted attachment.",
+    mediaReadyToResume: "Attachment ready to retry",
+    mediaDraftIncomplete: "Attachment preparation was interrupted",
+    mediaDiscardDraft: "Discard attachment",
+    mediaMirrorFailed:
+      "Attachment sent. The backup server did not save a copy.",
     mediaVideoTooShort: "Hold the camera button to record a longer video note.",
     mediaPhoto: "Photo",
     mediaVideo: "Video",
@@ -375,6 +385,7 @@ export const en = {
       "Messages stay in the chat. You can download their media again.",
     mediaClearError: "Could not clear downloaded media.",
     lockedMessage: "Locked message",
+    lockedOpening: "Unlocking…",
     lockedPreview: "Locked message · Opens {{time}}",
     lockedOpens: "Opens {{time}}",
     lockedDetails: "Unlock details",

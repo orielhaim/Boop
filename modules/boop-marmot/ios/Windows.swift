@@ -198,12 +198,18 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "invited": snapshot.pendingConfirmation,
     "canSend": snapshot.header.capabilities.canSend,
     "firstUnread": bridgeValue(snapshot.readState.firstUnreadMessageIdHex),
-    "draft": bridgeValue(snapshot.draft.draft.map { ["text": $0.content, "replyTo": bridgeValue($0.replyToMessageIdHex)] }),
+    "draft": bridgeValue(snapshot.draft.draft.map { draft in
+      ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
+        "attachments": draft.mediaAttachments.map { item -> Document in
+          ["id": item.id, "size": Double(item.plaintextSize), "duration": bridgeValue(item.durationSeconds),
+           "waveform": Array(item.waveformSamples.prefix(64))]
+        }]
+    }),
     "identities": snapshot.identities.map { ["id": $0.accountIdHex, "name": $0.displayName] },
     "messages": snapshot.messages.compactMap { message -> Document? in
       let row = message.timeline
       let system = row.groupSystem.flatMap { $0.provenance == .authenticatedGroupState ? $0 : nil }
-      guard system != nil || row.poll != nil || [9, 1111, 24881, 24883].contains(row.kind) else { return nil }
+      guard system != nil || row.poll != nil || [9, 1111, 24881, 24883, 24884, 24885].contains(row.kind) else { return nil }
       return [
         "id": row.messageIdHex,
         "token": bridgeValue(row.clientToken),

@@ -34,7 +34,9 @@ adb reverse tcp:19310 tcp:19310
 ./gradlew :boop-marmot:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64 -Pandroid.testInstrumentationRunnerArguments.relay=ws://127.0.0.1:19310
 ```
 
-Pass `-Pandroid.testInstrumentationRunnerArguments.blossom=<https-origin>` to include the encrypted media round trip. Use a Blossom origin you have permission to test. The test uploads synthetic bytes, checks that the receiver remains in `NOT_REQUESTED` before the explicit action, and verifies the retained plaintext handoff. Test identities, credentials, and native stores are independent of the app.
+For the media test, start `bun scripts/marmot-test-blossom.ts` and forward its printed port to the emulator. Pass that origin with `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The loopback fixture counts binary requests and pauses an explicit download so the test can cancel and retry it. The suite also checks encrypted draft recovery and cache access after restart. Only the instrumentation account enables loopback blobs.
+
+An authorized HTTPS Blossom endpoint also exercises the encrypted group-image round trip. Test identities, credentials, and native stores are independent of the app. On PowerShell, quote each `-Pandroid.testInstrumentationRunnerArguments.*` argument.
 
 `src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. Preserve the baseline's `PRAGMA user_version` when regenerating it.
 
@@ -44,15 +46,23 @@ The local Expo module opens the SQLCipher-backed MarmotKit account for the activ
 
 The enabled discovery relays are configured as MarmotKit directory indexers as well as account bootstrap relays. The 0.18.0 UniFFI directory lookup also reads the constructor's relay pool, which includes enabled general and discovery relays. The account's published relay lists still use the configured general and inbox selections. Inbox records can be available on the indexers while KeyPackages are served from the account's general relays.
 
-Received message attachments use MarmotKit's host-managed acquisition policy. The attachment action explicitly requests the download and leases the verified local file for presentation. The selected attachment Blossom origin is passed to MarmotKit. Profile photo upload and link previews use the separate Boop media path. First-contact WebRTC signaling uses authenticated kind `24880` control messages through the dedicated Nostr transport.
+Received message attachments use MarmotKit's host-managed acquisition policy. Chat Kit renders local ThumbHash previews and leases verified files for playback or export. Download and Cancel drive the native attachment job. A gallery may open retained files from its loaded window.
+
+The composer stages attachments in MDK's encrypted draft store. Retry uses the staged files and original client token, including after a restart. A partial batch from an interrupted copy can be discarded. MDK owns delivery after admission. Forwarding uses the same configured servers and only reads retained files from the source message.
+
+Boop checks enabled attachment origins in order with a signed BUD-06 request. Unsupported preflight permits an upload attempt. A confirmed upload-stage failure can advance to the next origin. An uncertain admission stops the attempt and leaves retry to the saved draft and its token. The optional BUD-04 mirror copies the published ciphertext after admission and checks the returned hash and size. MDK's 0.18.0 references contain the primary locator, so the mirror is a backup copy. Profile photo upload and link previews use the separate Boop media path.
+
+Connected group participants send expiring, group-encrypted call announcements with their current roster. A member can use **Join** in the conversation or Group Details to request a seat from a participant. Invites and join requests use kind `24880` over the dedicated encrypted Nostr transport. Trystero authenticates peers and checks current membership before sending microphone audio. First-contact calls use the same independent signaling path.
 
 Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone. Messaging Backup is opt-in and restores available history only into conversations the device already belongs to.
 
-MDK signs the configured attachment Blossom origin into newly created conversations. If the attachment server list is empty, MDK creates a text-only group. Encrypted group images use the configured group-image endpoint. Members need a common image server because the group state carries no origin. Normal attachment references carry their own encrypted blob locators.
+MDK signs the preferred attachment Blossom origin into newly created conversations. If the attachment server list is empty, MDK creates a text-only group. Encrypted group images use the configured group-image endpoint. Members need a common image server because the group state carries no origin. Normal attachment references carry their own encrypted blob locators.
 
 Group invitee checks use the SDK's single-account prewarm command. The completed lookup reflects a usable package and inbox route at that time. Creating a group or adding members revalidates them. In-chat reporting sends a group-encrypted report linked to the authenticated target message. The mention picker inserts a Nostr account link into the draft, which MDK recognizes on send.
 
 ## Delayed-message dependency
+
+Opening a conversation or loading an older page checks its Open Later messages. The resolver reads SQLite first, then verifies due drand rounds in a bounded queue. Failed verification can be retried from the bubble. Messages that are still locked can be checked again on reopen or retry.
 
 Open Later uses the vendored `tlock-js` 1.0.0 build from [upstream PR #52](https://github.com/drand/tlock-js/pull/52). The archive is from commit `b311ee25c26dcf86f347049e37d05fed0394889e` and has SHA-256 `25fd6819942da96832adc8c6470e2c253783e7c6d8b1c0bd96e5082adf0b159d`. Keep Quicknet chain and beacon validation in `src/core/messaging/special-messages/timelock.ts`.
 
