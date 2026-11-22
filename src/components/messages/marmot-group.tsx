@@ -1,22 +1,33 @@
-import { router, Stack, useIsFocused } from "expo-router";
+import { router, Stack, useIsFocused, usePreventRemove } from "expo-router";
 import type { File } from "expo-file-system";
+import { asc } from "drizzle-orm";
 import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Pressable, StyleSheet, View } from "react-native";
+import {
+  Alert,
+  AppState,
+  FlatList,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { usePerson } from "@/components/people/use-person";
+import { PersonAvatar } from "@/components/people/person-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { ActionMenu } from "@/components/ui/action-menu";
-import { GlassBackButton } from "@/components/ui/back-button";
+import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
 import {
   Action,
   Avatar,
@@ -231,72 +242,103 @@ function cleanImage(file: File | null) {
 export function NewMarmotGroup() {
   const { t } = useTranslation(namespaces);
   const { db, identity, marmotSession, privacy, mediaSdk } = useLocal();
+  const { colors } = useTheme();
   const translateError = useMarmotError();
-  const [addresses, setAddresses] = useState("");
+  const [saved] = useState(() =>
+    db.select().from(contacts).orderBy(asc(contacts.name)).all(),
+  );
+  useSyncExternalStore(privacy.subscribe, privacy.revision);
+  const eligible = saved.filter(
+    ({ publicKey }) =>
+      publicKey !== identity.publicKey && !privacy.isBlocked(publicKey),
+  );
+  const [step, setStep] = useState(eligible.length ? "people" : "details");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<"idle" | "creating" | "created">("idle");
   const [error, setError] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
+  const creating = useRef(false);
   const picker = useAvatarPicker();
   useEffect(() => () => cleanImage(photo), [photo]);
-  const saved = db
-    .select()
-    .from(contacts)
-    .all()
-    .filter((contact) => !privacy.isBlocked(contact.publicKey));
-  const addressesParsed = resolveAddresses(addresses, identity.publicKey);
-  const membersToCheck = [
-    ...new Set([...(addressesParsed ?? []), ...selected]),
-  ];
+
+  const busy = status !== "idle";
+  const selecting = step === "people" && eligible.length > 0;
+  const canReturnToPeople = !selecting && eligible.length > 0;
+  const disablePrevention = usePreventRemove(
+    status !== "created" &&
+      (busy || Boolean(picker.image) || canReturnToPeople),
+    () => {
+      if (creating.current) return;
+      if (picker.image) picker.clear();
+      else setStep("people");
+    },
+  );
+
+  function back() {
+    if (busy) return;
+    if (canReturnToPeople) setStep("people");
+    else if (router.canGoBack()) router.back();
+    else router.replace("/");
+  }
 
   async function create() {
-    const keys = resolveAddresses(addresses, identity.publicKey);
-    if (!keys) {
-      setError(t("contacts:invalidAddress"));
-      return;
-    }
-    const members = [...new Set([...keys, ...selected])];
-    if (members.some(privacy.isBlocked)) {
+    const groupName = name.trim();
+    if (!groupName || creating.current) return;
+    if (selected.some(privacy.isBlocked)) {
       setError(t("messages:marmot.blocked"));
       return;
     }
-    if (members.length < 2 || !name.trim()) return;
-    setBusy(true);
+    creating.current = true;
+    setStatus("creating");
     setError("");
+    let created = false;
     try {
       await marmotSession.ready();
+      if (selected.some(privacy.isBlocked)) {
+        setError(t("messages:marmot.blocked"));
+        return;
+      }
       const result = await marmot.createGroup(
-        name.trim(),
+        groupName,
         description.trim() || null,
-        members,
+        selected,
         photo ? imagePath(photo) : null,
       );
       const unavailable = failureList(result.members, t);
-      if (!result.groupId) {
+      const group = result.groupId;
+      if (!group) {
         setError(unavailable || t("messages:marmot.operationError"));
         return;
       }
-      const group = result.groupId;
-      if (unavailable)
+      created = true;
+      const openGroup = () => {
+        setStatus("created");
+        disablePrevention();
+        router.replace(conversationRoute(group));
+      };
+      if (unavailable) {
         Alert.alert(t("messages:marmot.unavailableMembers"), unavailable, [
-          {
-            text: t("common:done"),
-            onPress: () => router.replace(conversationRoute(group)),
-          },
+          { text: t("common:done"), onPress: openGroup },
         ]);
-      else router.replace(conversationRoute(group));
+      } else {
+        openGroup();
+      }
     } catch (reason) {
       setError(translateError(reason));
     } finally {
-      setBusy(false);
+      if (!created) {
+        creating.current = false;
+        setStatus("idle");
+      }
     }
   }
 
   if (picker.image)
     return (
       <AvatarCropScreen
+        topInset
         source={picker.image}
         onCancel={picker.clear}
         onSave={(file) => {
@@ -307,76 +349,244 @@ export function NewMarmotGroup() {
     );
 
   return (
-    <Screen>
-      <Stack.Screen
-        options={{ headerShown: true, title: t("messages:marmot.newGroup") }}
-      />
-      {!mediaSdk.configured("attachment").length && (
-        <Ink>{t("messages:marmot.textOnlyGroup")}</Ink>
-      )}
-      <EditableAvatar
-        disabled={busy || picker.busy}
-        onPick={(source) => void picker.pick(source)}
-        onRemove={photo ? () => setPhoto(null) : undefined}
-      >
-        <GlassAvatar
-          name={name || t("messages:marmot.group")}
-          src={photo?.uri}
-          size="xl"
-        />
-      </EditableAvatar>
-      {picker.error && <Ink>{picker.error}</Ink>}
-      <GlassInput
-        label={t("messages:marmot.groupName")}
-        value={name}
-        onChangeText={setName}
-        maxLength={128}
-      />
-      <GlassInput
-        label={t("messages:marmot.groupDescription")}
-        value={description}
-        onChangeText={setDescription}
-        multiline
-        maxLength={512}
-      />
-      <GlassInput
-        label={t("messages:marmot.addresses")}
-        value={addresses}
-        onChangeText={setAddresses}
-        multiline
-        autoCapitalize="none"
-      />
-      {saved.map((contact) => (
-        <Action
-          key={contact.publicKey}
-          variant={selected.includes(contact.publicKey) ? "prominent" : "soft"}
-          onPress={() =>
-            setSelected((value) =>
-              value.includes(contact.publicKey)
-                ? value.filter((key) => key !== contact.publicKey)
-                : [...value, contact.publicKey],
-            )
-          }
+    <Screen scroll={false} topInset>
+      <View style={groupSetupStyles.header}>
+        <View style={groupSetupStyles.back}>
+          {!busy && <GlassBackButton onPress={back} elevation="none" />}
+        </View>
+        <Ink
+          kind="heading"
+          accessibilityRole="header"
+          numberOfLines={1}
+          style={groupSetupStyles.title}
         >
-          {contact.name}
-        </Action>
-      ))}
-      <InviteeAvailability keys={membersToCheck} />
-      {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
-      <Action
-        disabled={
-          busy || !name.trim() || !addressesParsed || membersToCheck.length < 2
-        }
-        variant="prominent"
-        onPress={() => void create()}
-      >
-        {t(
-          busy ? "messages:marmot.checkingInvitees" : "messages:marmot.create",
-        )}
-      </Action>
+          {t(
+            selecting
+              ? "messages:marmot.selectGroupPeople"
+              : "messages:marmot.newGroup",
+          )}
+        </Ink>
+      </View>
+      {selecting ? (
+        <>
+          <FlatList
+            data={eligible}
+            keyExtractor={({ publicKey }) => publicKey}
+            contentContainerStyle={groupSetupStyles.people}
+            renderItem={({ item: { publicKey } }) => (
+              <GroupInviteeRow
+                publicKey={publicKey}
+                selected={selected.includes(publicKey)}
+                onToggle={() =>
+                  setSelected((keys) =>
+                    keys.includes(publicKey)
+                      ? keys.filter((key) => key !== publicKey)
+                      : [...keys, publicKey],
+                  )
+                }
+              />
+            )}
+          />
+          <View style={groupSetupStyles.footer}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("messages:marmot.continueToGroupDetails")}
+              onPress={() => {
+                tapFeedback();
+                setError("");
+                setStep("details");
+              }}
+              style={({ pressed }) => [
+                groupSetupStyles.continue,
+                {
+                  backgroundColor: colors.outgoing,
+                  opacity: pressed ? 0.72 : 1,
+                },
+              ]}
+            >
+              <Icon name="continue" size={24} color={colors.outgoingInk} />
+            </Pressable>
+          </View>
+        </>
+      ) : (
+        <ScrollView
+          contentContainerStyle={groupSetupStyles.form}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
+          <View style={groupSetupStyles.identityFields}>
+            <EditableAvatar
+              disabled={busy || picker.busy}
+              showEditBadge={Boolean(photo)}
+              onPick={(source) => void picker.pick(source)}
+              onRemove={photo ? () => setPhoto(null) : undefined}
+            >
+              {photo ? (
+                <GlassAvatar name={name} src={photo.uri} size="lg" />
+              ) : (
+                <View
+                  style={[
+                    groupSetupStyles.photoPlaceholder,
+                    { backgroundColor: colors.accentSoft },
+                  ]}
+                >
+                  <Icon name="photo" size={24} />
+                </View>
+              )}
+            </EditableAvatar>
+            <View style={groupSetupStyles.nameField}>
+              <GlassInput
+                compact
+                label={t("messages:marmot.groupName")}
+                value={name}
+                onChangeText={setName}
+                maxLength={128}
+                editable={!busy}
+              />
+            </View>
+          </View>
+          <GlassInput
+            compact
+            label={t("messages:marmot.groupDescriptionOptional")}
+            value={description}
+            onChangeText={setDescription}
+            multiline
+            textAlignVertical="top"
+            style={groupSetupStyles.description}
+            maxLength={512}
+            editable={!busy}
+          />
+          {picker.error && (
+            <Ink accessibilityLiveRegion="polite">{picker.error}</Ink>
+          )}
+          {!mediaSdk.configured("attachment").length && (
+            <Ink kind="caption" muted>
+              {t("messages:marmot.textOnlyGroup")}
+            </Ink>
+          )}
+          <InviteeAvailability keys={selected} />
+          {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
+          <Action
+            disabled={busy || picker.busy || !name.trim()}
+            variant="prominent"
+            onPress={() => void create()}
+          >
+            {t(
+              busy ? "messages:marmot.creatingGroup" : "messages:marmot.create",
+            )}
+          </Action>
+        </ScrollView>
+      )}
     </Screen>
   );
 }
+
+function GroupInviteeRow({
+  publicKey,
+  selected,
+  onToggle,
+}: {
+  publicKey: string;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const { colors } = useTheme();
+  const { contact, profile, photo, name } = usePerson(publicKey, false);
+  return (
+    <Pressable
+      accessibilityLabel={name}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: selected }}
+      onPress={() => {
+        tapFeedback();
+        onToggle();
+      }}
+      style={({ pressed }) => [
+        groupSetupStyles.person,
+        (selected || pressed) && { backgroundColor: colors.accentSoft },
+      ]}
+    >
+      <PersonAvatar
+        publicKey={publicKey}
+        name={name}
+        photo={photo}
+        hasName={Boolean(contact?.name || profile?.name)}
+      />
+      <Ink kind="label" numberOfLines={1} style={groupSetupStyles.personName}>
+        {name}
+      </Ink>
+      <View
+        style={[
+          groupSetupStyles.check,
+          {
+            borderColor: selected ? colors.outgoing : colors.line,
+            backgroundColor: selected ? colors.outgoing : undefined,
+          },
+        ]}
+      >
+        {selected && <Icon name="check" size={15} color={colors.outgoingInk} />}
+      </View>
+    </Pressable>
+  );
+}
+
+const groupSetupStyles = StyleSheet.create({
+  header: {
+    minHeight: backButtonSize,
+    justifyContent: "center",
+    marginHorizontal: space.lg,
+    marginBottom: space.sm,
+  },
+  back: { position: "absolute", start: 0, zIndex: 1 },
+  title: { textAlign: "center", marginHorizontal: backButtonSize + space.sm },
+  people: { paddingHorizontal: space.lg, paddingBottom: space.sm },
+  person: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    minHeight: 56,
+    paddingHorizontal: space.sm,
+    borderRadius: 14,
+  },
+  personName: { flex: 1 },
+  check: {
+    width: 23,
+    height: 23,
+    borderWidth: 1,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footer: {
+    alignItems: "flex-end",
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+    paddingBottom: space.md,
+  },
+  continue: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  form: {
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingTop: space.xs,
+    paddingBottom: space.xxl,
+  },
+  identityFields: { flexDirection: "row", gap: space.md, alignItems: "center" },
+  photoPlaceholder: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  nameField: { flex: 1, minWidth: 0 },
+  description: { minHeight: 112 },
+});
 
 export function MarmotGroupDetailsScreen({
   id,

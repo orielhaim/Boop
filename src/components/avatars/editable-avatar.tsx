@@ -11,12 +11,14 @@ import type { AvatarPhotoSource } from "./picker";
 export function EditableAvatar({
   disabled = false,
   showLabel = false,
+  showEditBadge = true,
   onPick,
   onRemove,
   children,
 }: {
   disabled?: boolean;
   showLabel?: boolean;
+  showEditBadge?: boolean;
   onPick: (source: AvatarPhotoSource) => void;
   onRemove?: () => void;
   children: ReactNode;
@@ -31,7 +33,7 @@ export function EditableAvatar({
     >
       <View>
         {children}
-        {!disabled && (
+        {!disabled && showEditBadge && (
           <View
             style={[
               styles.badge,
