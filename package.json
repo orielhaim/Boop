@@ -1,6 +1,6 @@
 {
   "name": "boop",
-  "version": "1.0.1-beta.1",
+  "version": "0.1.0-beta.2",
   "main": "./src/entry.ts",
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",

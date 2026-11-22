@@ -2,7 +2,7 @@
   "expo": {
     "name": "Boop",
     "slug": "boop",
-    "version": "1.0.1-beta.1",
+    "version": "0.1.0-beta.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": ["boop", "nostr"],
@@ -14,7 +14,7 @@
       }
     },
     "android": {
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "backgroundColor": "#414DC3",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -103,7 +103,7 @@
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
       "./plugins/with-system-calling.js",
-      "./plugins/with-optional-portrait.js",
+      "./plugins/with-optional-android-features.js",
       [
         "@hzblj/expo-translation",
         {
