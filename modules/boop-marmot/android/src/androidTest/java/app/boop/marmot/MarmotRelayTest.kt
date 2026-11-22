@@ -1,12 +1,16 @@
 package app.boop.marmot
 
+import android.graphics.Bitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ipf.marmotkit.*
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.util.UUID
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -42,6 +46,8 @@ class MarmotRelayTest {
           }
         }
 
+        val available = alice.kit.prewarmGroupMemberKeyPackages(alice.key, listOf(bob.key))
+        assertEquals(1uL, available.uniqueMembers)
         val direct = alice.kit.startDirectConversation(alice.key, bob.key)
         assertEquals(direct, alice.kit.startDirectConversation(alice.key, bob.key))
         bob.accept(direct)
@@ -64,6 +70,7 @@ class MarmotRelayTest {
           }
         }
         assertEquals(EncryptedMediaVersionFfi.V2, alice.kit.groupDetails(alice.key, direct).group.encryptedMedia.version)
+        verifyWindowDelta(alice, bob, direct)
         if (blossom != null) mediaRoundTrip(alice, bob, direct, blossom)
 
         alice.close()
@@ -94,11 +101,21 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
         carol.receives(group, alice.key, "hello group")
+        val target = bob.kit.messages(bob.key, group, 30u, null)
+          .single { it.plaintext == "hello group" }.messageIdHex
+        bob.kit.reportMessage(bob.key, group, target, ReportReasonFfi.SPAM, "")
+        await("group report with authenticated reporter") {
+          alice.kit.contentReports(alice.key, group, target, null, 10u).reports.any {
+            it.reason == ReportReasonFfi.SPAM && it.reporter == bob.key
+          }
+        }
+        if (blossom != null) groupPhotoRoundTrip(alice, bob, group)
 
         alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
         await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
         alice.kit.promoteAdmin(alice.key, group, bob.key)
         await("canonical admin promotion") { bob.kit.groupManagementState(bob.key, group).isSelfAdmin }
+        concurrentProfileUpdates(alice, bob, group)
         alice.kit.demoteAdmin(alice.key, group, bob.key)
         await("canonical admin demotion") { !bob.kit.groupManagementState(bob.key, group).isSelfAdmin }
         alice.kit.removeMembers(alice.key, group, listOf(carol.key))
@@ -106,6 +123,7 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "after removal", "after-removal")
         bob.receives(group, alice.key, "after removal")
         assertFalse(carol.kit.messages(carol.key, group, 30u, null).any { it.plaintext == "after removal" })
+        groupPoll(alice, bob, group)
         val secondAlice = Client(File(root, "alice-linked"), relay, blossom)
         try {
           secondAlice.start(alice.kit.revealNsec(alice.key))
@@ -114,12 +132,117 @@ class MarmotRelayTest {
         } finally {
           secondAlice.close()
         }
+        bob.close()
+        alice.kit.sendTextWithClientToken(alice.key, direct, "delivered after offline interval", "offline-recipient")
+        bob.start()
+        bob.kit.catchUpAccounts()
+        bob.receives(direct, alice.key, "delivered after offline interval")
+
+        val declined = alice.kit.createGroupDetailed(alice.key, "Declined fixture", listOf(bob.key), null)
+          .created?.groupIdHex ?: error("Could not create decline fixture")
+        await("declinable Welcome") {
+          bob.kit.chatList(bob.key, false).any { it.groupIdHex == declined && it.pendingConfirmation }
+        }
+        bob.kit.declineGroupInvite(bob.key, declined)
+        await("declined invitation left the inbox") {
+          bob.kit.chatList(bob.key, false).none { it.groupIdHex == declined && it.pendingConfirmation }
+        }
+
+        bob.kit.leaveGroup(bob.key, group)
+        await("authenticated leave") {
+          alice.kit.groupDetails(alice.key, group).members.none { it.memberIdHex == bob.key }
+        }
+        alice.kit.enableGroupDisbanding(alice.key, group)
+        await("authenticated disbanding policy") { alice.kit.groupManagementState(alice.key, group).canDisband }
+        alice.kit.disbandGroup(alice.key, group)
+        await("disbanded group state") {
+          alice.kit.groupDetails(alice.key, group).mlsState.lifecycleState == GroupLifecycleStateFfi.DISBANDED
+        }
       } finally {
         for (client in listOf(carol, bob, alice)) client.close()
       }
     } finally {
       root.deleteRecursively()
     }
+  }
+
+  private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
+    val handle = recipient.kit.openConversationWindow(recipient.key, group, ConversationOpenModeFfi.LATEST, null, 3u, 15_000u)
+    val window = ConversationWindow(handle)
+    try {
+      val initial = checkNotNull(window.initial())
+      val initialRows = initial["messages"] as List<*>
+      assertEquals(3, initialRows.size)
+      val body = "new message for the bounded window"
+      sender.kit.sendTextWithClientToken(sender.key, group, body, "window-delta-proof")
+      val next = withTimeout(35_000) {
+        var projected = checkNotNull(window.next())
+        while ((projected["messages"] as List<*>).filterIsInstance<Map<*, *>>().none { it["text"] == body }) {
+          projected = checkNotNull(window.next())
+        }
+        projected
+      }
+      assertEquals(3, (next["messages"] as List<*>).size)
+      val delta = checkNotNull(windowDelta(initial, next))
+      assertEquals(listOf(body), (delta["changed"] as List<*>).filterIsInstance<Map<*, *>>().map { it["text"] })
+      assertEquals(3, (delta["order"] as List<*>).size)
+    } finally {
+      window.stop()
+    }
+  }
+
+  private suspend fun concurrentProfileUpdates(alice: Client, bob: Client, group: String) = coroutineScope {
+    await("both group views stabilized before concurrent changes") {
+      listOf(alice, bob).all { it.kit.groupDetails(it.key, group).mlsState.lifecycleState == GroupLifecycleStateFfi.STABLE }
+    }
+    val first = async { runCatching { alice.kit.updateGroupProfile(alice.key, group, "Alice update", null) } }
+    val second = async { runCatching { bob.kit.updateGroupProfile(bob.key, group, "Bob update", null) } }
+    val outcomes = listOf(first.await(), second.await())
+    assertTrue(outcomes.any { it.isSuccess })
+    await("group converged after competing mutations") {
+      val a = alice.kit.groupDetails(alice.key, group)
+      val b = bob.kit.groupDetails(bob.key, group)
+      a.mlsState.lifecycleState == GroupLifecycleStateFfi.STABLE &&
+        b.mlsState.lifecycleState == GroupLifecycleStateFfi.STABLE &&
+        a.mlsState.epoch == b.mlsState.epoch &&
+        a.group.name == b.group.name &&
+        a.group.name in listOf("Alice update", "Bob update")
+    }
+  }
+
+  private suspend fun groupPoll(alice: Client, bob: Client, group: String) {
+    val question = "Which option?"
+    alice.kit.createPoll(alice.key, group, question, listOf("First", "Second"), PollTypeFfi.SINGLE_CHOICE, null)
+    val query = TimelineMessageQueryFfi(group, null, null, null, null, cursorGroupId = null,
+      before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
+    await("encrypted poll projection") {
+      bob.kit.timelineMessages(bob.key, query).messages.any { it.poll?.question == question }
+    }
+    val pollRow = bob.kit.timelineMessages(bob.key, query).messages.single { it.poll?.question == question }
+    val option = checkNotNull(pollRow.poll).options.first()
+    bob.kit.castPollVote(bob.key, group, pollRow.messageIdHex, listOf(option.id))
+    await("encrypted poll result") {
+      alice.kit.timelineMessages(alice.key, query).messages.single { it.poll?.question == question }
+        .poll?.options?.any { it.id == option.id && it.votes == 1uL } == true
+    }
+  }
+
+  private suspend fun groupPhotoRoundTrip(admin: Client, member: Client, group: String) {
+    val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+    val jpeg = try {
+      bitmap.eraseColor(0xff3050b0.toInt())
+      ByteArrayOutputStream().use { bytes ->
+        assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 85, bytes))
+        bytes.toByteArray()
+      }
+    } finally {
+      bitmap.recycle()
+    }
+    admin.kit.updateGroupImage(admin.key, group, jpeg, "image/jpeg")
+    await("authenticated group photo change") {
+      member.kit.groupDetails(member.key, group).group.imageHashHex != null
+    }
+    assertArrayEquals(jpeg, member.kit.downloadGroupBlossomImage(member.key, group))
   }
 
   private suspend fun linkDevice(primary: Client, joining: Client) {
@@ -209,7 +332,10 @@ class MarmotRelayTest {
         options = MarmotOptions(
           relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
           secretStore = store,
-          deployment = marmotDeploymentNeutral().copy(newGroupMediaEndpoints = listOf(blossom ?: "https://blossom.example.com")),
+          deployment = marmotDeploymentNeutral().copy(
+            newGroupMediaEndpoints = listOf(blossom ?: "https://blossom.example.com"),
+            groupImageEndpoint = blossom,
+          ),
           attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
         ),
       )

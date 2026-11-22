@@ -1,5 +1,7 @@
+import AVFoundation
 import ExpoModulesCore
 import Foundation
+import UIKit
 
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
@@ -120,6 +122,9 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("startDirect") { (peer: String) async throws -> String in
       try await self.withAccount { try await $0.startDirectConversation(accountRef: $1, peerAccountId: peer) }
     }
+    AsyncFunction("checkInvitee") { (peer: String) async throws in
+      try await self.withAccount { _ = try await $0.prewarmGroupMemberKeyPackages(accountRef: $1, memberRefs: [peer]) }
+    }
     AsyncFunction("createGroup") { (name: String, description: String?, members: [String], image: String?) async throws -> Document in
       try await self.withAccount { kit, account in
         let initial = try image.map { path in
@@ -159,6 +164,8 @@ public final class BoopMarmotModule: Module {
           "retention": Double(details.group.disappearingMessageSecs),
           "membership": wireName(details.group.selfMembership),
           "pendingInvitation": details.group.pendingConfirmation,
+          "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
+          "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
           "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
           "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
           "lifecycle": wireName(policy.lifecycleState), "commit": bridgeValue(pending.map { wireName($0.state) }),
@@ -307,11 +314,33 @@ public final class BoopMarmotModule: Module {
           }
           return MediaFileUploadAttachmentRequestFfi(sourcePath: path, expectedSize: size.uint64Value, fileName: name, mediaType: type, dim: file["dimensions"], thumbhash: file["thumbhash"])
         }
-        let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
+        let tags = (reply.map { [["e", $0, "", "reply"]] } ?? []) + inputs.enumerated().map { index, input in
+          let file = files[index]
+          return ["boop-media", String(index), String(input.expectedSize ?? 0), file["duration"] ?? "",
+            String((file["waveform"] ?? "").prefix(192)), file["presentation"] ?? ""]
+        }
         let request = MediaFileUploadRequestFfi(attachments: inputs, caption: caption, send: true, blossomServer: server, messageTags: tags)
         let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: MediaFileTransferControlFfi(), clientToken: token)
         guard let accepted = result.acceptance else { throw problem("MediaSendNotAccepted") }
         return accepted.messageIdHex
+      }
+    }
+    AsyncFunction("makeVideoPoster") { (path: String) async throws -> String in
+      try await protocolCall {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
+        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard file.path.hasPrefix(home), try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+          throw problem("InvalidMediaPath")
+        }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
+        generator.maximumSize = CGSize(width: 144, height: 144)
+        generator.appliesPreferredTrackTransform = true
+        let thumbnail = try await generator.image(at: .zero).image
+        guard let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.75) else { throw problem("MediaUnavailable") }
+        let cache = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let output = cache.appendingPathComponent("marmot-poster-" + UUID().uuidString + ".jpg")
+        try jpeg.write(to: output, options: [.atomic, .completeFileProtection])
+        return output.path
       }
     }
     AsyncFunction("attachmentStatus") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
@@ -389,6 +418,11 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("deleteMessage") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try await $0.deleteMessage(accountRef: $1, groupIdHex: group, targetMessageId: id) }
+    }
+    AsyncFunction("reportMessage") { (group: String, id: String, spam: Bool) async throws in
+      try await self.withAccount {
+        _ = try await $0.reportMessage(accountRef: $1, groupIdHex: group, messageId: id, reason: spam ? .spam : .other, explanation: "")
+      }
     }
     AsyncFunction("reactToMessage") { (group: String, id: String, emoji: String, remove: Bool) async throws in
       try await self.withAccount { kit, account in

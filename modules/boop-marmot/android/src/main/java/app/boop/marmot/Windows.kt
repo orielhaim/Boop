@@ -154,6 +154,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       "sender" to row.sender,
       "text" to row.plaintext,
       "sentAt" to row.timelineAt.toDouble(),
+      "expiresAt" to row.retentionExpiresAt?.toDouble(),
       "eventKind" to row.kind.toInt(),
       "replyTo" to row.replyToMessageIdHex,
       "replyPreview" to row.replyPreview?.let { mapOf("id" to it.messageIdHex, "sender" to it.sender, "text" to it.plaintext) },
@@ -162,8 +163,13 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       },
       "attachments" to row.media.mapNotNull { media ->
         (media as? MediaAttachmentOutcomeFfi.Accepted)?.takeIf { it.reference.version == EncryptedMediaVersionFfi.V2 }?.let {
+          val tag = row.tags.firstOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
+            tag.values[1].toUIntOrNull() == it.attachmentIndex }?.values
           mapOf("index" to it.attachmentIndex.toInt(), "name" to it.reference.fileName, "type" to it.reference.mediaType,
-            "thumbhash" to it.reference.thumbhash, "dimensions" to it.reference.dim)
+            "thumbhash" to it.reference.thumbhash, "dimensions" to it.reference.dim,
+            "size" to tag?.get(2)?.toULongOrNull()?.toDouble(), "duration" to tag?.get(3)?.toIntOrNull()?.takeIf { it in 1..3600 },
+            "waveform" to tag?.get(4)?.take(192)?.split(",")?.mapNotNull { value -> value.toIntOrNull()?.takeIf { level -> level in 0..31 } }?.take(64),
+            "round" to (tag?.get(5) == "round"))
         }
       },
       "sourceId" to row.sourceMessageIdHex,

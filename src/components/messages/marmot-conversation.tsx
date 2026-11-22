@@ -5,6 +5,7 @@ import {
   type IMessage,
 } from "@kesha-antonov/react-native-chat";
 import { randomUUID } from "expo-crypto";
+import { File } from "expo-file-system";
 import { Image } from "expo-image";
 import { router, Stack, useIsFocused } from "expo-router";
 import {
@@ -28,10 +29,12 @@ import {
 } from "@/core/messaging/special-messages/timelock";
 import {
   marmot,
+  type MarmotGroupDetails,
   type MarmotMessage,
   type MarmotUpload,
 } from "@/core/marmot/native";
 import { contactByKey } from "@/db/queries";
+import { removeOpenedMessage } from "@/db/open-later";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
@@ -77,19 +80,31 @@ const isForeground = () => AppState.currentState === "active";
 
 export function OpenMarmotDirect({ peer }: { peer: string }) {
   const { t } = useTranslation(namespaces);
-  const { marmotSession, identity, privacy } = useLocal();
+  const { marmotSession, identity, privacy, lock } = useLocal();
+  const focused = useIsFocused();
+  const foreground = useSyncExternalStore(subscribeForeground, isForeground);
+  useSyncExternalStore(privacy.subscribe, privacy.revision);
   const [retry, setRetry] = useState(0);
   const [error, setError] = useState<{ reason: unknown }>();
   const translateError = useMarmotError();
   const allowed = peer !== identity.publicKey && !privacy.isBlocked(peer);
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || !focused || !foreground) return;
     let active = true;
     void marmotSession
       .ready()
-      .then(() => marmot.startDirect(peer))
+      .then(() => {
+        if (
+          !active ||
+          !isForeground() ||
+          lock.getState().locked ||
+          privacy.isBlocked(peer)
+        )
+          return undefined;
+        return marmot.startDirect(peer);
+      })
       .then((group) => {
-        if (active) router.replace(conversationRoute(group));
+        if (active && group) router.replace(conversationRoute(group));
       })
       .catch((reason) => {
         if (active) setError({ reason });
@@ -97,7 +112,7 @@ export function OpenMarmotDirect({ peer }: { peer: string }) {
     return () => {
       active = false;
     };
-  }, [allowed, marmotSession, peer, retry]);
+  }, [allowed, focused, foreground, lock, marmotSession, peer, privacy, retry]);
   const title = allowed
     ? t("messages:marmot.newDirect")
     : t("messages:unavailable");
@@ -151,8 +166,15 @@ export function MarmotConversationScreen({
   initialPanel?: "search" | "media";
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity, privacy, mediaSdk, lock, marmotViewport, chatPreferences } =
-    useLocal();
+  const {
+    identity,
+    privacy,
+    mediaSdk,
+    lock,
+    marmotViewport,
+    chatPreferences,
+    db,
+  } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
   const foreground = useSyncExternalStore(subscribeForeground, isForeground);
@@ -192,6 +214,12 @@ export function MarmotConversationScreen({
       (peer ? `${toNpub(peer).slice(0, 15)}…` : t("messages:marmot.group"));
   const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
+  useEffect(() => {
+    for (const row of rows ?? []) {
+      if (row.eventKind === timeLockKind && row.deleted)
+        removeOpenedMessage(db, row.id);
+    }
+  }, [db, rows]);
   const people = snapshot?.identities;
   const pins = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.pinned(id),
@@ -231,13 +259,16 @@ export function MarmotConversationScreen({
         isEdited: row.edited,
         isPinned: pins.includes(row.id),
         system: Boolean(row.systemType),
-        replyMessage: row.replyPreview
-          ? {
-              _id: row.replyPreview.id,
-              text: row.replyPreview.text,
-              user: user(row.replyPreview.sender),
-            }
-          : undefined,
+        replyMessage:
+          row.replyPreview &&
+          !blocked.has(row.replyPreview.sender) &&
+          !omitted.has(row.replyPreview.id)
+            ? {
+                _id: row.replyPreview.id,
+                text: row.replyPreview.text,
+                user: user(row.replyPreview.sender),
+              }
+            : undefined,
         reactions: row.reactions.map((reaction) => ({
           emoji: reaction.emoji,
           userIds:
@@ -380,18 +411,34 @@ export function MarmotConversationScreen({
     run(async () => {
       const prepared = await Promise.all(
         files.map(async (file) => {
-          if (file.thumbhash || !file.type.startsWith("image/")) return file;
+          const video = file.type.startsWith("video/");
+          if (file.thumbhash || (!video && !file.type.startsWith("image/")))
+            return file;
+          let poster: File | undefined;
           try {
-            const image = await Image.loadAsync(`file://${file.path}`, {
-              maxWidth: 96,
-              maxHeight: 96,
-            });
+            if (video)
+              poster = new File(
+                `file://${await marmot.makeVideoPoster(file.path)}`,
+              );
+            const image = await Image.loadAsync(
+              poster?.uri ?? `file://${file.path}`,
+              {
+                maxWidth: 96,
+                maxHeight: 96,
+              },
+            );
             return {
               ...file,
               thumbhash: await Image.generateThumbhashAsync(image),
             };
           } catch {
             return file;
+          } finally {
+            try {
+              poster?.delete();
+            } catch {
+              /* The OS can reclaim cache files. */
+            }
           }
         }),
       );
@@ -664,24 +711,47 @@ export function MarmotConversationScreen({
                       for (const item of batch) {
                         if (item.audio || item.video) {
                           try {
-                            sendMedia(
-                              [
-                                item.audio
-                                  ? localUpload(
-                                      item.audio,
-                                      "voice.m4a",
-                                      "audio/mp4",
-                                    )
-                                  : localUpload(
-                                      item.video ?? "",
-                                      item.videoNote
-                                        ? "video-note.mp4"
-                                        : "video.mp4",
-                                      "video/mp4",
-                                    ),
-                              ],
-                              item.text,
-                            );
+                            const file = item.audio
+                              ? localUpload(
+                                  item.audio,
+                                  "voice.m4a",
+                                  "audio/mp4",
+                                )
+                              : localUpload(
+                                  item.video ?? "",
+                                  item.videoNote
+                                    ? "video-note.mp4"
+                                    : "video.mp4",
+                                  "video/mp4",
+                                );
+                            file.presentation = item.audio
+                              ? "voice"
+                              : item.videoNote
+                                ? "round"
+                                : undefined;
+                            if (item.duration && Number.isFinite(item.duration))
+                              file.duration = String(
+                                Math.max(1, Math.round(item.duration)),
+                              );
+                            if (item.waveform?.length) {
+                              const waveform = item.waveform;
+                              const count = Math.min(waveform.length, 48);
+                              file.waveform = Array.from(
+                                { length: count },
+                                (_, index) => {
+                                  const level =
+                                    waveform[
+                                      Math.floor(
+                                        (index * waveform.length) / count,
+                                      )
+                                    ] ?? 0;
+                                  return Math.round(
+                                    Math.max(0, Math.min(1, level)) * 31,
+                                  );
+                                },
+                              ).join(",");
+                            }
+                            sendMedia([file], item.text);
                           } catch (reason) {
                             showError(reason);
                           }
@@ -750,11 +820,42 @@ export function MarmotConversationScreen({
                       setPanel("edits");
                     },
                   });
+                if (canSend && !peer && row.sender !== self)
+                  actions.push({
+                    key: "report",
+                    label: t("messages:marmot.reportMessage"),
+                    onPress: () =>
+                      Alert.alert(
+                        t("messages:marmot.reportMessage"),
+                        t("messages:marmot.reportVisibility"),
+                        [
+                          { text: t("common:cancel"), style: "cancel" },
+                          {
+                            text: t("messages:marmot.reportSpam"),
+                            onPress: () =>
+                              run(() =>
+                                marmot.reportMessage(id, row.id, "spam"),
+                              ),
+                          },
+                          {
+                            text: t("messages:marmot.reportOther"),
+                            onPress: () =>
+                              run(() =>
+                                marmot.reportMessage(id, row.id, "other"),
+                              ),
+                          },
+                        ],
+                      ),
+                  });
                 actions.push({
                   key: "deleteLocal",
                   label: t("messages:marmot.removeForMe"),
                   destructive: true,
-                  onPress: () => chatPreferences.hide(id, row.id),
+                  onPress: () => {
+                    chatPreferences.hide(id, row.id);
+                    if (row.eventKind === timeLockKind)
+                      removeOpenedMessage(db, row.id);
+                  },
                 });
                 return actions;
               }}
@@ -794,8 +895,10 @@ export function MarmotConversationScreen({
                       key={row.id}
                       message={row.id}
                       content={row.text}
+                      expiresAt={row.expiresAt}
                       active={
                         focused &&
+                        foreground &&
                         visible.has(row.id) &&
                         !blocked &&
                         !privacy.isBlocked(row.sender)
@@ -889,10 +992,8 @@ function MarmotInvitation({
   const { privacy, db } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const translateError = useMarmotError();
-  const [invitation, setInvitation] = useState<{
-    inviter?: string | null;
-    name: string;
-  }>();
+  const [invitation, setInvitation] =
+    useState<Pick<MarmotGroupDetails, "inviter" | "name" | "members">>();
   useEffect(() => {
     let active = true;
     void marmot
@@ -901,7 +1002,7 @@ function MarmotInvitation({
         if (active) setInvitation(group);
       })
       .catch(() => {
-        if (active) setInvitation({ name: "" });
+        if (active) setInvitation({ name: "", members: [] });
       });
     return () => {
       active = false;
@@ -914,6 +1015,11 @@ function MarmotInvitation({
     inviter && allowed
       ? (contactByKey(db, inviter).get()?.name ?? toNpub(inviter))
       : null;
+  const participantNames = invitation?.members
+    .filter((member) => !member.self && !privacy.isBlocked(member.id))
+    .slice(0, 4)
+    .map((member) => member.name || member.npub.slice(0, 15) + "…")
+    .join(", ");
   function respond(accept: boolean) {
     if (busy) return;
     const current = inviter ? privacy.messagePermission(inviter) : undefined;
@@ -942,6 +1048,12 @@ function MarmotInvitation({
       {allowed && invitation?.name && <Ink kind="title">{invitation.name}</Ink>}
       {name && (
         <Ink kind="caption">{t("messages:marmot.invitedBy", { name })}</Ink>
+      )}
+      {allowed && !direct && invitation && invitation.members.length > 0 && (
+        <Ink kind="caption">
+          {t("messages:marmot.members")} ({invitation.members.length})
+          {participantNames ? "\n" + participantNames : ""}
+        </Ink>
       )}
       <Action disabled={busy || !allowed} onPress={() => respond(true)}>
         {t("messages:marmot.approve")}

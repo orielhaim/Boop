@@ -59,6 +59,7 @@ import {
 import { seedRelays } from "@/db/relays";
 import { relaySettings } from "@/db/schema";
 import { createDerivedTranslations } from "@/db/translations";
+import { purgeExpiredOpenedMessages } from "@/db/open-later";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
 import { useLocal } from "./local-context";
@@ -80,6 +81,7 @@ async function start() {
       ms: performance.now() - identityStarted,
     });
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
+    purgeExpiredOpenedMessages(db);
     seedRelays(db, fresh);
     const chatPreferences = createChatPreferences(db);
     const privacy = createPrivacy(db, identity.publicKey);

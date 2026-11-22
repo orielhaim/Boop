@@ -7,7 +7,7 @@ import {
   TimeLockError,
   type UnlockFailure,
 } from "@/core/messaging/special-messages/timelock";
-import { preference, setPreference } from "@/db/queries";
+import { readOpenedMessage, saveOpenedMessage } from "@/db/open-later";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
@@ -26,19 +26,22 @@ export function readTimeLock(content: string) {
 export function MarmotLocked({
   message,
   content,
+  expiresAt,
   active,
   rtl,
 }: {
   message: string;
   content: string;
+  expiresAt?: number | null;
   active: boolean;
   rtl: boolean;
 }) {
   const { t } = useTranslation(namespaces);
   const { db, lock } = useLocal();
   const { colors } = useTheme();
-  const cacheKey = `marmot.opened.${message}`;
-  const [text, setText] = useState(() => preference(db, cacheKey));
+  const [text, setText] = useState(() =>
+    readOpenedMessage(db, message, expiresAt),
+  );
   const [error, setError] = useState<UnlockFailure | null>(null);
   const [retry, setRetry] = useState(0);
 
@@ -65,7 +68,8 @@ export function MarmotLocked({
             !lock.getState().active
           )
             return;
-          setPreference(db, cacheKey, body);
+          if (expiresAt && expiresAt * 1_000 <= Date.now()) return;
+          saveOpenedMessage(db, message, body, expiresAt);
           setText(body);
         })
         .catch((reason) => {
@@ -80,7 +84,7 @@ export function MarmotLocked({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [active, cacheKey, content, db, lock, retry, text]);
+  }, [active, message, content, db, lock, retry, text, expiresAt]);
 
   if (active && text !== null) return <Ink>{text}</Ink>;
   const payload = readTimeLock(content);

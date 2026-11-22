@@ -118,6 +118,11 @@ export const en = {
   },
   messages: {
     marmot: {
+      reportMessage: "Report message",
+      reportVisibility:
+        "Your report and identity will be shared within this encrypted group.",
+      reportSpam: "Report spam",
+      reportOther: "Report for another reason",
       newPoll: "New poll",
       pollQuestion: "Question",
       pollOptions: "Choices, one per line",
@@ -150,6 +155,8 @@ export const en = {
       newGroup: "New group",
       newDirect: "New direct message",
       invitations: "Invitations",
+      noInvitations: "No pending invitations",
+      reviewInvitation: "Review invitation",
       group: "Group",
       groupName: "Group name",
       groupDescription: "Group description",
@@ -180,6 +187,9 @@ export const en = {
       disband: "Disband group",
       enableDisbanding: "Enable disbanding",
       cancelLeave: "Cancel pending departure",
+      leavePending: "Your departure is awaiting confirmation.",
+      leaveBlocked: "Another member needs admin access before you can leave.",
+      synchronizingGroup: "Synchronizing the conversation",
       retention: "Disappearing messages (seconds, 0 to keep)",
       relayList: "Group relays",
       viewGroupPhoto: "Show group photo",
@@ -244,6 +254,12 @@ export const en = {
       backup_unavailable: "No eligible history was available",
       backup_cancelled: "Restore cancelled ({{count}} events imported)",
       unavailableMembers: "Unavailable invitees",
+      checkingInvitees: "Checking invitees",
+      inviteeAvailable: "Available to invite",
+      checkAgain: "Check availability again",
+      missingInboxRoute: "This address has no usable invitation relay.",
+      temporarilyUnavailable:
+        "Messaging is temporarily unavailable for this address.",
       removedMessage: "Message deleted",
       eventMemberAdded: "A member was added",
       eventMemberRemoved: "A member was removed",

@@ -8,15 +8,17 @@ import { router, Stack } from "expo-router";
 import {
   useCallback,
   useDeferredValue,
+  useEffect,
   useState,
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
-import { Action, Empty, Screen } from "@/components/ui/kit";
+import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
+import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
@@ -77,7 +79,7 @@ export function MarmotInbox({
   invitations?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity, privacy, chatPreferences } = useLocal();
+  const { identity, privacy, chatPreferences, db } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const kit = useChatAppearance();
   const [archived, setArchived] = useState(false);
@@ -97,11 +99,52 @@ export function MarmotInbox({
   );
   const pending = useMarmotWindow(openInvites, !invitations && !archived);
   const { snapshot, window, error, retry } = useMarmotWindow(open);
+  const [inviters, setInviters] = useState<Record<string, string>>();
+  const pendingIds = (invitations ? snapshot : pending.snapshot)?.rows
+    .map((row) => row.id)
+    .join(",");
+  useEffect(() => {
+    if (!pendingIds) return;
+    let live = true;
+    async function readInviters() {
+      const entries = await Promise.allSettled(
+        (pendingIds ?? "").split(",").map(async (group) => {
+          const details = await marmot.groupDetails(group);
+          return [group, details.inviter ?? ""] as const;
+        }),
+      );
+      if (live)
+        setInviters(
+          Object.fromEntries(
+            entries.flatMap((entry) =>
+              entry.status === "fulfilled" ? [entry.value] : [],
+            ),
+          ),
+        );
+    }
+    void readInviters();
+    return () => {
+      live = false;
+    };
+  }, [pendingIds]);
+  function invitationAllowed(id: string) {
+    const inviter = inviters?.[id];
+    if (!inviter) return false;
+    const permission = privacy.messagePermission(inviter);
+    return permission === "allow" || permission === "request";
+  }
+  const hasInvitations = Boolean(
+    pending.snapshot?.rows.some((row) => invitationAllowed(row.id)),
+  );
   const fallback = t("messages:marmot.group");
   const invitationTitle = t("messages:marmot.inviteRequired");
   const chats =
     snapshot?.rows
-      .filter((row) => !row.peer || !privacy.isBlocked(row.peer))
+      .filter((row) =>
+        row.invited
+          ? invitationAllowed(row.id)
+          : !row.peer || !privacy.isBlocked(row.peer),
+      )
       .map((row) => {
         const preview =
           (row.previewSender && privacy.isBlocked(row.previewSender)) ||
@@ -113,6 +156,20 @@ export function MarmotInbox({
               : row.previewKind === 24883
                 ? t("messages:marmot.locationPreview")
                 : (row.preview ?? undefined);
+        if (row.invited) {
+          const inviter = inviters?.[row.id];
+          if (inviter) {
+            const name =
+              contactByKey(db, inviter).get()?.name ??
+              toNpub(inviter).slice(0, 16) + "…";
+            return asChat(
+              row,
+              fallback,
+              row.title || t("messages:marmot.invitedBy", { name }),
+              undefined,
+            );
+          }
+        }
         return asChat(row, fallback, invitationTitle, preview);
       }) ?? [];
   const page = () => {
@@ -147,6 +204,15 @@ export function MarmotInbox({
           filterChat={() => true}
           onSearchChange={setSearch}
           renderChat={(props) => <MarmotChatCell {...props} />}
+          renderEmpty={
+            invitations
+              ? () => (
+                  <Ink style={styles.empty}>
+                    {t("messages:marmot.noInvitations")}
+                  </Ink>
+                )
+              : undefined
+          }
           isArchiveOpen={archived}
           onArchiveOpenChange={setArchived}
           onPressChat={(row) => router.push(conversationRoute(row.id))}
@@ -189,7 +255,7 @@ export function MarmotInbox({
                   </Action>
                   <Action size="sm" onPress={() => router.push("/requests")}>
                     {t("messages:marmot.invitations")}
-                    {pending.snapshot?.rows.length ? " •" : ""}
+                    {hasInvitations ? " •" : ""}
                   </Action>
                 </View>
               ),
@@ -212,6 +278,7 @@ function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
 }
 
 const styles = StyleSheet.create({
+  empty: { textAlign: "center", padding: space.md },
   actions: {
     flexDirection: "row",
     flexWrap: "wrap",

@@ -1,7 +1,10 @@
 package app.boop.marmot
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.ThumbnailUtils
 import android.util.AtomicFile
+import android.util.Size
 import dev.ipf.marmotkit.*
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
@@ -180,6 +183,9 @@ class BoopMarmotModule : Module() {
     AsyncFunction("startDirect") Coroutine { peer: String ->
       withSession { it.kit.startDirectConversation(it.account, peer) }
     }
+    AsyncFunction("checkInvitee") Coroutine { peer: String ->
+      withSession { it.kit.prewarmGroupMemberKeyPackages(it.account, listOf(peer)); Unit }
+    }
     AsyncFunction("createGroup") Coroutine { name: String, description: String?, members: List<String>, image: String? ->
       withSession {
         val initial = image?.let { path -> InitialGroupImageFfi(groupImageInput(path), "image/jpeg", null, null, null) }
@@ -218,6 +224,8 @@ class BoopMarmotModule : Module() {
           "retention" to details.group.disappearingMessageSecs.toDouble(),
           "membership" to details.group.selfMembership.name.lowercase(),
           "pendingInvitation" to details.group.pendingConfirmation,
+          "kind" to chat?.conversationKind?.name?.lowercase(),
+          "pendingLeave" to details.group.leaveRequestPending, "leaveBlocked" to details.group.leaveBlocked,
           "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
           "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
           "lifecycle" to policy.lifecycleState.name.lowercase(), "commit" to pending?.state?.name?.lowercase(),
@@ -345,12 +353,36 @@ class BoopMarmotModule : Module() {
           if (!path.toPath().startsWith(base) || !path.isFile) throw problem("InvalidMediaPath")
           MediaFileUploadAttachmentRequestFfi(path.path, path.length().toULong(), file.getValue("name"), file.getValue("type"), file["dimensions"], file["thumbhash"])
         }
-        val tags = reply?.let { id -> listOf(listOf("e", id, "", "reply")) } ?: emptyList()
+        val tags = (reply?.let { id -> listOf(listOf("e", id, "", "reply")) } ?: emptyList()) +
+          inputs.mapIndexed { index, input ->
+            val file = files[index]
+            listOf("boop-media", index.toString(), input.expectedSize.toString(), file["duration"].orEmpty(),
+              file["waveform"].orEmpty().take(192), file["presentation"].orEmpty())
+          }
         MediaFileTransferControlFfi().use { control ->
           val result = it.kit.uploadMediaFilesWithClientToken(it.account, group,
             MediaFileUploadRequestFfi(inputs, caption, true, server, tags), control, token)
           result.acceptance?.messageIdHex ?: throw problem("MediaSendNotAccepted")
         }
+      }
+    }
+    AsyncFunction("makeVideoPoster") Coroutine { path: String ->
+      protocol {
+        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
+        val base = File(context.applicationInfo.dataDir).canonicalFile
+        val file = File(path).canonicalFile
+        if (!file.toPath().startsWith(base.toPath()) || !file.isFile) throw problem("InvalidMediaPath")
+        val thumbnail = ThumbnailUtils.createVideoThumbnail(file, Size(144, 144), null)
+        try {
+          val output = File.createTempFile("marmot-poster-", ".jpg", context.cacheDir)
+          try {
+            output.outputStream().use { if (!thumbnail.compress(Bitmap.CompressFormat.JPEG, 75, it)) throw problem("MediaUnavailable") }
+            output.canonicalPath
+          } catch (error: Exception) {
+            output.delete()
+            throw error
+          }
+        } finally { thumbnail.recycle() }
       }
     }
     AsyncFunction("attachmentStatus") Coroutine { group: String, id: String, source: String, index: Int ->
@@ -442,6 +474,13 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("deleteMessage") Coroutine { group: String, id: String ->
       withSession { it.kit.deleteMessage(it.account, group, id); Unit }
+    }
+    AsyncFunction("reportMessage") Coroutine { group: String, id: String, spam: Boolean ->
+      withSession {
+        val reason = if (spam) ReportReasonFfi.SPAM else ReportReasonFfi.OTHER
+        it.kit.reportMessage(it.account, group, id, reason, "")
+        Unit
+      }
     }
     AsyncFunction("reactToMessage") Coroutine { group: String, id: String, emoji: String, remove: Boolean ->
       withSession {

@@ -208,6 +208,7 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         "sender": row.sender,
         "text": row.plaintext,
         "sentAt": Double(row.timelineAt),
+        "expiresAt": bridgeValue(row.retentionExpiresAt.map(Double.init)),
         "eventKind": Double(row.kind),
         "replyTo": bridgeValue(row.replyToMessageIdHex),
         "replyPreview": bridgeValue(row.replyPreview.map { ["id": $0.messageIdHex, "sender": $0.sender, "text": $0.plaintext] }),
@@ -216,8 +217,15 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         },
         "attachments": row.media.compactMap { outcome -> Document? in
           guard case .accepted(let index, let reference) = outcome, reference.version == .v2 else { return nil }
+          let tag = row.tags.first { $0.values.count == 6 && $0.values[0] == "boop-media" && UInt32($0.values[1]) == index }?.values
+          let duration = tag.flatMap { Int($0[3]) }.flatMap { (1...3600).contains($0) ? $0 : nil }
+          let waveform = tag.map { value in Array(value[4].prefix(192).split(separator: ",").compactMap { token in
+            Int(token).flatMap { (0...31).contains($0) ? $0 : nil }
+          }.prefix(64)) }
           return ["index": Int(index), "name": reference.fileName, "type": reference.mediaType,
-            "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim)]
+            "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
+            "size": bridgeValue(tag.flatMap { UInt64($0[2]).map(Double.init) }), "duration": bridgeValue(duration),
+            "waveform": bridgeValue(waveform), "round": tag?[5] == "round"]
         },
         "sourceId": bridgeValue(row.sourceMessageIdHex),
         "poll": bridgeValue(row.poll.map { poll -> Document in

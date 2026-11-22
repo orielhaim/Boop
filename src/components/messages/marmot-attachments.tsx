@@ -1,3 +1,4 @@
+import { VoiceWaveform } from "@kesha-antonov/react-native-chat";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { Image } from "expo-image";
 import { shareAsync } from "expo-sharing";
@@ -9,9 +10,13 @@ import { Action, Ink } from "@/components/ui/kit";
 import { marmot, type MarmotMessage } from "@/core/marmot/native";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import { space } from "@/theme";
+import { space, useTheme } from "@/theme";
 
 type Handoff = NonNullable<Awaited<ReturnType<typeof marmot.openAttachment>>>;
+const time = (seconds: number) =>
+  Math.floor(seconds / 60) +
+  ":" +
+  String(Math.floor(seconds % 60)).padStart(2, "0");
 
 export function MarmotAttachments({
   group,
@@ -131,7 +136,8 @@ function Attachment({
   const image = item.type.startsWith("image/");
   const video = item.type.startsWith("video/");
   const audio = item.type.startsWith("audio/");
-  const round = video && item.name === "video-note.mp4";
+  const round = video && (item.round || item.name === "video-note.mp4");
+  const { colors } = useTheme();
   return (
     <View style={styles.stack}>
       {(image || video) && (item.thumbhash || (image && uri)) && (
@@ -147,6 +153,20 @@ function Attachment({
         />
       )}
       <Ink kind="caption">{item.name}</Ink>
+      {audio && item.waveform?.length && !uri ? (
+        <VoiceWaveform waveform={item.waveform} color={colors.text} />
+      ) : null}
+      {item.duration || item.size != null ? (
+        <Ink kind="caption">
+          {item.duration
+            ? time(item.duration)
+            : new Intl.NumberFormat(undefined, {
+                style: "unit",
+                unit: "kilobyte",
+                maximumFractionDigits: 1,
+              }).format(item.size ? item.size / 1_024 : 0)}
+        </Ink>
+      ) : null}
       {uri && video && <Video uri={uri} round={round} />}
       {uri && audio && <Audio uri={uri} />}
       {handoff ? (
@@ -200,10 +220,6 @@ function Audio({ uri }: { uri: string }) {
   const { t } = useTranslation(namespaces);
   const player = useAudioPlayer(uri);
   const { playing, currentTime, duration } = useAudioPlayerStatus(player);
-  const time = (seconds: number) =>
-    Math.floor(seconds / 60) +
-    ":" +
-    String(Math.floor(seconds % 60)).padStart(2, "0");
   return (
     <View style={styles.actions}>
       <Action

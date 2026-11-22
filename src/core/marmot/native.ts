@@ -48,6 +48,7 @@ const message = z.object({
   sender: z.string(),
   text: z.string(),
   sentAt: z.number().nonnegative(),
+  expiresAt: z.number().nonnegative().nullish(),
   eventKind: z.number().int().nonnegative(),
   replyTo: z.string().nullish(),
   replyPreview: z
@@ -68,6 +69,10 @@ const message = z.object({
       type: z.string(),
       thumbhash: z.string().nullish(),
       dimensions: z.string().nullish(),
+      size: z.number().nonnegative().nullish(),
+      duration: z.number().positive().nullish(),
+      waveform: z.array(z.number().int().min(0).max(31)).max(64).nullish(),
+      round: z.boolean().optional(),
     }),
   ),
   sourceId: z.string().nullish(),
@@ -203,6 +208,9 @@ const groupDetails = z.object({
   retention: z.number().int().nonnegative(),
   membership: z.string(),
   pendingInvitation: z.boolean(),
+  kind: z.string().nullish(),
+  pendingLeave: z.boolean(),
+  leaveBlocked: z.boolean(),
   createdAt: z.number().nullish(),
   muted: z.boolean(),
   archived: z.boolean(),
@@ -247,6 +255,9 @@ export type MarmotUpload = {
   type: string;
   dimensions?: string;
   thumbhash?: string;
+  duration?: string;
+  waveform?: string;
+  presentation?: "voice" | "round";
 };
 const handoff = z.object({
   lease: z.string(),
@@ -352,6 +363,7 @@ type Bridge = {
     target: string,
   ): Promise<unknown>;
   startDirect(peer: string): Promise<string>;
+  checkInvitee(peer: string): Promise<void>;
   createGroup(
     name: string,
     description: string | null,
@@ -418,6 +430,7 @@ type Bridge = {
     source: string,
     index: number,
   ): Promise<boolean>;
+  makeVideoPoster(path: string): Promise<string>;
   downloadAttachment(
     group: string,
     id: string,
@@ -436,6 +449,7 @@ type Bridge = {
   clearDownloads(): Promise<void>;
   editMessage(group: string, id: string, content: string): Promise<void>;
   deleteMessage(group: string, id: string): Promise<void>;
+  reportMessage(group: string, id: string, spam: boolean): Promise<void>;
   reactToMessage(
     group: string,
     id: string,
@@ -691,6 +705,7 @@ export const marmot = {
       conversationSnapshot,
     ),
   startDirect: (peer: string) => native().startDirect(peer),
+  checkInvitee: (peer: string) => native().checkInvitee(peer),
   async createGroup(
     name: string,
     description: string | null,
@@ -779,6 +794,7 @@ export const marmot = {
     source: string,
     index: number,
   ) => native().attachmentStatus(group, id, source, index),
+  makeVideoPoster: (path: string) => native().makeVideoPoster(path),
   async downloadAttachment(
     group: string,
     id: string,
@@ -815,6 +831,8 @@ export const marmot = {
     native().editMessage(group, id, content),
   deleteMessage: (group: string, id: string) =>
     native().deleteMessage(group, id),
+  reportMessage: (group: string, id: string, reason: "spam" | "other") =>
+    native().reportMessage(group, id, reason === "spam"),
   reactToMessage: (group: string, id: string, emoji: string, remove: boolean) =>
     native().reactToMessage(group, id, emoji, remove),
   markRead: (group: string, id: string) => native().markRead(group, id),
