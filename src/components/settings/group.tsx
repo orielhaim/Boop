@@ -55,6 +55,7 @@ export function SettingsRow({
   selectionRole = "radio",
   expanded,
   disabled = false,
+  leading,
   trailing,
 }: {
   title: string;
@@ -68,6 +69,7 @@ export function SettingsRow({
   selectionRole?: "radio" | "checkbox";
   expanded?: boolean;
   disabled?: boolean;
+  leading?: ReactNode;
   trailing?: ReactNode;
 }) {
   const { colors } = useTheme();
@@ -83,13 +85,17 @@ export function SettingsRow({
   );
   const content = (
     <>
-      {icon && (
-        <View
-          style={[styles.icon, { backgroundColor: accent ?? colors.outgoing }]}
-        >
-          <Icon name={icon} size={19} color="#fff" />
-        </View>
-      )}
+      {leading ??
+        (icon && (
+          <View
+            style={[
+              styles.icon,
+              { backgroundColor: accent ?? colors.outgoing },
+            ]}
+          >
+            <Icon name={icon} size={19} color="#fff" />
+          </View>
+        ))}
       {onTitlePress ? (
         <Pressable
           accessibilityRole="button"

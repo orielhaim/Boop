@@ -1,8 +1,9 @@
+import { type FlagCode, FlagView } from "@hzblj/expo-flags-kit";
 import { useLocales } from "expo-localization";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
 import {
   SettingsDescription,
   SettingsGroup,
@@ -27,6 +28,11 @@ const names = {
   he: "settings:languageHebrew",
   auto: "settings:languageAuto",
 } as const;
+
+const flags = {
+  en: "GB",
+  he: "IL",
+} satisfies Record<Exclude<LanguagePreference, "auto">, FlagCode>;
 
 export default function LanguageSettings() {
   const { i18n, t } = useTranslation(namespaces);
@@ -81,6 +87,12 @@ export default function LanguageSettings() {
           <SettingsRow
             key={choice}
             title={t(names[choice])}
+            icon={choice === "auto" ? "language" : undefined}
+            leading={
+              choice === "auto" ? undefined : (
+                <FlagView code={flags[choice]} style={styles.flag} />
+              )
+            }
             value={choice === "auto" ? t(names[detected]) : undefined}
             selected={selected === choice}
             onPress={() => select(choice)}
@@ -109,3 +121,7 @@ export default function LanguageSettings() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  flag: { width: 30, borderRadius: 4 },
+});

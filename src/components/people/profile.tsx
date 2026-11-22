@@ -1,17 +1,14 @@
 import { useMinimizeOnScroll } from "expo-glass-tabs";
-import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Linking, Share, StyleSheet, View } from "react-native";
-import QRCode from "react-native-qrcode-svg";
+import { Alert, Linking, StyleSheet, View } from "react-native";
 import { AvatarPicker } from "@/components/avatars/picker";
 import {
   GlassSheet,
   GlassSheetContent,
-  GlassSheetTitle,
 } from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
@@ -32,6 +29,8 @@ import { eq } from "drizzle-orm";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
+import { AddressSheetContent } from "./address-sheet";
+import { useIdentitySheet } from "./identity-sheet";
 import { PersonContext } from "./person-context";
 import { PersonAvatar } from "./person-avatar";
 import { usePerson, useVerifiedIdentifier } from "./use-person";
@@ -105,7 +104,7 @@ function ProfileContent({
   );
   const chatsEnabled = useChatsEnabled();
   const address = toNpub(publicKey);
-  const uri = `nostr:${address}`;
+  const showIdentitySheet = useIdentitySheet();
   const [qr, setQr] = useState(false);
   const [addressOpen, setAddressOpen] = useState(false);
   const [nickname, setNickname] = useState<string>();
@@ -257,6 +256,10 @@ function ProfileContent({
               iconOnly
               label={t("security:showIdentityQr")}
               onPress={() => {
+                if (own) {
+                  showIdentitySheet("qr");
+                  return;
+                }
                 setQr(true);
                 setAddressOpen(true);
               }}
@@ -328,10 +331,7 @@ function ProfileContent({
           <CompactAction
             icon="key"
             label={t("common:address")}
-            onPress={() => {
-              setQr(false);
-              setAddressOpen(true);
-            }}
+            onPress={() => showIdentitySheet("address")}
           />
         </View>
       ) : (
@@ -428,62 +428,17 @@ function ProfileContent({
             onPress={() => setAllowImages(true)}
           />
         )}
-      <GlassSheet open={addressOpen} onOpenChange={setAddressOpen}>
-        <GlassSheetContent>
-          <GlassSheetTitle>{t("common:address")}</GlassSheetTitle>
-          <View style={styles.sheet}>
-            <Ink selectable kind="caption" style={styles.address}>
-              {address}
-            </Ink>
-            {qr && (
-              <View
-                style={styles.qr}
-                accessible
-                accessibilityLabel={t("settings:addressQr")}
-              >
-                <QRCode value={uri} size={176} />
-              </View>
-            )}
-            <View style={styles.actions}>
-              <CompactAction
-                icon="copy"
-                iconOnly
-                label={t("settings:copyAddress")}
-                onPress={() => {
-                  void Clipboard.setStringAsync(address)
-                    .then((copied) => {
-                      setNotice(
-                        t(
-                          copied
-                            ? "settings:addressCopied"
-                            : "settings:copyAddressError",
-                        ),
-                      );
-                      setAddressOpen(false);
-                    })
-                    .catch(() => setNotice(t("settings:copyAddressError")));
-                }}
-              />
-              <CompactAction
-                icon="forward"
-                iconOnly
-                label={t("messenger:share")}
-                onPress={() => {
-                  void Share.share({ message: uri }).catch(() => undefined);
-                }}
-              />
-              {!qr && (
-                <CompactAction
-                  icon="qr"
-                  iconOnly
-                  label={t("security:showIdentityQr")}
-                  onPress={() => setQr(true)}
-                />
-              )}
-            </View>
-          </View>
-        </GlassSheetContent>
-      </GlassSheet>
+      {!own && (
+        <GlassSheet open={addressOpen} onOpenChange={setAddressOpen}>
+          <GlassSheetContent>
+            <AddressSheetContent
+              address={address}
+              showQr={qr}
+              onShowQr={() => setQr(true)}
+            />
+          </GlassSheetContent>
+        </GlassSheet>
+      )}
       {!own && (
         <SettingsGroup>
           {!block.blocked && (
@@ -667,12 +622,4 @@ const styles = StyleSheet.create({
     writingDirection: "ltr",
   },
   card: { padding: space.md, gap: space.sm },
-  sheet: { gap: space.md, padding: space.md },
-  address: { writingDirection: "ltr", textAlign: "left" },
-  qr: {
-    alignSelf: "center",
-    backgroundColor: "#fff",
-    padding: space.md,
-    borderRadius: 12,
-  },
 });

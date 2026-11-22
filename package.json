@@ -5,6 +5,7 @@
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
     "@expo/ui": "~58.0.29",
+    "@hzblj/expo-flags-kit": "^0.1.3",
     "@hzblj/expo-translation": "0.1.4",
     "@kesha-antonov/react-native-chat": "^7.2.0",
     "@noble/curves": "2.4.0",

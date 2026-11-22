@@ -18,7 +18,7 @@ import { useTranslation } from "react-i18next";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
-import { PeerActions } from "@/components/ui/peer-actions";
+import { useIdentitySheet } from "@/components/people/identity-sheet";
 import { usePerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
@@ -94,7 +94,7 @@ export function MarmotInbox({
   const kit = useChatAppearance();
   const onScroll = useMinimizeOnScroll();
   const [archived, setArchived] = useState(false);
-  const [actions, setActions] = useState(false);
+  const showSheet = useIdentitySheet();
   const [search, setSearch] = useState<string | null>(null);
   const term = useDeferredValue(search)?.trim();
   const { inbox, archive, invitations: pending } = useMarmotChatLists();
@@ -203,7 +203,6 @@ export function MarmotInbox({
 
   return (
     <Screen tab={!invitations} scroll={false}>
-      {!invitations && <PeerActions open={actions} onOpenChange={setActions} />}
       {invitations && (
         <Stack.Screen options={{ title: t("messages:marmot.invitations") }} />
       )}
@@ -260,7 +259,9 @@ export function MarmotInbox({
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")
         }
-        onPressNewChat={invitations ? undefined : () => setActions(true)}
+        onPressNewChat={
+          invitations ? undefined : () => showSheet("newConversation")
+        }
         onPinChats={
           invitations
             ? undefined

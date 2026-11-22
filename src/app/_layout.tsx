@@ -24,6 +24,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { MarmotChatLists } from "@/components/messages/marmot-chat-lists";
+import { IdentitySheetProvider } from "@/components/people/identity-sheet";
 import { LockScreen } from "@/components/settings/lock-screen";
 import { BoopLogo } from "@/components/ui/boop-logo";
 import { glassStackBack } from "@/components/ui/back-button";
@@ -228,54 +229,65 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
       <LocalSessionLifecycle />
       <MarmotChatLists enabled={chatsEnabled}>
         <LocaleProvider direction={direction}>
-          <View
-            style={[styles.root, { direction }, obscured && styles.obscured]}
-            pointerEvents={obscured ? "none" : "auto"}
-            accessibilityElementsHidden={obscured}
-            importantForAccessibility={
-              obscured ? "no-hide-descendants" : "auto"
-            }
+          <IdentitySheetProvider
+            key={data.identity.publicKey}
+            obscured={obscured}
           >
-            <Stack
-              screenOptions={({ navigation }) => ({
-                ...glassStackBack(navigation.goBack),
-                contentStyle: { backgroundColor: colors.background },
-              })}
+            <View
+              style={[styles.root, { direction }, obscured && styles.obscured]}
+              pointerEvents={obscured ? "none" : "auto"}
+              accessibilityElementsHidden={obscured}
+              importantForAccessibility={
+                obscured ? "no-hide-descendants" : "auto"
+              }
             >
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="call/[key]"
-                options={{ headerShown: false, presentation: "card" }}
-              />
-              <Stack.Protected guard={chatsEnabled}>
+              <Stack
+                screenOptions={({ navigation }) => ({
+                  ...glassStackBack(navigation.goBack),
+                  contentStyle: { backgroundColor: colors.background },
+                })}
+              >
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                 <Stack.Screen
-                  name="chat/[key]"
+                  name="call/[key]"
+                  options={{ headerShown: false, presentation: "card" }}
+                />
+                <Stack.Protected guard={chatsEnabled}>
+                  <Stack.Screen
+                    name="chat/[key]"
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="requests"
+                    options={{ title: t("security:pendingRequests") }}
+                  />
+                </Stack.Protected>
+                <Stack.Screen
+                  name="person/[key]"
                   options={{ headerShown: false }}
                 />
                 <Stack.Screen
-                  name="requests"
-                  options={{ title: t("security:pendingRequests") }}
+                  name="scan"
+                  options={{
+                    title: t("navigation:scan"),
+                    presentation: "modal",
+                  }}
                 />
-              </Stack.Protected>
-              <Stack.Screen
-                name="person/[key]"
-                options={{ headerShown: false }}
-              />
-              <Stack.Screen
-                name="scan"
-                options={{ title: t("navigation:scan"), presentation: "modal" }}
-              />
-              <Stack.Screen
-                name="connect"
-                options={{
-                  title: t("navigation:connect"),
-                  presentation: "modal",
-                }}
-              />
-              <Stack.Screen name="settings" options={{ headerShown: false }} />
-            </Stack>
-            {!obscured && <CallIndicator />}
-          </View>
+                <Stack.Screen
+                  name="connect"
+                  options={{
+                    title: t("navigation:connect"),
+                    presentation: "modal",
+                  }}
+                />
+                <Stack.Screen
+                  name="settings"
+                  options={{ headerShown: false }}
+                />
+              </Stack>
+              {!obscured && <CallIndicator />}
+            </View>
+          </IdentitySheetProvider>
         </LocaleProvider>
       </MarmotChatLists>
       <Modal
