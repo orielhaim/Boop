@@ -23,10 +23,13 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
+import { MarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import { LockScreen } from "@/components/settings/lock-screen";
 import { BoopLogo } from "@/components/ui/boop-logo";
+import { glassStackBack } from "@/components/ui/back-button";
 import { Action, Ink } from "@/components/ui/kit";
 import { IncompatibleDatabaseError } from "@/db";
+import { preference } from "@/db/queries";
 import {
   directionFor,
   namespaces,
@@ -36,8 +39,14 @@ import {
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
 import { initializeLocal, LocalSessionLifecycle } from "@/services/local";
-import { LocalContext } from "@/services/local-context";
-import { themes, useAppPreferences } from "@/stores/preferences";
+import { Onboarding } from "@/components/onboarding";
+import { IdentityMismatchError } from "@/core/identity/storage";
+import { LocalContext, type LocalServices } from "@/services/local-context";
+import {
+  callNavigationKeys,
+  themes,
+  useAppPreferences,
+} from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -60,7 +69,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation(namespaces);
   const [data, setData] =
     useState<Awaited<ReturnType<typeof initializeLocal>>>();
-  const [failed, setFailed] = useState<"database" | "startup">();
+  const [failed, setFailed] = useState<"database" | "startup" | "identity">();
   const { colors, theme } = useTheme();
   useEffect(() => {
     let live = true;
@@ -71,13 +80,23 @@ function Boot({ onRetry }: { onRetry: () => void }) {
         useAppPreferences.setState({
           theme: choice,
           haptics: result.haptics,
+          separateCallsTab:
+            preference(result.db, callNavigationKeys.separateTab) === "on",
+          defaultScreen:
+            preference(result.db, callNavigationKeys.defaultScreen) === "calls"
+              ? "calls"
+              : "chats",
         });
         setData(result);
       })
       .catch((error) => {
         if (live)
           setFailed(
-            error instanceof IncompatibleDatabaseError ? "database" : "startup",
+            error instanceof IncompatibleDatabaseError
+              ? "database"
+              : error instanceof IdentityMismatchError
+                ? "identity"
+                : "startup",
           );
       });
     return () => {
@@ -105,7 +124,11 @@ function Boot({ onRetry }: { onRetry: () => void }) {
     >
       <StatusBar style={theme === "dark" ? "light" : "dark"} />
       {data ? (
-        <ProtectedApplication data={data} />
+        data.status === "welcome" ? (
+          <Onboarding data={data} onComplete={onRetry} />
+        ) : (
+          <ProtectedApplication data={data} />
+        )
       ) : (
         <View style={[styles.boot, { backgroundColor: colors.background }]}>
           <BoopLogo />
@@ -116,7 +139,9 @@ function Boot({ onRetry }: { onRetry: () => void }) {
                 {t(
                   failed === "database"
                     ? "errors:databaseBaseline"
-                    : "errors:startup",
+                    : failed === "identity"
+                      ? "messenger:identityMismatch"
+                      : "errors:startup",
                 )}
               </Ink>
               <Action onPress={onRetry}>{t("common:retry")}</Action>
@@ -133,11 +158,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function ProtectedApplication({
-  data,
-}: {
-  data: Awaited<ReturnType<typeof initializeLocal>>;
-}) {
+function ProtectedApplication({ data }: { data: LocalServices }) {
   const { t, i18n } = useTranslation(namespaces);
   const deviceLanguage = useLocales()[0]?.languageCode;
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
@@ -205,61 +226,58 @@ function ProtectedApplication({
   return (
     <LocalContext.Provider value={data}>
       <LocalSessionLifecycle />
-      <LocaleProvider direction={direction}>
-        <View
-          style={[styles.root, { direction }, obscured && styles.obscured]}
-          pointerEvents={obscured ? "none" : "auto"}
-          accessibilityElementsHidden={obscured}
-          importantForAccessibility={obscured ? "no-hide-descendants" : "auto"}
-        >
-          <Stack
-            screenOptions={{
-              headerBackButtonDisplayMode: "minimal",
-              contentStyle: { backgroundColor: colors.background },
-            }}
+      <MarmotChatLists enabled={chatsEnabled}>
+        <LocaleProvider direction={direction}>
+          <View
+            style={[styles.root, { direction }, obscured && styles.obscured]}
+            pointerEvents={obscured ? "none" : "auto"}
+            accessibilityElementsHidden={obscured}
+            importantForAccessibility={
+              obscured ? "no-hide-descendants" : "auto"
+            }
           >
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen
-              name="call/[key]"
-              options={{ headerShown: false, presentation: "card" }}
-            />
-            <Stack.Protected guard={chatsEnabled}>
+            <Stack
+              screenOptions={({ navigation }) => ({
+                ...glassStackBack(navigation.goBack),
+                contentStyle: { backgroundColor: colors.background },
+              })}
+            >
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
               <Stack.Screen
-                name="chat/[key]"
+                name="call/[key]"
+                options={{ headerShown: false, presentation: "card" }}
+              />
+              <Stack.Protected guard={chatsEnabled}>
+                <Stack.Screen
+                  name="chat/[key]"
+                  options={{ headerShown: false }}
+                />
+                <Stack.Screen
+                  name="requests"
+                  options={{ title: t("security:pendingRequests") }}
+                />
+              </Stack.Protected>
+              <Stack.Screen
+                name="person/[key]"
                 options={{ headerShown: false }}
               />
               <Stack.Screen
-                name="requests"
-                options={{ title: t("security:pendingRequests") }}
+                name="scan"
+                options={{ title: t("navigation:scan"), presentation: "modal" }}
               />
-            </Stack.Protected>
-            <Stack.Screen
-              name="contact/[key]"
-              options={{ title: t("navigation:contact") }}
-            />
-            <Stack.Screen
-              name="contact/new"
-              options={{
-                title: t("navigation:addContact"),
-                presentation: "modal",
-              }}
-            />
-            <Stack.Screen
-              name="scan"
-              options={{ title: t("navigation:scan"), presentation: "modal" }}
-            />
-            <Stack.Screen
-              name="connect"
-              options={{
-                title: t("navigation:connect"),
-                presentation: "modal",
-              }}
-            />
-            <Stack.Screen name="settings" options={{ headerShown: false }} />
-          </Stack>
-          {!obscured && <CallIndicator />}
-        </View>
-      </LocaleProvider>
+              <Stack.Screen
+                name="connect"
+                options={{
+                  title: t("navigation:connect"),
+                  presentation: "modal",
+                }}
+              />
+              <Stack.Screen name="settings" options={{ headerShown: false }} />
+            </Stack>
+            {!obscured && <CallIndicator />}
+          </View>
+        </LocaleProvider>
+      </MarmotChatLists>
       <Modal
         visible={obscured}
         onRequestClose={() => undefined}

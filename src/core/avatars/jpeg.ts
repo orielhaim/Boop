@@ -1,6 +1,6 @@
 export const maxAvatarBytes = 250 * 1024;
 
-export function sanitizeAvatarJpeg(bytes: Uint8Array) {
+export function sanitizeAvatarJpeg(bytes: Uint8Array, wide = false) {
   if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.length > maxAvatarBytes)
     throw new Error("Invalid JPEG");
   const result = new Uint8Array(bytes.length);
@@ -8,6 +8,7 @@ export function sanitizeAvatarJpeg(bytes: Uint8Array) {
   let written = 2;
   let cursor = 2;
   let dimension = 0;
+  let imageHeight = 0;
   let scanned = false;
   while (cursor < bytes.length) {
     const start = cursor;
@@ -16,7 +17,11 @@ export function sanitizeAvatarJpeg(bytes: Uint8Array) {
     const marker = bytes[cursor++];
     if (marker === 0xd9 && scanned && dimension) {
       result.set([0xff, 0xd9], written);
-      return { bytes: result.slice(0, written + 2), dimension };
+      return {
+        bytes: result.slice(0, written + 2),
+        dimension,
+        height: imageHeight,
+      };
     }
     if (
       marker === undefined ||
@@ -33,7 +38,15 @@ export function sanitizeAvatarJpeg(bytes: Uint8Array) {
       if (dimension || length < 8 || bytes[cursor + 2] !== 8) break;
       const height = (bytes[cursor + 3] << 8) + bytes[cursor + 4];
       const width = (bytes[cursor + 5] << 8) + bytes[cursor + 6];
-      if (width !== height || width < 1 || width > 512) break;
+      if (
+        height < 1 ||
+        width < 1 ||
+        (wide
+          ? width > 1024 || height > 512 || height >= width
+          : width !== height || width > 512)
+      )
+        break;
+      imageHeight = height;
       dimension = width;
     }
     cursor = end;

@@ -1,24 +1,25 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native";
+import { StyleSheet, View } from "react-native";
 import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
 } from "@/components/glassyui/glass-segmented-control";
 import { SettingsDescription } from "@/components/settings/group";
-import { Screen, Section } from "@/components/ui/kit";
+import { Section } from "@/components/ui/kit";
 import { setPreference } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { themes, useAppPreferences } from "@/stores/preferences";
+import { space } from "@/theme";
 
-export default function Appearance() {
+export function ThemePreference() {
   const { t } = useTranslation(namespaces);
   const { db } = useLocal();
   const selected = useAppPreferences((state) => state.theme);
   const [error, setError] = useState("");
   return (
-    <Screen>
+    <View style={styles.group}>
       <Section>{t("settings:theme")}</Section>
       <GlassSegmentedControl
         accessibilityLabel={t("settings:theme")}
@@ -53,11 +54,12 @@ export default function Appearance() {
         ))}
       </GlassSegmentedControl>
       {error && <SettingsDescription>{error}</SettingsDescription>}
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  group: { gap: space.sm },
   theme: { alignSelf: "stretch" },
   option: { minHeight: 44 },
 });

@@ -9,6 +9,7 @@ import {
   blossomHash,
   parseProfile,
   photoAllowed,
+  profileDetails,
   publicImageUrl,
   replaces,
 } from "./protocol";
@@ -61,6 +62,7 @@ export function createAvatars<Result>(
   mirrorOrigins?: (from: string) => string[],
 ) {
   const visible = new Map<string, number>();
+  const exceptions = new Map<string, number>();
   const jobs = new Map<string, { id: string; source: string }>();
   const failures = new Map<
     string,
@@ -76,28 +78,37 @@ export function createAvatars<Result>(
   let pausedUntil = 0;
 
   const pinned = () => preference(db, "identity.publicKey") === owner;
+  const author = (key: string) => key.split(":")[0];
+  const banner = (key: string) => key.endsWith(":banner");
   const override = (key: string) => {
+    if (banner(key)) return undefined;
     const name = contactByKey(db, key).get()?.localAvatarFile;
     return name && filenamePattern.test(name) ? disk.local(name) : undefined;
   };
-  const permitted = (key: string) =>
-    pinned() &&
-    photoAllowed(
-      privacy.photoPolicy(),
-      privacy.isBlocked(key),
-      privacy.isContact(key),
+  const permitted = (key: string) => {
+    const peer = author(key);
+    return (
+      pinned() &&
+      !privacy.isBlocked(peer) &&
+      (exceptions.has(peer) ||
+        photoAllowed(privacy.photoPolicy(), false, privacy.isContact(peer)))
     );
+  };
   const profile = (key: string) =>
     db
       .select()
       .from(nostrProfiles)
       .where(eq(nostrProfiles.publicKey, key))
       .get();
+  const sourceFor = (key: string) =>
+    banner(key)
+      ? profileDetails(profile(author(key))?.fields).banner
+      : profile(key)?.picture;
   const cached = (key: string) =>
     db.select().from(avatarCache).where(eq(avatarCache.publicKey, key)).get();
 
   function changed(key: string) {
-    for (const listener of listeners.get(key) ?? []) listener();
+    for (const listener of listeners.get(author(key)) ?? []) listener();
   }
   function schedule(delay = 100) {
     if (!active) return;
@@ -111,7 +122,7 @@ export function createAvatars<Result>(
         !visible.has(key) ||
         !permitted(key) ||
         override(key) ||
-        profile(key)?.picture !== job.source
+        sourceFor(key) !== job.source
       ) {
         jobs.delete(key);
         native?.cancel(job.id);
@@ -153,7 +164,12 @@ export function createAvatars<Result>(
         .all()
         .flatMap((row) => row.filename ?? []),
     );
-    for (const key of ["profile.photo", "profile.draft.file"]) {
+    for (const key of [
+      "profile.photo",
+      "profile.draft.file",
+      "profile.banner",
+      "profile.draft.banner",
+    ]) {
       const value = preference(db, key);
       if (value) localFiles.add(value);
     }
@@ -171,10 +187,12 @@ export function createAvatars<Result>(
       .values({ publicKey: key, ...values })
       .onConflictDoUpdate({ target: nostrProfiles.publicKey, set: values })
       .run();
-    const job = jobs.get(key);
-    if (job && candidate.picture !== job.source) {
-      jobs.delete(key);
-      native?.cancel(job.id);
+    for (const media of [key, `${key}:banner`]) {
+      const job = jobs.get(media);
+      if (job && sourceFor(media) !== job.source) {
+        jobs.delete(media);
+        native?.cancel(job.id);
+      }
     }
     changed(key);
     schedule();
@@ -200,7 +218,7 @@ export function createAvatars<Result>(
       permitted(key) &&
       !override(key) &&
       visible.has(key) &&
-      profile(key)?.picture === source;
+      sourceFor(key) === source;
     jobs.set(key, job);
     running++;
     let retained = false;
@@ -275,9 +293,9 @@ export function createAvatars<Result>(
     }
     const keys = [...visible.keys()]
       .reverse()
-      .filter((key) => !privacy.isBlocked(key))
+      .filter((key) => !privacy.isBlocked(author(key)))
       .slice(0, maxVisibleAuthors);
-    const authors = [...keys].sort();
+    const authors = [...new Set(keys.map(author))].sort();
     const nextWatch = authors.join(",");
     if (watchKeys !== nextWatch || Date.now() - watchStarted > 15 * 60_000) {
       stopWatch?.();
@@ -291,7 +309,7 @@ export function createAvatars<Result>(
               if (
                 valid &&
                 active &&
-                visible.has(author) &&
+                (visible.has(author) || visible.has(`${author}:banner`)) &&
                 authors.includes(author) &&
                 !privacy.isBlocked(author)
               )
@@ -313,7 +331,7 @@ export function createAvatars<Result>(
       for (const key of keys) {
         if (running >= maxDownloads) break;
         if (jobs.has(key) || !permitted(key) || override(key)) continue;
-        const source = profile(key)?.picture;
+        const source = sourceFor(key);
         if (!source) continue;
         const copy = cached(key);
         const oldUrl = copy && publicImageUrl(copy.sourceUrl);
@@ -344,6 +362,24 @@ export function createAvatars<Result>(
       }
     if (keys.length) schedule(stopWatch ? 30_000 : 5_000);
   }
+  function watch(key: string, wide = false) {
+    if (!/^[a-f0-9]{64}$/u.test(key)) return () => {};
+    const media = wide ? `${key}:banner` : key;
+    visible.set(media, (visible.get(media) ?? 0) + 1);
+    schedule();
+    return () => {
+      const count = visible.get(media) ?? 0;
+      if (count <= 1) {
+        visible.delete(media);
+        const job = jobs.get(media);
+        if (job) {
+          jobs.delete(media);
+          native?.cancel(job.id);
+        }
+      } else visible.set(media, count - 1);
+      schedule();
+    };
+  }
   return {
     profile,
     ingest,
@@ -352,6 +388,7 @@ export function createAvatars<Result>(
       if (active === value) return;
       active = value;
       if (!active) {
+        exceptions.clear();
         stopWatch?.();
         stopWatch = null;
         watchKeys = "";
@@ -363,22 +400,24 @@ export function createAvatars<Result>(
       watchKeys = "";
       schedule();
     },
-    watch(key: string) {
-      if (!/^[a-f0-9]{64}$/u.test(key)) return () => {};
-      visible.set(key, (visible.get(key) ?? 0) + 1);
-      schedule();
+    watch,
+    allowVisit(key: string) {
+      if (!active || !pinned() || privacy.isBlocked(key)) return () => {};
+      exceptions.set(key, (exceptions.get(key) ?? 0) + 1);
+      invalidate();
       return () => {
-        const count = visible.get(key) ?? 0;
-        if (count <= 1) {
-          visible.delete(key);
-          const job = jobs.get(key);
-          if (job) {
-            jobs.delete(key);
-            native?.cancel(job.id);
-          }
-        } else visible.set(key, count - 1);
-        schedule();
+        const count = exceptions.get(key) ?? 0;
+        if (count <= 1) exceptions.delete(key);
+        else exceptions.set(key, count - 1);
+        invalidate();
       };
+    },
+    autoLoads(key: string) {
+      return photoAllowed(
+        privacy.photoPolicy(),
+        privacy.isBlocked(key),
+        privacy.isContact(key),
+      );
     },
     subscribe(key: string, listener: () => void) {
       const callbacks = listeners.get(key) ?? new Set();
@@ -389,19 +428,23 @@ export function createAvatars<Result>(
         if (!callbacks.size) listeners.delete(key);
       };
     },
-    resolve(key: string) {
-      if (!key || !pinned() || privacy.isBlocked(key)) return undefined;
-      const manual = key === owner ? preference(db, "profile.photo") : null;
+    resolve(peer: string, wide = false) {
+      if (!peer || !pinned() || privacy.isBlocked(peer)) return undefined;
+      const key = wide ? `${peer}:banner` : peer;
+      const setting = wide ? "profile.banner" : "profile.photo";
+      const manual = peer === owner ? preference(db, setting) : null;
       const uri =
         manual &&
         filenamePattern.test(manual) &&
-        preference(db, "profile.photo.url") === profile(key)?.picture
+        preference(db, `${setting}.url`) === sourceFor(key)
           ? disk.local(manual)
           : override(key);
       if (uri) return uri;
-      if (!permitted(key) || !profile(key)?.picture) return undefined;
+      const source = sourceFor(key);
+      if (!permitted(key) || !source) return undefined;
       const copy = cached(key);
-      return copy ? disk.cached(copy.filename) : undefined;
+      if (!copy) return undefined;
+      return disk.cached(copy.filename);
     },
     hasOverride: (key: string) => Boolean(override(key)),
     saveOverride(key: string, source: string | null) {

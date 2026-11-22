@@ -404,7 +404,7 @@ export function CallScreen({
                   onPress={() => {
                     tapFeedback();
                     router.push({
-                      pathname: "/contact/[key]",
+                      pathname: "/person/[key]",
                       params: { key: call.peerKey },
                     });
                   }}

@@ -1,22 +1,32 @@
 import { Stack } from "expo-router";
 import { useTranslation } from "react-i18next";
+import { glassStackBack } from "@/components/ui/back-button";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled } from "@/services/local-context";
+import { useTheme } from "@/theme";
 
 export default function SettingsLayout() {
   const { t } = useTranslation(namespaces);
   const chatsEnabled = useChatsEnabled();
+  const { colors } = useTheme();
   return (
-    <Stack screenOptions={{ headerBackButtonDisplayMode: "minimal" }}>
+    <Stack
+      screenOptions={({ navigation }) => ({
+        ...glassStackBack(navigation.goBack),
+        contentStyle: { backgroundColor: colors.background },
+        headerStyle: { backgroundColor: "transparent" },
+        headerShadowVisible: false,
+        headerTitleAlign: "center",
+        headerTitleStyle: { color: colors.text },
+      })}
+    >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen
         name="identity"
         options={{ title: t("settings:identity") }}
       />
 
-      <Stack.Screen
-        name="identity/edit-profile"
-        options={{ title: t("settings:editProfile") }}
-      />
+      <Stack.Screen name="edit-profile" options={{ headerShown: false }} />
       <Stack.Screen
         name="privacy/profile-photos"
         options={{ title: t("settings:profilePhotos") }}
@@ -29,10 +39,8 @@ export default function SettingsLayout() {
         name="connections/media-storage"
         options={{ title: t("settings:mediaStorage") }}
       />
-      <Stack.Screen
-        name="appearance"
-        options={{ title: t("settings:appearance") }}
-      />
+      <Stack.Screen name="storage" options={{ title: t("storage:title") }} />
+      <Stack.Screen name="chats" options={{ title: t("common:chats") }} />
       <Stack.Screen
         name="language"
         options={{ title: t("settings:language") }}
@@ -44,29 +52,24 @@ export default function SettingsLayout() {
           options={{ title: t("messages:marmot.backups") }}
         />
         <Stack.Screen
-          name="chats/health"
-          options={{ title: t("messages:marmot.health") }}
-        />
-        <Stack.Screen
           name="identity/devices"
           options={{ title: t("messages:marmot.devices") }}
         />
-        <Stack.Screen name="chats" options={{ title: t("common:chats") }} />
         <Stack.Screen
-          name="chats/translation"
+          name="language/translation/index"
           options={{ title: t("translation:title") }}
         />
         <Stack.Screen
-          name="chats/target"
+          name="language/translation/target"
           options={{ title: t("translation:target") }}
         />
         <Stack.Screen
-          name="chats/models"
-          options={{ title: t("translation:manageModels") }}
+          name="language/translation/excluded"
+          options={{ title: t("translation:excluded") }}
         />
         <Stack.Screen
-          name="chats/media"
-          options={{ title: t("messages:storageMedia") }}
+          name="language/translation/models"
+          options={{ title: t("translation:manageModels") }}
         />
       </Stack.Protected>
       <Stack.Screen name="privacy" options={{ title: t("settings:privacy") }} />

@@ -41,12 +41,8 @@ export default function Identity() {
   }
 
   return (
-    <Screen>
+    <Screen compact>
       <SettingsGroup>
-        <SettingsRow
-          title={t("settings:editProfile")}
-          onPress={() => router.push("/settings/identity/edit-profile")}
-        />
         {chats && (
           <SettingsRow
             title={t("messages:marmot.devices")}
@@ -76,21 +72,23 @@ export default function Identity() {
         </Action>
       </View>
       {notice && <SettingsDescription>{notice}</SettingsDescription>}
-      <View style={styles.actions}>
-        <Action
+      <SettingsGroup>
+        <SettingsRow
+          icon="download"
+          title={t("security:exportIdentityKey")}
           onPress={() =>
             router.push({
-              pathname: "./sim",
+              pathname: "/settings/identity-keys",
               params: { mode: "export" },
             })
           }
-        >
-          {t("security:exportSim")}
-        </Action>
-        <Action onPress={() => router.push("./sim")}>
-          {t("security:importSim")}
-        </Action>
-      </View>
+        />
+        <SettingsRow
+          icon="key"
+          title={t("security:importIdentityKey")}
+          onPress={() => router.push("/settings/identity-keys")}
+        />
+      </SettingsGroup>
       <GlassSheet open={showQR} onOpenChange={setShowQR}>
         <GlassSheetContent>
           <GlassSheetTitle>{t("settings:publicAddress")}</GlassSheetTitle>

@@ -11,22 +11,25 @@ import { useStore } from "zustand";
 import { CallScreen } from "@/components/calls/call-screen";
 import { Empty, Screen } from "@/components/ui/kit";
 import { parsePublicKey } from "@/core/identity/keys";
-import { nameOrAddress, useContact } from "@/db/contacts";
+import { usePerson } from "@/components/people/use-person";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 
 export default function CallRoute() {
   const { t } = useTranslation(namespaces);
-  const { key, callId, group } = useLocalSearchParams<{
+  const { key, callId, group, video } = useLocalSearchParams<{
     key: string;
     callId?: string;
     group?: string;
+    video?: string;
   }>();
   const { calling, identity } = useLocal();
   const peerKey = typeof key === "string" ? parsePublicKey(key) : null;
-  const contact = useContact(peerKey ?? "");
+  const { name } = usePerson(peerKey ?? "");
   const call = useStore(calling.store, (state) => state.call);
   const initiated = useRef(false);
+  const requestedVideo = useRef(false);
+  const started = useRef<string>(undefined);
   const navigation = useRootNavigationState();
   const [focused, setFocused] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -47,11 +50,31 @@ export default function CallRoute() {
       return;
     initiated.current = true;
     void calling
-      .dial(peerKey, typeof group === "string" ? group : undefined)
+      .dial(peerKey, typeof group === "string" ? group : undefined, (id) => {
+        started.current = id;
+      })
       .then((success) => {
         if (!success) setFailed(true);
       });
   }, [calling, callId, group, identity.publicKey, peerKey]);
+
+  useEffect(() => {
+    if (
+      video !== "1" ||
+      !initiated.current ||
+      requestedVideo.current ||
+      !focused ||
+      call?.phase !== "connected" ||
+      call.id !== started.current ||
+      call.direction !== "outgoing" ||
+      call.peerKey !== peerKey
+    )
+      return;
+    const controls = calling.video();
+    if (!controls) return;
+    requestedVideo.current = true;
+    void controls.enable();
+  }, [call, calling, focused, peerKey, video]);
 
   const close = () => {
     if (call?.phase === "ended") calling.dismiss(call.id);
@@ -113,12 +136,5 @@ export default function CallRoute() {
     );
   }
 
-  return (
-    <CallScreen
-      call={call}
-      name={nameOrAddress(contact?.name, call.peerKey)}
-      close={close}
-      focused={focused}
-    />
-  );
+  return <CallScreen call={call} name={name} close={close} focused={focused} />;
 }

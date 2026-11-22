@@ -33,7 +33,7 @@ export default function ContactPreferences() {
               icon="person"
               onPress={() =>
                 router.push({
-                  pathname: "/contact/[key]",
+                  pathname: "/person/[key]",
                   params: { key: contact.publicKey },
                 })
               }

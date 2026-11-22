@@ -9,40 +9,36 @@ import { Icon, Row } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 
 export function PeerActions({
-  mode,
   open,
   onOpenChange,
 }: {
-  mode: "chat" | "call";
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation(namespaces);
-  const title = mode === "chat" ? t("messages:newChat") : t("calls:newCall");
+  const title = t("messages:newChat");
 
   return (
     <GlassSheet open={open} onOpenChange={onOpenChange}>
       <GlassSheetContent side="bottom">
         <GlassSheetTitle>{title}</GlassSheetTitle>
-        {mode === "chat" && (
-          <Row
-            leading={<Icon name="addPerson" />}
-            title={t("messages:marmot.newGroup")}
-            onPress={() => {
-              onOpenChange(false);
-              router.push({
-                pathname: "/chat/[key]",
-                params: { key: "new-group" },
-              });
-            }}
-          />
-        )}
         <Row
-          leading={<Icon name={mode === "chat" ? "chat" : "phone"} />}
+          leading={<Icon name="addPerson" />}
+          title={t("messages:marmot.newGroup")}
+          onPress={() => {
+            onOpenChange(false);
+            router.push({
+              pathname: "/chat/[key]",
+              params: { key: "new-group" },
+            });
+          }}
+        />
+        <Row
+          leading={<Icon name="chat" />}
           title={t("contacts:enterAddress")}
           onPress={() => {
             onOpenChange(false);
-            router.push({ pathname: "/connect", params: { mode } });
+            router.push("/connect");
           }}
         />
         <Row
@@ -50,7 +46,7 @@ export function PeerActions({
           title={t("contacts:scanQr")}
           onPress={() => {
             onOpenChange(false);
-            router.push({ pathname: "/scan", params: { mode } });
+            router.push("/scan");
           }}
         />
         <Row

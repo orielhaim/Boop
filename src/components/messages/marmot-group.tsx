@@ -10,11 +10,13 @@ import {
 import { useTranslation } from "react-i18next";
 import { Alert, AppState, Pressable, StyleSheet, View } from "react-native";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
+import { usePerson } from "@/components/people/use-person";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { ActionMenu } from "@/components/ui/action-menu";
+import { GlassBackButton } from "@/components/ui/back-button";
 import {
   Action,
   Avatar,
@@ -663,10 +665,7 @@ export function MarmotGroupDetailsScreen({
         }
         return (
           <View key={person.id} style={styles.rosterRow}>
-            <Avatar publicKey={person.id} name={name} size="md" />
-            <Ink kind="label" numberOfLines={1} style={styles.grow}>
-              {name}
-            </Ink>
+            <GroupMemberIdentity publicKey={person.id} />
             {person.admin && (
               <Ink
                 kind="caption"
@@ -1006,7 +1005,7 @@ export function MarmotGroupDetailsScreen({
                   })}
                   onPress={() =>
                     router.push({
-                      pathname: "/contact/[key]",
+                      pathname: "/person/[key]",
                       params: { key: peer.id },
                     })
                   }
@@ -1179,6 +1178,26 @@ export function MarmotGroupDetailsScreen({
   );
 }
 
+function GroupMemberIdentity({ publicKey }: { publicKey: string }) {
+  const { t } = useTranslation(namespaces);
+  const { name } = usePerson(publicKey);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("contacts:openProfile", { name })}
+      style={[styles.rosterRow, styles.grow]}
+      onPress={() =>
+        router.push({ pathname: "/person/[key]", params: { key: publicKey } })
+      }
+    >
+      <Avatar publicKey={publicKey} name={name} size="md" />
+      <Ink kind="label" numberOfLines={1} style={styles.grow}>
+        {name}
+      </Ink>
+    </Pressable>
+  );
+}
+
 function GroupProfileHeader({
   name,
   avatar,
@@ -1202,17 +1221,7 @@ function GroupProfileHeader({
   return (
     <View style={styles.profileHeader}>
       <View style={styles.profileAvatar}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("common:back")}
-          onPress={() => {
-            tapFeedback();
-            back();
-          }}
-          style={[styles.iconTarget, styles.profileBack, surface]}
-        >
-          <Icon name="back" size={22} />
-        </Pressable>
+        <GlassBackButton onPress={back} style={styles.profileBack} />
         {avatar}
         {edit && (
           <Pressable
@@ -1347,7 +1356,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  profileBack: { position: "absolute", top: 0, start: 0, borderRadius: 22 },
+  profileBack: { position: "absolute", top: 0, start: 0 },
   profileEdit: { position: "absolute", top: 0, end: 0, borderRadius: 22 },
   profileName: {
     fontSize: 25,

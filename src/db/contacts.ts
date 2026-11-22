@@ -18,15 +18,5 @@ export function useContact(publicKey: string) {
 }
 
 export function nameOrAddress(name: string | undefined | null, key: string) {
-  return name ?? `${toNpub(key).slice(0, 15)}…`;
-}
-
-export function byNameOrKey(query: string, key: string, name?: string | null) {
-  const value = query.trim().toLowerCase();
-  return (
-    !value ||
-    Boolean(name?.toLowerCase().includes(value)) ||
-    key.includes(value) ||
-    toNpub(key).includes(value)
-  );
+  return name?.trim() || `${toNpub(key).slice(0, 15)}…`;
 }

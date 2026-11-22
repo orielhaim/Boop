@@ -19,6 +19,7 @@ export type GlassInputProps = TextInputProps & {
   invalid?: boolean;
   /** Text above the field. It also names the field for screen readers. */
   label?: string;
+  compact?: boolean;
 };
 
 // The recessed well a field sits in, from --lg-input-shadow.
@@ -51,6 +52,7 @@ export const GlassInput = forwardRef<
   (
     {
       editable = true,
+      compact = false,
       hint,
       invalid = false,
       label,
@@ -85,7 +87,7 @@ export const GlassInput = forwardRef<
     // The field carries the label and hint for screen readers, so the visible text is hidden
     // from them rather than read twice.
     return (
-      <View style={styles.field}>
+      <View style={[styles.field, compact && styles.compactField]}>
         {label ? (
           <Text
             accessibilityElementsHidden
@@ -115,6 +117,7 @@ export const GlassInput = forwardRef<
               boxShadow: ring ? `0px 0px 0px 1px ${ring}` : WELL_SHADOW[theme],
               color: colors.foreground,
             },
+            compact && styles.compactInput,
             !editable && styles.disabled,
             style,
           ]}
@@ -141,6 +144,8 @@ GlassInput.displayName = "GlassInput";
 
 const styles = StyleSheet.create({
   disabled: { opacity: 0.45 },
+  compactField: { gap: 4 },
+  compactInput: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12 },
   field: { alignSelf: "stretch", gap: 8 },
   hint: { fontSize: 12, lineHeight: 16 },
   input: {

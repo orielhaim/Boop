@@ -5,8 +5,9 @@ import {
   renderFadingTabScreen,
   TabBarMinimizeProvider,
 } from "expo-glass-tabs";
-import { router } from "expo-router";
+import { router, usePathname } from "expo-router";
 import { TabList, TabSlot, Tabs, TabTrigger } from "expo-router/ui";
+import { useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
@@ -16,10 +17,11 @@ import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
 } from "@/components/ui/tab-bar-insets";
-import { useMarmotWindow } from "@/components/messages/marmot-window";
+import { useAccountMarmotWindow } from "@/components/messages/marmot-window";
 import { marmot } from "@/core/marmot/native";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useChatsEnabled } from "@/services/local-context";
+import { useAppPreferences } from "@/stores/preferences";
 import { useTheme } from "@/theme";
 
 export default function TabLayout() {
@@ -39,19 +41,26 @@ function DockNavigator() {
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
   const chatsEnabled = useChatsEnabled();
-  const { snapshot } = useMarmotWindow(marmot.openAttention, chatsEnabled);
+  const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
+  const defaultScreen = useAppPreferences((state) => state.defaultScreen);
+  const pathname = usePathname();
+  const openCallsOnLaunch = useRef(
+    separateCallsTab && defaultScreen === "calls" && pathname === "/",
+  );
+  useLayoutEffect(() => {
+    if (!openCallsOnLaunch.current) return;
+    openCallsOnLaunch.current = false;
+    if (pathname === "/") router.replace("/calls");
+  }, [pathname]);
+  const { snapshot } = useAccountMarmotWindow(
+    marmot.openAttention,
+    chatsEnabled,
+  );
   const unread = snapshot?.count ?? 0;
   const badge = unread > 99 ? "99+" : unread || null;
-  const calls: GlassTabItem = {
-    name: "index",
-    label: t("navigation:calls"),
-    renderIcon: ({ tint, size }) => (
-      <Icon name="phone" size={size} color={tint} />
-    ),
-  };
   const messages: GlassTabItem = {
-    name: "messages",
-    label: t("navigation:messages"),
+    name: "index",
+    label: t("common:chats"),
     renderIcon: ({ tint, size }) => (
       <View style={styles.icon}>
         <Icon name="chat" size={size} color={tint} />
@@ -63,30 +72,40 @@ function DockNavigator() {
       </View>
     ),
   };
-  const contacts: GlassTabItem = {
-    name: "contacts",
-    label: t("navigation:contacts"),
+  const people: GlassTabItem = {
+    name: "people",
+    label: t("messenger:people"),
     renderIcon: ({ tint, size }) => (
-      <Icon name="person" size={size} color={tint} />
+      <Icon name="people" size={size} color={tint} />
+    ),
+  };
+  const calls: GlassTabItem = {
+    name: "calls",
+    label: t("navigation:calls"),
+    renderIcon: ({ tint, size }) => (
+      <Icon name="phone" size={size} color={tint} />
     ),
   };
   const profile: GlassTabItem = {
     name: "profile",
     label: t("navigation:profile"),
     renderIcon: ({ tint, size }) => (
-      <Icon name="settings" size={size} color={tint} />
+      <Icon name="person" size={size} color={tint} />
     ),
   };
+  const chatsTab = { item: messages, href: "/" } as const;
+  const callsTab = { item: calls, href: "/calls" } as const;
+  const conversationTabs = !separateCallsTab
+    ? [chatsTab]
+    : defaultScreen === "calls"
+      ? [callsTab, chatsTab]
+      : [chatsTab, callsTab];
   const tabs = [
-    { item: calls, href: "/" },
-    { item: messages, href: "/messages" },
-    { item: contacts, href: "/contacts" },
+    ...conversationTabs,
+    { item: people, href: "/people" },
     { item: profile, href: "/profile" },
   ] as const;
-  const visible = tabs.filter(
-    ({ href }) => chatsEnabled || href !== "/messages",
-  );
-  const ordered = direction === "rtl" ? visible.reverse() : visible;
+  const ordered = direction === "rtl" ? [...tabs].reverse() : tabs;
 
   return (
     <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
@@ -125,7 +144,7 @@ function DockNavigator() {
                   item={item}
                   index={index}
                   accessibilityLabel={
-                    href === "/messages" && badge
+                    href === "/" && badge
                       ? `${item.label} (${badge})`
                       : item.label
                   }

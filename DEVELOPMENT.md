@@ -4,11 +4,11 @@ Start with `bun install --frozen-lockfile`. Run `bun run android` or, on macOS w
 
 ## Reset a development database
 
-SQLite baseline v2 contains Boop application data and call history. The app refuses earlier baselines before it opens or generates a SecureStore identity.
+SQLite baseline v2 contains Boop application data and call history. The app refuses earlier baselines before it reads the SecureStore identity.
 
-1. To keep an existing address, open the **previous build** and export an encrypted **Digital SIM** backup. Record the public address and keep the backup and its passphrase.
+1. To keep an existing address, open the **previous build** and export an encrypted **identity key backup**. Record the public address and keep the backup and its passphrase.
 2. Clear Boop's app data on Android, or delete the app on iOS, then install the development build. This removes local history, settings, and caches. Android app-data clearing also removes SecureStore entries. iOS Keychain entries can survive app deletion.
-3. Compare the address in the new build with the recorded address. If the address differs, import the encrypted Digital SIM, confirm the replacement, restart, and verify the address again.
+3. At Welcome, choose **Sign In** and import the encrypted identity key backup. If iOS retained a different identity, use **Settings → Identity keys** to stage a replacement. After startup, check the address against the original.
 
 Keep the SQLite files and SecureStore state together when preserving an installation. Removing only the SQLite files can discard the pointer to a replacement identity's SecureStore slot.
 
@@ -40,6 +40,26 @@ An authorized HTTPS Blossom endpoint also exercises the encrypted group-image ro
 
 `src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. Preserve the baseline's `PRAGMA user_version` when regenerating it.
 
+## Onboarding and profiles
+
+Startup opens the SQLite baseline and checks the pinned SecureStore slot. A missing key and pin opens Welcome. A missing or mismatched pinned key stops startup. Existing valid keys bypass Welcome, including legacy keys stored before pinning.
+
+**Create Account** writes the initial profile draft and securely stores the generated key before pinning the address. The profile draft survives interrupted setup and offline startup. MarmotKit opens the same address before the first automatic profile publication. Relay acknowledgment, or a matching signed event read back from a relay, clears the pending draft. **Sign In** validates and confirms the imported address before saving it. It never publishes an initial profile. The Identity keys settings screen still handles staged replacements.
+
+Chats is the root route. People and Profile complete the dock. The shared person route accepts saved and unsaved identities. The `contacts.name` column holds a local nickname. An empty value means the user has no nickname. Existing saved rows, overrides, favorites, call preferences, and call history stay in the existing baseline. Public metadata stays in `nostr_profiles`.
+
+The profile cache accepts signed kind 0 events and keeps the most recent replaceable event. Edits merge with the latest observed fields, including fields Boop does not present. People resolves exact keys locally. NIP-05 checks HTTPS mappings through the native public-network transport, and text searches use enabled discovery relays that support NIP-50. Results reflect those relays. MarmotKit's directory and KeyPackage lookup remain responsible for starting an MLS conversation.
+
+Profile photo and banner URLs go through the same native destination, download, decode, and cache limits. The **My Contacts** default applies before downloading. **Load profile images** grants temporary access while the profile is open and unlocked. Blocking revokes access. Only checked local files reach the image component.
+
+### Storage and network usage
+
+**Settings → Storage** measures logical file bytes inside Boop’s private storage on a native background queue. The total excludes the installed app binary. Android and iOS system settings may report different totals because they account for disk allocation and app assets separately. The attachment slice uses the current Marmot account’s storage report and is taken out of the measured Marmot directory total. Clear actions use the existing Marmot download and profile-image caches, plus the local link-preview cache.
+
+Android reports per-app transmitted and received bytes across all interfaces since the last boot through [TrafficStats](https://developer.android.com/reference/android/net/TrafficStats). Both platforms report the current connection type. iOS does not expose a public per-app traffic total.
+
+The interactive donut uses [Gifted Charts 1.4.83](https://www.npmjs.com/package/react-native-gifted-charts/v/1.4.83) with Boop’s existing SVG and Expo gradient dependencies. [Victory Native](https://github.com/FormidableLabs/victory-native-xl) also supports pie charts and requires adding Skia.
+
 ## Messaging and identity
 
 The local Expo module opens the SQLCipher-backed MarmotKit account for the active Nostr address. The SecureStore identity remains the only persistent copy of the Nostr signing key. The native credential adapter supplies that key in memory and checks the account binding before opening the device database. MDK owns MLS keys, invitations, group state, timeline projections, delivery, and retained attachments. Chat Kit reads prepared windows through `src/core/marmot/native.ts`.
@@ -56,7 +76,7 @@ Boop checks enabled attachment origins in order with a signed BUD-06 request. Un
 
 Group members can start a call from Group Details before anyone else joins. The coordinator publishes group-encrypted updates at start, on routing changes, and at end. A long call renews its 30-minute lease after 25 minutes. Members see the call in the conversation and Group Details through a separate MDK subscription. **Join** checks current membership and requests a seat through encrypted kind `24880` signaling, trying another announced participant if needed. A sole remaining participant keeps the same call open for others to join. Trystero authenticates peers and checks membership before sending microphone audio. First-contact calls use the same independent signaling path.
 
-Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone. Messaging Backup is opt-in and restores available history only into conversations the device already belongs to.
+Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. An identity key backup carries the Nostr key alone. Messaging Backup is opt-in and restores available history only into conversations the device already belongs to.
 
 MDK signs the preferred attachment Blossom origin into newly created conversations. If the attachment server list is empty, MDK creates a text-only group. Encrypted group images use the configured group-image endpoint. Members need a common image server because the group state carries no origin. Normal attachment references carry their own encrypted blob locators.
 

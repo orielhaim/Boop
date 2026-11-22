@@ -44,6 +44,7 @@ const icons = {
   chat: { ios: "bubble.left.fill", android: "chat_bubble" },
   invitations: { ios: "envelope", android: "mail_outline" },
   person: { ios: "person.crop.circle", android: "account_circle" },
+  people: { ios: "person.2", android: "group" },
   add: { ios: "plus", android: "add" },
   subtract: { ios: "minus", android: "remove" },
   addPerson: { ios: "person.badge.plus", android: "person_add" },
@@ -67,6 +68,7 @@ const icons = {
   missed: { ios: "phone.down.fill", android: "call_missed" },
   hangup: { ios: "xmark", android: "close" },
   download: { ios: "arrow.down", android: "download" },
+  refresh: { ios: "arrow.clockwise", android: "refresh" },
   play: { ios: "play.fill", android: "play_arrow" },
   storage: { ios: "internaldrive", android: "storage" },
   audio: { ios: "headphones", android: "headphones" },
@@ -265,11 +267,13 @@ export function Screen({
   tab = false,
   topInset = false,
   onScroll,
+  compact = false,
 }: {
   children: ReactNode;
   scroll?: boolean;
   tab?: boolean;
   topInset?: boolean;
+  compact?: boolean;
   onScroll?: React.ComponentProps<typeof Animated.ScrollView>["onScroll"];
 }) {
   const { colors } = useTheme();
@@ -288,7 +292,9 @@ export function Screen({
         <Animated.ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          contentContainerStyle={styles.body}
+          contentContainerStyle={
+            compact ? [styles.body, styles.compactBody] : styles.body
+          }
           onScroll={onScroll}
           scrollEventThrottle={16}
         >
@@ -298,7 +304,9 @@ export function Screen({
         <ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          contentContainerStyle={styles.body}
+          contentContainerStyle={
+            compact ? [styles.body, styles.compactBody] : styles.body
+          }
         >
           {children}
         </ScrollView>
@@ -528,6 +536,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xl,
     paddingTop: space.md,
     paddingBottom: space.xxl,
+  },
+  compactBody: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+    gap: space.md,
   },
   header: {
     flexDirection: "row",

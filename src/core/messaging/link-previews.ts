@@ -266,6 +266,15 @@ export function createLinkPreviews(deps: Dependencies) {
     policy: deps.policy,
     snapshot,
     revalidate,
+    clear(clearCache: () => void) {
+      clearCache();
+      const jobs = [...queue.values(), ...active.values()];
+      queue.clear();
+      active.clear();
+      failures.clear();
+      for (const job of jobs) job.abort.abort();
+      for (const url of listeners.keys()) notify(url);
+    },
     subscribe(url: string, listener: () => void) {
       const group = listeners.get(url) ?? new Set();
       listeners.set(url, group);

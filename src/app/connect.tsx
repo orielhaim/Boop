@@ -1,4 +1,4 @@
-import { Redirect, router, Stack, useLocalSearchParams } from "expo-router";
+import { Redirect, router, Stack } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
@@ -9,13 +9,11 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function Connect() {
   const { t } = useTranslation(namespaces);
-  const { mode } = useLocalSearchParams<{ mode?: string }>();
   const { identity } = useLocal();
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
-  const isCall = mode === "call";
   const chatsEnabled = useChatsEnabled();
-  if (!isCall && !chatsEnabled) return <Redirect href="/" />;
+  if (!chatsEnabled) return <Redirect href="/" />;
 
   function connect() {
     const key = parsePublicKey(address);
@@ -28,16 +26,14 @@ export default function Connect() {
       return;
     }
     router.replace({
-      pathname: isCall ? "/call/[key]" : "/chat/[key]",
+      pathname: "/chat/[key]",
       params: { key },
     });
   }
 
   return (
     <Screen>
-      <Stack.Screen
-        options={{ title: isCall ? t("calls:newCall") : t("messages:newChat") }}
-      />
+      <Stack.Screen options={{ title: t("messages:newChat") }} />
       <GlassInput
         label={t("common:address")}
         placeholder={t("common:pasteAddress")}
@@ -54,7 +50,7 @@ export default function Connect() {
       />
       {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
       <Action variant="prominent" onPress={connect}>
-        {isCall ? t("calls:startCall") : t("messages:startChat")}
+        {t("messages:startChat")}
       </Action>
     </Screen>
   );

@@ -2,6 +2,7 @@ import { schnorr } from "@noble/curves/secp256k1.js";
 import { decode, npubEncode } from "nostr-tools/nip19";
 import { getPublicKey } from "nostr-tools/pure";
 import { z } from "zod";
+import { isPublicRelayAddress, secureRelays } from "../nostr/relays";
 
 const encodedKey = /^[0-9a-f]{64}$/;
 export const publicKeySchema = z.string().refine((value) => {
@@ -17,19 +18,36 @@ export const publicKeySchema = z.string().refine((value) => {
 export type Identity = { publicKey: string; npub: string };
 
 export function parsePublicKey(input: string): string | null {
+  return parsePublicIdentity(input)?.key ?? null;
+}
+
+export function parsePublicIdentity(
+  input: string,
+): { key: string; relays: string[] } | null {
   const value = input.trim().replace(/^nostr:/i, "");
   if (encodedKey.test(value.toLowerCase())) {
     const key = value.toLowerCase();
-    return publicKeySchema.safeParse(key).success ? key : null;
+    return publicKeySchema.safeParse(key).success ? { key, relays: [] } : null;
   }
-  if (!value.toLowerCase().startsWith("npub1") || value.length !== 63)
-    return null;
+  if (value.length > 1024 || !/^(?:npub|nprofile)1/i.test(value)) return null;
   try {
     const decoded = decode(value);
-    return decoded.type === "npub" &&
-      publicKeySchema.safeParse(decoded.data).success
-      ? decoded.data
-      : null;
+    const key =
+      decoded.type === "npub"
+        ? decoded.data
+        : decoded.type === "nprofile"
+          ? decoded.data.pubkey
+          : null;
+    if (!key || !publicKeySchema.safeParse(key).success) return null;
+    return {
+      key,
+      relays:
+        decoded.type === "nprofile"
+          ? secureRelays(decoded.data.relays ?? [])
+              .filter(isPublicRelayAddress)
+              .slice(0, 3)
+          : [],
+    };
   } catch {
     return null;
   }
@@ -44,41 +62,4 @@ export function deriveIdentity(secret: string): Identity {
   );
   const publicKey = getPublicKey(bytes);
   return { publicKey, npub: toNpub(publicKey) };
-}
-
-export async function loadIdentity(
-  storage: {
-    read: () => Promise<string | null>;
-    write: (secret: string) => Promise<void>;
-  },
-  pinnedKey: string | null,
-  random: () => Promise<Uint8Array>,
-): Promise<Identity> {
-  const stored = await storage.read();
-  if (stored !== null) {
-    const identity = deriveIdentity(stored);
-    if (pinnedKey !== null && pinnedKey !== identity.publicKey)
-      throw new Error("Identity mismatch");
-    return identity;
-  }
-  if (pinnedKey !== null)
-    throw new Error("Identity missing from secure storage");
-
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const bytes = await random();
-    if (bytes.length !== 32) throw new Error("Invalid identity entropy size");
-    const secret = Array.from(bytes, (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    let identity: Identity;
-    try {
-      identity = deriveIdentity(secret);
-    } catch {
-      // secp256k1 rejects zero and scalars at or above the group order.
-      continue;
-    }
-    await storage.write(secret);
-    return identity;
-  }
-  throw new Error("Could not generate a valid secret key");
 }

@@ -1,4 +1,5 @@
 import { useLocales } from "expo-localization";
+import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
@@ -19,7 +20,7 @@ import {
   readLanguagePreference,
   saveLanguagePreference,
 } from "@/i18n/preference";
-import { useLocal } from "@/services/local-context";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 const names = {
   en: "settings:languageEnglish",
@@ -30,6 +31,7 @@ const names = {
 export default function LanguageSettings() {
   const { i18n, t } = useTranslation(namespaces);
   const { db, calling } = useLocal();
+  const chatsEnabled = useChatsEnabled();
   const deviceLanguage = useLocales()[0]?.languageCode;
   const detected = preferredLanguage("auto", deviceLanguage);
   const current = resolveLanguage(i18n.resolvedLanguage);
@@ -85,6 +87,15 @@ export default function LanguageSettings() {
           />
         ))}
       </SettingsGroup>
+      {chatsEnabled && (
+        <SettingsGroup>
+          <SettingsRow
+            icon="language"
+            title={t("translation:title")}
+            onPress={() => router.push("/settings/language/translation")}
+          />
+        </SettingsGroup>
+      )}
       {saveFailed ? (
         <SettingsDescription>
           {t("settings:languageSaveError")}

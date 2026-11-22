@@ -8,13 +8,15 @@ import type {
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Icon } from "@/components/ui/kit";
+import { GlassBackIcon } from "@/components/ui/back-button";
+import type { ChatPresentation } from "@/core/marmot/chat-preferences";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { dark, light, space, type, useTheme } from "@/theme";
 
 const appearance: ChatAppearanceName = "soft";
 
 const icons: ChatIcons = {
-  arrowLeft: (props) => <Icon name="back" {...props} />,
+  arrowLeft: ({ color }) => <GlassBackIcon color={color} />,
   chevronLeft: (props) => <Icon name="previous" {...props} />,
   pencil: (props) => <Icon name="add" {...props} />,
   send: (props) => <Icon name="send" {...props} />,
@@ -52,10 +54,22 @@ export const conversationMaterials = {
   }
 >;
 
+export function messagePresentation({ textSize, rounding }: ChatPresentation) {
+  return {
+    text: { fontSize: textSize, lineHeight: Math.round((textSize * 21) / 16) },
+    radii: { bubble: rounding, bubbleGrouped: Math.round((rounding * 7) / 18) },
+  };
+}
+
 function chatTheme(
   colors: typeof light,
-  material?: (typeof conversationMaterials)["light"],
+  detail?: {
+    material: (typeof conversationMaterials)["light"];
+    presentation: ChatPresentation;
+  },
 ): PartialChatTheme {
+  const material = detail?.material;
+  const message = detail && messagePresentation(detail.presentation);
   return {
     colors: {
       background: material ? "transparent" : colors.background,
@@ -144,15 +158,14 @@ function chatTheme(
       isTimeInline: false,
     },
     typography: {
-      message: material ? { fontSize: 16, lineHeight: 21 } : type.body,
+      message: message?.text ?? type.body,
       composer: type.body,
       ...(material ? { time: { fontSize: 11 }, day: { fontSize: 12 } } : {}),
     },
-    ...(material
+    ...(message
       ? {
           radii: {
-            bubble: 18,
-            bubbleGrouped: 7,
+            ...message.radii,
             sendButton: 16,
             replyQuote: 9,
           },
@@ -171,10 +184,7 @@ function chatTheme(
 
 const theme = chatTheme(light);
 const darkTheme = chatTheme(dark);
-const detailTheme = chatTheme(light, conversationMaterials.light);
-const detailDarkTheme = chatTheme(dark, conversationMaterials.dark);
-
-export function useChatAppearance(detail = false) {
+export function useChatAppearance(presentation?: ChatPresentation) {
   const app = useTheme();
   const { t, i18n } = useTranslation("chatKit");
   const locale = resolveLanguage(i18n.resolvedLanguage);
@@ -183,10 +193,25 @@ export function useChatAppearance(detail = false) {
     () => t("labels", { returnObjects: true }) satisfies Partial<ChatLabels>,
     [t],
   );
+  const themes = useMemo(
+    () =>
+      presentation
+        ? {
+            theme: chatTheme(light, {
+              material: conversationMaterials.light,
+              presentation,
+            }),
+            darkTheme: chatTheme(dark, {
+              material: conversationMaterials.dark,
+              presentation,
+            }),
+          }
+        : { theme, darkTheme },
+    [presentation],
+  );
   return {
     appearance,
-    theme: detail ? detailTheme : theme,
-    darkTheme: detail ? detailDarkTheme : darkTheme,
+    ...themes,
     colorScheme: app.theme,
     colors: app.colors,
     locale,

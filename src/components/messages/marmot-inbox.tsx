@@ -1,3 +1,4 @@
+import { useMinimizeOnScroll } from "expo-glass-tabs";
 import {
   ChatList,
   ChatListCell,
@@ -15,9 +16,10 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
-import { Action, Empty, Icon, Ink, Screen } from "@/components/ui/kit";
+import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
+import { QuietState } from "@/components/ui/messenger-ui";
 import { PeerActions } from "@/components/ui/peer-actions";
-import { useAvatar } from "@/core/avatars/use-avatar";
+import { usePerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
 import { projectMentions } from "@/core/messaging/mentions";
@@ -26,6 +28,7 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
+import { useMarmotChatLists } from "./marmot-chat-lists";
 import { useMarmotWindow } from "./marmot-window";
 import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
@@ -89,32 +92,25 @@ export function MarmotInbox({
   const { identity, privacy, chatPreferences, db } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const kit = useChatAppearance();
+  const onScroll = useMinimizeOnScroll();
   const [archived, setArchived] = useState(false);
   const [actions, setActions] = useState(false);
   const [search, setSearch] = useState<string | null>(null);
-  const term = useDeferredValue(search);
-  const open = useCallback(
+  const term = useDeferredValue(search)?.trim();
+  const { inbox, archive, invitations: pending } = useMarmotChatLists();
+  const openSearch = useCallback(
     () =>
-      marmot.openChatList("chats", {
-        invitations,
-        search: term ?? undefined,
-      }),
-    [invitations, term],
+      marmot.openChatList(archived ? "archived" : "chats", { search: term }),
+    [archived, term],
   );
-  const archiveSearch = archived ? term : null;
-  const openArchive = useCallback(
-    () =>
-      marmot.openChatList("archived", { search: archiveSearch ?? undefined }),
-    [archiveSearch],
-  );
-  const openInvites = useCallback(
-    () => marmot.openChatList("chats", { invitations: true }),
-    [],
-  );
-  const pending = useMarmotWindow(openInvites, !invitations && !archived);
-  const inbox = useMarmotWindow(open, !archived);
-  const archive = useMarmotWindow(openArchive, !invitations);
-  const { snapshot, window, error, retry } = archived ? archive : inbox;
+  const results = useMarmotWindow(openSearch, !invitations && Boolean(term));
+  const { snapshot, window, error, retry } = invitations
+    ? pending
+    : term
+      ? results
+      : archived
+        ? archive
+        : inbox;
   const [inviters, setInviters] = useState<Record<string, string>>();
   const pendingIds = (invitations ? snapshot : pending.snapshot)?.rows
     .map((row) => row.id)
@@ -207,32 +203,38 @@ export function MarmotInbox({
 
   return (
     <Screen tab={!invitations} scroll={false}>
-      {!invitations && (
-        <PeerActions mode="chat" open={actions} onOpenChange={setActions} />
-      )}
+      {!invitations && <PeerActions open={actions} onOpenChange={setActions} />}
       {invitations && (
         <Stack.Screen options={{ title: t("messages:marmot.invitations") }} />
       )}
-      {error ? (
-        <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
-          <Action onPress={retry}>{t("common:retry")}</Action>
-        </Empty>
-      ) : (
-        <ChatList<ChatRow>
-          {...kit}
-          chats={chats}
-          user={{ _id: identity.publicKey }}
-          isLoading={!snapshot}
-          isTopInsetApplied={false}
-          isSortEnabled={false}
-          isSearchEnabled={!invitations}
-          filterChat={() => true}
-          onSearchChange={setSearch}
-          dateFormat={kit.locale === "he" ? "D.M.YY" : undefined}
-          renderChat={(props) => <MarmotChatCell {...props} />}
-          renderEmpty={(searching) => (
+      <ChatList<ChatRow>
+        {...kit}
+        chats={chats}
+        user={{ _id: identity.publicKey }}
+        isTopInsetApplied={false}
+        isSortEnabled={false}
+        isSearchEnabled={!invitations}
+        filterChat={() => true}
+        onSearchChange={setSearch}
+        dateFormat={kit.locale === "he" ? "D.M.YY" : undefined}
+        renderChat={(props) => <MarmotChatCell {...props} />}
+        renderEmpty={(searching) =>
+          !snapshot ? (
+            error ? (
+              <View style={styles.syncStatus}>
+                <Ink kind="caption" muted accessibilityLiveRegion="polite">
+                  {t("messages:marmot.accountError")}
+                </Ink>
+                <Action size="sm" variant="soft" onPress={retry}>
+                  {t("common:retry")}
+                </Action>
+              </View>
+            ) : (
+              <ChatSyncNotice />
+            )
+          ) : (
             <View style={styles.empty}>
-              <Empty
+              <QuietState
                 icon="chat"
                 title={
                   searching
@@ -250,101 +252,121 @@ export function MarmotInbox({
                 }
               />
             </View>
-          )}
-          isArchiveOpen={archived}
-          onArchiveOpenChange={setArchived}
-          onPressChat={(row) => router.push(conversationRoute(row.id))}
-          onPressNewChat={invitations ? undefined : () => setActions(true)}
-          onPinChats={
-            invitations
-              ? undefined
-              : (selection, pinned) =>
-                  update(selection, (id) => marmot.setPinned(id, pinned))
-          }
-          onMuteChats={
-            invitations
-              ? undefined
-              : (selection, muted) =>
-                  update(selection, (id) => marmot.setMuted(id, muted))
-          }
-          onArchiveChats={
-            invitations
-              ? undefined
-              : (selection, value) =>
-                  update(selection, (id) => marmot.setArchived(id, value))
-          }
-          listProps={{
-            onEndReached: page,
-            ListHeaderComponent:
-              !invitations &&
-              !archived &&
-              search === null &&
-              invitationCount > 0 ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("messages:marmot.invitations")}
-                  accessibilityValue={{ text: invitationBadge }}
-                  onPress={() => router.push("/requests")}
-                  style={({ pressed }) => [
-                    styles.invitationRow,
-                    {
-                      direction: kit.rtl ? "rtl" : "ltr",
-                      backgroundColor: pressed
-                        ? kit.colors.accentSoft
-                        : undefined,
-                    },
+          )
+        }
+        isArchiveOpen={archived}
+        onArchiveOpenChange={setArchived}
+        onPressChat={(row) => router.push(conversationRoute(row.id))}
+        title={
+          invitations ? t("messages:marmot.invitations") : t("common:chats")
+        }
+        onPressNewChat={invitations ? undefined : () => setActions(true)}
+        onPinChats={
+          invitations
+            ? undefined
+            : (selection, pinned) =>
+                update(selection, (id) => marmot.setPinned(id, pinned))
+        }
+        onMuteChats={
+          invitations
+            ? undefined
+            : (selection, muted) =>
+                update(selection, (id) => marmot.setMuted(id, muted))
+        }
+        onArchiveChats={
+          invitations
+            ? undefined
+            : (selection, value) =>
+                update(selection, (id) => marmot.setArchived(id, value))
+        }
+        listProps={{
+          onScroll: invitations ? undefined : onScroll,
+          onEndReached: page,
+          ListHeaderComponent:
+            !invitations &&
+            !archived &&
+            search === null &&
+            invitationCount > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("messages:marmot.invitations")}
+                accessibilityValue={{ text: invitationBadge }}
+                onPress={() => router.push("/requests")}
+                style={({ pressed }) => [
+                  styles.invitationRow,
+                  {
+                    direction: kit.rtl ? "rtl" : "ltr",
+                    backgroundColor: pressed
+                      ? kit.colors.accentSoft
+                      : undefined,
+                  },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.invitationIcon,
+                    { backgroundColor: kit.colors.accentSoft },
                   ]}
                 >
-                  <View
-                    style={[
-                      styles.invitationIcon,
-                      { backgroundColor: kit.colors.accentSoft },
-                    ]}
+                  <Icon
+                    name="invitations"
+                    size={24}
+                    color={kit.colors.accent}
+                  />
+                </View>
+                <View
+                  style={[
+                    styles.invitationContent,
+                    { borderBottomColor: kit.colors.line },
+                  ]}
+                >
+                  <Ink
+                    kind="label"
+                    numberOfLines={1}
+                    style={styles.invitationTitle}
                   >
-                    <Icon
-                      name="invitations"
-                      size={24}
-                      color={kit.colors.accent}
-                    />
-                  </View>
+                    {t("messages:marmot.invitations")}
+                  </Ink>
                   <View
                     style={[
-                      styles.invitationContent,
-                      { borderBottomColor: kit.colors.line },
+                      styles.invitationBadge,
+                      { backgroundColor: kit.colors.outgoing },
                     ]}
                   >
                     <Ink
-                      kind="label"
-                      numberOfLines={1}
-                      style={styles.invitationTitle}
+                      kind="caption"
+                      style={{ color: kit.colors.outgoingInk }}
                     >
-                      {t("messages:marmot.invitations")}
+                      {invitationBadge}
                     </Ink>
-                    <View
-                      style={[
-                        styles.invitationBadge,
-                        { backgroundColor: kit.colors.outgoing },
-                      ]}
-                    >
-                      <Ink
-                        kind="caption"
-                        style={{ color: kit.colors.outgoingInk }}
-                      >
-                        {invitationBadge}
-                      </Ink>
-                    </View>
                   </View>
-                </Pressable>
-              ) : undefined,
-          }}
-        />
-      )}
+                </View>
+              </Pressable>
+            ) : undefined,
+        }}
+      />
     </Screen>
   );
 }
 
+function ChatSyncNotice() {
+  const { t } = useTranslation("messenger");
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 500);
+    return () => clearTimeout(timer);
+  }, []);
+  return visible ? (
+    <View style={styles.syncStatus}>
+      <Ink kind="caption" muted accessibilityLiveRegion="polite">
+        {t("syncingChats")}
+      </Ink>
+    </View>
+  ) : null;
+}
+
 function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
-  const avatar = useAvatar(props.chat.peer);
+  const { name, photo: avatar } = usePerson(props.chat.peer ?? "");
   const groupAvatar = useMarmotGroupAvatar(props.chat.id, props.chat.image);
   const { draft, lastMessage } = props.chat;
   const mentions = /(?:nostr:|@)npub1/i;
@@ -363,6 +385,7 @@ function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
       chat={{
         ...props.chat,
         avatar: avatar ?? groupAvatar,
+        title: props.chat.peer ? name : props.chat.title,
         draft: draft && projectMentions(draft, names).text,
         lastMessage: lastMessage && {
           ...lastMessage,
@@ -375,6 +398,11 @@ function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
 
 const styles = StyleSheet.create({
   empty: { padding: space.xl },
+  syncStatus: {
+    alignItems: "center",
+    gap: space.sm,
+    padding: space.lg,
+  },
   invitationRow: {
     minHeight: 70,
     flexDirection: "row",

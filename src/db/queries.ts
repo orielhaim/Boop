@@ -20,7 +20,7 @@ export function contactByKey<TResult>(
 export function saveContact<TResult>(
   db: ReadyDatabase<TResult>,
   publicKey: string,
-  name: string,
+  name = "",
 ) {
   return db
     .insert(schema.contacts)
@@ -33,7 +33,10 @@ export function updateContactPreferences<TResult>(
   db: Pick<BaseSQLiteDatabase<"sync", TResult, typeof schema>, "update">,
   publicKey: string,
   patch: Partial<
-    Pick<typeof schema.contacts.$inferInsert, "favorite" | "allowIncomingVideo">
+    Pick<
+      typeof schema.contacts.$inferInsert,
+      "name" | "favorite" | "allowIncomingVideo"
+    >
   >,
 ) {
   return db

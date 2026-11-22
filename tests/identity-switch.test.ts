@@ -2,7 +2,11 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { deriveIdentity } from "../src/core/identity/keys";
-import { loadPinnedIdentity, stageSwitch } from "../src/core/identity/storage";
+import {
+  findPinnedIdentity,
+  installFirstIdentity,
+  stageSwitch,
+} from "../src/core/identity/storage";
 import { initializeTestDatabase } from "./db-fixture";
 import { preference, setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
@@ -13,10 +17,6 @@ const previousKey = deriveIdentity(previousSecret).publicKey;
 const nextKey = deriveIdentity(nextSecret).publicKey;
 const originalSlot = "boop.identity.v1";
 const newSlot = `${originalSlot}.${nextKey}`;
-const noRandom = async (): Promise<Uint8Array> => {
-  throw new Error("Unexpected key generation");
-};
-
 function setup(sqlite: Database) {
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
@@ -50,16 +50,16 @@ test("same-identity import keeps records and a staged replacement only activates
   expect(await stageSwitch(db, storage, nextSecret)).toBe("staged");
   expect(preference(db, "identity.publicKey")).toBe(previousKey);
   expect(keys.has(originalSlot)).toBe(true);
-  const active = await loadPinnedIdentity(db, storage, noRandom);
-  expect(active.identity.publicKey).toBe(nextKey);
+  const active = await findPinnedIdentity(db, storage);
+  expect(active?.identity.publicKey).toBe(nextKey);
   expect(keys.has(originalSlot)).toBe(false);
   expect(db.select().from(schema.contacts).all()).toEqual([]);
   expect(db.select().from(schema.peerPermissions).all()).toEqual([]);
   expect(preference(db, "marmot.pins.old")).toBeNull();
   expect(preference(db, "security.appLock")).toBe("0");
-  expect(
-    (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
-  ).toBe(nextKey);
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    nextKey,
+  );
 });
 
 test("a lost staged slot or failed SQLite reset preserves the previous identity and data", async () => {
@@ -67,9 +67,9 @@ test("a lost staged slot or failed SQLite reset preserves the previous identity 
   const { db, keys, storage } = setup(sqlite);
   await stageSwitch(db, storage, nextSecret);
   keys.delete(newSlot);
-  expect(
-    (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
-  ).toBe(previousKey);
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    previousKey,
+  );
   expect(db.select().from(schema.contacts).all()).toHaveLength(1);
   const brokenStore = {
     ...storage,
@@ -84,13 +84,87 @@ test("a lost staged slot or failed SQLite reset preserves the previous identity 
   sqlite.exec(
     "CREATE TRIGGER stop_reset BEFORE DELETE ON contacts BEGIN SELECT RAISE(ABORT, 'reset interrupted'); END",
   );
-  expect(
-    (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
-  ).toBe(previousKey);
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    previousKey,
+  );
   expect(preference(db, "marmot.pins.old")).toBe("old-message");
   expect(keys.has(originalSlot)).toBe(true);
   sqlite.exec("DROP TRIGGER stop_reset");
-  expect(
-    (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
-  ).toBe(nextKey);
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    nextKey,
+  );
+});
+
+test("first launch reads secure storage without generating or pinning a key", async () => {
+  using sqlite = new Database(":memory:");
+  const { db, storage, keys } = setup(sqlite);
+  db.delete(schema.settings).run();
+  keys.clear();
+  expect(await findPinnedIdentity(db, storage)).toBeNull();
+  expect(preference(db, "identity.publicKey")).toBeNull();
+  expect(keys.size).toBe(0);
+});
+
+test("explicit setup retains its private key and pending public draft across boot", async () => {
+  using sqlite = new Database(":memory:");
+  const { db, storage, keys } = setup(sqlite);
+  db.delete(schema.settings).run();
+  keys.clear();
+  const profile = JSON.stringify({
+    name: "Alex",
+    photo: { kind: "unchanged" },
+  });
+  await installFirstIdentity(db, storage, nextSecret, profile);
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    nextKey,
+  );
+  expect(preference(db, "profile.draft")).toBe(profile);
+  await expect(
+    installFirstIdentity(db, storage, previousSecret, ""),
+  ).rejects.toThrow("already exists");
+  expect(keys.get(originalSlot)).toBe(nextSecret);
+});
+
+test("a key persisted before a startup interruption is recovered without replacement", async () => {
+  using sqlite = new Database(":memory:");
+  const { db, storage, keys } = setup(sqlite);
+  db.delete(schema.settings).run();
+  keys.clear();
+  const interrupted = {
+    ...storage,
+    async write(slot: string, secret: string) {
+      await storage.write(slot, secret);
+      throw new Error("Interrupted");
+    },
+  };
+  await expect(
+    installFirstIdentity(db, interrupted, nextSecret, "{}"),
+  ).rejects.toThrow("Interrupted");
+  expect(preference(db, "identity.publicKey")).toBeNull();
+  expect((await findPinnedIdentity(db, storage))?.identity.publicKey).toBe(
+    nextKey,
+  );
+  expect(preference(db, "profile.draft")).toBe("{}");
+});
+
+test("missing, corrupt, and mismatched SecureStore values fail closed", async () => {
+  using sqlite = new Database(":memory:");
+  const { db, keys, storage } = setup(sqlite);
+  for (const value of [undefined, "bad", nextSecret]) {
+    if (value) keys.set(originalSlot, value);
+    else keys.delete(originalSlot);
+    await expect(findPinnedIdentity(db, storage)).rejects.toThrow(
+      "Identity mismatch",
+    );
+    expect(preference(db, "identity.publicKey")).toBe(previousKey);
+    expect(keys.get(originalSlot)).toBe(value);
+  }
+  await expect(
+    findPinnedIdentity(db, {
+      ...storage,
+      read: async () => {
+        throw new Error("locked");
+      },
+    }),
+  ).rejects.toThrow("locked");
 });

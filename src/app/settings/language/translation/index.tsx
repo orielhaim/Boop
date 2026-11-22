@@ -76,8 +76,17 @@ export default function TranslationSettings() {
           title={t("translation:target")}
           value={target?.name ?? preferences.target}
           onPress={
-            catalog ? () => router.push("/settings/chats/target") : undefined
+            catalog
+              ? () => router.push("/settings/language/translation/target")
+              : undefined
           }
+        />
+        <SettingsRow
+          title={t("translation:excluded")}
+          value={new Intl.NumberFormat(i18n.resolvedLanguage).format(
+            preferences.excludedSources.length,
+          )}
+          onPress={() => router.push("/settings/language/translation/excluded")}
         />
         <SettingsRow
           title={t("translation:manageModels")}
@@ -86,7 +95,7 @@ export default function TranslationSettings() {
               ? t("translation:downloadRequired")
               : undefined
           }
-          onPress={() => router.push("/settings/chats/models")}
+          onPress={() => router.push("/settings/language/translation/models")}
         />
       </SettingsGroup>
       <SettingsGroup>

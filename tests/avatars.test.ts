@@ -277,3 +277,38 @@ test("cache hides immediately on policy change; replacement waits for validated 
     f.close();
   }
 });
+
+test("banner downloads share the profile privacy gate and a visit grants temporary access", async () => {
+  const f = fixture("contacts", false);
+  const banner = "https://photos.example.com/cover.jpg";
+  try {
+    f.avatars.ingest(
+      sign(JSON.stringify({ picture: url, banner }), time + 1),
+      key,
+    );
+    f.avatars.watch(key);
+    f.avatars.watch(key, true);
+    await Bun.sleep(150);
+    expect(f.requests).toEqual([]);
+
+    const dismiss = f.avatars.allowVisit(key);
+    await Bun.sleep(150);
+    expect(f.requests.map((request) => request.url).sort()).toEqual(
+      [banner, url].sort(),
+    );
+    for (const request of f.requests) request.finish(12);
+    await Bun.sleep(20);
+    expect(f.avatars.resolve(key, true)).toStartWith("file:///cache/");
+
+    dismiss();
+    expect(f.avatars.resolve(key, true)).toBeUndefined();
+    f.context.blocked = true;
+    f.avatars.allowVisit(key);
+    f.avatars.invalidate();
+    await Bun.sleep(150);
+    expect(f.requests).toHaveLength(2);
+    expect(f.avatars.resolve(key)).toBeUndefined();
+  } finally {
+    f.close();
+  }
+});

@@ -41,5 +41,7 @@ example
 # generated native folders
 /ios
 /android
+/modules/*/android/.gradle/
 /modules/boop-marmot/sdk/
 /modules/boop-marmot/android/build/
+/modules/boop-storage/android/build/

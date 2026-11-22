@@ -399,7 +399,15 @@ test("confirmed photos survive relay refusal and retry without a second upload",
     (_file, signal) => uploads.upload("profile", photo, { signal }),
     relays,
   );
+  const empty = editor.getSnapshot();
+  expect(empty.draft).toBeNull();
+  expect(editor.getSnapshot()).toBe(empty);
+  const observed: ReturnType<typeof editor.getSnapshot>[] = [];
+  const unsubscribe = editor.subscribe(() =>
+    observed.push(editor.getSnapshot()),
+  );
   editor.prepare("file:///cropped.jpg");
+  expect(observed.at(-1)?.draft?.photo.kind).toBe("upload");
   expect(attempts).toEqual([]);
   const draft = editor.preview();
   expect(draft).toStartWith("file:///draft/");
@@ -419,7 +427,7 @@ test("confirmed photos survive relay refusal and retry without a second upload",
     about: "Keep this",
     picture: url,
   });
-  editor.removePhoto();
+  editor.removeImage("photo");
   expect(await editor.publish()).toBe("published");
   expect(avatars.profile(owner)?.fields).toEqual({
     name: "Original",
@@ -427,4 +435,10 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   });
   expect(avatars.resolve(owner)).toBeUndefined();
   expect(local.size).toBe(0);
+  expect(observed.at(-1)).toMatchObject({ draft: null, stage: "idle" });
+  editor.editFields({ name: "Private draft" });
+  expect(observed.at(-1)?.draft?.name).toBe("Private draft");
+  editor.discard();
+  expect(observed.at(-1)?.draft).toBeNull();
+  unsubscribe();
 });

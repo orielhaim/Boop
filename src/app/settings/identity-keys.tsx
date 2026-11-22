@@ -32,7 +32,7 @@ const secretInput = {
   maxLength: 512,
 } as const;
 
-export default function DigitalSim() {
+export default function IdentityKeys() {
   const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
@@ -139,7 +139,7 @@ export default function DigitalSim() {
       if (level !== Authentication.SecurityLevel.NONE) {
         const confirmed = await lock.confirmSensitive(async () => {
           const result = await Authentication.authenticateAsync({
-            promptMessage: t("security:exportSim"),
+            promptMessage: t("security:exportIdentityKey"),
             biometricsSecurityLevel: "strong",
             cancelLabel: t("common:cancel"),
           });
@@ -226,10 +226,10 @@ export default function DigitalSim() {
               if (!live()) return;
               await stageIdentity(db, candidate.secret);
               setCandidate(null);
-              setStatus(t("security:restartForSim"));
+              setStatus(t("security:restartForIdentity"));
               await marmotSession.stop();
               calling.end();
-              await reloadAppAsync("Activate staged Digital SIM").catch(
+              await reloadAppAsync("Activate staged identity key").catch(
                 () => undefined,
               );
             });
@@ -240,14 +240,20 @@ export default function DigitalSim() {
   }
 
   return (
-    <Screen>
+    <Screen compact>
       <Stack.Screen
         options={{
-          title: t(exporting ? "security:exportSim" : "security:importSim"),
+          title: t(
+            exporting
+              ? "security:exportIdentityKey"
+              : "security:importIdentityKey",
+          ),
         }}
       />
-      <Ink>{t("security:backupScope")}</Ink>
-      <Ink>{t("messages:marmot.backupScope")}</Ink>
+      <Ink kind="caption" muted>
+        {t("security:backupScope")}
+      </Ink>
+
       <Ink kind="label">{t("security:currentIdentity")}</Ink>
       <Ink kind="caption" selectable>
         {identity.npub}
@@ -257,6 +263,7 @@ export default function DigitalSim() {
           <>
             <Ink muted>{t("security:passwordHint")}</Ink>
             <GlassInput
+              compact
               {...secretInput}
               value={password}
               onChangeText={setPassword}
@@ -264,6 +271,7 @@ export default function DigitalSim() {
               editable={!busy}
             />
             <GlassInput
+              compact
               {...secretInput}
               value={confirmation}
               onChangeText={setConfirmation}
@@ -293,6 +301,7 @@ export default function DigitalSim() {
         ) : (
           <>
             <GlassInput
+              compact
               {...secretInput}
               value={input}
               onChangeText={setInput}
@@ -301,6 +310,7 @@ export default function DigitalSim() {
             />
             {backupKind(input) === "encrypted" && (
               <GlassInput
+                compact
                 {...secretInput}
                 value={password}
                 onChangeText={setPassword}

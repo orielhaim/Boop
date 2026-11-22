@@ -49,7 +49,13 @@ export function useMessageTranslations<T extends TranslationMessage>(
     useSyncExternalStore(subscribeAppState, () => AppState.currentState) ===
     "active";
   const [attempt, setAttempt] = useState(0);
-  const scope = JSON.stringify([settings.target, revision, attempt]);
+  const { excludedSources } = settings;
+  const scope = JSON.stringify([
+    settings.target,
+    excludedSources,
+    revision,
+    attempt,
+  ]);
   const [results, setResults] = useState({ scope: "", entries: emptyOutcomes });
   const [originals, setOriginals] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -105,7 +111,7 @@ export function useMessageTranslations<T extends TranslationMessage>(
     void (async () => {
       const cached = new Map(
         translation
-          .cached(tasks, settings.target)
+          .cached(tasks, settings.target, excludedSources)
           .map((row) => [row.messageId, row.translatedText]),
       );
       const hits = new Map<string, TranslationOutcome>();
@@ -129,16 +135,15 @@ export function useMessageTranslations<T extends TranslationMessage>(
             previous.kind !== "unavailable")
         )
           continue;
-        const result = await translation.translate(
-          task,
-          settings.target,
+        const result = await translation.translate(task, settings.target, {
           signal,
-        );
+          excludedSources,
+        });
         if (result.kind !== "cancelled") store(new Map([[key, result]]));
       }
     })().catch(() => undefined);
     return () => controller.abort();
-  }, [viewportKey, translation, settings.target, scope]);
+  }, [viewportKey, translation, settings.target, excludedSources, scope]);
 
   const displayed = useMemo(() => {
     if (!settings.automatic || !outcomes.size) return items;

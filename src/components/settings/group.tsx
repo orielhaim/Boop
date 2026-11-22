@@ -52,6 +52,7 @@ export function SettingsRow({
   onPress,
   onTitlePress,
   selected,
+  selectionRole = "radio",
   expanded,
   disabled = false,
   trailing,
@@ -64,6 +65,7 @@ export function SettingsRow({
   onPress?: () => void;
   onTitlePress?: () => void;
   selected?: boolean;
+  selectionRole?: "radio" | "checkbox";
   expanded?: boolean;
   disabled?: boolean;
   trailing?: ReactNode;
@@ -120,7 +122,7 @@ export function SettingsRow({
   return onPress ? (
     <Pressable
       disabled={disabled}
-      accessibilityRole={selected === undefined ? "button" : "radio"}
+      accessibilityRole={selected === undefined ? "button" : selectionRole}
       accessibilityState={{ disabled, expanded, checked: selected }}
       onPress={() => {
         tapFeedback();
@@ -179,10 +181,10 @@ export function SettingsToggle({
 
 const styles = StyleSheet.create({
   group: { gap: space.sm },
-  card: { overflow: "hidden" },
+  card: { overflow: "hidden", borderRadius: 14 },
   divider: { height: StyleSheet.hairlineWidth, marginHorizontal: space.lg },
   row: {
-    minHeight: 56,
+    minHeight: 52,
     flexDirection: "row",
     alignItems: "center",
     gap: space.md,
@@ -190,9 +192,9 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   icon: {
-    width: 32,
-    height: 32,
-    borderRadius: 11,
+    width: 30,
+    height: 30,
+    borderRadius: 9,
     alignItems: "center",
     justifyContent: "center",
   },

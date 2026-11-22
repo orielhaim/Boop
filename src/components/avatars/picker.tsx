@@ -108,13 +108,17 @@ export function useAvatarPicker() {
 
 type CropProps = {
   source: ImageResult;
+  wide?: boolean;
   onSave(file: File): void;
   onCancel(): void;
 };
 
-export function AvatarCropScreen(props: CropProps) {
+export function AvatarCropScreen({
+  topInset,
+  ...props
+}: CropProps & { topInset?: boolean }) {
   return (
-    <Screen scroll={false}>
+    <Screen scroll={false} topInset={topInset}>
       <View style={styles.editor}>
         <CropPhoto {...props} />
       </View>
@@ -157,7 +161,7 @@ function clamp(value: number, limit: number) {
   return Math.max(-limit, Math.min(limit, value));
 }
 
-function CropPhoto({ source, onSave, onCancel }: CropProps) {
+function CropPhoto({ source, wide = false, onSave, onCancel }: CropProps) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
   const { width, height } = useWindowDimensions();
@@ -175,14 +179,15 @@ function CropPhoto({ source, onSave, onCancel }: CropProps) {
   const swap = rotation % 180 !== 0;
   const imageWidth = swap ? source.height : source.width;
   const imageHeight = swap ? source.width : source.height;
-  const base = size / Math.min(imageWidth, imageHeight);
+  const cropHeight = wide ? size / 2.5 : size;
+  const base = Math.max(size / imageWidth, cropHeight / imageHeight);
   const scale = useSharedValue(1);
   const x = useSharedValue(0);
   const y = useSharedValue(0);
   function move(nextX: number, nextY: number, zoom: number) {
     "worklet";
     x.set(clamp(nextX, (imageWidth * base * zoom - size) / 2));
-    y.set(clamp(nextY, (imageHeight * base * zoom - size) / 2));
+    y.set(clamp(nextY, (imageHeight * base * zoom - cropHeight) / 2));
   }
   const pan = Gesture.Pan()
     .maxPointers(1)
@@ -192,7 +197,7 @@ function CropPhoto({ source, onSave, onCancel }: CropProps) {
   const pinch = Gesture.Pinch().onChange((event) => {
     const zoom = Math.max(1, Math.min(5, scale.get() * event.scaleChange));
     const fx = event.focalX - size / 2;
-    const fy = event.focalY - size / 2;
+    const fy = event.focalY - cropHeight / 2;
     move(
       fx + ((x.get() - fx) * zoom) / scale.get(),
       fy + ((y.get() - fy) * zoom) / scale.get(),
@@ -224,23 +229,40 @@ function CropPhoto({ source, onSave, onCancel }: CropProps) {
       const pixelsPerPoint = 1 / (base * scale.get());
       const edge = Math.max(
         1,
-        Math.min(imageWidth, imageHeight, Math.round(size * pixelsPerPoint)),
-      );
-      const origin = (bound: number, offset: number) =>
         Math.min(
-          bound - edge,
-          Math.max(0, Math.round((bound - edge) / 2 - offset * pixelsPerPoint)),
+          imageWidth,
+          wide ? imageWidth : imageHeight,
+          Math.round(size * pixelsPerPoint),
+        ),
+      );
+      const cropPixels = Math.max(
+        1,
+        Math.min(imageHeight, Math.round(cropHeight * pixelsPerPoint)),
+      );
+      if (wide && cropPixels >= edge) throw new Error("Banner is too small");
+      const outputWidth = Math.min(wide ? 1024 : 512, edge);
+      const outputHeight = wide
+        ? Math.max(1, Math.round((cropPixels * outputWidth) / edge))
+        : outputWidth;
+      const origin = (bound: number, length: number, offset: number) =>
+        Math.min(
+          bound - length,
+          Math.max(
+            0,
+            Math.round((bound - length) / 2 - offset * pixelsPerPoint),
+          ),
         );
       const context = ImageManipulator.manipulate(source.uri);
       try {
         if (rotation) context.rotate(rotation);
         context.crop({
-          originX: origin(imageWidth, x.get()),
-          originY: origin(imageHeight, y.get()),
+          originX: origin(imageWidth, edge, x.get()),
+          originY: origin(imageHeight, wide ? cropPixels : edge, y.get()),
           width: edge,
-          height: edge,
+          height: wide ? cropPixels : edge,
         });
-        if (edge > 512) context.resize({ width: 512, height: 512 });
+        if (edge !== outputWidth)
+          context.resize({ width: outputWidth, height: outputHeight });
         const ref = await context.renderAsync();
         try {
           for (const compress of [0.88, 0.78, 0.65]) {
@@ -251,8 +273,11 @@ function CropPhoto({ source, onSave, onCancel }: CropProps) {
             const file = new File(output.uri);
             try {
               if (file.size > maxAvatarBytes) continue;
-              const verified = sanitizeAvatarJpeg(await file.bytes());
-              if (verified.dimension !== Math.min(512, edge))
+              const verified = sanitizeAvatarJpeg(await file.bytes(), wide);
+              if (
+                verified.dimension !== outputWidth ||
+                verified.height !== outputHeight
+              )
                 throw new Error("Unexpected crop size");
               file.write(verified.bytes);
               if (active.current) onSave(file);
@@ -290,8 +315,8 @@ function CropPhoto({ source, onSave, onCancel }: CropProps) {
             styles.stencil,
             {
               width: size,
-              height: size,
-              borderRadius: size / 2,
+              height: cropHeight,
+              borderRadius: wide ? space.md : size / 2,
               backgroundColor: colors.surface,
             },
           ]}

@@ -29,13 +29,13 @@ import {
   BackHandler,
   Image as BackgroundImage,
   Keyboard,
-  Pressable,
   StyleSheet,
   type TextInput,
   View,
 } from "react-native";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { ActionMenu } from "@/components/ui/action-menu";
+import { GlassBackButton } from "@/components/ui/back-button";
 import {
   Action,
   Avatar,
@@ -45,9 +45,10 @@ import {
   Ink,
   Screen,
   Search,
+  tapFeedback,
 } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
-import { useAvatar } from "@/core/avatars/use-avatar";
+import { usePerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
 import {
@@ -74,7 +75,7 @@ import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { contactByKey } from "@/db/queries";
 import { removeOpenedMessage } from "@/db/open-later";
 import { namespaces } from "@/i18n";
-import { useLocal } from "@/services/local-context";
+import { useChatPresentation, useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
 import { MarmotActiveCall } from "./marmot-active-call";
@@ -246,7 +247,8 @@ export function MarmotConversationScreen({
     profileTransition?.revision === accountRevision
       ? profileTransition.snapshot
       : undefined);
-  const kit = useChatAppearance(true);
+  const messageStyle = useChatPresentation();
+  const kit = useChatAppearance(messageStyle);
   const material = conversationMaterials[kit.colorScheme];
   const translateError = useMarmotError();
   const [reply, setReply] = useState<ChatMessage | null>(null);
@@ -298,7 +300,9 @@ export function MarmotConversationScreen({
   const lastRead = useRef<string | undefined>(undefined);
   const draftWrites = useRef(Promise.resolve());
   const peer = snapshot?.peer;
-  const avatar = useAvatar(snapshot?.invited ? undefined : peer);
+  const { name: peerName, photo: avatar } = usePerson(
+    snapshot?.invited ? "" : (peer ?? ""),
+  );
   const groupAvatar = useMarmotGroupAvatar(
     id,
     snapshot?.invited ? undefined : snapshot?.image,
@@ -307,8 +311,9 @@ export function MarmotConversationScreen({
   const blocked = Boolean(peer && privacy.isBlocked(peer));
   const title = snapshot?.invited
     ? t("messages:marmot.invitations")
-    : snapshot?.title ||
-      (peer ? `${toNpub(peer).slice(0, 15)}…` : t("messages:marmot.group"));
+    : peer
+      ? peerName
+      : snapshot?.title || t("messages:marmot.group");
   const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
   const people = snapshot?.identities;
@@ -866,14 +871,7 @@ export function MarmotConversationScreen({
               { direction: kit.rtl ? "rtl" : "ltr" },
             ]}
           >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("common:close")}
-              onPress={closeSearch}
-              style={styles.menuButton}
-            >
-              <Icon name="back" color={kit.colors.text} />
-            </Pressable>
+            <GlassBackButton onPress={closeSearch} />
             <View style={styles.searchField}>
               <Search
                 accessibilityLabel={searchLabel}
@@ -894,11 +892,21 @@ export function MarmotConversationScreen({
                 ? undefined
                 : { id: peer ?? id, uri: peer ? avatar : groupAvatar }
             }
-            onBack={() =>
-              router.canGoBack() ? router.back() : router.replace("/messages")
-            }
+            onBack={() => {
+              tapFeedback();
+              if (router.canGoBack()) router.back();
+              else router.replace("/");
+            }}
             onPressTitle={
-              snapshot.invited ? undefined : () => openProfile("details")
+              snapshot.invited
+                ? undefined
+                : peer
+                  ? () =>
+                      router.push({
+                        pathname: "/person/[key]",
+                        params: { key: peer },
+                      })
+                  : () => openProfile("details")
             }
             renderRight={
               snapshot.invited
@@ -916,6 +924,18 @@ export function MarmotConversationScreen({
                                 params: { key: peer },
                               });
                           }}
+                        />
+                      )}
+                      {peer && !blocked && (
+                        <IconButton
+                          icon="camera"
+                          label={t("messenger:video")}
+                          onPress={() =>
+                            router.push({
+                              pathname: "/call/[key]",
+                              params: { key: peer, video: "1" },
+                            })
+                          }
                         />
                       )}
                       <ActionMenu
@@ -1615,7 +1635,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     minHeight: 56,
+    paddingStart: space.xs,
     paddingEnd: space.sm,
+    gap: space.sm,
   },
   searchField: { flex: 1 },
   menuButton: {

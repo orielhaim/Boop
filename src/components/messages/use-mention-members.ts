@@ -6,7 +6,7 @@ import { loadGroupDetails } from "./group-details-cache";
 import { useMarmotWindow } from "./marmot-window";
 
 export function useMentionMembers(group: string, enabled: boolean) {
-  const { db, marmotSession } = useLocal();
+  const { db, marmotSession, avatars } = useLocal();
   const watch = useCallback(() => marmot.openGroupState(group), [group]);
   const { snapshot, error, retry } = useMarmotWindow(watch, enabled);
   const revision = snapshot && `${snapshot.generation}:${snapshot.sequence}`;
@@ -41,9 +41,11 @@ export function useMentionMembers(group: string, enabled: boolean) {
       roster?.map((member) => ({
         ...member,
         label:
-          contactByKey(db, member.id).get()?.name ?? member.name ?? member.npub,
+          contactByKey(db, member.id).get()?.name ||
+          avatars.profile(member.id)?.name ||
+          member.npub,
       })),
-    [db, roster],
+    [avatars, db, roster],
   );
   return {
     members,
