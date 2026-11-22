@@ -3,7 +3,6 @@ import type { File } from "expo-file-system";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState, Pressable, StyleSheet, View } from "react-native";
-import { useStore } from "zustand";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
@@ -353,21 +352,13 @@ export function NewMarmotGroup() {
   );
 }
 
-export function MarmotGroupDetailsScreen({
-  id,
-  showCall = false,
-}: {
-  id: string;
-  showCall?: boolean;
-}) {
+export function MarmotGroupDetailsScreen({ id }: { id: string }) {
   const { t } = useTranslation(namespaces);
-  const { db, identity, marmotSession, privacy, calling } = useLocal();
-  const call = useStore(calling.store, (state) => state.call);
+  const { db, identity, marmotSession, privacy } = useLocal();
   const translateError = useMarmotError();
   const [details, setDetails] = useState<MarmotGroupDetails>();
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [selectPeer, setSelectPeer] = useState(showCall);
   const [image, setImage] = useState<{ hash: string; uri: string }>();
   const picker = useAvatarPicker();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
@@ -380,11 +371,6 @@ export function MarmotGroupDetailsScreen({
   );
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
-  const openConversation = useCallback(() => marmot.openConversation(id), [id]);
-  const callWindow = useMarmotWindow(
-    openConversation,
-    details?.kind === "group" && details.membership === "member",
-  );
   const revision = state.snapshot?.sequence;
   useEffect(() => {
     if (revision === undefined) return;
@@ -472,8 +458,6 @@ export function MarmotGroupDetailsScreen({
     details?.isAdmin &&
     details.membership === "member" &&
     details.kind !== "direct";
-  const activeCall =
-    call?.groupId === id && call.phase !== "ended" ? call : undefined;
   if (details?.pendingInvitation) {
     return (
       <Screen>
@@ -555,7 +539,7 @@ export function MarmotGroupDetailsScreen({
           {details.kind === "group" && details.membership === "member" && (
             <MarmotActiveCall
               group={id}
-              messages={callWindow.snapshot?.messages}
+              canStart={details.lifecycle === "stable"}
               members={details.members}
             />
           )}
@@ -615,57 +599,8 @@ export function MarmotGroupDetailsScreen({
                     : "messages:marmot.archiveConversation",
                 )}
               </Action>
-              <Action
-                size="sm"
-                disabled={!activeCall && details.lifecycle !== "stable"}
-                onPress={() => {
-                  if (activeCall) {
-                    router.push({
-                      pathname: "/call/[key]",
-                      params: {
-                        key: activeCall.peerKey,
-                        callId: activeCall.id,
-                      },
-                    });
-                  } else {
-                    setSelectPeer((previous) => !previous);
-                  }
-                }}
-              >
-                {t(
-                  activeCall
-                    ? "messages:marmot.returnToCall"
-                    : "calls:startCall",
-                )}
-              </Action>
             </View>
           )}
-          {selectPeer &&
-            !activeCall &&
-            details.membership === "member" &&
-            details.lifecycle === "stable" && (
-              <View>
-                <Ink>{t("messages:marmot.chooseCallMember")}</Ink>
-                {details.members
-                  .filter(
-                    (member) => !member.self && !privacy.isBlocked(member.id),
-                  )
-                  .map((member) => (
-                    <Action
-                      key={member.id}
-                      size="sm"
-                      onPress={() => {
-                        router.push({
-                          pathname: "/call/[key]",
-                          params: { key: member.id, group: id },
-                        });
-                      }}
-                    >
-                      {member.name || member.npub}
-                    </Action>
-                  ))}
-              </View>
-            )}
           {details.commit ? (
             <Ink>{t("messages:marmot.pendingCommit")}</Ink>
           ) : null}

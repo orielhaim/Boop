@@ -73,6 +73,7 @@ const message = z.object({
       duration: z.number().positive().nullish(),
       waveform: z.array(z.number().int().min(0).max(31)).max(64).nullish(),
       round: z.boolean().optional(),
+      voice: z.boolean().optional(),
     }),
   ),
   sourceId: z.string().nullish(),
@@ -106,6 +107,19 @@ const attentionSnapshot = windowRevision.extend({
 const groupStateSnapshot = windowRevision.extend({
   kind: z.literal("groupState"),
 });
+const groupCallSnapshot = windowRevision.extend({
+  kind: z.literal("groupCall"),
+  announcements: z
+    .array(
+      z.object({
+        text: z.string(),
+        sender: z.string(),
+        sentAt: z.number(),
+        invalidated: z.boolean(),
+      }),
+    )
+    .max(64),
+});
 const conversationSnapshot = windowRevision.extend({
   kind: z.literal("conversation"),
   title: z.string().nullish(),
@@ -125,8 +139,6 @@ const conversationSnapshot = windowRevision.extend({
           z.object({
             id: z.string(),
             size: z.number().int().positive(),
-            duration: z.number().nullish(),
-            waveform: z.array(z.number()).max(64),
           }),
         )
         .max(64),
@@ -362,6 +374,7 @@ type Bridge = {
   ): Promise<unknown>;
   openAttention(id: string): Promise<unknown>;
   openGroupState(id: string, group: string): Promise<unknown>;
+  openGroupCall(id: string, group: string): Promise<unknown>;
   openConversation(
     id: string,
     group: string,
@@ -446,7 +459,7 @@ type Bridge = {
   discardMediaDraft(group: string): Promise<void>;
   sendSpecial(
     group: string,
-    kind: 24881 | 24883 | 24884 | 24885,
+    kind: 24881 | 24883 | 24884,
     body: string,
     reply: string | null,
   ): Promise<void>;
@@ -465,7 +478,11 @@ type Bridge = {
     source: string,
     index: number,
   ): Promise<boolean>;
-  makeVideoPoster(path: string): Promise<string>;
+  inspectMediaFile(
+    path: string,
+    image: boolean,
+    poster: boolean,
+  ): Promise<unknown>;
   downloadAttachment(
     group: string,
     id: string,
@@ -740,6 +757,11 @@ export const marmot = {
       (bridge, id) => bridge.openGroupState(id, group),
       groupStateSnapshot,
     ),
+  openGroupCall: (group: string) =>
+    openWindow<z.infer<typeof groupCallSnapshot>, never>(
+      (bridge, id) => bridge.openGroupCall(id, group),
+      groupCallSnapshot,
+    ),
   openConversation: (group: string, target?: string) =>
     openWindow<MarmotConversation, "older" | "newer">(
       (bridge, id) => bridge.openConversation(id, group, target ?? null),
@@ -817,7 +839,7 @@ export const marmot = {
     native().saveDraft(group, text, reply),
   sendSpecial: (
     group: string,
-    kind: 24881 | 24883 | 24884 | 24885,
+    kind: 24881 | 24883 | 24884,
     body: string,
     reply: string | null,
   ) => native().sendSpecial(group, kind, body, reply),
@@ -879,7 +901,14 @@ export const marmot = {
     source: string,
     index: number,
   ) => native().attachmentStatus(group, id, source, index),
-  makeVideoPoster: (path: string) => native().makeVideoPoster(path),
+  inspectMediaFile: async (path: string, image: boolean, poster: boolean) =>
+    z
+      .object({
+        path: z.string().nullish(),
+        duration: z.number().positive().nullish(),
+        dimensions: z.string().nullish(),
+      })
+      .parse(await native().inspectMediaFile(path, image, poster)),
   async downloadAttachment(
     group: string,
     id: string,

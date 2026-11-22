@@ -6,6 +6,22 @@ import kotlinx.coroutines.cancelAndJoin
 
 internal typealias Document = Map<String, Any?>
 
+internal fun mediaPresentation(kind: String?, mime: String) = when {
+  kind == "round" && mime.startsWith("video/", ignoreCase = true) -> "round"
+  kind == "voice" && mime.startsWith("audio/", ignoreCase = true) -> "voice"
+  else -> "file"
+}
+
+internal fun mediaDuration(value: String?) = value?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 && it <= 604800 }
+
+internal fun mediaWaveform(value: String?) = value.orEmpty().take(192).split(",").take(64)
+  .mapNotNull { it.toIntOrNull()?.takeIf { level -> level in 0..31 }?.div(31.0) }
+
+internal fun mediaMetadata(index: Int, size: ULong, duration: Double?, waveform: List<Double>, kind: String) =
+  listOf("boop-media", index.toString(), size.toString(),
+    duration?.toString().orEmpty(),
+    waveform.take(64).joinToString(",") { kotlin.math.round(it.coerceIn(0.0, 1.0) * 31).toInt().toString() }, kind)
+
 internal fun windowDelta(previous: Document, current: Document): Document? {
   val field = when (current["kind"]) {
     "chatList" -> "rows"
@@ -80,6 +96,26 @@ internal class GroupStateWindow(private val generation: String, private val hand
   )
 }
 
+internal class GroupCallWindow(
+  private val generation: String,
+  private val handle: MessagesSubscription,
+  private val read: () -> List<AppMessageRecordFfi>,
+) : NativeWindow() {
+  private var sequence = 0L
+  override fun initial() = project(handle.snapshot())
+  override suspend fun next() = handle.next()?.let { sequence++; project(read()) }
+  override suspend fun page(generation: String, sequence: ULong, direction: String): Document = throw problem("InvalidWindow")
+  override suspend fun anchor(generation: String, sequence: ULong, target: String): Document = throw problem("InvalidWindow")
+  override suspend fun release() = handle.close()
+  private fun project(rows: List<AppMessageRecordFfi>): Document = mapOf(
+    "kind" to "groupCall", "generation" to generation, "sequence" to sequence.toString(),
+    "hasMoreBefore" to false, "hasMoreAfter" to false,
+    "announcements" to rows.filter { it.plaintext.length <= 750 }.map {
+      mapOf("text" to it.plaintext, "sender" to it.sender, "sentAt" to it.recordedAt.toDouble(), "invalidated" to it.invalidated)
+    },
+  )
+}
+
 internal class ConversationWindow(private val handle: ConversationWindowSubscription) : NativeWindow() {
   override fun initial() = handle.snapshot()?.let(::project)
   override suspend fun next() = handle.next()?.let(::project)
@@ -146,15 +182,14 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "firstUnread" to snapshot.readState.firstUnreadMessageIdHex,
   "draft" to snapshot.draft.draft?.let { draft ->
     mapOf("text" to draft.content, "replyTo" to draft.replyToMessageIdHex, "attachments" to draft.mediaAttachments.map { item ->
-      mapOf("id" to item.id, "size" to item.plaintextSize.toDouble(), "duration" to item.durationSeconds,
-        "waveform" to item.waveformSamples.take(64))
+      mapOf("id" to item.id, "size" to item.plaintextSize.toDouble())
     })
   },
   "identities" to snapshot.identities.map { mapOf("id" to it.accountIdHex, "name" to it.displayName) },
   "messages" to snapshot.messages.mapNotNull { message ->
     val row = message.timeline
     val system = row.groupSystem?.takeIf { it.provenance == GroupSystemEventProvenanceFfi.AUTHENTICATED_GROUP_STATE }
-    if (system == null && row.poll == null && row.kind !in setOf(9uL, 1111uL, 24881uL, 24883uL, 24884uL, 24885uL)) return@mapNotNull null
+    if (system == null && row.poll == null && row.kind !in setOf(9uL, 1111uL, 24881uL, 24883uL)) return@mapNotNull null
     mapOf(
       "id" to row.messageIdHex,
       "token" to row.clientToken,
@@ -170,13 +205,15 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       },
       "attachments" to row.media.mapNotNull { media ->
         (media as? MediaAttachmentOutcomeFfi.Accepted)?.takeIf { it.reference.version == EncryptedMediaVersionFfi.V2 }?.let {
-          val tag = row.tags.firstOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
-            tag.values[1].toUIntOrNull() == it.attachmentIndex }?.values
+          val tag = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
+            tag.values[1] == it.attachmentIndex.toString() }?.values
           mapOf("index" to it.attachmentIndex.toInt(), "name" to it.reference.fileName, "type" to it.reference.mediaType,
             "thumbhash" to it.reference.thumbhash, "dimensions" to it.reference.dim,
-            "size" to tag?.get(2)?.toULongOrNull()?.toDouble(), "duration" to tag?.get(3)?.toIntOrNull()?.takeIf { it in 1..3600 },
+            "size" to tag?.get(2)?.toULongOrNull()?.takeIf { it in 1uL..9007199254740991uL }?.toDouble(),
+            "duration" to tag?.get(3)?.let(::mediaDuration),
             "waveform" to tag?.get(4)?.take(192)?.split(",")?.mapNotNull { value -> value.toIntOrNull()?.takeIf { level -> level in 0..31 } }?.take(64),
-            "round" to (tag?.get(5) == "round"))
+            "round" to (tag?.get(5) == "round" && it.reference.mediaType.startsWith("video/")),
+            "voice" to (tag?.get(5) == "voice" && it.reference.mediaType.startsWith("audio/")))
         }
       },
       "sourceId" to row.sourceMessageIdHex,

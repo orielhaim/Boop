@@ -6,10 +6,11 @@ plugins {
 group = 'app.boop'
 version = '1.0.0'
 
-def sdk = file('../sdk/marmotkit-android-0.18.0')
+def sdk = file('../sdk/marmotkit-android-0.18.0-boop')
 def prepareMarmotKit = tasks.register('prepareMarmotKit', Exec) {
   workingDir file('../../..')
-  commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android'
+  commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android',
+    project.findProperty('reactNativeArchitectures') ?: 'armeabi-v7a,arm64-v8a,x86,x86_64'
 }
 
 android {

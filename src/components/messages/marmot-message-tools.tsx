@@ -278,7 +278,11 @@ export function ForwardMessage({
             thumbhash: item.thumbhash ?? undefined,
             duration: item.duration == null ? undefined : String(item.duration),
             waveform: item.waveform?.join(","),
-            presentation: item.round ? ("round" as const) : undefined,
+            presentation: item.round
+              ? ("round" as const)
+              : item.voice
+                ? ("voice" as const)
+                : undefined,
           });
         }
         const token = tokens.current.get(destination) ?? randomUUID();

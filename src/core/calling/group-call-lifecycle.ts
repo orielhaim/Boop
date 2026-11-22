@@ -2,7 +2,7 @@ import type { marmot } from "../marmot/native";
 import type { createCallController } from "./controller";
 import {
   groupCallAnnouncement,
-  groupCallHeartbeat,
+  groupCallRenewAfter,
   groupCallKind,
 } from "./group-presence";
 
@@ -28,39 +28,70 @@ export function attachGroupCallLifecycle({
   let last:
     | { group: string; call: string; members: string[]; sent: number }
     | undefined;
+  let publicationTime = 0;
+  let renewal: ReturnType<typeof setTimeout> | undefined;
   let chain = Promise.resolve();
 
   async function update() {
     if (stopped) return;
-    const { call, participants } = calling.store.getState();
-    const group = call?.groupId;
+    const { call, participants, groupLobby } = calling.store.getState();
+    const connected = call?.phase === "connected" ? call : undefined;
+    if (connected?.reconnecting && !groupLobby) return;
+    const group = connected?.groupId ?? groupLobby?.groupId;
+    const callId = connected?.id ?? groupLobby?.callId;
+    // An authenticated connected roster elects a deterministic coordinator.
+    // The lobby can advertise before the first peer negotiates any media.
+    const members =
+      group && callId && (participants.length || groupLobby)
+        ? [localKey, ...participants.map(({ key }) => key)].sort()
+        : [];
+    const coordinator = members[0] === localKey;
     if (
       last &&
-      (call?.id !== last.call || group !== last.group || call.phase === "ended")
+      (group !== last.group || callId !== last.call || !coordinator)
     ) {
       const previous = last;
       last = undefined;
-      await announce(previous.group, previous.call, []);
+      clearTimeout(renewal);
+      // Other members can take over without seeing this withdrawal. Under
+      // disconnection the old route can just expire.
+      const ended = !participants.length && previous.members.length === 1;
+      await announce(previous.group, previous.call, [], ended);
     }
-    if (!group || call?.phase !== "connected" || call.reconnecting) return;
-    const members = [localKey, ...participants.map(({ key }) => key)].sort();
+    if (!group || !callId || !coordinator) return;
     if (
-      members.length < 2 ||
-      (last &&
-        last.members.join() === members.join() &&
-        Date.now() - last.sent < groupCallHeartbeat - 1_000)
+      last &&
+      last.members.join() === members.join() &&
+      Date.now() < last.sent + groupCallRenewAfter
     )
       return;
-    if (await announce(group, call.id, members))
-      last = { group, call: call.id, members, sent: Date.now() };
+    clearTimeout(renewal);
+    if ((await announce(group, callId, members)) && !stopped) {
+      last = { group, call: callId, members, sent: Date.now() };
+      renewal = setTimeout(schedule, groupCallRenewAfter);
+    } else {
+      // Leave the last successful lease intact. Retry once on the next
+      // membership, connection, or routing change.
+      renewal = undefined;
+    }
   }
 
-  async function announce(group: string, call: string, members: string[]) {
+  async function announce(
+    group: string,
+    call: string,
+    members: string[],
+    ended = false,
+  ) {
     try {
       await ready();
       const details = await client.groupDetails(group);
       const roster = new Set(details.members.map(({ id }) => id));
-      const state = calling.store.getState().call;
+      const state = calling.store.getState();
+      const connected =
+        state.call?.id === call &&
+        state.call.phase === "connected" &&
+        !state.call.reconnecting;
+      const lobby = state.groupLobby?.callId === call;
       if (
         stopped ||
         details.kind !== "group" ||
@@ -69,16 +100,14 @@ export function attachGroupCallLifecycle({
         details.pendingInvitation ||
         !roster.has(localKey) ||
         !members.every((key) => roster.has(key)) ||
-        (members.length > 0 &&
-          (state?.id !== call ||
-            state.phase !== "connected" ||
-            state.reconnecting))
+        (members.length > 0 && !connected && !lobby)
       )
         return false;
+      publicationTime = Math.max(Date.now(), publicationTime + 1);
       await client.sendSpecial(
         group,
         groupCallKind,
-        groupCallAnnouncement(call, members),
+        groupCallAnnouncement(call, members, publicationTime, ended),
         null,
       );
       return true;
@@ -132,8 +161,10 @@ export function attachGroupCallLifecycle({
           return;
         }
         const onChange = () => {
-          if (window.getState().status === "ready") refresh(group, revision);
-          else if (revision === watchRevision) watch(undefined);
+          if (window.getState().status === "ready") {
+            refresh(group, revision);
+            schedule();
+          } else if (revision === watchRevision) watch(undefined);
         };
         const unsubscribe = window.subscribe(onChange);
         disposeWatch = () => {
@@ -149,8 +180,12 @@ export function attachGroupCallLifecycle({
 
   let queued = false;
   function schedule() {
-    const { call, joining } = calling.store.getState();
-    watch(call && call.phase !== "ended" ? call.groupId : joining?.groupId);
+    if (stopped) return;
+    const { call, joining, groupLobby } = calling.store.getState();
+    watch(
+      groupLobby?.groupId ??
+        (call && call.phase !== "ended" ? call.groupId : joining?.groupId),
+    );
     if (queued) return;
     queued = true;
     chain = chain.then(async () => {
@@ -165,6 +200,7 @@ export function attachGroupCallLifecycle({
       call?.id !== previous?.id ||
       call?.phase !== previous?.phase ||
       state.joining !== before.joining ||
+      state.groupLobby !== before.groupLobby ||
       state.participants.map(({ key }) => key).join() !==
         before.participants.map(({ key }) => key).join() ||
       (call?.phase === "connected" &&
@@ -173,13 +209,10 @@ export function attachGroupCallLifecycle({
     )
       schedule();
   });
-  const heartbeat = setInterval(() => {
-    if (calling.store.getState().call?.groupId) schedule();
-  }, groupCallHeartbeat);
   schedule();
   return () => {
     stopped = true;
-    clearInterval(heartbeat);
+    clearTimeout(renewal);
     unsubscribe();
     disposeWatch?.();
   };

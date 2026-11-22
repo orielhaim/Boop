@@ -1,11 +1,6 @@
 import { File } from "expo-file-system";
 import type { MediaSdk } from "../media";
-import {
-  type AttachmentMetadata,
-  attachmentMetadataEvent,
-  attachmentMetadataKind,
-  sendOnAttachmentServers,
-} from "./media-send";
+import { sendOnAttachmentServers } from "./media-send";
 import { marmot, type MarmotUpload } from "./native";
 
 export async function sendMarmotAttachment({
@@ -24,7 +19,7 @@ export async function sendMarmotAttachment({
   group: string;
   source:
     | { kind: "files"; files: MarmotUpload[]; saveDraft: boolean }
-    | { kind: "draft"; attachments: AttachmentMetadata[] };
+    | { kind: "draft"; sizes: readonly number[] };
   caption: string | null;
   reply: string | null;
   token: string;
@@ -33,21 +28,13 @@ export async function sendMarmotAttachment({
   mirrorFailed: () => void;
   signal: AbortSignal;
 }) {
-  const attachments =
+  const sizes =
     source.kind === "draft"
-      ? source.attachments
-      : source.files.map((file, index): AttachmentMetadata => {
+      ? source.sizes
+      : source.files.map((file) => {
           const size = new File("file://" + file.path).size;
           if (!size) throw new Error("InvalidMediaPath");
-          return {
-            index,
-            size,
-            duration: file.duration
-              ? Math.min(3_600, Math.max(1, Number(file.duration)))
-              : undefined,
-            waveform: file.waveform?.split(",").slice(0, 64).map(Number),
-            round: file.presentation === "round" ? true : undefined,
-          };
+          return size;
         });
   if (source.kind === "files" && source.saveDraft) {
     if (signal.aborted || !allowed()) return;
@@ -65,7 +52,7 @@ export async function sendMarmotAttachment({
     source.kind === "files" && !source.saveDraft ? source.files : [];
   const origins = () =>
     sdk.configured("attachment").map(({ origin }) => origin);
-  const maxCiphertext = Math.max(...attachments.map(({ size }) => size + 16));
+  const maxCiphertext = Math.max(...sizes.map((size) => size + 16));
   const accepted = await sendOnAttachmentServers({
     origins: origins(),
     isEnabled: (origin) => allowed() && origins().includes(origin),
@@ -83,12 +70,6 @@ export async function sendMarmotAttachment({
         signal,
       ),
   });
-  if (accepted.id && allowed() && !signal.aborted) {
-    const body = attachmentMetadataEvent(accepted.id, attachments);
-    void marmot
-      .sendSpecial(group, attachmentMetadataKind, body, null)
-      .catch(() => undefined);
-  }
   if (accepted.blobs.length && !signal.aborted && allowed())
     void sdk
       .mirrorAttachments(accepted.blobs, signal, allowed)

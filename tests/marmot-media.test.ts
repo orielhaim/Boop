@@ -35,10 +35,7 @@ test("an interrupted draft resumes with its original token only after all encryp
   ).toMatchObject({
     kind: "ready",
     token,
-    attachments: [
-      { index: 0, size: 300, duration: 4, waveform: [0, 16, 31] },
-      { index: 1, size: 500, round: true },
-    ],
+    sizes: [300, 500],
   });
 });
 

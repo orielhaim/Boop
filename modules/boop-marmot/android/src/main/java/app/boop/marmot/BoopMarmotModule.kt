@@ -2,6 +2,9 @@ package app.boop.marmot
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
 import android.util.AtomicFile
 import android.util.Size
@@ -138,6 +141,16 @@ class BoopMarmotModule : Module() {
           val mode = if (target == null) ConversationOpenModeFfi.AUTOMATIC else ConversationOpenModeFfi.MESSAGE
           val handle = active.kit.openConversationWindow(active.account, group, mode, target, 40u, 0u)
           install(id, ConversationWindow(handle))
+        }
+      }
+    }
+    AsyncFunction("openGroupCall") Coroutine { id: String, group: String ->
+      lifecycle.withLock {
+        protocol {
+          val active = requireSession()
+          val kinds = listOf(24884uL)
+          val handle = active.kit.subscribeMessages(active.account, group, 64u, kinds)
+          install(id, GroupCallWindow(id, handle) { active.kit.messages(active.account, group, 64u, kinds) })
         }
       }
     }
@@ -339,7 +352,7 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String? ->
       withSession {
-        if (kind !in setOf(24881, 24883, 24884, 24885)) throw problem("InvalidApplicationEvent")
+        if (kind !in setOf(24881, 24883, 24884)) throw problem("InvalidApplicationEvent")
         val tags = reply?.let { target -> listOf(listOf("e", target, "", "reply")) } ?: emptyList()
         it.kit.sendCustomEvent(it.account, group, kind.toULong(), tags, body)
         Unit
@@ -363,12 +376,12 @@ class BoopMarmotModule : Module() {
               sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to 0.0, "state" to "preparing"))
               for ((index, input) in inputs.withIndex()) {
                 val file = files[index]
-                val presentation = if (file["presentation"] == "round") "round" else "file"
-                val waveform = file["waveform"].orEmpty().split(",").mapNotNull { it.toDoubleOrNull() }.take(64).map { it / 31 }
+                val presentation = mediaPresentation(file["presentation"], input.mediaType)
+                val waveform = mediaWaveform(file["waveform"])
                 val request = MessageDraftAttachmentFileRequestFfi(
                   "$token:${inputs.size}:$index:$presentation", input.sourcePath, input.expectedSize,
                   input.fileName, input.mediaType, input.dim, input.thumbhash,
-                  file["duration"]?.toDoubleOrNull(), waveform,
+                  mediaDuration(file["duration"]), waveform,
                 )
                 val next = active.kit.stageMessageDraftAttachmentFile(active.account, draft.revision, request, control)
                 draft.destroy()
@@ -406,7 +419,11 @@ class BoopMarmotModule : Module() {
           selected.destroy()
           throw problem("MediaDraftPending")
         }
-        val tags = reply?.let { id -> listOf(listOf("e", id, "", "reply")) } ?: emptyList()
+        val tags = inputs.mapIndexed { index, input ->
+          val file = files[index]
+          mediaMetadata(index, input.expectedSize ?: throw problem("InvalidMediaPath"), mediaDuration(file["duration"]), mediaWaveform(file["waveform"]),
+            mediaPresentation(file["presentation"], input.mediaType))
+        } + reply?.let { id -> listOf(listOf("e", id, "", "reply")) }.orEmpty()
         MediaFileTransferControlFfi().use { control ->
           synchronized(uploads) {
             if (uploads.containsKey(token)) throw problem("TransferInProgress")
@@ -430,7 +447,10 @@ class BoopMarmotModule : Module() {
                 } else {
                   val result = active.kit.uploadMessageDraftAttachments(active.account, selected.revision, draftFiles.map { it.id }, server, control)
                   if (control.isCancelled()) throw problem("MediaCancelled")
-                  val accepted = active.kit.sendMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, token)
+                  val metadata = draftFiles.mapIndexed { index, item ->
+                    mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples, item.id.substringAfterLast(":"))
+                  }
+                  val accepted = active.kit.sendTaggedMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, metadata, token)
                   accepted.messageIdHex to result
                 }
                 mapOf("id" to id, "blobs" to uploaded.attachments.mapNotNull { item ->
@@ -456,18 +476,38 @@ class BoopMarmotModule : Module() {
     AsyncFunction("cancelUpload") Coroutine { token: String ->
       synchronized(uploads) { uploads[token]?.also { it.cancel() } != null }
     }
-    AsyncFunction("makeVideoPoster") Coroutine { path: String ->
+    AsyncFunction("inspectMediaFile") Coroutine { path: String, image: Boolean, poster: Boolean ->
       protocol {
         val context = appContext.reactContext ?: throw problem("ContextUnavailable")
         val base = File(context.applicationInfo.dataDir).canonicalFile
         val file = File(path).canonicalFile
         if (!file.toPath().startsWith(base.toPath()) || !file.isFile) throw problem("InvalidMediaPath")
-        val thumbnail = ThumbnailUtils.createVideoThumbnail(file, Size(144, 144), null)
+        if (image) {
+          val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+          BitmapFactory.decodeFile(file.path, options)
+          val rotates = runCatching {
+            ExifInterface(file.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) in 5..8
+          }.getOrDefault(false)
+          return@protocol mapOf("dimensions" to if (rotates) dimensions(options.outHeight, options.outWidth)
+            else dimensions(options.outWidth, options.outHeight))
+        }
+        val metadata = MediaMetadataRetriever().use { reader ->
+          reader.setDataSource(file.path)
+          val width = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+          val height = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+          val rotate = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION) in setOf("90", "270")
+          val duration = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.takeIf { it > 0 }
+          mapOf("dimensions" to if (rotate) dimensions(height, width) else dimensions(width, height),
+            "duration" to duration?.div(1000.0))
+        }
+        if (!poster) return@protocol metadata
+        val thumbnail = runCatching { ThumbnailUtils.createVideoThumbnail(file, Size(144, 144), null) }.getOrNull()
+          ?: return@protocol metadata
         try {
           val output = File.createTempFile("marmot-poster-", ".jpg", context.cacheDir)
           try {
             output.outputStream().use { if (!thumbnail.compress(Bitmap.CompressFormat.JPEG, 75, it)) throw problem("MediaUnavailable") }
-            output.canonicalPath
+            metadata + ("path" to output.canonicalPath)
           } catch (error: Exception) {
             output.delete()
             throw error
@@ -665,6 +705,9 @@ class BoopMarmotModule : Module() {
     }
     OnDestroy { observer.launch { shutdown(); observer.cancel() } }
   }
+
+  private fun dimensions(width: Int, height: Int): String? =
+    if (width > 0 && height > 0) "${width}x$height" else null
 
   private fun uploadInputs(files: List<Map<String, String>>): List<MediaFileUploadAttachmentRequestFfi> {
     val context = appContext.reactContext ?: throw problem("ContextUnavailable")

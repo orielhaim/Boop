@@ -103,17 +103,25 @@ class MarmotRelayTest {
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
         carol.receives(group, alice.key, "hello group")
-        val announcement = """{"version":1,"call":"fixture-call"}"""
-        alice.kit.sendCustomEvent(alice.key, group, 24884uL, emptyList(), announcement)
-        carol.receives(group, alice.key, announcement)
-        val presenceWindow = ConversationWindow(carol.kit.openConversationWindow(
-          carol.key, group, ConversationOpenModeFfi.LATEST, null, 30u, 15_000u
-        ))
+        val announcement = """{"version":2,"call":"fixture-call"}"""
+        val kinds = listOf(24884uL)
+        val previewBefore = carol.kit.chatList(carol.key, false).single { it.groupIdHex == group }
+        val presenceWindow = GroupCallWindow("fixture", carol.kit.subscribeMessages(carol.key, group, 64u, kinds)) {
+          carol.kit.messages(carol.key, group, 64u, kinds)
+        }
         try {
-          val rows = presenceWindow.initial()?.get("messages") as? List<*>
+          assertEquals(emptyList<Any>(), presenceWindow.initial()["announcements"])
+          alice.kit.sendCustomEvent(alice.key, group, 24884uL, emptyList(), announcement)
+          val update = withTimeout(15_000) { presenceWindow.next() }
+          val rows = update?.get("announcements") as? List<*>
           assertTrue(rows.orEmpty().filterIsInstance<Map<*, *>>().any {
-            it["eventKind"] == 24884 && it["sender"] == alice.key && it["text"] == announcement
+            it["sender"] == alice.key && it["text"] == announcement
           })
+          val latest = carol.kit.timelineMessages(carol.key, latestTimeline(group))
+          assertEquals("hello group", latest.messages.single().plaintext)
+          val previewAfter = carol.kit.chatList(carol.key, false).single { it.groupIdHex == group }
+          assertEquals(previewBefore.lastMessage?.messageIdHex, previewAfter.lastMessage?.messageIdHex)
+          assertEquals(previewBefore.unreadCount, previewAfter.unreadCount)
         } finally {
           presenceWindow.stop()
         }
@@ -350,7 +358,7 @@ class MarmotRelayTest {
     val caption = "Encrypted document fixture"
     val request = MediaFileUploadRequestFfi(
       listOf(MediaFileUploadAttachmentRequestFfi(path.canonicalPath, path.length().toULong(), path.name, "text/plain", null, null)),
-      caption, true, blossom,
+      caption, true, blossom, listOf(mediaMetadata(0, path.length().toULong(), null, emptyList(), "file")),
     )
     val sent = MediaFileTransferControlFfi().use {
       sender.kit.uploadMediaFilesWithClientToken(sender.key, group, request, it, "fixture-media")
@@ -360,6 +368,8 @@ class MarmotRelayTest {
     val row = recipient.kit.timelineMessages(recipient.key, TimelineMessageQueryFfi(group, caption, null, null, null,
       cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 30u)).messages.single()
     val attachment = row.media.single() as MediaAttachmentOutcomeFfi.Accepted
+    assertEquals(listOf("boop-media", "0", payload.size.toString(), "", "", "file"),
+      row.tags.single { it.values.first() == "boop-media" }.values)
     assertEquals(EncryptedMediaVersionFfi.V2, attachment.reference.version)
     assertNotEquals(attachment.reference.plaintextSha256, attachment.reference.ciphertextSha256)
     val target = AttachmentLocalTargetFfi(row.messageIdHex, checkNotNull(row.sourceMessageIdHex), attachment.attachmentIndex)
@@ -400,28 +410,50 @@ class MarmotRelayTest {
     }
     if (fixture) assertEquals(afterDownload, fixtureCall("stats"))
     val draftToken = "fixture-resumed-upload"
-    val draftAttachment = "fixture-retained-draft"
+    val voice = File(sender.directory, "fixture-voice.m4a").apply { writeBytes("voice fixture".toByteArray()) }
+    val video = File(sender.directory, "arbitrary-filename.mp4").apply { writeBytes("round fixture".toByteArray()) }
+    val draftIds = listOf("$draftToken:2:0:voice", "$draftToken:2:1:round")
+    val duration = 3.5
+    val waveform = listOf(0.0, 15.0 / 31, 1.0)
     val selected = sender.kit.selectedMessageDraft(sender.key, group)
     val updated = try {
       sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Resumed upload", row.messageIdHex, emptyList())
     } finally { selected.destroy() }
     try {
       MediaFileTransferControlFfi().use { control ->
-        sender.kit.stageMessageDraftAttachmentFile(sender.key, updated.revision,
-          MessageDraftAttachmentFileRequestFfi(draftAttachment, path.canonicalPath, path.length().toULong(),
-            path.name, "text/plain", null, null, null, emptyList()), control).destroy()
+        val first = sender.kit.stageMessageDraftAttachmentFile(sender.key, updated.revision,
+          MessageDraftAttachmentFileRequestFfi(draftIds[0], voice.canonicalPath, voice.length().toULong(),
+            voice.name, "audio/mp4", null, null, duration, waveform), control)
+        try {
+          sender.kit.stageMessageDraftAttachmentFile(sender.key, first.revision,
+            MessageDraftAttachmentFileRequestFfi(draftIds[1], video.canonicalPath, video.length().toULong(),
+              video.name, "video/mp4", "720x720", null, 5.0, emptyList()), control).destroy()
+        } finally { first.destroy() }
       }
     } finally { updated.destroy() }
     assertTrue(path.delete())
+    assertTrue(voice.delete())
+    assertTrue(video.delete())
     sender.close()
     sender.start()
     val resumed = sender.kit.selectedMessageDraft(sender.key, group)
     val accepted = try {
-      assertEquals(draftAttachment, resumed.draft?.mediaAttachments?.single()?.id)
-      val prepared = MediaFileTransferControlFfi().use { control ->
-        sender.kit.uploadMessageDraftAttachments(sender.key, resumed.revision, listOf(draftAttachment), blossom, control)
+      val files = checkNotNull(resumed.draft?.mediaAttachments)
+      assertEquals(draftIds, files.map { it.id })
+      MediaFileTransferControlFfi().use { cancelled ->
+        cancelled.cancel()
+        val cancelledUpload = runCatching {
+          sender.kit.uploadMessageDraftAttachments(sender.key, resumed.revision, draftIds, blossom, cancelled)
+        }
+        assertTrue(cancelledUpload.isFailure)
       }
-      sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, prepared.attachments.map { it.reference }, draftToken)
+      val prepared = MediaFileTransferControlFfi().use { control ->
+        sender.kit.uploadMessageDraftAttachments(sender.key, resumed.revision, draftIds, blossom, control)
+      }
+      val tags = files.mapIndexed { index, file ->
+        mediaMetadata(index, file.plaintextSize, file.durationSeconds, file.waveformSamples, file.id.substringAfterLast(":"))
+      }
+      sender.kit.sendTaggedMessageDraftWithClientToken(sender.key, resumed.revision, prepared.attachments.map { it.reference }, tags, draftToken)
     } finally { resumed.destroy() }
     assertNotNull(sender.kit.localSendStatus(sender.key, group, draftToken))
     val consumed = sender.kit.selectedMessageDraft(sender.key, group)
@@ -429,7 +461,21 @@ class MarmotRelayTest {
     recipient.receives(group, sender.key, "Resumed upload")
     val delivered = recipient.kit.messages(recipient.key, group, 25u, null).filter { it.plaintext == "Resumed upload" }
     assertEquals(listOf(accepted.messageIdHex), delivered.map { it.messageIdHex })
+    recipient.close()
+    recipient.start()
+    val persisted = recipient.kit.timelineMessages(recipient.key,
+      latestTimeline(group, "Resumed upload")).messages.single()
+    assertEquals(listOf(
+      listOf("boop-media", "0", "13", "3.5", "0,15,31", "voice"),
+      listOf("boop-media", "1", "13", "5.0", "", "round"),
+    ), persisted.tags.filter { it.values.first() == "boop-media" }.map { it.values })
+    assertEquals(row.messageIdHex, persisted.replyToMessageIdHex)
+    assertEquals("arbitrary-filename.mp4", (persisted.media[1] as MediaAttachmentOutcomeFfi.Accepted).reference.fileName)
   }
+
+  private fun latestTimeline(group: String, search: String? = null) =
+    TimelineMessageQueryFfi(group, search, null, null, null,
+      cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 1u)
 
   private class Client(val directory: File, private val relay: String, private val blossom: String?) {
     private val store = MemorySecretStore()

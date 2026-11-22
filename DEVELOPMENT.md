@@ -34,7 +34,7 @@ adb reverse tcp:19310 tcp:19310
 ./gradlew :boop-marmot:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64 -Pandroid.testInstrumentationRunnerArguments.relay=ws://127.0.0.1:19310
 ```
 
-For the media test, start `bun scripts/marmot-test-blossom.ts` and forward its printed port to the emulator. Pass that origin with `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The loopback fixture counts binary requests and pauses an explicit download so the test can cancel and retry it. The suite also checks encrypted draft recovery and cache access after restart. Only the instrumentation account enables loopback blobs.
+For the media test, start `bun scripts/marmot-test-blossom.ts` and forward its printed port to the emulator. Pass that origin with `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The loopback fixture counts binary requests and pauses an explicit download so the test can cancel and retry it. The suite also checks multi-attachment metadata after encrypted draft recovery and restart, and verifies that call announcements leave timeline page size, unread counts, and previews unchanged. Only the instrumentation account enables loopback blobs.
 
 An authorized HTTPS Blossom endpoint also exercises the encrypted group-image round trip. Test identities, credentials, and native stores are independent of the app. On PowerShell, quote each `-Pandroid.testInstrumentationRunnerArguments.*` argument.
 
@@ -48,11 +48,11 @@ The enabled discovery relays are configured as MarmotKit directory indexers as w
 
 Received message attachments use MarmotKit's host-managed acquisition policy. Chat Kit renders local ThumbHash previews and leases verified files for playback or export. Download and Cancel drive the native attachment job. A gallery may open retained files from its loaded window.
 
-The composer stages attachments in MDK's encrypted draft store. Retry uses the staged files and original client token, including after a restart. A partial batch from an interrupted copy can be discarded. MDK owns delivery after admission. Forwarding uses the same configured servers and only reads retained files from the source message.
+The composer stages attachments in MDK's encrypted draft store. Retry uses the staged files and original client token, including after a restart. MDK builds the Marmot encrypted-media-v2 `imeta` entries in attachment order. An application tag for each entry adds size, duration, waveform, and the voice or round-video presentation type when applicable. The caption and reply stay in the same encrypted event. Forwarding uses the same configured servers and reads retained files from the source message.
 
 Boop checks enabled attachment origins in order with a signed BUD-06 request. Unsupported preflight permits an upload attempt. A confirmed upload-stage failure can advance to the next origin. An uncertain admission stops the attempt and leaves retry to the saved draft and its token. The optional BUD-04 mirror copies the published ciphertext after admission and checks the returned hash and size. MDK's 0.18.0 references contain the primary locator, so the mirror is a backup copy. Profile photo upload and link previews use the separate Boop media path.
 
-Connected group participants send expiring, group-encrypted call announcements with their current roster. A member can use **Join** in the conversation or Group Details to request a seat from a participant. Invites and join requests use kind `24880` over the dedicated encrypted Nostr transport. Trystero authenticates peers and checks current membership before sending microphone audio. First-contact calls use the same independent signaling path.
+Group members can start a call from Group Details before anyone else joins. The coordinator publishes group-encrypted updates at start, on routing changes, and at end. A long call renews its 30-minute lease after 25 minutes. Members see the call in the conversation and Group Details through a separate MDK subscription. **Join** checks current membership and requests a seat through encrypted kind `24880` signaling, trying another announced participant if needed. A sole remaining participant keeps the same call open for others to join. Trystero authenticates peers and checks membership before sending microphone audio. First-contact calls use the same independent signaling path.
 
 Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone. Messaging Backup is opt-in and restores available history only into conversations the device already belongs to.
 
@@ -68,4 +68,8 @@ Open Later uses the vendored `tlock-js` 1.0.0 build from [upstream PR #52](https
 
 ## MarmotKit release inputs
 
-The Android and iOS builds fetch the pinned MarmotKit 0.18.0 archive into `modules/boop-marmot/sdk`. The fetch script verifies the archive checksum and source commit. To prepare the inputs manually, run `bun scripts/fetch-marmotkit.ts android` or `bun scripts/fetch-marmotkit.ts ios`. The CocoaPods integration bundles the SDK privacy manifest and requires iOS 18 or later. See the [0.18.0 distribution guide](https://github.com/marmot-protocol/mdk/blob/v0.18.0/crates/marmot-uniffi/DISTRIBUTION.md).
+Boop builds MarmotKit from the pinned MDK 0.18.0 commit. The local patch retains message tags on durable sends and keeps Boop call control events out of timeline queries. The build generates matching UniFFI bindings and caches the outputs under `modules/boop-marmot/sdk`. Gradle builds the selected ABIs. CocoaPods prepares the XCFramework and bundles the SDK privacy manifest.
+
+Install Rust through rustup and the platform's native toolchain. The source checkout selects Rust 1.97.1 and requires Odin dev-2026-10 at `84bc3fc`. On Windows, use Visual Studio C++ build tools and add MSYS2 `make` and `perl` to PATH for SQLCipher. Set `ODIN` to the Odin executable and `ANDROID_NDK_HOME` to the installed NDK if needed. On macOS and Linux, the build script can install Odin using MDK's checksum-verified installer.
+
+To prepare the SDK directly, run `bun scripts/fetch-marmotkit.ts android x86_64` for an x86_64 emulator, or omit the ABI to build all Android ABIs. On macOS with Xcode, run `bun scripts/fetch-marmotkit.ts ios`. See the [0.18.0 distribution guide](https://github.com/marmot-protocol/mdk/blob/v0.18.0/crates/marmot-uniffi/DISTRIBUTION.md).

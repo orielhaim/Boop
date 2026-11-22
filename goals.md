@@ -7,3 +7,8 @@
 - Keep encrypted kind `24880` calling independent of chat. Preserve first-contact calls, authenticated Trystero/WebRTC, conference capacity and selective video. Use current Marmot membership to authorize group-call invitations.
 - Add native device linking, supported history recovery, and honest account, relay, and storage diagnostics. Preserve the separate contact, request, block, and call policies.
 - Remove the legacy messaging engine, schemas, and unused dependencies. Refresh project documentation. Verify the real relay, recovery, persistence, media, calling, and native build paths. Record any environment restrictions on verification.
+
+## PR #2 follow-up
+
+- Let members start, discover, and join group calls through a separate MLS announcement stream. Keep kind `24880` as the call negotiation transport. Verify stale routes, coordinator handoff, group membership, and capacity.
+- Keep attachment presentation metadata, caption, and reply in the original encrypted media event. Verify encrypted draft retries, restart recovery, and explicit-download privacy.

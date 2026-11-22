@@ -1,0 +1,469 @@
+diff --git a/crates/marmot-app/src/local_submissions.rs b/crates/marmot-app/src/local_submissions.rs
+index 295ebbb..5db0b83 100644
+--- a/crates/marmot-app/src/local_submissions.rs
++++ b/crates/marmot-app/src/local_submissions.rs
+@@ -96,6 +96,8 @@ pub(crate) struct LocalMessageRequest {
+     pub content: String,
+     pub reply_to: Option<String>,
+     pub attachments: Vec<MediaAttachmentReference>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub message_tags: Vec<Vec<String>>,
+ }
+ 
+ #[derive(Serialize, Deserialize)]
+@@ -132,7 +134,7 @@ impl LocalMessageRequest {
+             AppMessageIntent::Media {
+                 attachments: self.attachments.clone(),
+                 caption: Some(self.content.clone()),
+-                message_tags: Vec::new(),
++                message_tags: self.message_tags.clone(),
+             }
+         } else if let Some(target) = &self.reply_to {
+             AppMessageIntent::Reply {
+diff --git a/crates/marmot-app/src/runtime/local_submissions.rs b/crates/marmot-app/src/runtime/local_submissions.rs
+index 7e95d21..9753267 100644
+--- a/crates/marmot-app/src/runtime/local_submissions.rs
++++ b/crates/marmot-app/src/runtime/local_submissions.rs
+@@ -68,6 +68,12 @@ impl MarmotAppRuntime {
+             let send = request.send;
+             request.send = false;
+             let caption = request.caption.clone();
++            let message_tags = request
++                .message_tags
++                .iter()
++                .filter(|tag| !matches!(tag.first().map(String::as_str), Some("e" | "q")))
++                .cloned()
++                .collect();
+             let upload = runtime.upload_media(&account, &group, request).await?;
+             runtime
+                 .admit_uploaded_media(
+@@ -77,6 +83,7 @@ impl MarmotAppRuntime {
+                     send,
+                     caption,
+                     reply_to,
++                    message_tags,
+                     client_token,
+                     None,
+                 )
+@@ -114,6 +121,12 @@ impl MarmotAppRuntime {
+             let send = request.send;
+             request.send = false;
+             let caption = request.caption.clone();
++            let message_tags = request
++                .message_tags
++                .iter()
++                .filter(|tag| !matches!(tag.first().map(String::as_str), Some("e" | "q")))
++                .cloned()
++                .collect();
+             let upload = runtime
+                 .upload_media_files(&account, &group, request, control.clone())
+                 .await?;
+@@ -125,6 +138,7 @@ impl MarmotAppRuntime {
+                     send,
+                     caption,
+                     reply_to,
++                    message_tags,
+                     client_token,
+                     Some(control),
+                 )
+@@ -146,6 +160,7 @@ impl MarmotAppRuntime {
+         send: bool,
+         caption: Option<String>,
+         reply_to: Option<String>,
++        message_tags: Vec<Vec<String>>,
+         client_token: String,
+         control: Option<Arc<crate::MediaFileTransferControl>>,
+     ) -> Result<(MediaUploadResult, Option<crate::LocalSendAcceptance>), AppError> {
+@@ -155,7 +170,7 @@ impl MarmotAppRuntime {
+         let submission = match control.as_ref().map(|control| control.check()) {
+             Some(Err(cancelled)) => Err(cancelled),
+             _ => {
+-                self.submit_media_attachments(
++                self.submit_tagged_media_attachments(
+                     account,
+                     group,
+                     upload
+@@ -165,6 +180,7 @@ impl MarmotAppRuntime {
+                         .collect(),
+                     caption,
+                     reply_to,
++                    message_tags,
+                     client_token,
+                 )
+                 .await
+@@ -234,12 +250,35 @@ impl MarmotAppRuntime {
+     /// and adds the shared builder's `e` and `q` tags alongside attachment tags.
+     /// This method never reads, consumes, or changes the composer draft.
+     pub async fn submit_media_attachments(
++        &self,
++        account: &str,
++        group: &GroupId,
++        attachments: Vec<MediaAttachmentReference>,
++        caption: Option<String>,
++        reply_to_message_id: Option<String>,
++        client_token: String,
++    ) -> Result<crate::LocalSendAcceptance, AppError> {
++        self.submit_tagged_media_attachments(
++            account,
++            group,
++            attachments,
++            caption,
++            reply_to_message_id,
++            vec![],
++            client_token,
++        )
++        .await
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    async fn submit_tagged_media_attachments(
+         &self,
+         account: &str,
+         group: &GroupId,
+         attachments: Vec<MediaAttachmentReference>,
+         caption: Option<String>,
+         mut reply_to_message_id: Option<String>,
++        message_tags: Vec<Vec<String>>,
+         client_token: String,
+     ) -> Result<crate::LocalSendAcceptance, AppError> {
+         if let Some(target) = reply_to_message_id.as_mut() {
+@@ -253,6 +292,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content: caption.unwrap_or_default(),
+                 reply_to: reply_to_message_id,
++                message_tags,
+                 attachments,
+             },
+             None,
+@@ -281,6 +321,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content: caption.unwrap_or_default(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments,
+             },
+             consuming_draft.map(LocalDraftAdmission::ConsumeIfCurrent),
+@@ -307,6 +348,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content: text,
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -330,6 +372,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content: text,
+                 reply_to: Some(target),
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -345,6 +388,26 @@ impl MarmotAppRuntime {
+         revision: crate::MessageDraftRevision,
+         attachments: Vec<MediaAttachmentReference>,
+         client_token: String,
++    ) -> Result<crate::LocalSendAcceptance, AppError> {
++        self.submit_tagged_message_draft(
++            account,
++            group,
++            revision,
++            attachments,
++            vec![],
++            client_token,
++        )
++        .await
++    }
++
++    pub async fn submit_tagged_message_draft(
++        &self,
++        account: &str,
++        group: &GroupId,
++        revision: crate::MessageDraftRevision,
++        attachments: Vec<MediaAttachmentReference>,
++        message_tags: Vec<Vec<String>>,
++        client_token: String,
+     ) -> Result<crate::LocalSendAcceptance, AppError> {
+         self.submit_local_message(
+             account,
+@@ -353,6 +416,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content: String::new(),
+                 reply_to: None,
++                message_tags,
+                 attachments,
+             },
+             Some(LocalDraftAdmission::Source(revision)),
+@@ -378,6 +442,7 @@ impl MarmotAppRuntime {
+             LocalMessageRequest {
+                 content,
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+diff --git a/crates/marmot-app/src/tests/conversation_cold_open/local_submissions.rs b/crates/marmot-app/src/tests/conversation_cold_open/local_submissions.rs
+index 08c71b1..199ceb4 100644
+--- a/crates/marmot-app/src/tests/conversation_cold_open/local_submissions.rs
++++ b/crates/marmot-app/src/tests/conversation_cold_open/local_submissions.rs
+@@ -98,6 +98,7 @@ async fn durable_admission_is_atomic_correlated_and_retry_stable() {
+     let request = LocalMessageRequest {
+         content: String::new(),
+         reply_to: None,
++        message_tags: vec![],
+         attachments: vec![],
+     };
+     let (first, update) = h
+@@ -151,6 +152,7 @@ async fn durable_admission_is_atomic_correlated_and_retry_stable() {
+     let changed = LocalMessageRequest {
+         content: "different".into(),
+         reply_to: None,
++        message_tags: vec![],
+         attachments: vec![],
+     };
+     assert!(
+@@ -172,6 +174,7 @@ async fn durable_admission_is_atomic_correlated_and_retry_stable() {
+             LocalMessageRequest {
+                 content: String::new(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             Some(newer_draft.revision.clone()),
+@@ -210,6 +213,7 @@ async fn durable_admission_is_atomic_correlated_and_retry_stable() {
+             LocalMessageRequest {
+                 content: "same text".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -315,6 +319,7 @@ async fn pending_edit_requires_an_existing_local_original() {
+             LocalMessageRequest {
+                 content: "revision".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -346,6 +351,7 @@ async fn rapid_edit_limit_reports_a_stable_retryable_error() {
+             LocalMessageRequest {
+                 content: "original".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -361,6 +367,7 @@ async fn rapid_edit_limit_reports_a_stable_retryable_error() {
+             LocalMessageRequest {
+                 content: format!("revision {revision}"),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -392,6 +399,7 @@ async fn multiple_rapid_pending_edits_survive_restart_and_target_the_original_se
+             LocalMessageRequest {
+                 content: "before revision".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -407,6 +415,7 @@ async fn multiple_rapid_pending_edits_survive_restart_and_target_the_original_se
+             LocalMessageRequest {
+                 content: "after revision".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -422,6 +431,7 @@ async fn multiple_rapid_pending_edits_survive_restart_and_target_the_original_se
+             LocalMessageRequest {
+                 content: "latest revision".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -542,6 +552,7 @@ async fn rejected_original_cannot_publish_a_retained_pending_edit() {
+             LocalMessageRequest {
+                 content: "not accepted".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -556,6 +567,7 @@ async fn rejected_original_cannot_publish_a_retained_pending_edit() {
+             LocalMessageRequest {
+                 content: "must not publish".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -683,6 +695,7 @@ async fn durable_admission_is_drained_by_a_new_worker() {
+             LocalMessageRequest {
+                 content: "retained before worker startup".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -766,6 +779,7 @@ async fn durable_admission_is_drained_by_a_new_worker() {
+             LocalMessageRequest {
+                 content: "retained before worker startup".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -782,6 +796,7 @@ async fn rejected_submission_requires_a_new_token_after_restart() {
+     let request = LocalMessageRequest {
+         content: "rejected attempt".into(),
+         reply_to: None,
++        message_tags: vec![],
+         attachments: vec![],
+     };
+     let (accepted, _) = h
+@@ -859,6 +874,7 @@ async fn completion_write_failure_does_not_stall_later_submissions() {
+                     LocalMessageRequest {
+                         content: format!("queued message {i}"),
+                         reply_to: None,
++                        message_tags: vec![],
+                         attachments: vec![],
+                     },
+                     None,
+@@ -969,6 +985,7 @@ fn prepared_media_snapshot_fixture(
+         LocalMessageRequest {
+             content: "caption".into(),
+             reply_to: None,
++            message_tags: vec![],
+             attachments: references,
+         },
+     )
+@@ -1356,6 +1373,7 @@ async fn retained_edit_of_a_deleted_message_is_refused_at_admission() {
+             LocalMessageRequest {
+                 content: "original".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+@@ -1401,6 +1419,7 @@ async fn retained_edit_of_a_deleted_message_is_refused_at_admission() {
+             LocalMessageRequest {
+                 content: "revision".into(),
+                 reply_to: None,
++                message_tags: vec![],
+                 attachments: vec![],
+             },
+             None,
+diff --git a/crates/marmot-uniffi/src/commands/local_submissions.rs b/crates/marmot-uniffi/src/commands/local_submissions.rs
+index 023e8a0..ceb647d 100644
+--- a/crates/marmot-uniffi/src/commands/local_submissions.rs
++++ b/crates/marmot-uniffi/src/commands/local_submissions.rs
+@@ -121,6 +121,29 @@ impl Marmot {
+             .into())
+     }
+ 
++    /// Atomically consume the draft and admit its media with app tags.
++    pub async fn send_tagged_message_draft_with_client_token(
++        &self,
++        account_ref: String,
++        revision: Arc<MessageDraftRevisionFfi>,
++        attachments: Vec<MediaAttachmentReferenceFfi>,
++        message_tags: Vec<Vec<String>>,
++        client_token: String,
++    ) -> Result<LocalSendAcceptanceFfi, MarmotKitError> {
++        Ok(self
++            .runtime
++            .submit_tagged_message_draft(
++                &account_ref,
++                &group_id_from_hex(revision.inner.group_id_hex())?,
++                revision.inner.clone(),
++                attachments.into_iter().map(Into::into).collect(),
++                message_tags,
++                client_token,
++            )
++            .await?
++            .into())
++    }
++
+     /// Admit an immutable ordinary-media snapshot and consume only its unchanged captured draft.
+     /// Keep the original token/revision for live retries; recover ownership by token after restart.
+     pub async fn send_prepared_media_with_client_token(
+diff --git a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
+index 11fbcde..65ae5f3 100644
+--- a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
++++ b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
+@@ -52,6 +52,26 @@ extension BlockListSubscription {
+   }
+ }
+ 
++extension MessagesSubscription {
++  public func nextCancellable() async throws -> MessageUpdateFfi? {
++    try Task.checkCancellation()
++    return try await cancellableProjectionNext(
++      uniffi_marmot_uniffi_fn_method_messagessubscription_next(uniffiClonePointer()),
++      read: FfiConverterTypeMessageUpdateFfi.read
++    )
++  }
++}
++
++extension GroupStateSubscription {
++  public func nextCancellable() async throws -> AppGroupRecordFfi? {
++    try Task.checkCancellation()
++    return try await cancellableProjectionNext(
++      uniffi_marmot_uniffi_fn_method_groupstatesubscription_next(uniffiClonePointer()),
++      read: FfiConverterTypeAppGroupRecordFfi.read
++    )
++  }
++}
++
+ private func cancellableProjectionNext<Value>(
+   _ handle: UInt64,
+   read: (inout (data: Data, offset: Data.Index)) throws -> Value
+diff --git a/crates/storage-sqlite/src/app/timeline.rs b/crates/storage-sqlite/src/app/timeline.rs
+index 7bd99a2..ce58772 100644
+--- a/crates/storage-sqlite/src/app/timeline.rs
++++ b/crates/storage-sqlite/src/app/timeline.rs
+@@ -2460,6 +2460,9 @@ fn project_single_message_timeline_tx(
+         | MARMOT_APP_EVENT_KIND_REPORT
+         | MARMOT_APP_EVENT_KIND_REVIEW
+         | MARMOT_APP_EVENT_KIND_REMOVE => return Ok(None),
++        // Boop control events remain accessible through the filtered raw
++        // messages API. They must never occupy a timeline position.
++        24884 | 24885 => return Ok(None),
+         _ => timeline_row_from_custom_event(&event),
+     };
+ 
+@@ -3958,7 +3961,7 @@ fn timeline_order_cursor_tx(
+             "SELECT source_message_id_hex, source_epoch, invalidation_status,
+                     kind, timeline_at, message_id_hex
+              FROM visible_message_timeline
+-             WHERE group_id_hex = ?1 AND message_id_hex = ?2",
++             WHERE group_id_hex = ?1 AND message_id_hex = ?2 AND kind NOT IN (24884, 24885)",
+             params![group_id_hex, message_id_hex],
+             |row| {
+                 Ok((
+@@ -4067,7 +4070,7 @@ fn timeline_query_sql(
+     } else {
+         "message_timeline"
+     };
+-    let mut clauses = Vec::new();
++    let mut clauses = vec!["timeline.kind NOT IN (24884, 24885)".to_owned()];
+     let mut params = Vec::new();
+     if let Some(group_id_hex) = &query.group_id_hex {
+         clauses.push("timeline.group_id_hex = ?".to_owned());
+diff --git a/crates/storage-sqlite/src/app/timeline/opening.rs b/crates/storage-sqlite/src/app/timeline/opening.rs
+index e4133d9..35458ba 100644
+--- a/crates/storage-sqlite/src/app/timeline/opening.rs
++++ b/crates/storage-sqlite/src/app/timeline/opening.rs
+@@ -391,6 +391,7 @@ fn neighbor_key(
+     };
+     let sql = format!("SELECT timeline_order_class, timeline_order_primary, timeline_order_phase, timeline_order_at, message_id_hex
+         FROM visible_message_timeline AS timeline WHERE group_id_hex = ? AND
++          timeline.kind NOT IN (24884, 24885) AND
+         (timeline_order_class, timeline_order_primary, timeline_order_phase, timeline_order_at, message_id_hex) {op} (?, ?, ?, ?, ?)
+         {order} LIMIT 1");
+     let mut values = vec![rusqlite::types::Value::Text(group.to_owned())];

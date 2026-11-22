@@ -48,7 +48,6 @@ import {
 } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useAvatar } from "@/core/avatars/use-avatar";
-import { groupCallKind } from "@/core/calling/group-presence";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
 import {
@@ -69,10 +68,7 @@ import {
   type MarmotMessage,
   type MarmotUpload,
 } from "@/core/marmot/native";
-import {
-  applyAttachmentMetadata,
-  pendingMediaDraft,
-} from "@/core/marmot/media-send";
+import { pendingMediaDraft } from "@/core/marmot/media-send";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { contactByKey } from "@/db/queries";
 import { removeOpenedMessage } from "@/db/open-later";
@@ -289,10 +285,7 @@ export function MarmotConversationScreen({
     : snapshot?.title ||
       (peer ? `${toNpub(peer).slice(0, 15)}…` : t("messages:marmot.group"));
   const deleted = t("messages:marmot.removedMessage");
-  const rows = useMemo(
-    () => snapshot && applyAttachmentMetadata(snapshot.messages),
-    [snapshot],
-  );
+  const rows = snapshot?.messages;
   const people = snapshot?.identities;
   const mentionRoster = useMentionMembers(
     id,
@@ -372,12 +365,7 @@ export function MarmotConversationScreen({
     const names = new Map(people?.map((person) => [person.id, person.name]));
     const user = (key: string) => ({ _id: key, name: names.get(key) });
     return (rows ?? [])
-      .filter(
-        (row) =>
-          row.eventKind !== groupCallKind &&
-          !blocked.has(row.sender) &&
-          !omitted.has(row.id),
-      )
+      .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
       .map((row): ChatMessage => ({
         _id: row.id,
         direction: row.sender === self ? "outgoing" : "incoming",
@@ -634,14 +622,33 @@ export function MarmotConversationScreen({
           files.map(async (file) => {
             signal.throwIfAborted();
             const video = file.type.startsWith("video/");
-            if (file.thumbhash || (!video && !file.type.startsWith("image/")))
-              return file;
+            const audio = file.type.startsWith("audio/");
+            const imageFile = file.type.startsWith("image/");
+            if (!video && !audio && !imageFile) return file;
             let poster: File | undefined;
+            let prepared = file;
             try {
-              if (video)
-                poster = new File(
-                  `file://${await marmot.makeVideoPoster(file.path)}`,
+              if (
+                video ||
+                (audio && !file.duration) ||
+                (imageFile && !file.dimensions)
+              ) {
+                const info = await marmot.inspectMediaFile(
+                  file.path,
+                  imageFile,
+                  video && !file.thumbhash,
                 );
+                if (info.path) poster = new File(`file://${info.path}`);
+                prepared = {
+                  ...file,
+                  dimensions: file.dimensions ?? info.dimensions ?? undefined,
+                  duration:
+                    file.duration ??
+                    (info.duration == null ? undefined : String(info.duration)),
+                };
+              }
+              signal.throwIfAborted();
+              if (file.thumbhash || (!imageFile && !poster)) return prepared;
               const image = await Image.loadAsync(
                 poster?.uri ?? `file://${file.path}`,
                 {
@@ -650,11 +657,12 @@ export function MarmotConversationScreen({
                 },
               );
               return {
-                ...file,
+                ...prepared,
                 thumbhash: await Image.generateThumbhashAsync(image),
               };
             } catch {
-              return file;
+              signal.throwIfAborted();
+              return prepared;
             } finally {
               try {
                 poster?.delete();
@@ -906,8 +914,8 @@ export function MarmotConversationScreen({
           {!peer && !searching && snapshot.canSend && (
             <MarmotActiveCall
               group={id}
-              messages={rows}
               members={mentionRoster.members}
+              canStart={false}
             />
           )}
           {upload && (
@@ -949,7 +957,7 @@ export function MarmotConversationScreen({
                       },
                       async () => ({
                         kind: "draft",
-                        attachments: pendingMedia.attachments,
+                        sizes: pendingMedia.sizes,
                       }),
                     )
                   }
@@ -1211,9 +1219,7 @@ export function MarmotConversationScreen({
                                 ? "round"
                                 : undefined;
                             if (item.duration && Number.isFinite(item.duration))
-                              file.duration = String(
-                                Math.max(1, Math.round(item.duration)),
-                              );
+                              file.duration = String(item.duration);
                             if (item.waveform?.length) {
                               const waveform = item.waveform;
                               const count = Math.min(waveform.length, 48);

@@ -173,13 +173,11 @@ export function MarmotInbox({
         (row.previewId &&
           chatPreferences.hidden(row.id).includes(row.previewId))
           ? undefined
-          : row.previewKind === 24884 || row.previewKind === 24885
-            ? undefined
-            : row.previewKind === 24881
-              ? t("messages:lockedMessage")
-              : row.previewKind === 24883
-                ? t("messages:marmot.locationPreview")
-                : (row.preview ?? undefined);
+          : row.previewKind === 24881
+            ? t("messages:lockedMessage")
+            : row.previewKind === 24883
+              ? t("messages:marmot.locationPreview")
+              : (row.preview ?? undefined);
       if (row.invited) {
         const inviter = inviters?.[row.id];
         if (inviter) {

@@ -95,9 +95,7 @@ export function parseCallSignal(
       data.senderKey === data.recipientKey ||
       data.createdAt !== envelope.sentAt ||
       (data.type === "call.rtc" && data.recovery && data.invitationId) ||
-      (data.type === "call.invite" &&
-        data.joinNonce &&
-        (!data.groupId || !data.conference)) ||
+      (data.type === "call.invite" && data.joinNonce && !data.groupId) ||
       (data.type === "call.invite" &&
         data.conference &&
         (!data.conference.roster.includes(data.senderKey) ||

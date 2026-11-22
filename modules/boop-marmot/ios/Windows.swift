@@ -2,6 +2,29 @@ import Foundation
 
 typealias Document = [String: Any]
 
+func mediaPresentation(_ kind: String?, _ mime: String) -> String {
+  if kind == "round", mime.lowercased().hasPrefix("video/") { return "round" }
+  if kind == "voice", mime.lowercased().hasPrefix("audio/") { return "voice" }
+  return "file"
+}
+
+func mediaDuration(_ value: String?) -> Double? {
+  guard let value, let duration = Double(value), duration.isFinite, duration > 0, duration <= 604_800 else { return nil }
+  return duration
+}
+
+func mediaWaveform(_ value: String?) -> [Double] {
+  (value ?? "").prefix(192).split(separator: ",").prefix(64).compactMap {
+    guard let level = Int($0), (0...31).contains(level) else { return nil }
+    return Double(level) / 31
+  }
+}
+
+func mediaMetadata(_ index: Int, _ size: UInt64, _ duration: Double?, _ waveform: [Double], _ kind: String) -> [String] {
+  ["boop-media", String(index), String(size), duration.map { String($0) } ?? "",
+    waveform.prefix(64).map { String(Int((min(1, max(0, $0)) * 31).rounded(.toNearestOrEven))) }.joined(separator: ","), kind]
+}
+
 func windowDelta(_ previous: Document, _ current: Document) -> Document? {
   let field: String
   switch current["kind"] as? String {
@@ -45,6 +68,7 @@ enum NativeWindow: Sendable {
   case conversation(ConversationWindowSubscription)
   case attention(AccountAttentionSubscription, String)
   case groupState(GroupStateWindow)
+  case groupCall(GroupCallWindow)
 
   func initial() -> Document? {
     switch self {
@@ -52,6 +76,7 @@ enum NativeWindow: Sendable {
     case .conversation(let handle): return handle.snapshot().map(project)
     case .attention(let handle, let account): return handle.snapshot().map { project($0, account) }
     case .groupState(let window): return window.initial()
+    case .groupCall(let window): return window.initial()
     }
   }
 
@@ -61,6 +86,7 @@ enum NativeWindow: Sendable {
     case .conversation(let handle): return try await handle.next().map(project)
     case .attention(let handle, let account): return try await handle.next().map { project($0, account) }
     case .groupState(let window): return try await window.next()
+    case .groupCall(let window): return try await window.next()
     }
   }
 
@@ -72,7 +98,7 @@ enum NativeWindow: Sendable {
     case .conversation(let handle):
       guard direction == "older" || direction == "newer" else { throw problem("InvalidDirection") }
       return project(try await handle.page(revision: revision, direction: direction == "older" ? .older : .newer, count: 40, timeoutMs: 0))
-    case .attention, .groupState: throw problem("InvalidWindow")
+    case .attention, .groupState, .groupCall: throw problem("InvalidWindow")
     }
   }
 
@@ -82,7 +108,7 @@ enum NativeWindow: Sendable {
       return project(try await handle.setVisibleAnchor(sequence: revision.sequence, groupIdHex: target))
     case .conversation(let handle):
       return project(try await handle.setVisibleAnchor(revision: revision, messageIdHex: target, timeoutMs: 0))
-    case .attention, .groupState: throw problem("InvalidWindow")
+    case .attention, .groupState, .groupCall: throw problem("InvalidWindow")
     }
   }
 
@@ -93,6 +119,35 @@ enum NativeWindow: Sendable {
 
   func cancel() async {
     if case .conversation(let handle) = self { await handle.cancel() }
+  }
+}
+
+final class GroupCallWindow: @unchecked Sendable {
+  private let generation: String
+  private let handle: MessagesSubscription
+  private let read: () throws -> [AppMessageRecordFfi]
+  // Only the window observer reads next(), and initial() runs before it starts.
+  private var sequence: UInt64 = 0
+
+  init(generation: String, handle: MessagesSubscription, read: @escaping () throws -> [AppMessageRecordFfi]) {
+    self.generation = generation
+    self.handle = handle
+    self.read = read
+  }
+
+  func initial() -> Document { project(handle.snapshot()) }
+
+  func next() async throws -> Document? {
+    guard try await handle.nextCancellable() != nil else { return nil }
+    sequence += 1
+    return project(try read())
+  }
+
+  private func project(_ rows: [AppMessageRecordFfi]) -> Document {
+    ["kind": "groupCall", "generation": generation, "sequence": String(sequence),
+      "hasMoreBefore": false, "hasMoreAfter": false,
+      "announcements": rows.filter { $0.plaintext.utf8.count <= 750 }.map { ["text": $0.plaintext, "sender": $0.sender,
+        "sentAt": Double($0.recordedAt), "invalidated": $0.invalidated] as Document }]
   }
 }
 
@@ -112,7 +167,7 @@ final class GroupStateWindow: @unchecked Sendable {
   }
 
   func next() async throws -> Document? {
-    try await handle.next().map { _ in current(advance: true) }
+    try await handle.nextCancellable().map { _ in current(advance: true) }
   }
 
   private func current(advance: Bool) -> Document {
@@ -201,15 +256,14 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "draft": bridgeValue(snapshot.draft.draft.map { draft in
       ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
         "attachments": draft.mediaAttachments.map { item -> Document in
-          ["id": item.id, "size": Double(item.plaintextSize), "duration": bridgeValue(item.durationSeconds),
-           "waveform": Array(item.waveformSamples.prefix(64))]
+          ["id": item.id, "size": Double(item.plaintextSize)]
         }]
     }),
     "identities": snapshot.identities.map { ["id": $0.accountIdHex, "name": $0.displayName] },
     "messages": snapshot.messages.compactMap { message -> Document? in
       let row = message.timeline
       let system = row.groupSystem.flatMap { $0.provenance == .authenticatedGroupState ? $0 : nil }
-      guard system != nil || row.poll != nil || [9, 1111, 24881, 24883, 24884, 24885].contains(row.kind) else { return nil }
+      guard system != nil || row.poll != nil || [9, 1111, 24881, 24883].contains(row.kind) else { return nil }
       return [
         "id": row.messageIdHex,
         "token": bridgeValue(row.clientToken),
@@ -225,15 +279,19 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         },
         "attachments": row.media.compactMap { outcome -> Document? in
           guard case .accepted(let index, let reference) = outcome, reference.version == .v2 else { return nil }
-          let tag = row.tags.first { $0.values.count == 6 && $0.values[0] == "boop-media" && UInt32($0.values[1]) == index }?.values
-          let duration = tag.flatMap { Int($0[3]) }.flatMap { (1...3600).contains($0) ? $0 : nil }
+          let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" && $0.values[1] == String(index) }
+          let tag = matches.count == 1 ? matches.first?.values : nil
+          let duration = mediaDuration(tag?[3])
+          let size = tag.flatMap { UInt64($0[2]) }.flatMap { (1...9007199254740991).contains($0) ? Double($0) : nil }
           let waveform = tag.map { value in Array(value[4].prefix(192).split(separator: ",").compactMap { token in
             Int(token).flatMap { (0...31).contains($0) ? $0 : nil }
           }.prefix(64)) }
           return ["index": Int(index), "name": reference.fileName, "type": reference.mediaType,
             "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
-            "size": bridgeValue(tag.flatMap { UInt64($0[2]).map(Double.init) }), "duration": bridgeValue(duration),
-            "waveform": bridgeValue(waveform), "round": tag?[5] == "round"]
+            "size": bridgeValue(size), "duration": bridgeValue(duration),
+            "waveform": bridgeValue(waveform),
+            "round": tag?[5] == "round" && reference.mediaType.hasPrefix("video/"),
+            "voice": tag?[5] == "voice" && reference.mediaType.hasPrefix("audio/")]
         },
         "sourceId": bridgeValue(row.sourceMessageIdHex),
         "poll": bridgeValue(row.poll.map { poll -> Document in

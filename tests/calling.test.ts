@@ -10,6 +10,7 @@ import {
 import {
   discoverGroupCall,
   groupCallAnnouncement,
+  groupCallLease,
 } from "../src/core/calling/group-presence";
 import {
   peerTranscript,
@@ -237,37 +238,40 @@ test("a group call rechecks Marmot membership before answering while first-conta
   }
 });
 
-test("group discovery expires and chooses another authenticated coordinator when one leaves", () => {
+test("group discovery accepts a solo lobby, switches coordinators, and expires the lease", () => {
   const now = 1_700_000_000_000;
   const call = id(99);
   const members = new Set([caller.pubkey, callee.pubkey, third.pubkey]);
-  const active = (sender: string, users: string[], time = now) => ({
+  const active = (
+    sender: string,
+    users: string[],
+    time = now,
+    ended = false,
+  ) => ({
     sender,
-    text: groupCallAnnouncement(call, users, time),
+    text: groupCallAnnouncement(call, users, time, ended),
     sentAt: Math.floor(time / 1000),
     deleted: false,
     invalidated: false,
   });
-  const membersInCall = [caller.pubkey, callee.pubkey];
-  const rows = [
-    active(caller.pubkey, membersInCall),
-    active(callee.pubkey, membersInCall, now + 1),
-    active(third.pubkey, [caller.pubkey, callee.pubkey], now + 2),
-  ];
-  expect(discoverGroupCall(rows, (key) => members.has(key), now)).toMatchObject(
-    { call, coordinator: callee.pubkey },
+  const rows = [active(caller.pubkey, [caller.pubkey])];
+  const discover = (at = now) =>
+    discoverGroupCall(rows, (key) => members.has(key), at);
+  expect(discover()).toMatchObject({
+    call,
+    coordinator: caller.pubkey,
+    routes: [caller.pubkey],
+  });
+  rows.push(active(third.pubkey, [caller.pubkey], now + 2));
+  expect(discover()?.coordinator).toBe(caller.pubkey);
+  rows.push(
+    active(caller.pubkey, [], now + 3),
+    active(callee.pubkey, [callee.pubkey], now + 4),
   );
-  rows.push(active(callee.pubkey, [], now + 3));
-  expect(discoverGroupCall(rows, (key) => members.has(key), now)).toMatchObject(
-    { call, coordinator: caller.pubkey },
-  );
-  expect(
-    discoverGroupCall(rows, (key) => members.has(key), now + 106_000),
-  ).toBeUndefined();
-  members.delete(callee.pubkey);
-  expect(
-    discoverGroupCall(rows, (key) => members.has(key), now),
-  ).toBeUndefined();
+  expect(discover()).toMatchObject({ call, coordinator: callee.pubkey });
+  expect(discover(now + groupCallLease + 4)).toBeUndefined();
+  rows.push(active(callee.pubkey, [], now + 5, true));
+  expect(discover()).toBeUndefined();
 });
 
 test("an uninvited group member joins through a correlated encrypted-control offer and loses admission on removal", async () => {
@@ -277,6 +281,8 @@ test("an uninvited group member joins through a correlated encrypted-control off
   let nonce = 1000;
   const now = Date.now();
   const revoked: string[] = [];
+  const remoteHangup = new Map<string, () => void>();
+  const offline = new Set<string>();
   const build = (localKey: string) => {
     const instance = createCallController({
       localKey,
@@ -289,15 +295,17 @@ test("an uninvited group member joins through a correlated encrypted-control off
       prepareInvite: async () => invitation(now).offer,
       send: async (signal) => {
         events.push(signal);
-        return true;
+        return !offline.has(signal.recipientKey);
       },
       openMedia: async ({
         invite,
         peerKey,
         onAuthenticated,
         onParticipants,
+        onHangup,
       }) => {
         const notifyHangup = async () => {};
+        remoteHangup.set(localKey, onHangup);
         onAuthenticated({ notifyHangup });
         onParticipants?.(
           (invite.conference?.roster ?? [peerKey])
@@ -353,16 +361,30 @@ test("an uninvited group member joins through a correlated encrypted-control off
     }
   }
   try {
-    expect(await alice.dial(callee.pubkey, group)).toBe(true);
-    await deliver();
-    bob.accept();
+    expect(await alice.startGroup(group)).toBe(true);
+    const lobby = alice.store.getState().groupLobby;
+    if (!lobby) throw new Error("Group lobby missing");
+    expect(alice.store.getState().call).toBeNull();
+    expect(await bob.join(group, lobby.callId, [caller.pubkey])).toBe(true);
     await deliver();
     const call = alice.store.getState().call;
     if (call?.phase !== "connected")
       throw new Error("Initial conference did not connect");
-    expect(await charlie.join(group, call.id, caller.pubkey)).toBe(true);
-    const request = events[0];
-    expect(request).toMatchObject({ type: "call.join", groupId: group });
+    alice.end();
+    remoteHangup.get(callee.pubkey)?.();
+    offline.add(caller.pubkey);
+    expect(bob.store.getState().groupLobby).toEqual({
+      callId: call.id,
+      groupId: group,
+    });
+    expect(
+      await charlie.join(group, call.id, [caller.pubkey, callee.pubkey]),
+    ).toBe(true);
+    expect(
+      events
+        .filter((event) => event.type === "call.join")
+        .map((event) => event.recipientKey),
+    ).toEqual([caller.pubkey, callee.pubkey]);
     await deliver();
     expect(charlie.store.getState().call).toMatchObject({
       phase: "connected",
@@ -370,11 +392,27 @@ test("an uninvited group member joins through a correlated encrypted-control off
       groupId: group,
     });
     expect(charlie.store.getState().joining).toBeUndefined();
+    const connected = bob.store.getState().participants;
+    offline.delete(caller.pubkey);
+    bob.store.setState({
+      participants: Array.from({ length: 5 }, (_, index) => ({
+        key: id(1500 + index),
+        muted: false,
+        silenced: false,
+        volume: 100,
+        speaking: false,
+      })),
+    });
+    expect(await alice.join(group, call.id, [callee.pubkey])).toBe(true);
+    await deliver();
+    expect(alice.store.getState().fullGroupCall?.callId).toBe(call.id);
+    expect(alice.store.getState().joining).toBeUndefined();
+    bob.store.setState({ participants: connected });
     roster.delete(third.pubkey);
     charlie.reconcileGroup(group, roster);
     expect(charlie.store.getState().call?.phase).toBe("ended");
-    expect(await charlie.join(group, call.id, callee.pubkey)).toBe(false);
-    expect(alice.store.getState().call?.phase).toBe("connected");
+    expect(await charlie.join(group, call.id, [callee.pubkey])).toBe(false);
+    expect(bob.store.getState().call?.phase).toBe("connected");
     expect(revoked).toEqual([]);
   } finally {
     for (const client of clients.values()) client.end();

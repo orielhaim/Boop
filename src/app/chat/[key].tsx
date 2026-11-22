@@ -23,11 +23,7 @@ export default function ChatRoute() {
     const group = /^marmot-([a-f0-9]{2,512})$/u.exec(key)?.[1];
     if (group)
       return view === "details" || view === "call" ? (
-        <MarmotGroupDetailsScreen
-          key={group}
-          id={group}
-          showCall={view === "call"}
-        />
+        <MarmotGroupDetailsScreen key={group} id={group} />
       ) : (
         <MarmotConversationScreen
           key={group}

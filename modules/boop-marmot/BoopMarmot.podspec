@@ -1,9 +1,7 @@
-sdk = 'sdk/marmotkit-ios-0.18.0'
-unless File.exist?(File.join(__dir__, sdk, 'manifest.json'))
-  root = File.expand_path('../..', __dir__)
-  Dir.chdir(root) do
-    raise 'Unable to prepare MarmotKit 0.18.0 for iOS' unless system('bun', 'scripts/fetch-marmotkit.ts', 'ios')
-  end
+sdk = 'sdk/marmotkit-ios-0.18.0-boop'
+root = File.expand_path('../..', __dir__)
+Dir.chdir(root) do
+  raise 'Unable to prepare MarmotKit 0.18.0 for iOS' unless system('bun', 'scripts/fetch-marmotkit.ts', 'ios')
 end
 
 Pod::Spec.new do |s|

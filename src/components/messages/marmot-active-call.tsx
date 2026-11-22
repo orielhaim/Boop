@@ -1,5 +1,6 @@
 import { router } from "expo-router";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,30 +11,33 @@ import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { useStore } from "zustand";
 import { Action, Icon, Ink } from "@/components/ui/kit";
-import { callCapacity } from "@/core/calling/conference";
-import {
-  discoverGroupCall,
-  groupCallKind,
-} from "@/core/calling/group-presence";
-import type { MarmotMessage } from "@/core/marmot/native";
+import { discoverGroupCall } from "@/core/calling/group-presence";
+import { marmot } from "@/core/marmot/native";
+import { useMarmotWindow } from "./marmot-window";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 
 export function MarmotActiveCall({
   group,
-  messages,
   members,
+  canStart,
 }: {
   group: string;
-  messages?: readonly MarmotMessage[];
   members?: readonly { id: string; name?: string | null; label?: string }[];
+  canStart: boolean;
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
   const { calling, privacy, lock } = useLocal();
   const state = useStore(calling.store);
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
+  const open = useCallback(() => marmot.openGroupCall(group), [group]);
+  const discovery = useMarmotWindow(
+    open,
+    !lockState.locked && lockState.active,
+  );
+  const announcements = discovery.snapshot?.announcements;
   const privacyRevision = useSyncExternalStore(
     privacy.subscribe,
     privacy.revision,
@@ -43,6 +47,9 @@ export function MarmotActiveCall({
       ? state.call
       : undefined;
   const pending = useRef<string>(undefined);
+  const unavailable = state.unavailableGroupCall;
+  const lobby =
+    state.groupLobby?.groupId === group ? state.groupLobby : undefined;
   const [discovered, setDiscovered] =
     useState<ReturnType<typeof discoverGroupCall>>();
   const roster = useMemo(
@@ -60,7 +67,7 @@ export function MarmotActiveCall({
       const next =
         !lockState.locked && lockState.active
           ? discoverGroupCall(
-              messages?.filter((row) => row.eventKind === groupCallKind) ?? [],
+              announcements ?? [],
               (key) => roster.has(key) && !privacy.isBlocked(key),
             )
           : undefined;
@@ -76,7 +83,7 @@ export function MarmotActiveCall({
   }, [
     lockState.active,
     lockState.locked,
-    messages,
+    announcements,
     privacy,
     privacyRevision,
     roster,
@@ -90,19 +97,61 @@ export function MarmotActiveCall({
       params: { key: current.peerKey, callId: current.id },
     });
   }, [current, lockState.locked]);
+  useEffect(() => {
+    if (!unavailable || pending.current !== unavailable.callId) return;
+    pending.current = undefined;
+    if (!lockState.locked)
+      Alert.alert(t("messages:marmot.groupCallUnavailable"));
+  }, [lockState.locked, t, unavailable]);
 
-  if ((!current && !discovered) || lockState.locked) return null;
+  if (lockState.locked) return null;
+  const active =
+    discovered &&
+    (unavailable?.callId !== discovered.call ||
+      unavailable.at < discovered.updatedAt)
+      ? discovered
+      : undefined;
+  const full =
+    active &&
+    state.fullGroupCall?.callId === active.call &&
+    state.fullGroupCall.at >= active.updatedAt;
+  const isJoining = state.joining?.groupId === group;
+  if (!current && !lobby && !active && !isJoining) {
+    if (!canStart) return null;
+    return (
+      <View style={styles.row}>
+        <Action
+          size="sm"
+          disabled={
+            !announcements ||
+            Boolean(
+              state.groupLobby ||
+              state.joining ||
+              (state.call && state.call.phase !== "ended"),
+            )
+          }
+          onPress={() => {
+            void calling.startGroup(group).then((started) => {
+              if (started)
+                pending.current = calling.store.getState().groupLobby?.callId;
+              else Alert.alert(t("messages:marmot.groupCallStartFailed"));
+            });
+          }}
+        >
+          {t("calls:startCall")}
+        </Action>
+      </View>
+    );
+  }
   const names = (
     current
       ? state.participants.map(({ key }) => key)
-      : discovered
-        ? discovered.members
+      : active
+        ? active.members
         : []
   )
     .map((key) => roster.get(key))
     .filter(Boolean);
-  const isJoining = state.joining?.groupId === group;
-  const full = discovered && discovered.members.length >= callCapacity;
   return (
     <View style={[styles.row, { backgroundColor: colors.accentSoft }]}>
       <Icon name="audio" color={colors.accent} />
@@ -120,6 +169,7 @@ export function MarmotActiveCall({
           !current &&
           (isJoining ||
             !!full ||
+            Boolean(state.groupLobby && !lobby) ||
             Boolean(state.call && state.call.phase !== "ended"))
         }
         onPress={() => {
@@ -128,30 +178,27 @@ export function MarmotActiveCall({
               pathname: "/call/[key]",
               params: { key: current.peerKey, callId: current.id },
             });
+          } else if (lobby) {
+            calling.end();
           } else if (
-            discovered &&
-            discovered.expiresAt > Date.now() &&
+            active &&
+            active.expiresAt > Date.now() &&
             !lock.getState().locked
           ) {
-            pending.current = discovered.call;
-            void calling
-              .join(group, discovered.call, discovered.coordinator)
-              .then((sent) => {
-                if (!sent) {
-                  pending.current = undefined;
-                  Alert.alert(t("messages:marmot.groupCallUnavailable"));
-                }
-              });
+            pending.current = active.call;
+            void calling.join(group, active.call, active.routes);
           }
         }}
       >
         {current
           ? t("messages:marmot.returnToCall")
-          : full
-            ? t("messages:marmot.groupCallFull")
-            : isJoining
-              ? t("messages:marmot.joiningGroupCall")
-              : t("messages:marmot.joinGroupCall")}
+          : lobby
+            ? t("calls:end")
+            : full
+              ? t("messages:marmot.groupCallFull")
+              : isJoining
+                ? t("messages:marmot.joiningGroupCall")
+                : t("messages:marmot.joinGroupCall")}
       </Action>
     </View>
   );

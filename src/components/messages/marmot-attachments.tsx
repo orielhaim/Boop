@@ -258,8 +258,7 @@ function Attachment({
   const isPhoto = photo(item);
   const video = item.type.startsWith("video/");
   const audio = item.type.startsWith("audio/");
-  const round =
-    video && (item.round === true || item.name === "video-note.mp4");
+  const round = video && item.round === true;
   const visualWidth = round
     ? Math.min(width, height) * 0.54
     : Math.min(width * 0.67, 300);

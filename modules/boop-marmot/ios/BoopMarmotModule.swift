@@ -1,6 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 import Foundation
+import ImageIO
 import UIKit
 
 public final class BoopMarmotModule: Module {
@@ -84,6 +85,9 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("openGroupState") { (id: String, group: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openGroupState(id: id, group: group) }
+    }
+    AsyncFunction("openGroupCall") { (id: String, group: String) async throws -> Document in
+      try await protocolCall { try await self.runtime.openGroupCall(id: id, group: group) }
     }
     AsyncFunction("openConversation") { (id: String, group: String, target: String?) async throws -> Document in
       try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target) }
@@ -298,7 +302,7 @@ public final class BoopMarmotModule: Module {
       }
     }
     AsyncFunction("sendSpecial") { (group: String, kind: UInt64, body: String, reply: String?) async throws in
-      guard [24881, 24883, 24884, 24885].contains(kind) else { throw problem("InvalidApplicationEvent") }
+      guard [24881, 24883, 24884].contains(kind) else { throw problem("InvalidApplicationEvent") }
       try await self.withAccount { kit, account in
         let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
         _ = try await kit.sendCustomEvent(accountRef: account, groupIdHex: group, kind: kind, tags: tags, content: body)
@@ -321,12 +325,11 @@ public final class BoopMarmotModule: Module {
         self.sendEvent("attachmentProgress", ["transfer": token, "received": 0.0, "state": "preparing"])
         for (index, input) in inputs.enumerated() {
           let file = files[index]
-          let presentation = file["presentation"] == "round" ? "round" : "file"
-          let waveform = (file["waveform"] ?? "").split(separator: ",").prefix(64).compactMap { Double($0).map { $0 / 31 } }
+          let presentation = mediaPresentation(file["presentation"], input.mediaType)
           let request = MessageDraftAttachmentFileRequestFfi(id: "\(token):\(inputs.count):\(index):\(presentation)",
             sourcePath: input.sourcePath, expectedSize: input.expectedSize, fileName: input.fileName,
             mediaType: input.mediaType, dim: input.dim, thumbhash: input.thumbhash,
-            durationSeconds: file["duration"].flatMap { Double($0) }, waveformSamples: waveform)
+            durationSeconds: mediaDuration(file["duration"]), waveformSamples: mediaWaveform(file["waveform"]))
           draft = try await kit.stageMessageDraftAttachmentFile(accountRef: account, revision: draft.revision, request: request, control: control)
         }
       }
@@ -376,7 +379,12 @@ public final class BoopMarmotModule: Module {
           progress.cancel()
           _ = self.uploadLock.withLock { self.uploads.removeValue(forKey: token) }
         }
-        let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
+        let tags = try inputs.enumerated().map { index, input in
+          let file = files[index]
+          guard let size = input.expectedSize else { throw problem("InvalidMediaPath") }
+          return mediaMetadata(index, size, mediaDuration(file["duration"]),
+            mediaWaveform(file["waveform"]), mediaPresentation(file["presentation"], input.mediaType))
+        } + (reply.map { [["e", $0, "", "reply"]] } ?? [])
         let request = MediaFileUploadRequestFfi(attachments: inputs, caption: caption, send: true, blossomServer: server, messageTags: tags)
         do {
           let uploaded: MediaUploadResultFfi
@@ -384,7 +392,12 @@ public final class BoopMarmotModule: Module {
           if let selected {
             uploaded = try await kit.uploadMessageDraftAttachments(accountRef: account, revision: selected.revision, attachmentIds: draftFiles.map(\.id), blossomServer: server, control: control)
             if control.isCancelled() { throw problem("MediaCancelled") }
-            let accepted = try await kit.sendMessageDraftWithClientToken(accountRef: account, revision: selected.revision, attachments: uploaded.attachments.map(\.reference), clientToken: token)
+            let metadata = draftFiles.enumerated().map { index, item in
+              mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples,
+                item.id.split(separator: ":").last.map(String.init) ?? "file")
+            }
+            let accepted = try await kit.sendTaggedMessageDraftWithClientToken(accountRef: account, revision: selected.revision,
+              attachments: uploaded.attachments.map(\.reference), messageTags: metadata, clientToken: token)
             id = accepted.messageIdHex
           } else {
             let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: control, clientToken: token)
@@ -412,22 +425,46 @@ public final class BoopMarmotModule: Module {
         return true
       }
     }
-    AsyncFunction("makeVideoPoster") { (path: String) async throws -> String in
+    AsyncFunction("inspectMediaFile") { (path: String, image: Bool, poster: Bool) async throws -> Document in
       try await protocolCall {
         let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
         let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         guard file.path.hasPrefix(home), try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
           throw problem("InvalidMediaPath")
         }
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
+        if image {
+          let source = CGImageSourceCreateWithURL(file as CFURL, nil)
+          let properties = source.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) } as? [CFString: Any]
+          guard let width = properties?[kCGImagePropertyPixelWidth] as? Int,
+            let height = properties?[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0 else { return [:] }
+          let orientation = properties?[kCGImagePropertyOrientation] as? Int ?? 1
+          return ["dimensions": (5...8).contains(orientation) ? "\(height)x\(width)" : "\(width)x\(height)"]
+        }
+        let asset = AVURLAsset(url: file)
+        var result: Document = [:]
+        if let duration = try? await asset.load(.duration).seconds, duration.isFinite, duration > 0 {
+          result["duration"] = duration
+        }
+        if let track = try? await asset.loadTracks(withMediaType: .video).first,
+          let size = try? await track.load(.naturalSize),
+          let transform = try? await track.load(.preferredTransform) {
+          let oriented = size.applying(transform)
+          let width = abs(oriented.width), height = abs(oriented.height)
+          if width.isFinite, height.isFinite, width >= 1, height >= 1, width < 65_536, height < 65_536 {
+            result["dimensions"] = "\(Int(width.rounded()))x\(Int(height.rounded()))"
+          }
+        }
+        guard poster else { return result }
+        let generator = AVAssetImageGenerator(asset: asset)
         generator.maximumSize = CGSize(width: 144, height: 144)
         generator.appliesPreferredTrackTransform = true
-        let thumbnail = try await generator.image(at: .zero).image
-        guard let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.75) else { throw problem("MediaUnavailable") }
+        guard let thumbnail = try? await generator.image(at: .zero).image,
+          let jpeg = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.75) else { return result }
         let cache = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let output = cache.appendingPathComponent("marmot-poster-" + UUID().uuidString + ".jpg")
         try jpeg.write(to: output, options: [.atomic, .completeFileProtection])
-        return output.path
+        result["path"] = output.path
+        return result
       }
     }
     AsyncFunction("attachmentStatus") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
@@ -746,6 +783,16 @@ private actor Runtime {
     let account = try account()
     let handle = try await account.kit.subscribeGroupState(accountRef: account.key, groupIdHex: group)
     return try await install(.groupState(GroupStateWindow(generation: id, handle: handle)), id: id, account: account)
+  }
+
+  func openGroupCall(id: String, group: String) async throws -> Document {
+    let account = try account()
+    let kinds: [UInt64] = [24884]
+    let handle = try await account.kit.subscribeMessages(accountRef: account.key, groupIdHex: group, limit: 64, kinds: kinds)
+    let window = GroupCallWindow(generation: id, handle: handle) {
+      try account.kit.messages(accountRef: account.key, groupIdHex: group, limit: 64, kinds: kinds)
+    }
+    return try await install(.groupCall(window), id: id, account: account)
   }
 
   func openConversation(id: String, group: String, target: String?) async throws -> Document {

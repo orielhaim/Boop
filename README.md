@@ -2,7 +2,7 @@
 
 Boop is an open-source phone and messenger for Android and iOS. Share your Boop address or scan a QR code to connect. Your address is a Nostr public key, and your device holds the private key. There is no Boop account or phone-number signup.
 
-- Make direct voice calls, invite people into small conferences, and share video with people who choose to watch.
+- Make direct voice calls, start or join a group call, and share video with people who choose to watch.
 - Use Marmot for MLS-encrypted direct conversations and persistent groups. Send voice notes, photos, videos, files, and locations. Use Open Later to choose when a message can be opened.
 - Manage contacts, block unwanted callers, review message requests, and protect the app with your device lock.
 - Translate messages on your device with installed language models. Use Boop in English or Hebrew.
