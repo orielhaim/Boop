@@ -8,7 +8,6 @@
         "@config-plugins/react-native-webrtc": "^15.0.2",
         "@expo/ui": "~58.0.29",
         "@hzblj/expo-translation": "0.1.4",
-        "@kesha-antonov/react-native-background-downloader": "5.1.0",
         "@kesha-antonov/react-native-chat": "^7.2.0",
         "@noble/curves": "2.4.0",
         "@noble/hashes": "2.4.0",
@@ -94,7 +93,6 @@
     "@trystero-p2p/core@0.27.0": "patches/@trystero-p2p%2Fcore@0.27.0.patch",
     "@kesha-antonov/react-native-chat@7.2.0": "patches/@kesha-antonov%2Freact-native-chat@7.2.0.patch",
     "expo-glass-tabs@0.1.1": "patches/expo-glass-tabs@0.1.1.patch",
-    "@kesha-antonov/react-native-background-downloader@5.1.0": "patches/@kesha-antonov%2Freact-native-background-downloader@5.1.0.patch",
     "react-native-webrtc@155.0.1": "patches/react-native-webrtc@155.0.1.patch",
   },
   "packages": {
@@ -435,8 +433,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.6.0", "", {}, "sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
-
-    "@kesha-antonov/react-native-background-downloader": ["@kesha-antonov/react-native-background-downloader@5.1.0", "", { "peerDependencies": { "react-native": ">=0.57.0" }, "bin": { "react-native-background-downloader": "bin/react-native-background-downloader.js" } }, "sha512-e0FkURZ8y5m/xEQfEFFbBs5/6dWFaEKZr/tcfBW0FrJpYn6G5/5YsNEh8JW903IlNappSPriip4arLuHAZ6knA=="],
 
     "@kesha-antonov/react-native-chat": ["@kesha-antonov/react-native-chat@7.2.0", "", { "dependencies": { "@legendapp/list": "^3.7.1", "dayjs": "^1.11.23", "react-native-zoom-reanimated": "^1.6.0" }, "peerDependencies": { "@lodev09/react-native-true-sheet": ">=3.0.0", "@react-native-async-storage/async-storage": "*", "@react-native-clipboard/clipboard": "*", "expo-audio": "*", "expo-blur": "*", "expo-clipboard": "*", "expo-device": "*", "expo-document-picker": "*", "expo-file-system": "*", "expo-haptics": "*", "expo-image": "*", "expo-image-picker": "*", "expo-location": "*", "expo-media-library": "*", "expo-sharing": "*", "expo-video": "*", "react": ">=19.0.0", "react-native": ">=0.82.0", "react-native-audio-api": "*", "react-native-gesture-handler": ">=3.0.0", "react-native-keyboard-controller": ">=1.21.7", "react-native-reanimated": ">=3.0.0 || ^4.0.0", "react-native-safe-area-context": ">=5.0.0", "react-native-streamdown": "*", "react-native-svg": "*", "react-native-vision-camera": ">=5.0.0" }, "optionalPeers": ["@lodev09/react-native-true-sheet", "@react-native-async-storage/async-storage", "@react-native-clipboard/clipboard", "expo-audio", "expo-blur", "expo-clipboard", "expo-device", "expo-document-picker", "expo-file-system", "expo-haptics", "expo-image", "expo-image-picker", "expo-location", "expo-media-library", "expo-sharing", "expo-video", "react-native-audio-api", "react-native-streamdown", "react-native-svg", "react-native-vision-camera"] }, "sha512-n45nroDtqxjpJzZ7UMSf3v8wkkY8BISl/sAQB9ibdWZUxh8M/Xv0l3Iwrvfetmj5xofBfNc/q2Q4jL3jm7DxJA=="],
 

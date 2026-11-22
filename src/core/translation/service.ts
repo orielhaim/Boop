@@ -1,8 +1,7 @@
-import type { createTranslationCache } from "@/db/translations";
+import type { TranslationCache } from "@/db/translations";
 
 type MessageDirection = "incoming" | "outgoing";
 type Message = { id: string; text: string; direction: MessageDirection };
-type Cache = ReturnType<typeof createTranslationCache>;
 export type TranslationOutcome =
   | { kind: "translated"; text: string }
   | { kind: "original" | "failed" | "unavailable" | "cancelled" }
@@ -71,7 +70,7 @@ export function viewportMessages<T extends { direction: MessageDirection }>(
 }
 
 export function createTranslationService(
-  cache: Cache,
+  cache: TranslationCache,
   loadEngine: () => Promise<TranslationEngine>,
 ) {
   let native: Promise<TranslationEngine> | undefined;

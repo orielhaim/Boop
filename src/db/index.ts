@@ -14,7 +14,7 @@ export async function openDatabase() {
       "PRAGMA user_version",
     );
     if (
-      version?.user_version !== 1 &&
+      version?.user_version !== 2 &&
       sqlite.getFirstSync(
         "SELECT 1 FROM sqlite_schema WHERE type = 'table' LIMIT 1",
       )

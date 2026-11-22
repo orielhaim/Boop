@@ -140,10 +140,10 @@ test("only enabled, compatible role candidates receive a PUT, and MIME/size reje
   settings.save({
     mirror: false,
     servers: [
-      { origin: first, enabled: true, roles: ["attachment"] },
-      { origin: second, enabled: true, roles: ["attachment", "profile"] },
-      { origin: disabled, enabled: false, roles: ["attachment"] },
-      { origin: foreign, enabled: true, roles: ["profile"] },
+      { origin: first, enabled: true, roles: ["profile"] },
+      { origin: second, enabled: true, roles: ["profile", "attachment"] },
+      { origin: disabled, enabled: false, roles: ["profile"] },
+      { origin: foreign, enabled: true, roles: ["attachment"] },
     ],
   });
   for (const rejection of [413, 415]) {
@@ -153,14 +153,15 @@ test("only enabled, compatible role candidates receive a PUT, and MIME/size reje
       {
         sha256,
         async request(path, options) {
-          requests.push(`${options.method} ${path}`);
+          requests.push(`${options.method ?? "GET"} ${path}`);
+          if (path === `${second}/${hash}.bin`) return new Response(bytes);
           if (path.startsWith(first))
             return new Response(null, { status: rejection });
           if (options.method === "HEAD")
             return new Response(null, { status: 200 });
           expect(path).toBe(`${second}/upload`);
           expect(options.body).toEqual(bytes);
-          return descriptor(second);
+          return descriptor(second, { type: "image/jpeg" });
         },
       },
       settings,
@@ -168,8 +169,7 @@ test("only enabled, compatible role candidates receive a PUT, and MIME/size reje
     );
     for (let attempt = 0; attempt < 2; attempt++) {
       expect(
-        await uploads.upload("attachment", bytes, {
-          expectedHash: hash,
+        await uploads.upload("profile", bytes, {
           signal: signal(),
         }),
       ).toEqual({ url: `${second}/${hash}.bin` });
@@ -178,16 +178,11 @@ test("only enabled, compatible role candidates receive a PUT, and MIME/size reje
       `HEAD ${first}/upload`,
       `HEAD ${second}/upload`,
       `PUT ${second}/upload`,
+      `GET ${second}/${hash}.bin`,
       `HEAD ${second}/upload`,
       `PUT ${second}/upload`,
+      `GET ${second}/${hash}.bin`,
     ]);
-    await expect(
-      uploads.upload("attachment", bytes, {
-        expectedHash: "ab".repeat(32),
-        signal: signal(),
-      }),
-    ).rejects.toHaveProperty("code", "hash");
-    expect(requests).toHaveLength(5);
   }
 });
 
@@ -198,7 +193,7 @@ test("an opted-in BUD-04 failure leaves the verified primary usable", async () =
     servers: [first, second].map((origin) => ({
       origin,
       enabled: true,
-      roles: ["attachment"],
+      roles: ["profile"],
     })),
   });
   const uploads = createMediaUploads(
@@ -206,6 +201,7 @@ test("an opted-in BUD-04 failure leaves the verified primary usable", async () =
     {
       sha256,
       async request(path, opts) {
+        if (path === `${first}/${hash}.bin`) return new Response(bytes);
         if (path === `${second}/mirror`) {
           const mirror = JSON.parse(new TextDecoder().decode(opts.body));
           expect(mirror).toEqual({ url: `${first}/${hash}.bin` });
@@ -214,23 +210,21 @@ test("an opted-in BUD-04 failure leaves the verified primary usable", async () =
         expect(path).toBe(`${first}/upload`);
         return opts.method === "HEAD"
           ? new Response(null, { status: 200 })
-          : descriptor(first);
+          : descriptor(first, { type: "image/jpeg" });
       },
     },
     settings,
     () => {},
   );
-  const result = await uploads.upload("attachment", bytes, {
-    expectedHash: hash,
+  const result = await uploads.upload("profile", bytes, {
     signal: signal(),
   });
   expect(result.url).toBe(`${first}/${hash}.bin`);
   expect(await result.mirror).toBe(false);
-  expect(uploads.health(second, "attachment")?.lastFailure).toBe("descriptor");
+  expect(uploads.health(second, "profile")?.lastFailure).toBe("descriptor");
   settings.save({ mirror: false, servers: [] });
   await expect(
-    uploads.upload("attachment", bytes, {
-      expectedHash: hash,
+    uploads.upload("profile", bytes, {
       signal: signal(),
     }),
   ).rejects.toHaveProperty("code", "configuration");

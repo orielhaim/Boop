@@ -14,7 +14,6 @@ import {
 } from "../src/core/identity/keys";
 import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
-import { createMessagingRepository } from "../src/db/messaging";
 import { initializeTestDatabase } from "./db-fixture";
 import { callList, preference, setPreference } from "../src/db/queries";
 import { editRelays, seedRelays } from "../src/db/relays";
@@ -77,7 +76,7 @@ test("fails closed when the secure store is locked, missing or corrupted", async
   expect(writes).toBe(0);
 });
 
-test("fresh baseline initializes once and enforces event and contact uniqueness", () => {
+test("fresh baseline keeps application state and enforces contact uniqueness", () => {
   using db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   const migrationsFolder = join(import.meta.dir, "../src/db/migrations");
@@ -90,7 +89,7 @@ test("fresh baseline initializes once and enforces event and contact uniqueness"
   const orm = drizzle(db, { schema });
   migrate(orm, { migrationsFolder });
   migrate(orm, { migrationsFolder });
-  expect(db.query("PRAGMA user_version").values()).toEqual([[1]]);
+  expect(db.query("PRAGMA user_version").values()).toEqual([[2]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
   ).toEqual([[1]]);
@@ -102,24 +101,12 @@ test("fresh baseline initializes once and enforces event and contact uniqueness"
       .values()
       .flat(),
   ).toEqual([
-    "attachment_cache",
-    "attachment_uploads",
     "avatar_cache",
     "call_history",
     "contacts",
-    "conversations",
     "link_preview_cache",
-    "message_attachments",
-    "message_edit_outbox",
-    "message_reactions",
-    "message_requests",
-    "message_revisions",
-    "message_timelocks",
-    "message_translations",
-    "messages",
     "nostr_profiles",
     "peer_permissions",
-    "pending_message_edits",
     "relay_settings",
     "settings",
   ]);
@@ -131,77 +118,15 @@ test("fresh baseline initializes once and enforces event and contact uniqueness"
       peerKey,
     ]),
   ).toThrow("UNIQUE");
-  db.run("INSERT INTO conversations (peer_key, updated_at) VALUES (?, 1)", [
-    peerKey,
-  ]);
-  db.run(
-    "INSERT INTO messages (id, event_id, peer_key, direction, body, sent_at) VALUES ('1', 'event', ?, 'incoming', 'Hello', 1)",
-    [peerKey],
-  );
-  expect(() =>
-    db.run(
-      "INSERT INTO messages (id, event_id, peer_key, direction, body, sent_at) VALUES ('2', 'event', ?, 'incoming', 'Hello', 1)",
-      [peerKey],
-    ),
-  ).toThrow("UNIQUE");
-  expect(() =>
-    db.run(
-      "INSERT INTO messages (id, peer_key, direction, body, sent_at) VALUES ('3', ?, 'outgoing', 'Hi', 1)",
-      [localKey],
-    ),
-  ).toThrow("FOREIGN KEY");
-  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
-  expect(db.query("PRAGMA integrity_check").values()).toEqual([["ok"]]);
 });
 
-test("chat reads use the targeted partial indexes", () => {
-  using sqlite = new Database(":memory:");
-  initializeTestDatabase(sqlite);
-  const queries = {
-    message_attachments_hash:
-      "SELECT message_id FROM message_attachments WHERE hash = 'digest'",
-    messages_peer_order:
-      "SELECT * FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND (sent_at, id) < (10, 'id') ORDER BY sent_at DESC, id DESC LIMIT 50",
-    messages_unread:
-      "SELECT count(*) FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND is_unread = 1",
-    messages_pinned:
-      "SELECT * FROM messages WHERE peer_key = 'peer' AND deleted_at IS NULL AND pinned_at IS NOT NULL ORDER BY pinned_at DESC, id DESC",
-    messages_outbox:
-      "SELECT * FROM messages WHERE status = 'pending' AND deleted_at IS NULL ORDER BY sent_at, id LIMIT 25",
-    messages_attachment_copies:
-      "SELECT * FROM messages WHERE status = 'sent' AND content_type = 'attachment' AND deleted_at IS NULL AND rumor_json IS NOT NULL ORDER BY sent_at, id LIMIT 16",
-  };
-  for (const [index, query] of Object.entries(queries)) {
-    const plan = sqlite
-      .query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${query}`)
-      .all();
-    expect(plan.some(({ detail }) => detail.includes(index))).toBe(true);
-    expect(plan.some(({ detail }) => detail.includes("TEMP B-TREE"))).toBe(
-      false,
-    );
-  }
-});
-
-test("queries local call history, conversation previews, drafts and preferences", () => {
+test("queries local call history and preferences", () => {
   using sqlite = new Database(":memory:");
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
-  const repo = createMessagingRepository(db);
   db.insert(schema.contacts)
     .values({ publicKey: peerKey, name: "Alice" })
     .run();
-  repo.saveDraft(peerKey, "Meet at six?", null);
-  repo.receive({
-    id: "message-1",
-    eventId: "rumor-1",
-    peerKey,
-    direction: "incoming",
-    body: "Hello",
-    sentAt: 100,
-    replyTo: null,
-    senderKey: peerKey,
-    recipientKey: localKey,
-  });
   db.insert(schema.callHistory)
     .values({
       id: "call-1",
@@ -211,18 +136,10 @@ test("queries local call history, conversation previews, drafts and preferences"
       startedAt: 100,
     })
     .run();
-  expect(repo.conversation(peerKey)).toMatchObject({
-    name: "Alice",
-    preview: "Hello",
-    draft: "Meet at six?",
-    unread: 1,
-  });
   expect(callList(db).all()[0]).toMatchObject({
     name: "Alice",
     outcome: "missed",
   });
-  repo.markRead(peerKey, ["message-1"]);
-  expect(repo.conversation(peerKey)?.unread).toBe(0);
   setPreference(db, "theme", "dark");
   expect(preference(db, "theme")).toBe("dark");
 });
@@ -281,7 +198,6 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
     "contact/[key]",
     "contact/new",
     "requests",
-    "requests/[key]",
     "scan",
     "settings",
   ]);
@@ -302,6 +218,7 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
     "connections",
     "connections/media-storage",
     "identity",
+    "identity/devices",
     "identity/edit-profile",
     "language",
     "privacy",

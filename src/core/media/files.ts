@@ -1,4 +1,3 @@
-import { Platform } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { Directory, File, Paths } from "expo-file-system";
 import type { AvatarDisk } from "../avatars/service";
@@ -27,26 +26,6 @@ function sweepRetiredOwners(root: Directory, owner: string) {
       /^[a-f0-9]{64}$/u.test(entry.name)
     )
       removeMediaFile(entry);
-}
-
-export const voiceRecordingPrefix = "boop-voice-";
-const voiceRecordingName = /^boop-voice-[a-f0-9-]{36}\.m4a$/iu;
-
-export function attachmentFiles(owner: string) {
-  const recordings = new Directory(
-    Paths.cache,
-    Platform.OS === "ios" ? "ExpoAudio" : "Audio",
-  );
-  if (recordings.exists)
-    for (const file of recordings.list())
-      if (file instanceof File && voiceRecordingName.test(file.name))
-        removeMediaFile(file);
-  const root = new Directory(Paths.document, "attachment-blobs");
-  sweepRetiredOwners(root, owner);
-  removeMediaFile(new Directory(Paths.cache, "attachment-exports"));
-  const work = new Directory(Paths.cache, "attachment-work");
-  removeMediaFile(work);
-  return { blobs: new Directory(root, owner), work };
 }
 
 const filename = /^[a-f0-9-]{36}\.jpg$/u;

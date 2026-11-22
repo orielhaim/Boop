@@ -154,6 +154,9 @@ export const en = {
       decline: "Decline invitation",
       invitedBy: "Invited by {{name}}",
       inviteRequired: "Review this invitation to join the conversation.",
+      inviteFiltered:
+        "Your messaging privacy settings prevent accepting this invitation.",
+      blockInviter: "Block inviter",
       missingPackage:
         "This address has no compatible messaging keys available.",
       relayError: "Could not reach a suitable relay. Try again when connected.",

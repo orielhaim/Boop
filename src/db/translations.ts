@@ -1,27 +1,27 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import {
-  and,
-  eq,
-  getTableColumns,
-  inArray,
-  isNull,
-  like,
-  ne,
-  sql,
-} from "drizzle-orm";
+import { and, eq, like, sql } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import * as schema from "./schema";
 import { preference, setPreference } from "./queries";
 
-const { messages, messageTranslations } = schema;
-type TranslationRow = typeof messageTranslations.$inferInsert;
-const liveIncoming = and(
-  eq(messages.direction, "incoming"),
-  isNull(messages.deletedAt),
-  ne(messages.body, ""),
-);
+type TranslationRow = {
+  messageId: string;
+  targetLanguage: string;
+  sourceLanguage: string;
+  translatedText: string;
+};
+export type TranslationCache = {
+  read(
+    ids: string[],
+    target: string,
+  ): (TranslationRow & { original: string })[];
+  matchesIncoming(id: string, body: string): boolean;
+  store(row: TranslationRow, body: string): boolean;
+  remove(id: string, target: string): void;
+  clear(): void;
+};
 
 const prefix = "marmot.translation.";
 const stored = z.object({
@@ -36,7 +36,7 @@ const digest = (body: string) => bytesToHex(sha256(encoder.encode(body)));
 export function createDerivedTranslations<Result>(
   db: BaseSQLiteDatabase<"sync", Result, typeof schema>,
   incoming: (id: string) => string | undefined,
-): ReturnType<typeof createTranslationCache<Result>> {
+): TranslationCache {
   let writes = 0;
   const key = (id: string, target: string) => `${prefix}${id}.${target}`;
   return {
@@ -100,85 +100,6 @@ export function createDerivedTranslations<Result>(
       db.delete(schema.settings)
         .where(like(schema.settings.key, `${prefix}%`))
         .run();
-    },
-  };
-}
-
-export function createTranslationCache<TResult>(
-  db: BaseSQLiteDatabase<"sync", TResult, typeof schema>,
-) {
-  return {
-    read(ids: string[], target: string) {
-      if (!ids.length) return [];
-      return db
-        .select({
-          ...getTableColumns(messageTranslations),
-          original: messages.body,
-        })
-        .from(messageTranslations)
-        .innerJoin(messages, eq(messages.id, messageTranslations.messageId))
-        .where(
-          and(
-            inArray(messageTranslations.messageId, ids),
-            eq(messageTranslations.targetLanguage, target),
-            liveIncoming,
-          ),
-        )
-        .all()
-        .filter(
-          (row) => row.translatedText.trim() && row.sourceLanguage !== target,
-        );
-    },
-    matchesIncoming(id: string, body: string) {
-      return Boolean(
-        db
-          .select({ id: messages.id })
-          .from(messages)
-          .where(
-            and(eq(messages.id, id), eq(messages.body, body), liveIncoming),
-          )
-          .get(),
-      );
-    },
-    store(row: TranslationRow, original: string) {
-      return db.transaction((tx) => {
-        const exists = tx
-          .select({ id: messages.id })
-          .from(messages)
-          .where(
-            and(
-              eq(messages.id, row.messageId),
-              eq(messages.body, original),
-              liveIncoming,
-            ),
-          )
-          .get();
-        if (!exists) return false;
-        tx.insert(messageTranslations)
-          .values(row)
-          .onConflictDoUpdate({
-            target: [
-              messageTranslations.messageId,
-              messageTranslations.targetLanguage,
-            ],
-            set: row,
-          })
-          .run();
-        return true;
-      });
-    },
-    remove(id: string, target: string) {
-      db.delete(messageTranslations)
-        .where(
-          and(
-            eq(messageTranslations.messageId, id),
-            eq(messageTranslations.targetLanguage, target),
-          ),
-        )
-        .run();
-    },
-    clear() {
-      db.delete(messageTranslations).run();
     },
   };
 }

@@ -1,7 +1,5 @@
 import { Parser } from "htmlparser2";
 import { publicMediaUrl } from "@/core/media/url";
-import type { Privacy } from "@/core/privacy";
-import type { MessagingRepository } from "@/db/messaging";
 
 export type LinkPreviewPolicy = "off" | "on-demand" | "always";
 export const linkPreviewPolicies = ["off", "on-demand", "always"] as const;
@@ -123,20 +121,6 @@ export type CachedPreview = {
 
 type Target = { peer: string; id: string; url: string };
 
-export function authorizePreview(
-  { peer, id, url }: Target,
-  chat: Pick<MessagingRepository, "previewMessage">,
-  privacy: Pick<Privacy, "isBlocked" | "request" | "messagePermission">,
-) {
-  if (privacy.isBlocked(peer) || privacy.request(peer).length) return false;
-  const row = chat.previewMessage(peer, id);
-  return (
-    !!row &&
-    (row.direction === "outgoing" ||
-      privacy.messagePermission(peer) === "allow") &&
-    firstPreviewUrl(row.body) === url
-  );
-}
 type Job = {
   target: Target;
   explicit: boolean;

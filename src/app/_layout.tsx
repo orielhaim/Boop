@@ -134,8 +134,8 @@ function ProtectedApplication({
   const { colors } = useTheme();
   const { db, calling, lock } = data;
   const chatsEnabled = useSyncExternalStore(
-    data.messaging.subscribeStatus,
-    data.messaging.getChatsEnabled,
+    data.chatPreferences.subscribe,
+    data.chatPreferences.enabled,
   );
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const obscured = state.enabled && (state.locked || !state.active);

@@ -4,7 +4,7 @@ Start with `bun install --frozen-lockfile`. Run `bun run android` or, on macOS w
 
 ## Reset a development database
 
-The current build opens a fresh SQLite database and refuses databases from earlier prototype builds. It never erases an existing identity during startup.
+SQLite baseline v2 contains Boop application data and call history. The app refuses earlier baselines before it opens or generates a SecureStore identity.
 
 1. To keep an existing address, open the **previous build** and export an encrypted **Digital SIM** backup. Record the public address and keep the backup and its passphrase.
 2. Clear Boop's app data on Android, or delete the app on iOS, then install the development build. This removes local history, settings, and caches. Android app-data clearing also removes SecureStore entries. iOS Keychain entries can survive app deletion.
@@ -20,13 +20,20 @@ bun run lint
 bun run typecheck
 bun test
 bunx expo-doctor
-bun scripts/test-chat-relay.ts --timelock
-bun scripts/test-media-files.ts
+bun scripts/test-call-relay.ts
 ```
 
-The relay integration test uses OpenSSL on PATH and connects to Quicknet when run with `--timelock`. It exchanges a call invitation and RTC answer with both chat runtimes stopped. The media integration test uses temporary files on the host.
+The call-signaling integration test uses OpenSSL on PATH and a local TLS relay. It checks first-contact invitations, replay suppression, and encrypted RTC replies without starting Marmot.
 
-`src/db/schema.ts` defines tables and indexes. The initial SQL also defines the SQLite triggers for delivery grants, translation invalidation, and tombstone cleanup. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. If you change trigger SQL in the baseline, run `bun scripts/bundle-migrations.ts` again.
+`src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. Preserve the baseline's `PRAGMA user_version` when regenerating it.
+
+## Messaging and identity
+
+The local Expo module opens the SQLCipher-backed MarmotKit account for the active Nostr address. The SecureStore identity remains the only persistent copy of the Nostr signing key. The native credential adapter supplies that key in memory and checks the account binding before opening the device database. MDK owns MLS keys, invitations, group state, timeline projections, delivery, and retained attachments. Chat Kit reads prepared windows through `src/core/marmot/native.ts`.
+
+Received message attachments use MarmotKit's host-managed acquisition policy. The attachment action explicitly requests the download and leases the verified local file for presentation. The selected attachment Blossom origin is passed to MarmotKit. Profile photo upload and link previews use the separate Boop media path. First-contact WebRTC signaling uses authenticated kind `24880` control messages through the dedicated Nostr transport.
+
+Pairing devices allows MarmotKit to synchronize supported state under the same Nostr account. Preserve the native account storage when preserving a development installation. A Digital SIM carries the Nostr key alone.
 
 ## Delayed-message dependency
 

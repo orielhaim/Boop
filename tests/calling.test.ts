@@ -18,7 +18,6 @@ import {
   type InviteSignal,
   parseCallSignal,
 } from "../src/core/calling/signals";
-import { unwrapPrivateEvent } from "../src/core/messaging/nip17";
 import { unsignedRumor, wrapRumor } from "../src/core/nostr/gift-wrap";
 import {
   unwrapCallSignal,
@@ -69,7 +68,6 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
     replyRelays: [replyRelay],
   });
   expect(await unwrapCallSignal(wrapped.rawEvent(), third)).toBeNull();
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toBeNull();
   const envelope = {
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,

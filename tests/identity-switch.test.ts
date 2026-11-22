@@ -38,9 +38,7 @@ function setup(sqlite: Database) {
   db.insert(schema.peerPermissions)
     .values({ publicKey: nextKey, blockedAt: 1 })
     .run();
-  db.insert(schema.conversations)
-    .values({ peerKey: nextKey, updatedAt: 1, draft: "Old draft" })
-    .run();
+  setPreference(db, "marmot.pins.old", "old-message");
   return { db, keys, storage };
 }
 
@@ -57,7 +55,7 @@ test("same-identity import keeps records and a staged replacement only activates
   expect(keys.has(originalSlot)).toBe(false);
   expect(db.select().from(schema.contacts).all()).toEqual([]);
   expect(db.select().from(schema.peerPermissions).all()).toEqual([]);
-  expect(db.select().from(schema.conversations).all()).toEqual([]);
+  expect(preference(db, "marmot.pins.old")).toBeNull();
   expect(preference(db, "security.appLock")).toBe("0");
   expect(
     (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
@@ -89,7 +87,7 @@ test("a lost staged slot or failed SQLite reset preserves the previous identity 
   expect(
     (await loadPinnedIdentity(db, storage, noRandom)).identity.publicKey,
   ).toBe(previousKey);
-  expect(db.select().from(schema.conversations).all()).toHaveLength(1);
+  expect(preference(db, "marmot.pins.old")).toBe("old-message");
   expect(keys.has(originalSlot)).toBe(true);
   sqlite.exec("DROP TRIGGER stop_reset");
   expect(

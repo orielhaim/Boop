@@ -1,12 +1,10 @@
 import { createMediaSdk } from "@/core/media";
 import { createNativeLinkPreviews } from "@/core/messaging/native-link-previews";
-import { createAttachmentMedia } from "@/core/media/service";
 import { File } from "expo-file-system";
 import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
 import { asc } from "drizzle-orm";
-import { randomUUID } from "expo-crypto";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { useEffect } from "react";
@@ -31,22 +29,15 @@ import { createMarmotSession } from "@/core/marmot/account-session";
 import { createMarmotViewport } from "@/core/marmot/viewport";
 import { marmot } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
-import { createMessagingService } from "@/core/messaging/runtime";
-import { createConversationFeed } from "@/core/messaging/conversations";
 import { messagingMetric } from "@/core/messaging/diagnostics";
-import { createHistoryLoader } from "@/core/messaging/history";
 import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
 import { createPrivacy } from "@/core/privacy";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { loadTranslationEngine } from "@/core/translation/native";
-import {
-  initializeTranslationPreferences,
-  translationPreviewTarget,
-} from "@/core/translation/preferences";
+import { initializeTranslationPreferences } from "@/core/translation/preferences";
 import { createTranslationService } from "@/core/translation/service";
 import { openDatabase } from "@/db";
-import { createMessagingRepository } from "@/db/messaging";
 import {
   callById,
   contactByKey,
@@ -81,18 +72,8 @@ async function start() {
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     seedRelays(db, fresh);
     const chatPreferences = createChatPreferences(db);
-    const chat = createMessagingRepository(db);
-    const privacy = createPrivacy(db, chat, identity.publicKey);
+    const privacy = createPrivacy(db, identity.publicKey);
     const mediaSdk = createMediaSdk(db, signer);
-    const attachments = createAttachmentMedia(
-      chat,
-      privacy.isBlocked,
-      mediaSdk,
-    );
-    const history = createHistoryLoader(chat);
-    const conversations = createConversationFeed(chat, history, () =>
-      translationPreviewTarget(db),
-    );
     const messagingStarted = performance.now();
     const relays = createRelayService({
       readState: (key) => preference(db, key),
@@ -104,16 +85,6 @@ async function start() {
       relays,
       isBlocked: privacy.isBlocked,
       canReceiveCall: privacy.canReceiveCall,
-    });
-    const messaging = createMessagingService({
-      relays,
-      readState: (key) => preference(db, key),
-      writeState: (key, value) => setPreference(db, key, value),
-      createId: randomUUID,
-      signer,
-      chat,
-      privacy,
-      media: attachments,
     });
     const lock = createAppLock({
       read: (key) => preference(db, key),
@@ -302,16 +273,11 @@ async function start() {
       ),
       identity,
       avatars,
-      attachments,
       previews,
       mediaSdk,
       profileEditor,
       publicMetadata,
       privacy,
-      chat,
-      history,
-      conversations,
-      messaging,
       chatPreferences,
       marmotSession,
       marmotViewport,

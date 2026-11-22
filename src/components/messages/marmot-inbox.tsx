@@ -22,18 +22,21 @@ export function conversationRoute(group: string, details = false) {
 function asChat(
   row: MarmotChatRow,
   fallback: string,
+  invitationTitle: string,
 ): ChatListItem & { id: string } {
   return {
     id: row.id,
-    title:
-      row.title || (row.peer ? `${toNpub(row.peer).slice(0, 15)}…` : fallback),
+    title: row.invited
+      ? invitationTitle
+      : row.title ||
+        (row.peer ? `${toNpub(row.peer).slice(0, 15)}…` : fallback),
     kind: row.kind === "group" ? "group" : "private",
     isArchived: row.archived,
     isMuted: row.muted,
     isPinned: row.pinned,
     unreadCount: row.unread,
     lastMessage:
-      row.preview == null
+      row.invited || row.preview == null
         ? undefined
         : {
             _id: row.id,
@@ -59,12 +62,13 @@ export function MarmotInbox({
   );
   const { snapshot, window, error, retry } = useMarmotWindow(open);
   const fallback = t("messages:marmot.group");
+  const invitationTitle = t("messages:marmot.inviteRequired");
   const chats = useMemo(
     () =>
       snapshot?.rows
         .filter((row) => row.invited === invitations)
-        .map((row) => asChat(row, fallback)) ?? [],
-    [snapshot, invitations, fallback],
+        .map((row) => asChat(row, fallback, invitationTitle)) ?? [],
+    [snapshot, invitations, fallback, invitationTitle],
   );
   const page = () => {
     if (snapshot?.hasMoreAfter)

@@ -1,6 +1,11 @@
 import { firstPreviewUrl } from "../messaging/link-previews";
 import type { MarmotMessage } from "./native";
 
+type VisibleMessage = Pick<
+  MarmotMessage,
+  "id" | "sender" | "text" | "deleted" | "eventKind" | "attachments"
+>;
+
 // The active Chat Kit viewport is the authorization source for derived text
 // and preview requests. The map is cleared when the screen loses eligibility.
 export function createMarmotViewport(
@@ -8,7 +13,7 @@ export function createMarmotViewport(
   allowed: () => boolean,
   blocked: (key: string) => boolean,
 ) {
-  let live: { group: string; rows: Map<string, MarmotMessage> } | undefined;
+  let live: { group: string; rows: Map<string, VisibleMessage> } | undefined;
   const listeners = new Set<() => void>();
   const notify = () => {
     for (const listener of listeners) listener();
@@ -18,7 +23,7 @@ export function createMarmotViewport(
     if (item && !blocked(item.sender)) return item;
   }
   return {
-    update(group: string, rows: MarmotMessage[]) {
+    update(group: string, rows: VisibleMessage[]) {
       const next = {
         group,
         rows: new Map(
