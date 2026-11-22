@@ -615,10 +615,15 @@ class BoopMarmotModule : Module() {
     initializeBindings(context)
     val root = File(context.noBackupFilesDir, "marmot/$key")
     val store = AccountCredential(key, secret, File(root, "boop-credential"))
-    val kit = Marmot.newWithConfiguration(root.canonicalPath, general, MarmotOptions(
+    val directorySources = (general + discovery).distinct()
+    val kit = Marmot.newWithConfiguration(root.canonicalPath, directorySources, MarmotOptions(
       clientName = "Boop", devicePlatform = "Android", secretStore = store,
       attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
-      deployment = marmotDeploymentNeutral().copy(groupImageEndpoint = mediaOrigin, newGroupMediaEndpoints = listOfNotNull(mediaOrigin)),
+      deployment = marmotDeploymentNeutral().copy(
+        discoveryIndexerRelays = discovery,
+        groupImageEndpoint = mediaOrigin,
+        newGroupMediaEndpoints = listOfNotNull(mediaOrigin),
+      ),
     ))
     try {
       val known = kit.listAccounts()

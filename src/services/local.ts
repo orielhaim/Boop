@@ -394,8 +394,7 @@ export function LocalSessionLifecycle() {
               network.type === NetworkStateType.WIFI &&
                 network.isConnected === true,
               battery === BatteryState.CHARGING ||
-                battery === BatteryState.FULL ||
-                battery === BatteryState.NOT_CHARGING,
+                battery === BatteryState.FULL,
             );
           }
         })

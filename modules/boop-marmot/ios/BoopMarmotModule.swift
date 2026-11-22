@@ -572,9 +572,12 @@ private actor Runtime {
     let root = directory.appendingPathComponent(key, isDirectory: true)
     let store = AccountCredential(account: key, secret: secret, marker: root.appendingPathComponent("boop-credential"))
     var deployment = marmotDeploymentNeutral()
+    deployment.discoveryIndexerRelays = discovery
     deployment.groupImageEndpoint = mediaOrigin
     deployment.newGroupMediaEndpoints = mediaOrigin.map { [$0] } ?? []
-    let kit = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: general, options: MarmotOptions(
+    var seen = Set<String>()
+    let directorySources = (general + discovery).filter { seen.insert($0).inserted }
+    let kit = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: directorySources, options: MarmotOptions(
       clientName: "Boop", devicePlatform: "iOS", secretStore: store,
       attachmentAcquisitionMode: .hostManaged, deployment: deployment
     ))
