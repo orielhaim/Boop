@@ -133,17 +133,24 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
   });
   const root = getExactRoutes(context, { importMode: "lazy" });
   expect(root?.children.map((route) => route.route).sort()).toEqual([
-    "(tabs)",
+    "(messenger)",
     "call/[key]",
+    "scan",
+  ]);
+  const messenger = root?.children.find(
+    (route) => route.route === "(messenger)",
+  );
+  expect(messenger?.children.map((route) => route.route).sort()).toEqual([
+    "(tabs)",
     "chat/[key]",
     "connect",
     "person/[key]",
+    "profile-photo/[key]",
     "requests",
-    "scan",
     "settings",
   ]);
   expect(
-    root?.children
+    messenger?.children
       .find((route) => route.route === "settings")
       ?.children.map((route) => route.route)
       .sort(),
@@ -174,7 +181,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "storage",
   ]);
   expect(
-    root?.children
+    messenger?.children
       .find((route) => route.route === "(tabs)")
       ?.children.map((route) => route.route)
       .sort(),

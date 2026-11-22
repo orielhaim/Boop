@@ -1,7 +1,9 @@
+import { ScreenHeader } from "@/components/navigation/screen-header";
+import Transition from "react-native-screen-transitions";
+import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import {
   Chat,
   type ChatHandle,
-  ChatHeader,
   Composer,
   type IMessage,
   InputToolbar,
@@ -11,7 +13,7 @@ import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, Stack, useIsFocused } from "expo-router";
+import { router, useIsFocused, useNavigation } from "expo-router";
 import {
   type ComponentRef,
   useCallback,
@@ -78,7 +80,7 @@ import { namespaces } from "@/i18n";
 import { useChatPresentation, useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
 import { conversationMaterials, useChatAppearance } from "./appearance";
-import { MarmotActiveCall } from "./marmot-active-call";
+import { GroupCallHeaderButton, MarmotActiveCall } from "./marmot-active-call";
 import { conversationPhotos, MarmotAttachments } from "./marmot-attachments";
 import { useMarmotError } from "./marmot-group";
 import { conversationRoute } from "./marmot-inbox";
@@ -161,8 +163,7 @@ export function OpenMarmotDirect({ peer }: { peer: string }) {
     ? t("messages:marmot.newDirect")
     : t("messages:unavailable");
   return (
-    <Screen>
-      <Stack.Screen options={{ headerShown: true, title }} />
+    <Screen navigationHeader={<ScreenHeader title={title} />}>
       <Empty
         detail=""
         icon="chat"
@@ -210,6 +211,7 @@ export function MarmotConversationScreen({
   initialPanel?: "search" | "media";
 }) {
   const { t } = useTranslation(namespaces);
+  const navigation = useNavigation();
   const {
     identity,
     privacy,
@@ -731,7 +733,7 @@ export function MarmotConversationScreen({
     }
   }
 
-  function openProfile(view: "details" | "call") {
+  function openGroupDetails() {
     if (!liveSnapshot || liveSnapshot.invited || !focused || locked) return;
     setProfileTransition({ revision: accountRevision, snapshot: liveSnapshot });
     rememberGroupProfile(
@@ -742,13 +744,19 @@ export function MarmotConversationScreen({
         ? { hash: liveSnapshot.image, uri: groupAvatar }
         : undefined,
     );
-    router.push(conversationRoute(id, view));
+    const route = conversationRoute(id, "details");
+    router.push({
+      ...route,
+      params: {
+        ...route.params,
+        origin: `group:${id}`,
+      },
+    });
   }
 
   if (error)
     return (
-      <Screen>
-        <Stack.Screen options={{ title }} />
+      <Screen navigationHeader={<ScreenHeader title={title} />}>
         <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
           <Action onPress={retry}>{t("common:retry")}</Action>
         </Empty>
@@ -756,16 +764,13 @@ export function MarmotConversationScreen({
     );
   if (!snapshot)
     return (
-      <Screen scroll={false} topInset>
-        <Stack.Screen options={{ headerShown: false }} />
+      <Screen scroll={false} navigationHeader={<ScreenHeader title={title} />}>
+        {null}
       </Screen>
     );
 
   const menu = [
     { id: "search", title: t("messages:marmot.searchConversation") },
-    ...(!peer && snapshot.canSend
-      ? [{ id: "call", title: t("calls:startCall") }]
-      : []),
     ...(pins.length
       ? [
           {
@@ -794,9 +799,6 @@ export function MarmotConversationScreen({
         break;
       case "poll":
         if (canDispatch()) setPanel(action);
-        break;
-      case "call":
-        if (!peer && canDispatch()) openProfile("call");
         break;
       case "pins": {
         if (!pins.length) break;
@@ -832,13 +834,143 @@ export function MarmotConversationScreen({
       : "messages:marmot.searchConversation",
   );
 
+  const header = (
+    <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
+      <GlassBackButton
+        elevation="none"
+        onPress={
+          searching
+            ? closeSearch
+            : () => {
+                if (router.canGoBack()) router.back();
+                else router.replace("/");
+              }
+        }
+      />
+      {searching ? (
+        <View style={styles.headerIdentity}>
+          <Search
+            accessibilityLabel={searchLabel}
+            placeholder={searchLabel}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            maxLength={128}
+            autoFocus={panel === "search"}
+          />
+        </View>
+      ) : (
+        <>
+          <GlassSurface
+            preset="control"
+            elevation="none"
+            tint={material.panel}
+            style={[styles.headerCapsule, styles.headerIdentity]}
+          >
+            {snapshot.invited ? (
+              <Ink
+                kind="heading"
+                numberOfLines={1}
+                style={styles.invitationTitle}
+              >
+                {title}
+              </Ink>
+            ) : (
+              <Transition.Boundary
+                id={peer ? `person:${peer}` : `group:${id}`}
+                accessibilityRole="button"
+                accessibilityLabel={title}
+                style={styles.profileLink}
+                onPress={() => {
+                  tapFeedback();
+                  if (peer) {
+                    router.push({
+                      pathname: "/person/[key]",
+                      params: { key: peer, origin: `person:${peer}` },
+                    });
+                  } else openGroupDetails();
+                }}
+              >
+                <Transition.Boundary.Target>
+                  <GlassAvatar
+                    size="md"
+                    name={title}
+                    src={peer ? avatar : groupAvatar}
+                  />
+                </Transition.Boundary.Target>
+                <Ink
+                  kind="heading"
+                  numberOfLines={1}
+                  style={styles.profileName}
+                >
+                  {title}
+                </Ink>
+              </Transition.Boundary>
+            )}
+          </GlassSurface>
+          {!snapshot.invited && (
+            <GlassSurface
+              preset="control"
+              elevation="none"
+              tint={material.panel}
+              style={[styles.headerCapsule, styles.headerActions]}
+            >
+              {peer && !blocked && (
+                <>
+                  <IconButton
+                    icon="phone"
+                    label={t("messages:call")}
+                    tone="plain"
+                    onPress={() => {
+                      if (!privacy.isBlocked(peer))
+                        router.push({
+                          pathname: "/call/[key]",
+                          params: { key: peer },
+                        });
+                    }}
+                  />
+                  <IconButton
+                    icon="camera"
+                    label={t("messenger:video")}
+                    tone="plain"
+                    onPress={() => {
+                      if (!privacy.isBlocked(peer))
+                        router.push({
+                          pathname: "/call/[key]",
+                          params: { key: peer, video: "1" },
+                        });
+                    }}
+                  />
+                </>
+              )}
+              {!peer && canSend && (
+                <GroupCallHeaderButton
+                  canDispatch={() => navigation.isFocused() && canDispatch()}
+                />
+              )}
+              <ActionMenu
+                label={t("messages:marmot.chatOptions")}
+                actions={menu}
+                onSelect={selectMenuAction}
+              >
+                <View style={styles.menuButton}>
+                  <View style={styles.verticalMenu}>
+                    <Icon name="more" color={kit.colors.text} />
+                  </View>
+                </View>
+              </ActionMenu>
+            </GlassSurface>
+          )}
+        </>
+      )}
+    </View>
+  );
+
   return (
     <ScreenInsets
       edges={["top", "left", "right"]}
       pointerEvents={liveSnapshot ? "auto" : "none"}
       style={[styles.screen, { backgroundColor: kit.colors.background }]}
     >
-      <Stack.Screen options={{ headerShown: false }} />
       <LinearGradient
         pointerEvents="none"
         colors={material.canvas}
@@ -858,108 +990,16 @@ export function MarmotConversationScreen({
           ]}
         />
       )}
-      <GlassSurface
-        preset="standard"
-        elevation="none"
-        tint={material.panel}
-        style={styles.header}
-      >
-        {searching ? (
-          <View
-            style={[
-              styles.searchHeader,
-              { direction: kit.rtl ? "rtl" : "ltr" },
-            ]}
-          >
-            <GlassBackButton onPress={closeSearch} />
-            <View style={styles.searchField}>
-              <Search
-                accessibilityLabel={searchLabel}
-                placeholder={searchLabel}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                maxLength={128}
-                autoFocus={panel === "search"}
-              />
-            </View>
-          </View>
-        ) : (
-          <ChatHeader
-            {...kit}
-            title={title}
-            avatar={
-              snapshot.invited
-                ? undefined
-                : { id: peer ?? id, uri: peer ? avatar : groupAvatar }
-            }
-            onBack={() => {
-              tapFeedback();
-              if (router.canGoBack()) router.back();
-              else router.replace("/");
-            }}
-            onPressTitle={
-              snapshot.invited
-                ? undefined
-                : peer
-                  ? () =>
-                      router.push({
-                        pathname: "/person/[key]",
-                        params: { key: peer },
-                      })
-                  : () => openProfile("details")
-            }
-            renderRight={
-              snapshot.invited
-                ? undefined
-                : () => (
-                    <View style={styles.headerActions}>
-                      {peer && !blocked && (
-                        <IconButton
-                          icon="phone"
-                          label={t("messages:call")}
-                          onPress={() => {
-                            if (!privacy.isBlocked(peer))
-                              router.push({
-                                pathname: "/call/[key]",
-                                params: { key: peer },
-                              });
-                          }}
-                        />
-                      )}
-                      {peer && !blocked && (
-                        <IconButton
-                          icon="camera"
-                          label={t("messenger:video")}
-                          onPress={() =>
-                            router.push({
-                              pathname: "/call/[key]",
-                              params: { key: peer, video: "1" },
-                            })
-                          }
-                        />
-                      )}
-                      <ActionMenu
-                        label={t("messages:marmot.chatOptions")}
-                        actions={menu}
-                        onSelect={selectMenuAction}
-                      >
-                        <View
-                          style={[
-                            styles.menuButton,
-                            { backgroundColor: kit.colors.accentSoft },
-                          ]}
-                        >
-                          <Icon name="more" color={kit.colors.accent} />
-                        </View>
-                      </ActionMenu>
-                    </View>
-                  )
-            }
-            isTopInsetApplied={false}
-            style={styles.headerContent}
-          />
-        )}
-      </GlassSurface>
+      {!peer && !searching && canSend ? (
+        <MarmotActiveCall
+          group={id}
+          members={mentionRoster.members}
+          canStart
+          header={header}
+        />
+      ) : (
+        header
+      )}
       {snapshot.invited ? (
         <MarmotInvitation
           id={id}
@@ -969,13 +1009,6 @@ export function MarmotConversationScreen({
         />
       ) : (
         <>
-          {!peer && !searching && snapshot.canSend && (
-            <MarmotActiveCall
-              group={id}
-              members={mentionRoster.members}
-              canStart={false}
-            />
-          )}
           {upload && (
             <View style={styles.uploadStatus}>
               <Ink kind="caption">
@@ -1618,35 +1651,34 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   contours: { width: "100%", height: "100%", opacity: 0.25 },
   header: {
-    borderRadius: radius.card,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs + 2,
     zIndex: 1,
     marginHorizontal: space.sm,
     marginTop: space.xs,
     marginBottom: space.sm,
   },
-  headerContent: {
-    backgroundColor: "transparent",
-    boxShadow: "none",
-    paddingEnd: space.xs,
-    borderRadius: radius.card,
-  },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: space.xs },
-  searchHeader: {
+  headerCapsule: { minHeight: 44, borderRadius: radius.round },
+  headerIdentity: { flex: 1, minWidth: 0, justifyContent: "center" },
+  profileLink: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 56,
-    paddingStart: space.xs,
-    paddingEnd: space.sm,
+    minHeight: 44,
     gap: space.sm,
+    paddingStart: 2,
+    paddingEnd: space.md,
   },
-  searchField: { flex: 1 },
+  profileName: { flex: 1, fontSize: 16 },
+  invitationTitle: { paddingHorizontal: space.md, fontSize: 16 },
+  headerActions: { flexDirection: "row", alignItems: "center" },
   menuButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
+  verticalMenu: { transform: [{ rotate: "90deg" }] },
   chat: { flex: 1 },
   invitation: { padding: space.md, gap: space.sm },
 });

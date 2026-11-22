@@ -60,10 +60,16 @@ export default function ScanAddress() {
                 return;
               }
               locked.current = true;
-              router.replace({
+              const profile = {
                 pathname: "/person/[key]",
                 params: { key, reference: data },
-              });
+              } as const;
+              if (router.canGoBack()) {
+                router.back();
+                router.push(profile);
+              } else {
+                router.replace(profile, { withAnchor: true });
+              }
             }}
           />
         ) : null}

@@ -50,6 +50,8 @@ import {
 } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 
+export const unstable_settings = { initialRouteName: "(messenger)" };
+
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
@@ -163,7 +165,7 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
   const { t, i18n } = useTranslation(namespaces);
   const deviceLanguage = useLocales()[0]?.languageCode;
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const { db, calling, lock } = data;
   const chatsEnabled = useSyncExternalStore(
     data.chatPreferences.subscribe,
@@ -244,27 +246,17 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
               <Stack
                 screenOptions={({ navigation }) => ({
                   ...glassStackBack(navigation.goBack),
+                  animation: reduceMotion ? "none" : undefined,
                   contentStyle: { backgroundColor: colors.background },
                 })}
               >
-                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="(messenger)"
+                  options={{ headerShown: false }}
+                />
                 <Stack.Screen
                   name="call/[key]"
                   options={{ headerShown: false, presentation: "card" }}
-                />
-                <Stack.Protected guard={chatsEnabled}>
-                  <Stack.Screen
-                    name="chat/[key]"
-                    options={{ headerShown: false }}
-                  />
-                  <Stack.Screen
-                    name="requests"
-                    options={{ title: t("security:pendingRequests") }}
-                  />
-                </Stack.Protected>
-                <Stack.Screen
-                  name="person/[key]"
-                  options={{ headerShown: false }}
                 />
                 <Stack.Screen
                   name="scan"
@@ -272,17 +264,6 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
                     title: t("navigation:scan"),
                     presentation: "modal",
                   }}
-                />
-                <Stack.Screen
-                  name="connect"
-                  options={{
-                    title: t("navigation:connect"),
-                    presentation: "modal",
-                  }}
-                />
-                <Stack.Screen
-                  name="settings"
-                  options={{ headerShown: false }}
                 />
               </Stack>
               {!obscured && <CallIndicator />}

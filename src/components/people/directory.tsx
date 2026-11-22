@@ -1,14 +1,9 @@
+import Transition from "react-native-screen-transitions";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { router, useIsFocused } from "expo-router";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ActivityIndicator,
-  Keyboard,
-  Pressable,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, Keyboard, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { CallHistory } from "@/components/calls/call-history";
 import { GlassInput } from "@/components/glassyui/glass-input";
@@ -361,7 +356,8 @@ function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
   );
   const address = toNpub(publicKey);
   return (
-    <Pressable
+    <Transition.Boundary
+      id={`person:${publicKey}`}
       style={styles.row}
       accessibilityRole="button"
       accessibilityLabel={t("contacts:openProfile", { name })}
@@ -369,16 +365,22 @@ function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
         tapFeedback();
         router.push({
           pathname: "/person/[key]",
-          params: { key: publicKey, ...(reference ? { reference } : {}) },
+          params: {
+            key: publicKey,
+            origin: `person:${publicKey}`,
+            ...(reference ? { reference } : {}),
+          },
         });
       }}
     >
-      <PersonAvatar
-        publicKey={publicKey}
-        name={name}
-        photo={photo}
-        hasName={Boolean(contact?.name || profile?.name)}
-      />
+      <Transition.Boundary.Target>
+        <PersonAvatar
+          publicKey={publicKey}
+          name={name}
+          photo={photo}
+          hasName={Boolean(contact?.name || profile?.name)}
+        />
+      </Transition.Boundary.Target>
       <View style={styles.info}>
         <Ink kind="label" numberOfLines={1}>
           {name}
@@ -396,7 +398,7 @@ function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
       ) : (
         <Icon name="next" size={18} />
       )}
-    </Pressable>
+    </Transition.Boundary>
   );
 }
 const styles = StyleSheet.create({

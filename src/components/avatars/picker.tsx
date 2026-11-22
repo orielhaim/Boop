@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
 import { Image } from "expo-image";
 import {
@@ -115,10 +116,15 @@ type CropProps = {
 
 export function AvatarCropScreen({
   topInset,
+  navigationHeader,
   ...props
-}: CropProps & { topInset?: boolean }) {
+}: CropProps & { topInset?: boolean; navigationHeader?: ReactNode }) {
   return (
-    <Screen scroll={false} topInset={topInset}>
+    <Screen
+      scroll={false}
+      topInset={topInset}
+      navigationHeader={navigationHeader}
+    >
       <View style={styles.editor}>
         <CropPhoto {...props} />
       </View>

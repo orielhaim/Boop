@@ -1,3 +1,4 @@
+import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import {
   ChatList,
@@ -5,7 +6,7 @@ import {
   type ChatListCellProps,
   type ChatListItem,
 } from "@kesha-antonov/react-native-chat";
-import { router, Stack } from "expo-router";
+import { router } from "expo-router";
 import {
   useCallback,
   useDeferredValue,
@@ -50,6 +51,7 @@ function asChat(
   fallback: string,
   invitationTitle: string,
   preview: string | undefined,
+  emptyPreview?: string,
 ): ChatRow {
   return {
     id: row.id,
@@ -71,6 +73,7 @@ function asChat(
     isPinned: row.pinned,
     unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
     draft: row.invited ? undefined : (row.draft ?? undefined),
+    emptyPreview,
     lastMessage:
       row.invited || preview == null
         ? undefined
@@ -90,11 +93,11 @@ export function MarmotInbox({
 }) {
   const { t } = useTranslation(namespaces);
   const { identity, privacy, chatPreferences, db } = useLocal();
+  const showSheet = useIdentitySheet();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const kit = useChatAppearance();
   const onScroll = useMinimizeOnScroll();
   const [archived, setArchived] = useState(false);
-  const showSheet = useIdentitySheet();
   const [search, setSearch] = useState<string | null>(null);
   const term = useDeferredValue(search)?.trim();
   const { inbox, archive, invitations: pending } = useMarmotChatLists();
@@ -188,7 +191,17 @@ export function MarmotInbox({
           );
         }
       }
-      return asChat(row, fallback, invitationTitle, preview);
+      const emptyPreview =
+        !row.invited &&
+        row.membership === "member" &&
+        row.kind !== "unknown" &&
+        row.previewId == null &&
+        row.previewKind == null &&
+        row.previewSender == null &&
+        row.preview == null
+          ? t("messages:sayHello")
+          : undefined;
+      return asChat(row, fallback, invitationTitle, preview, emptyPreview);
     });
   const page = () => {
     if (snapshot?.hasMoreAfter)
@@ -202,10 +215,15 @@ export function MarmotInbox({
   }
 
   return (
-    <Screen tab={!invitations} scroll={false}>
-      {invitations && (
-        <Stack.Screen options={{ title: t("messages:marmot.invitations") }} />
-      )}
+    <Screen
+      tab={!invitations}
+      scroll={false}
+      navigationHeader={
+        invitations ? (
+          <ScreenHeader title={t("messages:marmot.invitations")} />
+        ) : undefined
+      }
+    >
       <ChatList<ChatRow>
         {...kit}
         chats={chats}

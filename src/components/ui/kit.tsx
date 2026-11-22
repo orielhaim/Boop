@@ -169,7 +169,7 @@ export function IconButton({
   label: string;
   onPress?: () => void;
   disabled?: boolean;
-  tone?: "normal" | "danger" | "accent";
+  tone?: "normal" | "danger" | "accent" | "plain";
 }) {
   const { colors, reduceMotion } = useTheme();
   const scale = useSharedValue(1);
@@ -181,13 +181,17 @@ export function IconButton({
       ? colors.danger
       : tone === "accent"
         ? colors.outgoing
-        : colors.accentSoft;
+        : tone === "plain"
+          ? "transparent"
+          : colors.accentSoft;
   const tint =
     tone === "danger"
       ? colors.onDanger
       : tone === "accent"
         ? colors.outgoingInk
-        : colors.accent;
+        : tone === "plain"
+          ? colors.text
+          : colors.accent;
   const animate = (value: number) => {
     scale.set(
       withSpring(value, {
@@ -271,12 +275,14 @@ export function Screen({
   topInset = false,
   onScroll,
   compact = false,
+  navigationHeader,
 }: {
   children: ReactNode;
   scroll?: boolean;
   tab?: boolean;
   topInset?: boolean;
   compact?: boolean;
+  navigationHeader?: ReactNode;
   onScroll?: React.ComponentProps<typeof Animated.ScrollView>["onScroll"];
 }) {
   const { colors } = useTheme();
@@ -285,12 +291,13 @@ export function Screen({
       edges={
         tab
           ? ["top", "left", "right"]
-          : topInset
+          : topInset || navigationHeader
             ? ["top", "left", "right", "bottom"]
             : ["left", "right", "bottom"]
       }
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
+      {navigationHeader}
       {scroll && onScroll ? (
         <Animated.ScrollView
           keyboardShouldPersistTaps="handled"

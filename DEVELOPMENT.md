@@ -1,6 +1,6 @@
 # Development
 
-Start with `bun install --frozen-lockfile`. Run `bun run android` or, on macOS with Xcode, `bun run ios` to generate and build the native project. Start Metro with `bun start`.
+Start with `bun install --frozen-lockfile`. Run `bun run android` or, on macOS with Xcode, `bun run ios` to generate and build the native project. Start Metro with `bun start`. Open the active server from the Expo terminal or select it in the development launcher. Opening a development build from its icon takes you to the launcher so it cannot automatically retry a stale Metro bundle. Standalone builds open Boop directly.
 
 ## Reset a development database
 
@@ -59,6 +59,14 @@ Profile photo and banner URLs go through the same native destination, download, 
 Android reports per-app transmitted and received bytes across all interfaces since the last boot through [TrafficStats](https://developer.android.com/reference/android/net/TrafficStats). Both platforms report the current connection type. iOS does not expose a public per-app traffic total.
 
 The interactive donut uses [Gifted Charts 1.4.83](https://www.npmjs.com/package/react-native-gifted-charts/v/1.4.83) with Boop’s existing SVG and Expo gradient dependencies. [Victory Native](https://github.com/FormidableLabs/victory-native-xl) also supports pie charts and requires adding Skia.
+
+## Navigation and motion
+
+The root native stack owns the call screen and camera scanner. The pathless `(messenger)` group keeps public paths such as `/chat/[key]`, `/person/[key]`, and `/settings`. It uses Screen Transitions 4.2.0 through Expo Router's standard navigator API. Settings uses a nested BlankStack with the same horizontal motion and edge gestures.
+
+The glass dock uses the Expo Router headless tab state. Its Reanimated adapter slides the previous tab and the selected tab using the dock's displayed order, including the optional Calls tab and Hebrew RTL. A tab keeps its mounted state after its first visit. Back gestures belong to the stack, so horizontal gestures inside Chat Kit stay available.
+
+Keep transition presets in `src/components/navigation/motion.ts`. People rows and chat headers can supply measured avatar bounds to profile and group details. A missing source falls back to the standard push. The fullscreen profile photo uses the existing local avatar resolver without starting a download. New Conversation and identity QR use the protected GlassSheet host. The Chat Kit attachment viewer has its own presentation. App Lock covers the entire navigator and its overlays.
 
 ## Messaging and identity
 

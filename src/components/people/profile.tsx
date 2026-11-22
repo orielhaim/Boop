@@ -1,3 +1,5 @@
+import { ScreenHeader } from "@/components/navigation/screen-header";
+import Transition from "react-native-screen-transitions";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -53,7 +55,9 @@ export function PersonProfile({
       tab={tab}
     />
   ) : (
-    <Screen>
+    <Screen
+      navigationHeader={<ScreenHeader title={t("contacts:unavailable")} />}
+    >
       <Empty
         icon="person"
         title={t("contacts:unavailable")}
@@ -93,6 +97,9 @@ function ProfileContent({
   );
   const { contact, profile, photo, name } = usePerson(publicKey);
   const own = identity.publicKey === publicKey;
+  const canViewPhoto =
+    !!photo &&
+    (own || avatars.autoLoads(publicKey) || avatars.hasOverride(publicKey));
   const pendingProfile = own ? draft : undefined;
   const localName = !profile?.name ? pendingProfile?.name : undefined;
   const banner = useAvatar(publicKey, true, true);
@@ -267,7 +274,23 @@ function ProfileContent({
           </View>
         </View>
         <View style={styles.identityLine}>
-          <View style={[styles.avatar, { backgroundColor: colors.background }]}>
+          <Transition.Boundary
+            id={`avatar:${publicKey}`}
+            accessibilityRole={canViewPhoto ? "button" : undefined}
+            accessibilityLabel={
+              canViewPhoto ? t("messenger:viewProfilePhoto") : undefined
+            }
+            {...(canViewPhoto
+              ? {
+                  onPress: () =>
+                    router.push({
+                      pathname: "/profile-photo/[key]",
+                      params: { key: publicKey, origin: `avatar:${publicKey}` },
+                    }),
+                }
+              : {})}
+            style={[styles.avatar, { backgroundColor: colors.background }]}
+          >
             <PersonAvatar
               publicKey={publicKey}
               name={displayName}
@@ -275,7 +298,7 @@ function ProfileContent({
               hasName={Boolean(localName || contact?.name || profile?.name)}
               size="xl"
             />
-          </View>
+          </Transition.Boundary>
           <View style={styles.identity}>
             <Ink
               kind="heading"

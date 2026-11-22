@@ -1,8 +1,10 @@
 import { router } from "expo-router";
 import {
   type ComponentProps,
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -12,7 +14,14 @@ import {
 import { useTranslation } from "react-i18next";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { useStore } from "zustand";
-import { Action, Card, Icon, Ink, tapFeedback } from "@/components/ui/kit";
+import {
+  Action,
+  Card,
+  Icon,
+  IconButton,
+  Ink,
+  tapFeedback,
+} from "@/components/ui/kit";
 import { discoverGroupCall } from "@/core/calling/group-presence";
 import { marmot } from "@/core/marmot/native";
 import { useMarmotWindow } from "./marmot-window";
@@ -20,16 +29,55 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
+type GroupCallStart = { disabled: boolean; onPress: () => void };
+const GroupCallStartContext = createContext<GroupCallStart | null>(null);
+
+export function GroupCallHeaderButton({
+  canDispatch,
+}: {
+  canDispatch: () => boolean;
+}) {
+  const { t } = useTranslation(namespaces);
+  const start = useContext(GroupCallStartContext);
+  return (
+    <IconButton
+      icon="phone"
+      tone="plain"
+      label={t("messages:marmot.startGroupCall")}
+      disabled={!start || start.disabled}
+      onPress={() => {
+        if (!start || start.disabled || !canDispatch()) return;
+        Alert.alert(
+          t("messages:marmot.confirmGroupCall"),
+          t("messages:marmot.confirmGroupCallHint"),
+          [
+            { text: t("common:cancel"), style: "cancel" },
+            {
+              text: t("calls:startCall"),
+              onPress: () => {
+                if (canDispatch()) start.onPress();
+              },
+            },
+          ],
+          { cancelable: true },
+        );
+      }}
+    />
+  );
+}
+
 export function MarmotActiveCall({
   group,
   members,
   canStart,
   profileActions,
+  header,
 }: {
   group: string;
   members?: readonly { id: string; name?: string | null; label?: string }[];
   canStart: boolean;
   profileActions?: ReactNode;
+  header?: ReactNode;
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
@@ -108,6 +156,28 @@ export function MarmotActiveCall({
       Alert.alert(t("messages:marmot.groupCallUnavailable"));
   }, [lockState.locked, t, unavailable]);
 
+  const startGroupCall = useCallback(() => {
+    const window = discovery.window?.getState();
+    const currentLock = lock.getState();
+    if (currentLock.locked || !currentLock.active || window?.status !== "ready")
+      return;
+    const latest = discoverGroupCall(
+      window.snapshot.announcements,
+      (key) => roster.has(key) && !privacy.isBlocked(key),
+    );
+    const unavailable = calling.store.getState().unavailableGroupCall;
+    if (
+      latest &&
+      (unavailable?.callId !== latest.call || unavailable.at < latest.updatedAt)
+    )
+      return;
+    void calling.startGroup(group).then((started) => {
+      if (started)
+        pending.current = calling.store.getState().groupLobby?.callId;
+      else Alert.alert(t("messages:marmot.groupCallStartFailed"));
+    });
+  }, [calling, discovery.window, group, lock, privacy, roster, t]);
+
   if (lockState.locked) return null;
   const active =
     discovered &&
@@ -122,10 +192,15 @@ export function MarmotActiveCall({
   const isJoining = state.joining?.groupId === group;
   if (!current && !lobby && !active && !isJoining) {
     if (!canStart)
-      return profileActions ? (
-        <GroupShortcuts>{profileActions}</GroupShortcuts>
-      ) : null;
-    const start = {
+      return (
+        <>
+          <GroupCallStartContext.Provider value={null}>
+            {header}
+          </GroupCallStartContext.Provider>
+          {profileActions && <GroupShortcuts>{profileActions}</GroupShortcuts>}
+        </>
+      );
+    const start: GroupCallStart = {
       disabled:
         !announcements ||
         Boolean(
@@ -133,14 +208,16 @@ export function MarmotActiveCall({
           state.joining ||
           (state.call && state.call.phase !== "ended"),
         ),
-      onPress() {
-        void calling.startGroup(group).then((started) => {
-          if (started)
-            pending.current = calling.store.getState().groupLobby?.callId;
-          else Alert.alert(t("messages:marmot.groupCallStartFailed"));
-        });
-      },
+      onPress: startGroupCall,
     };
+    if (header)
+      return (
+        <>
+          <GroupCallStartContext.Provider value={start}>
+            {header}
+          </GroupCallStartContext.Provider>
+        </>
+      );
     if (profileActions)
       return (
         <GroupShortcuts>
@@ -172,6 +249,9 @@ export function MarmotActiveCall({
     .filter(Boolean);
   return (
     <>
+      <GroupCallStartContext.Provider value={null}>
+        {header}
+      </GroupCallStartContext.Provider>
       {profileActions && <GroupShortcuts>{profileActions}</GroupShortcuts>}
       <View
         style={[

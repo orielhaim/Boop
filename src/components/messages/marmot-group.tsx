@@ -1,4 +1,5 @@
-import { router, Stack, useIsFocused, usePreventRemove } from "expo-router";
+import { ScreenHeader } from "@/components/navigation/screen-header";
+import { router, useIsFocused, usePreventRemove } from "expo-router";
 import type { File } from "expo-file-system";
 import { asc } from "drizzle-orm";
 import {
@@ -707,29 +708,26 @@ export function MarmotGroupDetailsScreen({
 
   if (editing && canEdit && picker.image)
     return (
-      <>
-        <Stack.Screen
-          options={{
-            headerShown: true,
-            title: t("settings:photoChange"),
-            headerRight: undefined,
-          }}
-        />
-        <AvatarCropScreen
-          source={picker.image}
-          onCancel={picker.clear}
-          onSave={(file) => {
-            picker.clear();
-            void update(async () => {
-              try {
-                await marmot.updateGroupImage(id, imagePath(file));
-              } finally {
-                cleanImage(file);
-              }
-            });
-          }}
-        />
-      </>
+      <AvatarCropScreen
+        navigationHeader={
+          <ScreenHeader
+            title={t("settings:photoChange")}
+            onBack={picker.clear}
+          />
+        }
+        source={picker.image}
+        onCancel={picker.clear}
+        onSave={(file) => {
+          picker.clear();
+          void update(async () => {
+            try {
+              await marmot.updateGroupImage(id, imagePath(file));
+            } finally {
+              cleanImage(file);
+            }
+          });
+        }}
+      />
     );
 
   const title = details?.pendingInvitation
@@ -750,13 +748,14 @@ export function MarmotGroupDetailsScreen({
     (editing && !canEdit)
   )
     return (
-      <Screen topInset={!editing && !details?.pendingInvitation}>
-        <Stack.Screen
-          options={{
-            headerShown: editing || !!details?.pendingInvitation,
-            title: editing || details?.pendingInvitation ? title : "",
-          }}
-        />
+      <Screen
+        topInset
+        navigationHeader={
+          editing || details?.pendingInvitation ? (
+            <ScreenHeader title={title} onBack={back} />
+          ) : undefined
+        }
+      >
         {!editing && !details?.pendingInvitation && (
           <GroupProfileHeader
             name={initial?.title ?? details?.name}
@@ -1011,26 +1010,28 @@ export function MarmotGroupDetailsScreen({
   }
 
   return (
-    <Screen topInset={!editing}>
-      <Stack.Screen
-        options={{
-          headerShown: editing,
-          title: editing ? title : "",
-          headerShadowVisible: false,
-          headerRight:
-            editing && isGroup
-              ? () => (
-                  <Action
-                    size="sm"
-                    disabled={!canSaveProfile}
-                    onPress={saveProfile}
-                  >
-                    {t("messages:marmot.save")}
-                  </Action>
-                )
-              : undefined,
-        }}
-      />
+    <Screen
+      topInset
+      navigationHeader={
+        editing ? (
+          <ScreenHeader
+            title={title}
+            onBack={back}
+            action={
+              isGroup ? (
+                <Action
+                  size="sm"
+                  disabled={!canSaveProfile}
+                  onPress={saveProfile}
+                >
+                  {t("messages:marmot.save")}
+                </Action>
+              ) : undefined
+            }
+          />
+        ) : undefined
+      }
+    >
       {editing ? (
         <>
           {isGroup && (
