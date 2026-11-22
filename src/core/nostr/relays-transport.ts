@@ -433,6 +433,57 @@ export function createNostrRelays(signer: NDKSigner) {
         (event) => onEvent(event.rawEvent(), event.pubkey),
         onEose,
       ),
+    searchProfiles(
+      targets: NDKRelay[],
+      query: string,
+      onEvent: (event: unknown, author: string) => void,
+      onEose: () => void,
+    ) {
+      return subscription(
+        targets,
+        { kinds: [0], search: query, limit: 24 },
+        (event) => onEvent(event.rawEvent(), event.pubkey),
+        onEose,
+        true,
+      );
+    },
+    async lookupProfileHints(
+      author: string,
+      hints: string[],
+      onEvent: (event: unknown, author: string) => void,
+      signal: AbortSignal,
+    ) {
+      const targets = secureRelays(hints)
+        .filter(isPublicRelayAddress)
+        .slice(0, 3)
+        .map(getRelay);
+      await withRelays(targets, async () => {
+        await Promise.all(targets.map(connect));
+        const ready = targets.filter(connected);
+        if (!ready.length || signal.aborted) return;
+        await new Promise<void>((resolve) => {
+          let stop: (() => void) | undefined;
+          const timer = setTimeout(finish, timeout);
+          function finish() {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", finish);
+            stop?.();
+            resolve();
+          }
+          signal.addEventListener("abort", finish, { once: true });
+          stop = subscription(
+            ready,
+            { kinds: [0], authors: [author], limit: 2 },
+            (event) => {
+              if (!signal.aborted && event.pubkey === author)
+                onEvent(event.rawEvent(), author);
+            },
+            finish,
+            true,
+          );
+        });
+      });
+    },
     async publishReplaceable(
       kind: number,
       content: string,

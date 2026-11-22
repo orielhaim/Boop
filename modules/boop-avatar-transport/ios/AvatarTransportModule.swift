@@ -37,6 +37,9 @@ public final class AvatarTransportModule: Module {
     AsyncFunction("download") { (id: String, url: String, output: String, hash: String?, attachmentLimit: Int?, promise: Promise) in
       self.transfer(id, url, output, hash, attachmentLimit, nil, promise)
     }
+    AsyncFunction("downloadNip05") { (id: String, url: String, output: String, promise: Promise) in
+      self.transfer(id, url, output, nil, nil, false, promise, nip05: true)
+    }
     AsyncFunction("downloadPreview") { (id: String, url: String, output: String, image: Bool, promise: Promise) in
       self.transfer(id, url, output, nil, nil, image, promise)
     }
@@ -78,7 +81,7 @@ public final class AvatarTransportModule: Module {
   }
 
   private func transfer(_ id: String, _ url: String, _ output: String, _ hash: String?,
-                        _ attachmentLimit: Int?, _ previewImage: Bool?, _ promise: Promise) {
+                        _ attachmentLimit: Int?, _ previewImage: Bool?, _ promise: Promise, nip05: Bool = false) {
       guard let job = self.getJob(id) else {
         promise.reject("AVATAR_UNAVAILABLE", "Avatar operation missing")
         return
@@ -87,7 +90,7 @@ public final class AvatarTransportModule: Module {
         defer { self.removeJob(id) }
         do {
           guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
-          let size = try await downloadMedia(url, output, hash, attachmentLimit, previewImage, job) { received, total in
+          let size = try await downloadMedia(url, output, hash, attachmentLimit, previewImage, job, nip05: nip05) { received, total in
             self.sendEvent("attachmentProgress", ["id": id, "received": received, "total": total])
           }
           promise.resolve(size)
@@ -146,12 +149,12 @@ private let maxBytes = 2 * 1024 * 1024
 
 @available(iOS 17.0, *)
 private func downloadMedia(
-  _ input: String, _ output: String, _ hash: String?, _ attachmentLimit: Int?, _ previewImage: Bool?, _ job: DownloadJob,
+  _ input: String, _ output: String, _ hash: String?, _ attachmentLimit: Int?, _ previewImage: Bool?, _ job: DownloadJob, nip05: Bool,
   _ progress: (Int, Int64) -> Void
 ) async throws -> Int {
-  let html = previewImage == false
-  let images = attachmentLimit == nil && !html
-  let limit = html ? 512 * 1024 : attachmentLimit ?? maxBytes
+  let html = previewImage == false && !nip05
+  let images = attachmentLimit == nil && !html && !nip05
+  let limit = nip05 ? 64 * 1024 : html ? 512 * 1024 : attachmentLimit ?? maxBytes
   guard attachmentLimit == nil || ((17...(32 * 1024 * 1024)).contains(limit) &&
     hash?.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil)
   else { throw AvatarTransferError.destination }
@@ -189,7 +192,7 @@ private func downloadMedia(
   let session = URLSession(configuration: configuration, delegate: NoAvatarRedirect(), delegateQueue: nil)
   defer { session.invalidateAndCancel() }
   var request = URLRequest(url: url)
-  request.setValue(html ? "text/html" : images ? "image/jpeg, image/png, image/webp" : "*/*", forHTTPHeaderField: "Accept")
+  request.setValue(nip05 ? "application/json" : html ? "text/html" : images ? "image/jpeg, image/png, image/webp" : "*/*", forHTTPHeaderField: "Accept")
   request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
   try job.check()
   let (stream, response) = try await session.bytes(for: request)
@@ -199,6 +202,7 @@ private func downloadMedia(
   guard let http = response as? HTTPURLResponse, http.statusCode == 200,
         !images || imageTypes.contains(response.mimeType ?? ""),
         !html || response.mimeType == "text/html",
+        !nip05 || response.mimeType == "application/json" || response.mimeType == "text/plain",
         response.expectedContentLength <= limit
   else { throw AvatarTransferError.response }
   if attachmentLimit != nil {

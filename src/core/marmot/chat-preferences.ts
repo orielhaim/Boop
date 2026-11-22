@@ -3,10 +3,40 @@ import { preference, setPreference } from "@/db/queries";
 import { z } from "zod";
 
 const key = "chat.enabled";
+const presentationKey = "chat.presentation";
+
+export const chatPresentationControls = {
+  textSize: { min: 12, max: 28, step: 1, initial: 16 },
+  rounding: { min: 0, max: 28, step: 2, initial: 18 },
+};
+
+const presentationValue = (control: keyof typeof chatPresentationControls) => {
+  const { min, max, step, initial } = chatPresentationControls[control];
+  return z.number().int().min(min).max(max).multipleOf(step).catch(initial);
+};
+
+const chatPresentation = z.object({
+  textSize: presentationValue("textSize"),
+  rounding: presentationValue("rounding"),
+});
+
+export type ChatPresentation = z.infer<typeof chatPresentation>;
+
+function readPresentation(db: Database): ChatPresentation {
+  try {
+    return chatPresentation.parse(
+      JSON.parse(preference(db, presentationKey) ?? "{}"),
+    );
+  } catch {
+    return chatPresentation.parse({});
+  }
+}
 
 export function createChatPreferences(db: Database) {
   let enabled = preference(db, key) !== "false";
   const listeners = new Set<() => void>();
+  const presentationListeners = new Set<() => void>();
+  let presentation = readPresentation(db);
   const messageLists = new Map<string, readonly string[]>();
   const messageIds = z.array(z.string());
   function list(group: string, kind: "pin" | "hidden" | "listened") {
@@ -42,6 +72,23 @@ export function createChatPreferences(db: Database) {
     for (const listener of listeners) listener();
   }
   return {
+    presentation: () => presentation,
+    setPresentation(control: keyof ChatPresentation, value: number) {
+      const next = chatPresentation.parse({
+        ...presentation,
+        [control]: Math.round(value),
+      });
+      if (next[control] === presentation[control]) return;
+      setPreference(db, presentationKey, JSON.stringify(next));
+      presentation = next;
+      for (const listener of presentationListeners) listener();
+    },
+    subscribePresentation(listener: () => void) {
+      presentationListeners.add(listener);
+      return () => {
+        presentationListeners.delete(listener);
+      };
+    },
     pinned: (group: string) => list(group, "pin"),
     hidden: (group: string) => list(group, "hidden"),
     listened: (group: string) => list(group, "listened"),

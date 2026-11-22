@@ -143,6 +143,7 @@ export function MarmotAttachments({
   gallery: GalleryPhoto[];
 }) {
   const [selected, setSelected] = useState<number>();
+  const { reduceMotion } = useTheme();
   const assets = useMemo(() => {
     const source = row.sourceId;
     if (!source) return [];
@@ -171,7 +172,7 @@ export function MarmotAttachments({
       ))}
       {galleryIndex >= 0 && (
         <Modal
-          animationType="fade"
+          animationType={reduceMotion ? "none" : "fade"}
           visible
           onRequestClose={() => setSelected(undefined)}
         >

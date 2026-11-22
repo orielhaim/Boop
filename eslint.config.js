@@ -4,6 +4,11 @@ const expo = require("eslint-config-expo/flat");
 module.exports = defineConfig([
   expo,
   {
-    ignores: ["src/components/glassyui/**", "src/db/migrations/**", "dist/**"],
+    ignores: [
+      "src/components/glassyui/**",
+      "src/db/migrations/**",
+      "dist/**",
+      "modules/boop-marmot/sdk/**",
+    ],
   },
 ]);

@@ -63,14 +63,53 @@ export function replaces(
   );
 }
 
+export function profileDetails(fields: Record<string, unknown> | undefined) {
+  const text = (value: unknown, limit: number) =>
+    typeof value === "string" && value.length <= limit
+      ? value.trim() || undefined
+      : undefined;
+  const url = (value: unknown) =>
+    typeof value === "string" && value.length <= 2048
+      ? publicImageUrl(value)?.href
+      : undefined;
+  return {
+    name: text(fields?.name, 128),
+    about: text(fields?.about, 1000),
+    banner: url(fields?.banner),
+    website: url(fields?.website),
+    nip05: text(fields?.nip05, 254),
+    bot: fields?.bot === true,
+  };
+}
+
 export function updateProfileFields(
   fields: Record<string, unknown> | undefined,
-  edits: { displayName?: string; picture?: string | null },
+  edits: {
+    displayName?: string;
+    picture?: string | null;
+    banner?: string | null;
+    about?: string;
+    website?: string;
+    nip05?: string;
+  },
 ) {
   const next = { ...fields };
-  if (edits.displayName !== undefined) next.display_name = edits.displayName;
-  if (edits.picture === null) delete next.picture;
-  else if (edits.picture !== undefined) next.picture = edits.picture;
+  if (edits.displayName !== undefined) {
+    next.display_name = edits.displayName;
+    if (typeof fields?.name !== "string" || fields.name === fields.display_name)
+      next.name = edits.displayName;
+  }
+  for (const key of [
+    "picture",
+    "banner",
+    "about",
+    "website",
+    "nip05",
+  ] as const) {
+    const value = edits[key];
+    if (value === null || value === "") delete next[key];
+    else if (value !== undefined) next[key] = value;
+  }
   return next;
 }
 

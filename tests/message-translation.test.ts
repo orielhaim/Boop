@@ -176,6 +176,40 @@ test("source confidence, unsupported and missing models leave the original", asy
   expect(cache.read([message.id], "en")).toEqual([]);
 });
 
+test("excluded detected languages do not translate or request models", async () => {
+  using sqlite = new Database(":memory:");
+  const { cache } = database(sqlite);
+  const mock = engine({ downloaded: async () => ["en"] });
+  const service = createTranslationService(cache, async () => mock.worker);
+
+  expect(
+    await service.translate(message, "en", { excludedSources: ["fr", "he"] }),
+  ).toEqual({ kind: "original" });
+  expect(
+    await service.translate(message, "en", { excludedSources: ["fr"] }),
+  ).toEqual({ kind: "models", languages: ["he"] });
+  expect(mock.calls()).toBe(0);
+});
+
+test("an exclusion hides cached translations and removing it reuses them", async () => {
+  using sqlite = new Database(":memory:");
+  const { cache } = database(sqlite);
+  const mock = engine();
+  const service = createTranslationService(cache, async () => mock.worker);
+  const translated = {
+    kind: "translated",
+    text: "See you tomorrow morning",
+  } as const;
+
+  expect(await service.translate(message, "en")).toEqual(translated);
+  expect(service.cached([message], "en", ["he"])).toEqual([]);
+  expect(
+    await service.translate(message, "en", { excludedSources: ["he"] }),
+  ).toEqual({ kind: "original" });
+  expect(await service.translate(message, "en")).toEqual(translated);
+  expect(mock.calls()).toBe(1);
+});
+
 test("cancelled and cleared in-flight operations cannot commit a result", async () => {
   using sqlite = new Database(":memory:");
   const { cache } = database(sqlite);
@@ -189,7 +223,7 @@ test("cancelled and cleared in-flight operations cannot commit a result", async 
   });
   const service = createTranslationService(cache, async () => mock.worker);
   const cancel = new AbortController();
-  const work = service.translate(message, "en", cancel.signal);
+  const work = service.translate(message, "en", { signal: cancel.signal });
   await begun.promise;
   cancel.abort();
   service.clear();

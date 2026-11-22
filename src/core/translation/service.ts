@@ -95,9 +95,15 @@ export function createTranslationService(
   }
   let downloading: string | undefined;
   let failedDownload: string | undefined;
+  const isExcluded = (source: string, excludedSources: readonly string[]) =>
+    excludedSources.includes(languageCode(source));
 
   const service = {
-    cached(messages: Message[], target: string) {
+    cached(
+      messages: Message[],
+      target: string,
+      excludedSources: readonly string[] = [],
+    ) {
       const bodies = new Map(
         messages
           .filter(({ direction }) => direction === "incoming")
@@ -105,7 +111,11 @@ export function createTranslationService(
       );
       return cache
         .read([...bodies.keys()], target)
-        .filter((row) => bodies.get(row.messageId) === row.original);
+        .filter(
+          (row) =>
+            bodies.get(row.messageId) === row.original &&
+            !isExcluded(row.sourceLanguage, excludedSources),
+        );
     },
     revision: () => revision,
     refreshModelStatus: changed,
@@ -164,20 +174,30 @@ export function createTranslationService(
     async translate(
       message: Message,
       target: string,
-      signal?: AbortSignal,
+      options: {
+        signal?: AbortSignal;
+        excludedSources?: readonly string[];
+      } = {},
     ): Promise<TranslationOutcome> {
+      const { signal, excludedSources = [] } = options;
       if (message.direction !== "incoming") return { kind: "original" };
       const version = generation;
       const sample = languageSample(message.text);
       if (!sample) return { kind: "original" };
       if (signal?.aborted || version !== generation)
         return { kind: "cancelled" };
-      const key = JSON.stringify([message.id, target, message.text, version]);
+      const key = JSON.stringify([
+        message.id,
+        target,
+        message.text,
+        version,
+        excludedSources,
+      ]);
       const running = pending.get(key);
       if (running) {
         const result = await running;
         return result.kind === "cancelled" && !signal?.aborted
-          ? service.translate(message, target, signal)
+          ? service.translate(message, target, options)
           : result;
       }
       const work = serialize(async (): Promise<TranslationOutcome> => {
@@ -187,7 +207,10 @@ export function createTranslationService(
           return { kind: "original" };
         }
         const [hit] = cache.read([message.id], target);
-        if (hit) return { kind: "translated", text: hit.translatedText };
+        if (hit)
+          return isExcluded(hit.sourceLanguage, excludedSources)
+            ? { kind: "original" }
+            : { kind: "translated", text: hit.translatedText };
         const worker = await engine().catch(() => null);
         if (!worker) return { kind: "unavailable" };
         const detected = await worker.identify(sample);
@@ -199,7 +222,8 @@ export function createTranslationService(
         )
           return { kind: "original" };
         const source = languageCode(detected.language);
-        if (source === target) return { kind: "original" };
+        if (source === target || isExcluded(source, excludedSources))
+          return { kind: "original" };
         const supported = new Set(
           (await worker.languages()).map(({ code }) => code),
         );

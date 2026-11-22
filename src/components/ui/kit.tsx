@@ -44,6 +44,7 @@ const icons = {
   chat: { ios: "bubble.left.fill", android: "chat_bubble" },
   invitations: { ios: "envelope", android: "mail_outline" },
   person: { ios: "person.crop.circle", android: "account_circle" },
+  people: { ios: "person.2", android: "group" },
   add: { ios: "plus", android: "add" },
   subtract: { ios: "minus", android: "remove" },
   addPerson: { ios: "person.badge.plus", android: "person_add" },
@@ -56,6 +57,7 @@ const icons = {
   previous: { ios: "chevron.left", android: "chevron_left" },
   language: { ios: "globe", android: "language" },
   next: { ios: "chevron.right", android: "chevron_right" },
+  continue: { ios: "arrow.right", android: "arrow_forward" },
   expand: { ios: "chevron.down", android: "expand_more" },
   collapse: { ios: "chevron.up", android: "expand_less" },
   info: { ios: "info.circle", android: "info" },
@@ -67,6 +69,7 @@ const icons = {
   missed: { ios: "phone.down.fill", android: "call_missed" },
   hangup: { ios: "xmark", android: "close" },
   download: { ios: "arrow.down", android: "download" },
+  refresh: { ios: "arrow.clockwise", android: "refresh" },
   play: { ios: "play.fill", android: "play_arrow" },
   storage: { ios: "internaldrive", android: "storage" },
   audio: { ios: "headphones", android: "headphones" },
@@ -80,6 +83,7 @@ const icons = {
   mic: { ios: "mic.slash", android: "mic_off" },
   microphone: { ios: "mic.fill", android: "mic" },
   camera: { ios: "video.fill", android: "videocam" },
+  photo: { ios: "camera.fill", android: "photo_camera" },
   cameraOff: { ios: "video.slash.fill", android: "videocam_off" },
   cameraSwitch: { ios: "camera.rotate.fill", android: "flip_camera_ios" },
   speaker: { ios: "speaker.wave.2", android: "volume_up" },
@@ -100,6 +104,7 @@ const directionalIcons = new Set<IconName>([
   "back",
   "previous",
   "next",
+  "continue",
   "outgoing",
   "incoming",
   "reply",
@@ -164,7 +169,7 @@ export function IconButton({
   label: string;
   onPress?: () => void;
   disabled?: boolean;
-  tone?: "normal" | "danger" | "accent";
+  tone?: "normal" | "danger" | "accent" | "plain";
 }) {
   const { colors, reduceMotion } = useTheme();
   const scale = useSharedValue(1);
@@ -176,13 +181,17 @@ export function IconButton({
       ? colors.danger
       : tone === "accent"
         ? colors.outgoing
-        : colors.accentSoft;
+        : tone === "plain"
+          ? "transparent"
+          : colors.accentSoft;
   const tint =
     tone === "danger"
       ? colors.onDanger
       : tone === "accent"
         ? colors.outgoingInk
-        : colors.accent;
+        : tone === "plain"
+          ? colors.text
+          : colors.accent;
   const animate = (value: number) => {
     scale.set(
       withSpring(value, {
@@ -265,11 +274,15 @@ export function Screen({
   tab = false,
   topInset = false,
   onScroll,
+  compact = false,
+  navigationHeader,
 }: {
   children: ReactNode;
   scroll?: boolean;
   tab?: boolean;
   topInset?: boolean;
+  compact?: boolean;
+  navigationHeader?: ReactNode;
   onScroll?: React.ComponentProps<typeof Animated.ScrollView>["onScroll"];
 }) {
   const { colors } = useTheme();
@@ -278,17 +291,20 @@ export function Screen({
       edges={
         tab
           ? ["top", "left", "right"]
-          : topInset
+          : topInset || navigationHeader
             ? ["top", "left", "right", "bottom"]
             : ["left", "right", "bottom"]
       }
       style={[styles.screen, { backgroundColor: colors.background }]}
     >
+      {navigationHeader}
       {scroll && onScroll ? (
         <Animated.ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          contentContainerStyle={styles.body}
+          contentContainerStyle={
+            compact ? [styles.body, styles.compactBody] : styles.body
+          }
           onScroll={onScroll}
           scrollEventThrottle={16}
         >
@@ -298,7 +314,9 @@ export function Screen({
         <ScrollView
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          contentContainerStyle={styles.body}
+          contentContainerStyle={
+            compact ? [styles.body, styles.compactBody] : styles.body
+          }
         >
           {children}
         </ScrollView>
@@ -528,6 +546,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xl,
     paddingTop: space.md,
     paddingBottom: space.xxl,
+  },
+  compactBody: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+    gap: space.md,
   },
   header: {
     flexDirection: "row",

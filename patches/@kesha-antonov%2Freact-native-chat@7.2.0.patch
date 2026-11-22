@@ -1143,3 +1143,27 @@ diff --git a/lib/Chat/useMessageActions.d.ts b/lib/Chat/useMessageActions.d.ts
          onDeleteMessage: ((message: TMessage) => void) | undefined;
          onForwardMessage: ((message: TMessage) => void) | undefined;
          onPinMessage: ((message: TMessage) => void) | undefined;
+diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
+--- a/lib/ChatList/types.d.ts
++++ b/lib/ChatList/types.d.ts
+@@ -20,6 +20,8 @@
+     avatar?: string;
+     /** The newest message: its preview, time and (when it is yours) its sent / read checks. */
+     lastMessage?: IMessage;
++    /** A display-only preview shown when the chat has no message, draft or typing status. */
++    emptyPreview?: string;
+     unreadCount?: number;
+     isPinned?: boolean;
+     isMuted?: boolean;
+diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
+--- a/lib/ChatList/ChatListCell.js
++++ b/lib/ChatList/ChatListCell.js
+@@ -322,7 +322,7 @@
+                     }]} numberOfLines={1}>
+                                 {preview.attachment ? <Text style={{
+                         color: colors.attachment
+-                      }}>{preview.attachment}</Text> : preview.text}
++                      }}>{preview.attachment}</Text> : lastMessage ? preview.text : chat.emptyPreview}
+                               </Text>
+                             </>}
+                       </Animated.View>}

@@ -65,6 +65,8 @@ export function createMarmotSession(
       await reconcile();
       if (error) throw error;
     },
+    retry: reconcile,
+    status: () => (error ? "failed" : active ? "ready" : "pending"),
     revision: () => revision,
     subscribe(listener: () => void) {
       listeners.add(listener);

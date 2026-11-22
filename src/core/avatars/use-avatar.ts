@@ -8,18 +8,22 @@ import {
 } from "react";
 import { useLocal } from "@/services/local-context";
 
-export function useAvatar(key: string | null | undefined, enabled = true) {
+export function useAvatar(
+  key: string | null | undefined,
+  enabled = true,
+  banner = false,
+) {
   const { avatars } = useLocal();
   const focused = useIsFocused();
   useEffect(() => {
-    if (key && focused && enabled) return avatars.watch(key);
-  }, [avatars, key, focused, enabled]);
+    if (key && focused && enabled) return avatars.watch(key, banner);
+  }, [avatars, key, focused, enabled, banner]);
   return useSyncExternalStore(
     useCallback(
       (listener) => (key ? avatars.subscribe(key, listener) : () => {}),
       [avatars, key],
     ),
-    () => (key ? avatars.resolve(key) : undefined),
+    () => (key ? avatars.resolve(key, banner) : undefined),
   );
 }
 

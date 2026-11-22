@@ -1,0 +1,2 @@
+/modules/boop-marmot/mdk-*.patch text eol=lf
+/src/db/migrations/*.sql text eol=lf

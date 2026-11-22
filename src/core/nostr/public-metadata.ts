@@ -21,10 +21,22 @@ export function createPublicMetadata(
     return transport.lookupLists(publicKey, listRelays(), [serverListKind]);
   }
 
+  const profileRelays = () =>
+    [...new Set([...discoveryRelays(), ...listRelays()])].slice(0, 4);
   return {
+    searchProfiles(
+      query: string,
+      onEvent: (event: unknown, author: string) => void,
+      onEose: () => void,
+    ) {
+      const targets = discoveryRelays().slice(0, 4);
+      return targets.length && canPublishMedia()
+        ? transport.searchProfiles(targets, query, onEvent, onEose)
+        : null;
+    },
+    lookupProfileHints: transport.lookupProfileHints,
     profileRelayKey: () =>
-      discoveryRelays()
-        .slice(0, 4)
+      profileRelays()
         .map((relay) => relay.url)
         .join(","),
     watchProfiles(
@@ -32,7 +44,7 @@ export function createPublicMetadata(
       onEvent: (event: unknown, author: string) => void,
       onEose: () => void,
     ) {
-      const targets = discoveryRelays().slice(0, 4);
+      const targets = profileRelays();
       return targets.length
         ? transport.watchProfiles(targets, authors, onEvent, onEose)
         : null;
@@ -77,7 +89,7 @@ export function createPublicMetadata(
         [],
         createdAt,
         relays.configuration().general,
-        () => session === relays.generation(),
+        () => session === relays.generation() && canPublishMedia(),
       );
     },
   };

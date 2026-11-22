@@ -1,7 +1,10 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 import type { initializeLocal } from "./local";
 
-type LocalServices = Awaited<ReturnType<typeof initializeLocal>>;
+export type LocalServices = Extract<
+  Awaited<ReturnType<typeof initializeLocal>>,
+  { status: "ready" }
+>;
 
 // Keep the provider identity stable when Fast Refresh reloads service setup.
 export const LocalContext = createContext<LocalServices | null>(null);
@@ -17,5 +20,13 @@ export function useChatsEnabled() {
   return useSyncExternalStore(
     chatPreferences.subscribe,
     chatPreferences.enabled,
+  );
+}
+
+export function useChatPresentation() {
+  const { chatPreferences } = useLocal();
+  return useSyncExternalStore(
+    chatPreferences.subscribePresentation,
+    chatPreferences.presentation,
   );
 }

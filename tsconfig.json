@@ -9,5 +9,5 @@
     "types": ["bun"]
   },
   "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"],
-  "exclude": ["node_modules", "website"]
+  "exclude": ["node_modules", "website", "modules/boop-marmot/sdk"]
 }

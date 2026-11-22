@@ -16,6 +16,7 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
     output: string,
     image: boolean,
   ): Promise<number>;
+  downloadNip05?(id: string, url: string, output: string): Promise<number>;
   prepare(id: string): void;
   blossomCommand(
     id: string,
@@ -62,6 +63,24 @@ export async function downloadPreviewFile(
   signal.addEventListener("abort", cancel, { once: true });
   try {
     return await native.downloadPreview(id, url, output, image);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+export async function downloadNip05(
+  id: string,
+  url: string,
+  output: string,
+  signal: AbortSignal,
+) {
+  if (!native?.available() || !native.downloadNip05 || signal.aborted)
+    throw new Error("NIP-05 lookup unavailable");
+  native.prepare(id);
+  const cancel = () => native.cancel(id);
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await native.downloadNip05(id, url, output);
   } finally {
     signal.removeEventListener("abort", cancel);
   }

@@ -24,17 +24,22 @@ type Relays = {
 };
 
 const fileName = z.string().regex(/^[a-f0-9-]{36}\.jpg$/u);
+const imageEdit = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unchanged") }),
+  z.object({ kind: z.literal("remove") }),
+  z.object({
+    kind: z.literal("upload"),
+    file: fileName,
+    url: z.string().optional(),
+    mirrorFailed: z.boolean().optional(),
+  }),
+]);
 const draftSchema = z.object({
-  photo: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("unchanged") }),
-    z.object({ kind: z.literal("remove") }),
-    z.object({
-      kind: z.literal("upload"),
-      file: fileName,
-      url: z.string().optional(),
-      mirrorFailed: z.boolean().optional(),
-    }),
-  ]),
+  photo: imageEdit,
+  banner: imageEdit.optional(),
+  about: z.string().max(1000).optional(),
+  website: z.string().max(2048).optional(),
+  nip05: z.string().max(254).optional(),
   name: z.string().max(128).optional(),
 });
 type Draft = z.infer<typeof draftSchema>;
@@ -45,19 +50,17 @@ export function createProfileEditor<Result>(
   owner: string,
   avatars: Pick<Avatars, "profile" | "ingest" | "notify">,
   disk: Pick<AvatarDisk, "newId" | "local" | "copyLocal" | "removeLocal">,
-  upload: (file: string, signal: AbortSignal) => Promise<MediaUploadResult>,
+  upload: (
+    file: string,
+    signal: AbortSignal,
+    wide: boolean,
+  ) => Promise<MediaUploadResult>,
   relays: Relays,
 ) {
   const listeners = new Set<() => void>();
-  let revision = 0;
   let stage: ProfileStage = "idle";
   let abort: AbortController | undefined;
-  let lastTimestamp = 0;
-  const notify = () => {
-    revision++;
-    for (const listener of listeners) listener();
-    avatars.notify(owner);
-  };
+
   const pinned = () => preference(db, "identity.publicKey") === owner;
   const readDraft = () => {
     try {
@@ -68,6 +71,27 @@ export function createProfileEditor<Result>(
       return null;
     }
   };
+  function makeSnapshot() {
+    const draft = readDraft();
+    return {
+      draft,
+      stage,
+      bannerPreview:
+        draft?.banner?.kind === "upload"
+          ? disk.local(draft.banner.file)
+          : undefined,
+      photoPreview:
+        draft?.photo.kind === "upload"
+          ? disk.local(draft.photo.file)
+          : undefined,
+    };
+  }
+  let snapshot = makeSnapshot();
+  function notify() {
+    snapshot = makeSnapshot();
+    for (const listener of listeners) listener();
+    avatars.notify(owner);
+  }
   function remove(filename: string | null) {
     if (!filename || !fileName.safeParse(filename).success) return;
     disk.removeLocal(filename);
@@ -77,21 +101,16 @@ export function createProfileEditor<Result>(
       setPreference(tx, "profile.draft", draft ? JSON.stringify(draft) : "");
       setPreference(
         tx,
+        "profile.draft.banner",
+        draft?.banner?.kind === "upload" ? draft.banner.file : "",
+      );
+      setPreference(
+        tx,
         "profile.draft.file",
         draft?.photo.kind === "upload" ? draft.photo.file : "",
       );
     });
     notify();
-  }
-  function edit(photo: Draft["photo"], name?: string) {
-    if (!pinned() || abort) throw new Error("Profile editor unavailable");
-    const previous = readDraft();
-    write({ photo, name });
-    if (
-      previous?.photo.kind === "upload" &&
-      (photo.kind !== "upload" || photo.file !== previous.photo.file)
-    )
-      remove(previous.photo.file);
   }
   function refresh(signal: AbortSignal) {
     return new Promise<boolean>((resolve) => {
@@ -122,7 +141,12 @@ export function createProfileEditor<Result>(
             return;
           }
           const verified = verifiedEvent(event);
-          if (verified?.kind !== 0 || verified.pubkey !== owner) return;
+          if (
+            verified?.kind !== 0 ||
+            verified.pubkey !== owner ||
+            verified.created_at > Math.floor(Date.now() / 1000) + 60
+          )
+            return;
           const candidate = {
             eventId: verified.id,
             createdAt: verified.created_at,
@@ -135,7 +159,7 @@ export function createProfileEditor<Result>(
     });
   }
   return {
-    revision: () => revision,
+    getSnapshot: () => snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -144,33 +168,55 @@ export function createProfileEditor<Result>(
     },
     stage: () => stage,
     draft: readDraft,
-    preview() {
-      const draft = readDraft();
-      if (draft?.photo.kind !== "upload") return;
-      return disk.local(draft.photo.file);
+    preview(field: "photo" | "banner" = "photo") {
+      const image = readDraft()?.[field];
+      if (image?.kind === "upload") return disk.local(image.file);
     },
-    prepare(source: string, name?: string) {
+    prepare(source: string, field: "photo" | "banner" = "photo") {
       if (!pinned() || abort) throw new Error("Profile editor unavailable");
       const file = `${disk.newId()}.jpg`;
       disk.copyLocal(source, file);
       try {
-        edit({ kind: "upload", file }, name);
+        const previous = readDraft();
+        write({
+          photo: { kind: "unchanged" },
+          ...previous,
+          [field]: { kind: "upload", file },
+        });
+        const old = previous?.[field];
+        if (old?.kind === "upload") remove(old.file);
       } catch (error) {
         remove(file);
         throw error;
       }
     },
-    removePhoto(name?: string) {
-      edit({ kind: "remove" }, name);
+    removeImage(field: "photo" | "banner") {
+      if (!pinned() || abort) throw new Error("Profile editor unavailable");
+      const previous = readDraft();
+      write({
+        photo: { kind: "unchanged" },
+        ...previous,
+        [field]: { kind: "remove" },
+      });
+      const old = previous?.[field];
+      if (old?.kind === "upload") remove(old.file);
     },
-    editName(name: string) {
-      edit(readDraft()?.photo ?? { kind: "unchanged" }, name);
+    editFields(fields: Pick<Draft, "name" | "about" | "website" | "nip05">) {
+      if (!pinned() || abort) throw new Error("Profile editor unavailable");
+      write(
+        draftSchema.parse({
+          photo: { kind: "unchanged" },
+          ...readDraft(),
+          ...fields,
+        }),
+      );
     },
     discard() {
       const draft = readDraft();
       if (abort) return;
       write(null);
       if (draft?.photo.kind === "upload") remove(draft.photo.file);
+      if (draft?.banner?.kind === "upload") remove(draft.banner.file);
     },
     cancel() {
       abort?.abort();
@@ -184,83 +230,100 @@ export function createProfileEditor<Result>(
       const { signal } = job;
       const valid = () => pinned() && !signal.aborted;
       try {
-        stage =
-          draft.photo.kind === "upload" && !draft.photo.url
-            ? "uploading"
-            : "publishing";
-        notify();
-        if (draft.photo.kind === "upload" && !draft.photo.url) {
-          const file = draft.photo.file;
-          const { url, mirror } = await upload(file, signal);
+        for (const field of ["photo", "banner"] as const) {
+          const image = draft[field];
+          if (image?.kind !== "upload" || image.url) continue;
+          stage = "uploading";
+          notify();
+          const { url, mirror } = await upload(
+            image.file,
+            signal,
+            field === "banner",
+          );
           if (!valid()) return "cancelled";
-          draft = { ...draft, photo: { ...draft.photo, url } };
+          if (!publicImageUrl(url)) return "metadata";
+          draft = { ...draft, [field]: { ...image, url } };
           write(draft);
           if (mirror && !(await mirror)) {
             if (!valid()) return "cancelled";
             draft = {
               ...draft,
-              photo: { kind: "upload", file, url, mirrorFailed: true },
+              [field]: { ...image, url, mirrorFailed: true },
             };
             write(draft);
           }
         }
+        stage = "publishing";
+        notify();
         if (!(await refresh(signal)))
           return signal.aborted ? "cancelled" : "relays";
         if (!valid()) return "cancelled";
         const previous = avatars.profile(owner);
-        const photoEdits =
-          draft.photo.kind === "upload" ? draft.photo.url : null;
-        if (
-          draft.photo.kind === "upload" &&
-          (!photoEdits || !publicImageUrl(photoEdits))
-        )
-          return "unavailable";
+        const imageUrl = (image: Draft["banner"]) =>
+          image?.kind === "upload"
+            ? image.url
+            : image?.kind === "remove"
+              ? null
+              : undefined;
         const content = JSON.stringify(
           updateProfileFields(previous?.fields, {
             displayName: draft.name,
-            picture: draft.photo.kind === "unchanged" ? undefined : photoEdits,
+            about: draft.about,
+            website: draft.website,
+            nip05: draft.nip05,
+            picture: imageUrl(draft.photo),
+            banner: imageUrl(draft.banner),
           }),
         );
         if (new TextEncoder().encode(content).length > maxProfileBytes)
           return "metadata";
         const now = Math.floor(Date.now() / 1000);
-        const timestamp = Math.max(
-          now,
-          (previous?.createdAt ?? 0) + 1,
-          lastTimestamp + 1,
-        );
-        if (timestamp > now + 60 || !valid()) return "relays";
-        lastTimestamp = timestamp;
-        stage = "publishing";
-        notify();
-        const result = await relays.publishProfile(content, timestamp);
-        if (!result || !pinned()) return "relays";
-        // A relay can acknowledge after cancellation, so reconcile that publication.
-        avatars.ingest(result, owner);
-        const oldPhoto = preference(db, "profile.photo");
-        const photo = draft.photo;
+        const priorAttempt = Number(preference(db, "profile.publishAt") || 0);
+        const same = preference(db, "profile.publishContent") === content;
+        const acknowledged =
+          previous &&
+          JSON.stringify(previous.fields) === content &&
+          same &&
+          previous.createdAt >= priorAttempt;
+        if (!acknowledged) {
+          const timestamp =
+            same && priorAttempt > (previous?.createdAt ?? 0)
+              ? priorAttempt
+              : Math.max(now, (previous?.createdAt ?? 0) + 1, priorAttempt + 1);
+          if (timestamp > now + 60 || !valid()) return "relays";
+          db.transaction((tx) => {
+            setPreference(tx, "profile.publishAt", String(timestamp));
+            setPreference(tx, "profile.publishContent", content);
+          });
+          const result = await relays.publishProfile(content, timestamp);
+          if (!result || !pinned()) return "relays";
+          avatars.ingest(result, owner);
+        }
+        const retired: string[] = [];
         db.transaction((tx) => {
-          if (photo.kind !== "unchanged") {
-            setPreference(
-              tx,
-              "profile.photo",
-              photo.kind === "upload" ? photo.file : "",
-            );
-            setPreference(
-              tx,
-              "profile.photo.url",
-              photo.kind === "upload" ? (photo.url ?? "") : "",
-            );
+          for (const field of ["photo", "banner"] as const) {
+            const image = draft[field];
+            if (!image || image.kind === "unchanged") continue;
+            const setting = `profile.${field}`;
+            const old = preference(tx, setting);
+            const next = image.kind === "upload" ? image.file : "";
+            if (old && old !== next) retired.push(old);
+            setPreference(tx, setting, next);
+            setPreference(tx, `${setting}.url`, imageUrl(image) ?? "");
           }
-          setPreference(tx, "profile.draft", "");
-          setPreference(tx, "profile.draft.file", "");
+          for (const key of [
+            "profile.draft",
+            "profile.draft.file",
+            "profile.draft.banner",
+            "profile.publishAt",
+            "profile.publishContent",
+          ])
+            setPreference(tx, key, "");
         });
-        if (
-          photo.kind !== "unchanged" &&
-          oldPhoto !== (photo.kind === "upload" ? photo.file : null)
+        for (const file of retired) remove(file);
+        return [draft.photo, draft.banner].some(
+          (image) => image?.kind === "upload" && image.mirrorFailed,
         )
-          remove(oldPhoto);
-        return photo.kind === "upload" && photo.mirrorFailed
           ? "mirror"
           : "published";
       } finally {

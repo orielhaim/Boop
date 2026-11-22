@@ -5,7 +5,7 @@
     "version": "1.0.1-beta.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "boop",
+    "scheme": ["boop", "nostr"],
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "app.boop.mobile",
@@ -44,6 +44,7 @@
       [
         "expo-dev-client",
         {
+          "launchMode": "launcher",
           "toolsButton": false,
           "showMenuAtLaunch": false
         }

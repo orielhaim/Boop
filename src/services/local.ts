@@ -20,6 +20,7 @@ import { addDatabaseChangeListener } from "expo-sqlite";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 import { createCallSignalingService } from "@/core/calling/signaling-service";
+import { createNip05Lookup } from "@/core/nostr/nip05-lookup";
 import { createPublicMetadata } from "@/core/nostr/public-metadata";
 import { createRelayService } from "@/core/nostr/relay-service";
 import { createCallController } from "@/core/calling/controller";
@@ -77,7 +78,25 @@ async function start() {
       ),
     );
     const identityStarted = performance.now();
-    const { identity, signer, fresh } = await initializeIdentity(db);
+    const lock = createAppLock({
+      read: (key) => preference(db, key),
+      write: (key, value) => setPreference(db, key, value),
+      startActive: AppState.currentState === "active",
+      authenticate: authenticateApp,
+      protect: protectAppWindow,
+    });
+    appLock = lock;
+    const loaded = await initializeIdentity(db);
+    if (!loaded) {
+      return {
+        status: "welcome" as const,
+        db,
+        lock,
+        theme: preference(db, "theme"),
+        haptics: preference(db, "haptics") !== "off",
+      };
+    }
+    const { identity, signer, fresh } = loaded;
     messagingMetric("identity ready", {
       ms: performance.now() - identityStarted,
     });
@@ -99,18 +118,14 @@ async function start() {
       isBlocked: privacy.isBlocked,
       canReceiveCall: privacy.canReceiveCall,
     });
-    const lock = createAppLock({
-      read: (key) => preference(db, key),
-      write: (key, value) => setPreference(db, key, value),
-      startActive: AppState.currentState === "active",
-      authenticate: authenticateApp,
-      protect: protectAppWindow,
-    });
+    const active = () =>
+      AppState.currentState === "active" && !lock.getState().locked;
     const publicMetadata = createPublicMetadata(
       relays,
       identity.publicKey,
-      () => AppState.currentState === "active" && !lock.getState().locked,
+      active,
     );
+    const nip05 = createNip05Lookup(active);
     const { disk, localDirectory } = mediaSdk.profileFiles;
     const avatars = createAvatars(
       db,
@@ -126,8 +141,13 @@ async function start() {
       identity.publicKey,
       avatars,
       disk,
-      (filename, signal) =>
-        uploadAvatar(mediaSdk, new File(localDirectory, filename), signal),
+      (filename, signal, wide) =>
+        uploadAvatar(
+          mediaSdk,
+          new File(localDirectory, filename),
+          signal,
+          wide,
+        ),
       publicMetadata,
     );
     const marmotSession = createMarmotSession(
@@ -301,6 +321,7 @@ async function start() {
     appLock = lock;
     messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
+      status: "ready" as const,
       db,
       translation: createTranslationService(
         createDerivedTranslations(db, marmotViewport.incomingText),
@@ -312,6 +333,7 @@ async function start() {
       mediaSdk,
       profileEditor,
       publicMetadata,
+      nip05,
       privacy,
       chatPreferences,
       marmotSession,
@@ -345,6 +367,11 @@ export function initializeLocal() {
   return initialization;
 }
 
+export function finishOnboarding(db: Awaited<ReturnType<typeof openDatabase>>) {
+  db.$client.closeSync();
+  initialization = undefined;
+}
+
 export function LocalSessionLifecycle() {
   const {
     db,
@@ -357,6 +384,8 @@ export function LocalSessionLifecycle() {
     marmotSession,
     chatPreferences,
     mediaSdk,
+    profileEditor,
+    publicMetadata,
   } = useLocal();
   useEffect(() => {
     const stopGroupCalls = attachGroupCallLifecycle({
@@ -503,7 +532,32 @@ export function LocalSessionLifecycle() {
       mediaOrigin = next;
       connectMessaging();
     });
-    const unsubscribeAccount = marmotSession.subscribe(updateBackupConditions);
+    let attemptedInitialProfile = false;
+    function publishInitialProfile() {
+      if (
+        attemptedInitialProfile ||
+        AppState.currentState !== "active" ||
+        lock.getState().locked ||
+        !publicMetadata.profileRelayKey() ||
+        marmotSession.status() !== "ready" ||
+        preference(db, "profile.initialBackup") !== identity.publicKey ||
+        !profileEditor.draft() ||
+        profileEditor.stage() !== "idle"
+      )
+        return;
+      attemptedInitialProfile = true;
+      void profileEditor.publish().catch(() => undefined);
+    }
+    const unsubscribeAccount = marmotSession.subscribe(() => {
+      updateBackupConditions();
+      publishInitialProfile();
+    });
+    const unsubscribeProfileRelays = relays.subscribe(publishInitialProfile);
+    const unsubscribeProfileLock = lock.subscribe(() => {
+      if (lock.getState().locked) profileEditor.cancel();
+      else publishInitialProfile();
+    });
+    publishInitialProfile();
     const battery = addBatteryStateListener(updateBackupConditions);
     const network = addNetworkStateListener(updateBackupConditions);
     return () => {
@@ -514,6 +568,9 @@ export function LocalSessionLifecycle() {
       unsubscribeChats();
       unsubscribeMedia();
       unsubscribeAccount();
+      unsubscribeProfileRelays();
+      unsubscribeProfileLock();
+      profileEditor.cancel();
       battery.remove();
       network.remove();
       subscription.remove();
@@ -534,6 +591,8 @@ export function LocalSessionLifecycle() {
     marmotSession,
     chatPreferences,
     mediaSdk,
+    profileEditor,
+    publicMetadata,
   ]);
   return null;
 }

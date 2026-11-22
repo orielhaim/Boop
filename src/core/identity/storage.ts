@@ -11,7 +11,8 @@ import {
   linkPreviewCache,
   settings,
 } from "@/db/schema";
-import { deriveIdentity, loadIdentity, parsePublicKey } from "./keys";
+import { inboxIntentKey } from "../nostr/config";
+import { deriveIdentity, parsePublicKey } from "./keys";
 
 const key = "boop.identity.v1";
 const pinned = "identity.publicKey";
@@ -41,7 +42,7 @@ const currentSlot = <TResult>(db: IdentityDatabase<TResult>) => {
   const saved = preference(db, activeSlot);
   if (saved === null) return key;
   if (saved !== preference(db, pinned) || parsePublicKey(saved) !== saved)
-    throw new Error("Identity slot mismatch");
+    throw new IdentityMismatchError();
   return slot(saved);
 };
 
@@ -89,7 +90,7 @@ async function recoverSwitch<TResult>(
       parsePublicKey(pending) !== pending ||
       pending === previous
     )
-      throw new Error("Invalid identity switch");
+      throw new IdentityMismatchError();
     let candidate: string | null;
     try {
       candidate = await storage.read(slot(pending));
@@ -147,28 +148,61 @@ async function recoverSwitch<TResult>(
   }
 }
 
-export async function loadPinnedIdentity<TResult>(
+export async function findPinnedIdentity<TResult>(
   db: IdentityDatabase<TResult>,
   storage: Storage,
-  random: () => Promise<Uint8Array>,
 ) {
   await recoverSwitch(db, storage);
   const pinnedKey = preference(db, pinned);
-  const storageKey = currentSlot(db);
-  let secret = await storage.read(storageKey);
-  const identity = await loadIdentity(
-    {
-      read: async () => secret,
-      write: async (value) => {
-        await storage.write(storageKey, value);
-        secret = value;
-      },
-    },
-    pinnedKey,
-    random,
-  );
-  if (secret === null) throw new Error("Identity missing from secure storage");
-  const fresh = pinnedKey === null;
-  if (fresh) setPreference(db, pinned, identity.publicKey);
-  return { identity, secret, fresh };
+  const secret = await storage.read(currentSlot(db));
+  if (secret === null && pinnedKey === null) return null;
+  if (secret === null) throw new IdentityMismatchError();
+  let identity;
+  try {
+    identity = deriveIdentity(secret);
+  } catch {
+    throw new IdentityMismatchError();
+  }
+  if (pinnedKey !== null && pinnedKey !== identity.publicKey)
+    throw new IdentityMismatchError();
+  if (pinnedKey === null) {
+    db.transaction((tx) => {
+      setPreference(tx, pinned, identity.publicKey);
+      const draftOwner = preference(tx, "profile.initialBackup");
+      if (draftOwner === identity.publicKey)
+        setPreference(tx, inboxIntentKey, "initial");
+      else if (draftOwner) {
+        setPreference(tx, "profile.draft", "");
+        setPreference(tx, "profile.initialBackup", "");
+      }
+    });
+  }
+  return { identity, secret, fresh: pinnedKey === null };
+}
+
+export class IdentityMismatchError extends Error {
+  constructor() {
+    super("Identity mismatch");
+  }
+}
+
+export async function installFirstIdentity<TResult>(
+  db: IdentityDatabase<TResult>,
+  storage: Storage,
+  secret: string,
+  draft: string,
+) {
+  if (await findPinnedIdentity(db, storage))
+    throw new Error("Identity already exists");
+  const identity = deriveIdentity(secret);
+  db.transaction((tx) => {
+    setPreference(tx, "profile.draft", draft);
+    setPreference(tx, "profile.initialBackup", draft ? identity.publicKey : "");
+  });
+  await storage.write(key, secret);
+  if ((await storage.read(key)) !== secret) throw new IdentityMismatchError();
+  db.transaction((tx) => {
+    setPreference(tx, pinned, identity.publicKey);
+    if (draft) setPreference(tx, inboxIntentKey, "initial");
+  });
 }

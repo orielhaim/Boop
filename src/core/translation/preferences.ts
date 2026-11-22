@@ -5,9 +5,16 @@ import type { Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
 import { settings } from "@/db/schema";
 import type { AppLanguage } from "@/i18n";
+import { languageCode } from "./service";
 
 const preferenceKey = "chats.translation";
-type TranslationPreferences = { automatic: boolean; target: string };
+type TranslationPreferences = {
+  automatic: boolean;
+  target: string;
+  excludedSources: string[];
+};
+
+const languageTag = /^[a-z]{2,3}(?:-[a-z]{2,8})?$/;
 
 function parse(
   value: string | null | undefined,
@@ -24,14 +31,26 @@ function parse(
     typeof saved === "object" &&
     "target" in saved &&
     typeof saved.target === "string" &&
-    /^[a-z]{2,3}(?:-[a-z]{2,8})?$/.test(saved.target)
+    languageTag.test(saved.target)
   ) {
+    const excluded = "excludedSources" in saved ? saved.excludedSources : null;
     return {
       automatic: "automatic" in saved && saved.automatic === true,
       target: saved.target,
+      excludedSources: Array.isArray(excluded)
+        ? [
+            ...new Set(
+              excluded.flatMap((tag: unknown) =>
+                typeof tag === "string" && languageTag.test(tag)
+                  ? [languageCode(tag)]
+                  : [],
+              ),
+            ),
+          ].sort()
+        : [],
     };
   }
-  return { automatic: false, target: language };
+  return { automatic: false, target: language, excludedSources: [] };
 }
 
 export function initializeTranslationPreferences(
@@ -63,4 +82,20 @@ export function setTranslationPreferences(
   value: TranslationPreferences,
 ) {
   setPreference(db, preferenceKey, JSON.stringify(value));
+}
+
+export function toggleExcludedSource(
+  db: Database,
+  language: AppLanguage,
+  code: string,
+) {
+  const preferences = parse(preference(db, preferenceKey), language);
+  const excluded = new Set(preferences.excludedSources);
+  const source = languageCode(code);
+  if (excluded.has(source)) excluded.delete(source);
+  else excluded.add(source);
+  setTranslationPreferences(db, {
+    ...preferences,
+    excludedSources: [...excluded].sort(),
+  });
 }

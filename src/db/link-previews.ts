@@ -41,6 +41,12 @@ export function openLinkPreviewCache<Result>(
   }
   prune();
   return {
+    clear() {
+      db.delete(linkPreviewCache).run();
+      const removed = [...entries.values()];
+      entries.clear();
+      for (const entry of removed) if (entry.image) remove(entry.image);
+    },
     cached(url: string) {
       const entry = entries.get(url);
       return entry && entry.expiresAt > Date.now() ? entry : undefined;

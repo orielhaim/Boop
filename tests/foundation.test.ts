@@ -7,11 +7,7 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { getExactRoutes } from "expo-router/build/getRoutes";
-import {
-  deriveIdentity,
-  loadIdentity,
-  parsePublicKey,
-} from "../src/core/identity/keys";
+import { deriveIdentity } from "../src/core/identity/keys";
 import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
 import { initializeTestDatabase } from "./db-fixture";
@@ -20,62 +16,8 @@ import { editRelays, seedRelays } from "../src/db/relays";
 import * as schema from "../src/db/schema";
 
 const secret = "01".repeat(32);
-const bytes = new Uint8Array(32).fill(1);
 const peerKey = deriveIdentity(secret).publicKey;
 const localKey = deriveIdentity("02".repeat(32)).publicKey;
-test("creates one identity and derives the same npub after restart", async () => {
-  let stored: string | null = null;
-  let writes = 0;
-  const storage = {
-    read: async () => stored,
-    write: async (value: string) => {
-      stored = value;
-      writes++;
-    },
-  };
-  const identity = await loadIdentity(storage, null, async () => bytes);
-  expect(identity.npub).toBe(
-    "npub1rwzv24nmzfjypx2a8m264ws9vht3uxp5vpypnluuzl67n4waq78suk0wul",
-  );
-  expect(parsePublicKey(`nostr:${identity.npub}`)).toBe(peerKey);
-  expect(
-    await loadIdentity(storage, peerKey, async () => {
-      throw new Error("unexpected entropy");
-    }),
-  ).toEqual(identity);
-  expect(writes).toBe(1);
-});
-
-test("fails closed when the secure store is locked, missing or corrupted", async () => {
-  let writes = 0;
-  const write = async () => {
-    writes++;
-  };
-  const random = async () => bytes;
-  await expect(
-    loadIdentity(
-      {
-        read: async () => {
-          throw new Error("locked");
-        },
-        write,
-      },
-      null,
-      random,
-    ),
-  ).rejects.toThrow("locked");
-  await expect(
-    loadIdentity({ read: async () => null, write }, peerKey, random),
-  ).rejects.toThrow("missing");
-  await expect(
-    loadIdentity({ read: async () => "broken", write }, peerKey, random),
-  ).rejects.toThrow("Invalid");
-  await expect(
-    loadIdentity({ read: async () => secret, write }, localKey, random),
-  ).rejects.toThrow("mismatch");
-  expect(writes).toBe(0);
-});
-
 test("fresh baseline keeps application state and enforces contact uniqueness", () => {
   using db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
@@ -177,7 +119,7 @@ test("requires a secure relay URL", () => {
     expect(relayUrl.safeParse(invalid).success).toBe(false);
   }
 });
-test("Expo Router discovers four primary tabs and the detail routes", () => {
+test("Expo Router discovers the primary routes including the optional Calls tab", () => {
   const context = Object.assign(() => ({}), {
     keys: () =>
       Array.from(
@@ -191,38 +133,44 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
   });
   const root = getExactRoutes(context, { importMode: "lazy" });
   expect(root?.children.map((route) => route.route).sort()).toEqual([
-    "(tabs)",
+    "(messenger)",
     "call/[key]",
+    "scan",
+  ]);
+  const messenger = root?.children.find(
+    (route) => route.route === "(messenger)",
+  );
+  expect(messenger?.children.map((route) => route.route).sort()).toEqual([
+    "(tabs)",
     "chat/[key]",
     "connect",
-    "contact/[key]",
-    "contact/new",
+    "person/[key]",
+    "profile-photo/[key]",
     "requests",
-    "scan",
     "settings",
   ]);
   expect(
-    root?.children
+    messenger?.children
       .find((route) => route.route === "settings")
       ?.children.map((route) => route.route)
       .sort(),
   ).toEqual([
     "about",
-    "appearance",
     "calls",
     "chats",
-    "chats/health",
-    "chats/media",
-    "chats/models",
-    "chats/target",
-    "chats/translation",
     "connections",
     "connections/media-storage",
+    "edit-profile",
     "identity",
+    "identity-keys",
     "identity/backup",
     "identity/devices",
-    "identity/edit-profile",
+    "index",
     "language",
+    "language/translation/excluded",
+    "language/translation/index",
+    "language/translation/models",
+    "language/translation/target",
     "privacy",
     "privacy/app-lock",
     "privacy/blocked",
@@ -230,12 +178,12 @@ test("Expo Router discovers four primary tabs and the detail routes", () => {
     "privacy/link-previews",
     "privacy/permissions",
     "privacy/profile-photos",
-    "sim",
+    "storage",
   ]);
   expect(
-    root?.children
+    messenger?.children
       .find((route) => route.route === "(tabs)")
       ?.children.map((route) => route.route)
       .sort(),
-  ).toEqual(["contacts", "index", "messages", "profile"]);
+  ).toEqual(["calls", "index", "people", "profile"]);
 });

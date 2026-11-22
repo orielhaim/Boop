@@ -69,6 +69,7 @@ export function createNativeLinkPreviews(
   authorizer.subscribe(previews.revalidate);
   return {
     ...previews,
+    clear: () => previews.clear(cache.clear),
     imageUri(name: string | undefined) {
       if (!name || !imageName.test(name)) return;
       const file = new File(root, name);

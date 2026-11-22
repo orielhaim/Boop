@@ -9,13 +9,14 @@ export async function uploadAvatar(
   media: MediaSdk,
   file: File,
   signal: AbortSignal,
+  wide = false,
 ) {
   if (!file.exists || file.size > maxAvatarBytes)
     throw new BlossomError("format");
   const bytes = await file.bytes();
   let clean: Uint8Array<ArrayBuffer>;
   try {
-    clean = sanitizeAvatarJpeg(bytes).bytes;
+    clean = sanitizeAvatarJpeg(bytes, wide).bytes;
   } catch {
     throw new BlossomError("format");
   }

@@ -59,7 +59,7 @@ export function InvitationStatus({ onPress }: { onPress: () => void }) {
 }
 
 export function useConferencePeers(video: VideoState | null) {
-  const { calling } = useLocal();
+  const { calling, avatars } = useLocal();
   const participants = useStore(calling.store, (state) => state.participants);
   const contacts = useContacts();
   const byKey = useMemo(
@@ -73,7 +73,10 @@ export function useConferencePeers(video: VideoState | null) {
       const contact = byKey.get(peer.key);
       return {
         ...peer,
-        name: nameOrAddress(contact?.name, peer.key),
+        name: nameOrAddress(
+          contact?.name || avatars.profile(peer.key)?.name,
+          peer.key,
+        ),
         camera: video?.conference?.cameras[peer.key],
       };
     }),
@@ -94,7 +97,7 @@ export function ConferenceSheet({
   activeVideo: VideoState | null;
 }) {
   const { t } = useTranslation(["calls", "common", "contacts", "video"]);
-  const { calling, identity, privacy } = useLocal();
+  const { calling, identity, privacy, avatars } = useLocal();
   const invitations = useStore(calling.store, (state) => state.invitations);
   const group = useStore(calling.store, (state) => state.call?.groupId);
   const [query, setQuery] = useState("");
@@ -249,7 +252,7 @@ export function ConferenceSheet({
                     onPress={() => {
                       setOpen(false);
                       router.push({
-                        pathname: "/contact/[key]",
+                        pathname: "/person/[key]",
                         params: { key: member.key },
                       });
                     }}
@@ -302,7 +305,10 @@ export function ConferenceSheet({
               ))}
               {invitations.map((item) => {
                 const contact = peers.byKey.get(item.key);
-                const name = nameOrAddress(contact?.name, item.key);
+                const name = nameOrAddress(
+                  contact?.name || avatars.profile(item.key)?.name,
+                  item.key,
+                );
                 return (
                   <Row
                     key={item.id}

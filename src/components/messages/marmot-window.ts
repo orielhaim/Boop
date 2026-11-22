@@ -22,24 +22,37 @@ export function useMarmotWindow<Snapshot, Direction>(
   open: () => Promise<MarmotWindow<Snapshot, Direction>>,
   enabled = true,
 ) {
+  const focused = useIsFocused();
+  return useAccountMarmotWindow(open, enabled && focused);
+}
+
+export function useAccountMarmotWindow<Snapshot, Direction>(
+  open: () => Promise<MarmotWindow<Snapshot, Direction>>,
+  enabled: boolean,
+) {
   const { marmotSession, lock } = useLocal();
   const accountRevision = useSyncExternalStore(
     marmotSession.subscribe,
     marmotSession.revision,
   );
+  const accountStatus = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.status,
+  );
   const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
-  const isFocused = useIsFocused() && enabled;
   const [retry, setRetry] = useState(0);
   const [loaded, setLoaded] = useState<{
     open: typeof open;
+    session: typeof marmotSession;
     accountRevision: number;
     window?: MarmotWindow<Snapshot, Direction>;
     error?: string;
   }>();
   const current =
-    isFocused &&
+    enabled &&
     !locked &&
     loaded?.open === open &&
+    loaded.session === marmotSession &&
     loaded.accountRevision === accountRevision
       ? loaded
       : undefined;
@@ -50,36 +63,70 @@ export function useMarmotWindow<Snapshot, Direction>(
   );
 
   useEffect(() => {
-    if (!isFocused || locked) return;
+    if (!enabled || locked || accountStatus === "pending") return;
     let cancelled = false;
     let active: MarmotWindow<Snapshot, Direction> | undefined;
+    const isCurrent = () =>
+      !cancelled &&
+      !lock.getState().locked &&
+      marmotSession.revision() === accountRevision;
     void marmotSession
       .ready()
-      .then(() => (cancelled ? undefined : open()))
+      .then(() => (isCurrent() ? open() : undefined))
       .then((next) => {
         if (!next) return;
-        if (cancelled) return next.close();
+        if (!isCurrent()) return next.close();
         active = next;
-        setLoaded({ open, accountRevision, window: next });
+        setLoaded({
+          open,
+          session: marmotSession,
+          accountRevision,
+          window: next,
+        });
       })
       .catch((error) => {
-        if (!cancelled) {
+        if (isCurrent()) {
           const code = marmotErrorCode(error);
           if (__DEV__) console.info("[marmot] window startup", { code });
-          setLoaded({ open, accountRevision, error: code });
+          setLoaded({
+            open,
+            session: marmotSession,
+            accountRevision,
+            error: code,
+          });
         }
       });
     return () => {
       cancelled = true;
-      void active?.close().catch(() => undefined);
+      if (active) {
+        void active.close().catch(() => undefined);
+        queueMicrotask(() => {
+          setLoaded((previous) =>
+            previous?.window === active ? undefined : previous,
+          );
+        });
+      }
     };
-  }, [accountRevision, isFocused, locked, marmotSession, open, retry]);
+  }, [
+    accountRevision,
+    accountStatus,
+    enabled,
+    locked,
+    lock,
+    marmotSession,
+    open,
+    retry,
+  ]);
 
   return {
     window,
     snapshot: state?.status === "ready" ? state.snapshot : undefined,
     error: state?.status === "closed" ? state.code : current?.error,
     retry() {
+      if (marmotSession.status() === "failed") {
+        void marmotSession.retry();
+        return;
+      }
       setLoaded(undefined);
       setRetry((value) => value + 1);
     },

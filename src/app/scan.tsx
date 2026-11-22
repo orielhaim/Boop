@@ -1,30 +1,20 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import {
-  Redirect,
-  router,
-  useIsFocused,
-  useLocalSearchParams,
-} from "expo-router";
+import { router, useIsFocused } from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Linking, StyleSheet, View } from "react-native";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
-import { parsePublicKey, toNpub } from "@/core/identity/keys";
+import { parsePublicIdentity } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
-import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { radius, space, useTheme } from "@/theme";
 
 export default function ScanAddress() {
   const { t } = useTranslation(namespaces);
-  const { mode } = useLocalSearchParams<{ mode?: string }>();
-  const { identity } = useLocal();
   const focused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const [error, setError] = useState("");
   const locked = useRef(false);
   const { colors } = useTheme();
-  const chatsEnabled = useChatsEnabled();
-  if (mode === "chat" && !chatsEnabled) return <Redirect href="/" />;
 
   if (!permission?.granted)
     return (
@@ -63,27 +53,23 @@ export default function ScanAddress() {
             onMountError={() => setError(t("contacts:cameraUnavailable"))}
             onBarcodeScanned={({ data }) => {
               if (locked.current) return;
-              const key = parsePublicKey(data);
+              const result = parsePublicIdentity(data);
+              const key = result?.key;
               if (!key) {
                 setError(t("contacts:invalidQr"));
                 return;
               }
-              if (key === identity.publicKey) {
-                setError(t("contacts:ownQrError"));
-                return;
-              }
               locked.current = true;
-              if (mode === "chat" || mode === "call") {
-                router.replace({
-                  pathname: mode === "call" ? "/call/[key]" : "/chat/[key]",
-                  params: { key },
-                });
-                return;
+              const profile = {
+                pathname: "/person/[key]",
+                params: { key, reference: data },
+              } as const;
+              if (router.canGoBack()) {
+                router.back();
+                router.push(profile);
+              } else {
+                router.replace(profile, { withAnchor: true });
               }
-              router.dismissTo({
-                pathname: "/contact/new",
-                params: { address: toNpub(key) },
-              });
             }}
           />
         ) : null}

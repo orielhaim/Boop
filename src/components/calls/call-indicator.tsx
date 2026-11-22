@@ -5,7 +5,7 @@ import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { Action, Icon } from "@/components/ui/kit";
-import { nameOrAddress, useContact } from "@/db/contacts";
+import { usePersonIdentity } from "@/components/people/use-person";
 import { namespaces } from "@/i18n";
 import { isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
@@ -20,7 +20,7 @@ export function CallIndicator() {
   const navigation = useRootNavigationState();
   const insets = useSafeAreaInsets();
   const shown = useRef<string | null>(null);
-  const contact = useContact(call?.peerKey ?? "");
+  const { name: peerName } = usePersonIdentity(call?.peerKey ?? "");
   useEffect(() => {
     if (
       !navigation?.key ||
@@ -46,9 +46,7 @@ export function CallIndicator() {
 
   if (!call || call.phase === "ended" || pathname === `/call/${call.peerKey}`)
     return null;
-  const name = video?.conference
-    ? t("calls:groupCall")
-    : nameOrAddress(contact?.name, call.peerKey);
+  const name = video?.conference ? t("calls:groupCall") : peerName;
   const hasVideo =
     video?.local.phase === "sharing" || video?.remote.phase === "receiving";
   const label =

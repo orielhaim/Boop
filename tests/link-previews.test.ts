@@ -270,3 +270,39 @@ test("expired and evicted previews release their local images", () => {
   expect(removed).toEqual(["expired.jpg", "0.jpg"]);
   expect(db.select().from(schema.linkPreviewCache).all()).toHaveLength(96);
 });
+
+test("clearing link previews deletes cached files and discards the result of an in-flight preview", async () => {
+  using sqlite = new Database(":memory:");
+  const db = database(sqlite);
+  const removed: string[] = [];
+  const storage = openLinkPreviewCache(db, (file) => removed.push(file));
+  const expiresAt = Date.now() + 1000;
+  const savedUrl = "https://saved.example.com/";
+  storage.save({
+    url: savedUrl,
+    siteName: "Saved",
+    image: "old.jpg",
+    fetchedAt: Date.now(),
+    expiresAt,
+  });
+  const pending = Promise.withResolvers<string>();
+  const previews = createLinkPreviews({
+    ...storage,
+    policy: () => "on-demand",
+    authorize: () => true,
+    html: () => pending.promise,
+    image: async () => "late.jpg",
+    removeImage: (file) => removed.push(file),
+  });
+
+  previews.request(target, true, () => true);
+  expect(previews.snapshot(page)).toBe("loading");
+  previews.clear(storage.clear);
+  pending.resolve(html);
+  await Bun.sleep(0);
+
+  expect(removed).toEqual(["old.jpg"]);
+  expect(previews.snapshot(page)).toBeUndefined();
+  expect(previews.snapshot(savedUrl)).toBeUndefined();
+  expect(openLinkPreviewCache(db, () => {}).cached(savedUrl)).toBeUndefined();
+});

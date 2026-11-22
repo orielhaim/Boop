@@ -4,12 +4,14 @@ import { resources } from "./resources";
 
 export const namespaces = [
   "common",
+  "messenger",
   "navigation",
   "contacts",
   "messages",
   "calls",
   "video",
   "settings",
+  "storage",
   "connections",
   "security",
   "errors",
