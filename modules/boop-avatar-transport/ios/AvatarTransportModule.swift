@@ -40,6 +40,22 @@ public final class AvatarTransportModule: Module {
     AsyncFunction("downloadPreview") { (id: String, url: String, output: String, image: Bool, promise: Promise) in
       self.transfer(id, url, output, nil, nil, image, promise)
     }
+    AsyncFunction("blossomCommand") { (id: String, url: String, headers: [String: String], body: String?, promise: Promise) in
+      guard let job = self.getJob(id) else {
+        promise.reject("MEDIA_PREFLIGHT", "Media operation missing")
+        return
+      }
+      let task = Task.detached {
+        defer { self.removeJob(id) }
+        do {
+          guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
+          promise.resolve(try await blossomCommand(url, headers, body))
+        } catch {
+          promise.reject("MEDIA_PREFLIGHT", "Blossom compatibility check failed")
+        }
+      }
+      job.attach(task)
+    }
     AsyncFunction("uploadAttachment") { (id: String, url: String, source: String, headers: [String: String], size: Int, promise: Promise) in
       guard let job = self.getJob(id) else {
         promise.reject("MEDIA_UPLOAD", "Media operation missing")
@@ -256,6 +272,47 @@ private func downloadMedia(
   let bytes = buffer as Data
   try bytes.write(to: target, options: .atomic)
   return bytes.count
+}
+
+@available(iOS 17.0, *)
+private func blossomCommand(_ input: String, _ headers: [String: String], _ body: String?) async throws -> [String: Any] {
+  guard let url = URL(string: input), url.scheme == "https",
+        let host = url.host, url.user == nil, url.password == nil,
+        url.port == nil || url.port == 443, url.path == (body == nil ? "/upload" : "/mirror"),
+        (body?.utf8.count ?? 0) <= 8192,
+        url.query == nil, url.fragment == nil,
+        host.range(of: #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"#, options: .regularExpression) != nil,
+        host.range(of: #"\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$"#, options: .regularExpression) == nil
+  else { throw AvatarTransferError.destination }
+  let gate = try AvatarConnectGate(host: host, addresses: try publicAddresses(host))
+  defer { gate.close() }
+  let endpoint = try await gate.start()
+  try Task.checkCancellation()
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.timeoutIntervalForResource = 12
+  configuration.httpCookieStorage = nil
+  configuration.httpShouldSetCookies = false
+  configuration.urlCredentialStorage = nil
+  configuration.urlCache = nil
+  var proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
+  proxy.allowFailover = false
+  configuration.proxyConfigurations = [proxy]
+  var request = URLRequest(url: url)
+  request.httpMethod = body == nil ? "HEAD" : "PUT"
+  request.httpBody = body.map { Data($0.utf8) }
+  request.allHTTPHeaderFields = headers
+  let session = URLSession(configuration: configuration, delegate: NoAvatarRedirect(), delegateQueue: nil)
+  defer { session.invalidateAndCancel() }
+  let (bytes, response) = try await session.bytes(for: request)
+  guard let http = response as? HTTPURLResponse else { throw AvatarTransferError.destination }
+  var data = Data()
+  if body != nil {
+    for try await byte in bytes {
+      guard data.count < 8192 else { throw AvatarTransferError.size }
+      data.append(byte)
+    }
+  }
+  return ["status": http.statusCode, "body": String(decoding: data, as: UTF8.self)]
 }
 
 private class NoAvatarRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

@@ -1,0 +1,4 @@
+-keep class com.sun.jna.** { *; }
+-keep class dev.ipf.marmotkit.** implements com.sun.jna.Callback { *; }
+-keep class dev.ipf.marmotkit.** extends com.sun.jna.Structure { *; }
+-keep class io.crates.keyring.Keyring { *; }

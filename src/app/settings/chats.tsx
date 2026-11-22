@@ -19,6 +19,16 @@ export default function ChatSettings() {
           icon="storage"
           onPress={() => router.push("/settings/chats/media")}
         />
+        <SettingsRow
+          title={t("messages:marmot.invitations")}
+          icon="chat"
+          onPress={() => router.push("/requests")}
+        />
+        <SettingsRow
+          title={t("messages:marmot.health")}
+          icon="connection"
+          onPress={() => router.push("./chats/health")}
+        />
       </SettingsGroup>
     </Screen>
   );

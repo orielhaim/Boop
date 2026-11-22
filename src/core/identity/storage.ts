@@ -8,11 +8,7 @@ import {
   callHistory,
   peerPermissions,
   contacts,
-  conversations,
-  messageRequests,
-  attachmentCache,
   linkPreviewCache,
-  pendingMessageEdits,
   settings,
 } from "@/db/schema";
 import { deriveIdentity, loadIdentity, parsePublicKey } from "./keys";
@@ -32,6 +28,13 @@ type IdentityDatabase<TResult> = BaseSQLiteDatabase<
   TResult,
   typeof schema
 >;
+
+export function isPinnedIdentity<TResult>(
+  db: IdentityDatabase<TResult>,
+  publicKey: string,
+) {
+  return preference(db, pinned) === publicKey;
+}
 
 const slot = (publicKey: string) => `${key}.${publicKey}`;
 const currentSlot = <TResult>(db: IdentityDatabase<TResult>) => {
@@ -105,15 +108,11 @@ async function recoverSwitch<TResult>(
       try {
         db.transaction((tx) => {
           tx.delete(linkPreviewCache).run();
-          tx.delete(pendingMessageEdits).run();
-          tx.delete(attachmentCache).run();
-          tx.delete(conversations).run();
           tx.delete(contacts).run();
           tx.delete(avatarCache).run();
           tx.delete(nostrProfiles).run();
           tx.delete(callHistory).run();
           tx.delete(peerPermissions).run();
-          tx.delete(messageRequests).run();
           tx.delete(settings)
             .where(
               notInArray(settings.key, [

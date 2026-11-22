@@ -5,11 +5,9 @@ import {
   createBlossomClient,
   type UploadFailure,
   type UploadMime,
-  type UploadProgress,
-  type UploadContext,
 } from "./blossom";
 import type { createMediaSettings, MediaRole } from "./servers";
-import { maxAttachmentBytes } from "./protocol";
+import { maxAvatarBytes } from "../avatars/jpeg";
 
 const backoffMs = 30_000;
 const capabilityMs = 10 * 60_000;
@@ -73,6 +71,44 @@ export function createMediaUploads(
 
   return {
     health: getHealth,
+    async mirrorAttachments(
+      blobs: readonly { url: string; hash: string; size: number }[],
+      signal: AbortSignal,
+      allowed: () => boolean,
+    ) {
+      if (!settings.snapshot().mirror) return true;
+      let succeeded = true;
+      for (const blob of blobs) {
+        const source = new URL(blob.url).origin;
+        const configured = settings.configured("attachment");
+        const mirror = configured.find(
+          ({ origin }) =>
+            origin !== source &&
+            !priorRejection(origin, "attachment", blob.size),
+        );
+        if (
+          !mirror ||
+          !configured.some(({ origin }) => origin === source) ||
+          signal.aborted ||
+          !allowed() ||
+          !settings.snapshot().mirror
+        )
+          continue;
+        try {
+          await client.mirror(
+            mirror.origin,
+            blob.url,
+            { ...blob, mime: "application/octet-stream" },
+            signal,
+          );
+        } catch (error) {
+          if (error instanceof BlossomError)
+            failure(mirror.origin, "attachment", error, blob.size);
+          succeeded = false;
+        }
+      }
+      return succeeded;
+    },
     async check(
       origin: string,
       role: MediaRole,
@@ -97,33 +133,20 @@ export function createMediaUploads(
       }
     },
     async upload(
-      role: MediaRole,
-      input:
-        | Uint8Array<ArrayBuffer>
-        | { uri: string; size: number; hash: string; context?: UploadContext },
-      options: {
-        signal: AbortSignal;
-        expectedHash?: string;
-        progress?: (progress: UploadProgress) => void;
-        canStart?: () => boolean;
-      },
+      role: "profile",
+      input: Uint8Array<ArrayBuffer>,
+      options: { signal: AbortSignal },
     ): Promise<MediaUploadResult> {
-      const { signal, expectedHash, progress, canStart } = options;
+      const { signal } = options;
       const checkLive = () => {
-        if (signal.aborted || canStart?.() === false)
-          throw new BlossomError("cancelled");
+        if (signal.aborted) throw new BlossomError("cancelled");
       };
-      const size = input instanceof Uint8Array ? input.length : input.size;
-      if (!size || size > maxAttachmentBytes) throw new BlossomError("size");
-      if (role === "attachment" && !expectedHash)
-        throw new BlossomError("hash");
-      const hash =
-        input instanceof Uint8Array ? await http.sha256(input) : input.hash;
-      if (expectedHash && hash !== expectedHash) throw new BlossomError("hash");
+      const size = input.length;
+      if (!size || size > maxAvatarBytes) throw new BlossomError("size");
       const blob = {
-        ...(input instanceof Uint8Array ? { bytes: input } : input),
+        bytes: input,
         size,
-        hash,
+        hash: await http.sha256(input),
         mime: mimeFor(role),
       };
       const servers = settings.configured(role);
@@ -151,7 +174,6 @@ export function createMediaUploads(
                 checkLive();
                 checkPreference(server.origin);
               },
-              progress,
             });
           try {
             url = await put();
@@ -183,9 +205,8 @@ export function createMediaUploads(
                 candidate.origin !== server.origin &&
                 !priorRejection(candidate.origin, role, size),
             );
-        if (!target || signal.aborted || canStart?.() === false) return { url };
+        if (!target || signal.aborted) return { url };
         const mirror = async () => {
-          progress?.("mirroring");
           try {
             if (!settings.snapshot().mirror || !allowed(target.origin))
               return false;
@@ -199,9 +220,7 @@ export function createMediaUploads(
                 throw error;
               // BUD-04 is optional. Reuse the exact bytes for an opted-in destination.
               checkPreference(target.origin);
-              const fallback =
-                "uri" in blob ? { ...blob, context: undefined } : blob;
-              await client.put(target.origin, fallback, signal);
+              await client.put(target.origin, blob, signal);
             }
             return true;
           } catch (error) {

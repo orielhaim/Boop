@@ -8,6 +8,11 @@ import {
   type OpenMedia,
 } from "../src/core/calling/controller";
 import {
+  discoverGroupCall,
+  groupCallAnnouncement,
+  groupCallLease,
+} from "../src/core/calling/group-presence";
+import {
   peerTranscript,
   proofKind,
   verifyPeerProof,
@@ -18,12 +23,11 @@ import {
   type InviteSignal,
   parseCallSignal,
 } from "../src/core/calling/signals";
+import { unsignedRumor, wrapRumor } from "../src/core/nostr/gift-wrap";
 import {
+  unwrapCallSignal,
   callReplyRelayTag,
-  createRumor,
-  unwrapPrivateEvent,
-  wrapRumor,
-} from "../src/core/messaging/nip17";
+} from "../src/core/calling/signaling-service";
 
 const caller = new NDKPrivateKeySigner("01".repeat(32));
 const callee = new NDKPrivateKeySigner("02".repeat(32));
@@ -49,7 +53,7 @@ function invitation(now: number): InviteSignal {
 test("signed NIP-59 call rumor reaches only its intended inbox, expires, and stays outside chat", async () => {
   const invite = invitation(Date.now());
   const replyRelay = "wss://relay.example/";
-  const rumor = createRumor({
+  const rumor = unsignedRumor({
     kind: callSignalKind,
     pubkey: invite.senderKey,
     content: JSON.stringify(invite),
@@ -63,12 +67,12 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
   expect(wrapped.rawEvent().kind).toBe(1059);
   expect(wrapped.rawEvent().content).not.toContain(invite.roomId);
   expect(JSON.stringify(wrapped.rawEvent())).not.toContain(replyRelay);
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), callee)).toMatchObject({
-    type: "call",
+  expect(await unwrapCallSignal(wrapped.rawEvent(), callee)).toMatchObject({
+    id: rumor.id,
     signal: invite,
     replyRelays: [replyRelay],
   });
-  expect(await unwrapPrivateEvent(wrapped.rawEvent(), third)).toBeNull();
+  expect(await unwrapCallSignal(wrapped.rawEvent(), third)).toBeNull();
   const envelope = {
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,
@@ -128,6 +132,7 @@ function pair(
   connectTimeout?: number,
   acceptAcknowledgment?: Promise<boolean>,
   backgroundAudio = false,
+  authorizeGroup?: (group: string, peers: string[]) => Promise<boolean>,
 ) {
   const events: CallSignal[] = [];
   const records: CallRecord[] = [];
@@ -138,6 +143,7 @@ function pair(
   const build = (localKey: string) =>
     createCallController({
       localKey,
+      authorizeGroup,
       randomId: () => id(nonce++),
       prepareInvite: async () => invitation(clock).offer,
       send: async (signal) => {
@@ -189,6 +195,229 @@ function pair(
     },
   };
 }
+
+test("a group call rechecks Marmot membership before answering while first-contact calls remain independent", async () => {
+  const group = id(99);
+  const members = new Set([caller.pubkey, callee.pubkey]);
+  const { a, b, deliver, events } = pair(
+    undefined,
+    undefined,
+    undefined,
+    false,
+    async (requestedGroup, peers) =>
+      requestedGroup === group && peers.every((peer) => members.has(peer)),
+  );
+  try {
+    expect(await a.dial(third.pubkey, group)).toBe(false);
+    expect(events).toEqual([]);
+    expect(await a.dial(callee.pubkey, group)).toBe(true);
+    expect(events[0]).toMatchObject({ type: "call.invite", groupId: group });
+    deliver();
+    await Bun.sleep(0);
+    expect(b.store.getState().call).toMatchObject({
+      phase: "incoming",
+      groupId: group,
+    });
+    members.delete(caller.pubkey);
+    b.accept();
+    await Bun.sleep(0);
+    expect(b.store.getState().call).toMatchObject({
+      phase: "ended",
+      outcome: "failed",
+    });
+    expect(events.some((event) => event.type === "call.accept")).toBe(false);
+    a.end();
+    events.length = 0;
+    expect(await a.dial(callee.pubkey)).toBe(true);
+    deliver();
+    expect(b.store.getState().call).toMatchObject({ phase: "incoming" });
+    expect(b.store.getState().call?.groupId).toBeUndefined();
+  } finally {
+    a.end();
+    b.end();
+  }
+});
+
+test("group discovery accepts a solo lobby, switches coordinators, and expires the lease", () => {
+  const now = 1_700_000_000_000;
+  const call = id(99);
+  const members = new Set([caller.pubkey, callee.pubkey, third.pubkey]);
+  const active = (
+    sender: string,
+    users: string[],
+    time = now,
+    ended = false,
+  ) => ({
+    sender,
+    text: groupCallAnnouncement(call, users, time, ended),
+    sentAt: Math.floor(time / 1000),
+    deleted: false,
+    invalidated: false,
+  });
+  const rows = [active(caller.pubkey, [caller.pubkey])];
+  const discover = (at = now) =>
+    discoverGroupCall(rows, (key) => members.has(key), at);
+  expect(discover()).toMatchObject({
+    call,
+    coordinator: caller.pubkey,
+    routes: [caller.pubkey],
+  });
+  rows.push(active(third.pubkey, [caller.pubkey], now + 2));
+  expect(discover()?.coordinator).toBe(caller.pubkey);
+  rows.push(
+    active(caller.pubkey, [], now + 3),
+    active(callee.pubkey, [callee.pubkey], now + 4),
+  );
+  expect(discover()).toMatchObject({ call, coordinator: callee.pubkey });
+  expect(discover(now + groupCallLease + 4)).toBeUndefined();
+  rows.push(active(callee.pubkey, [], now + 5, true));
+  expect(discover()).toBeUndefined();
+});
+
+test("an uninvited group member joins through a correlated encrypted-control offer and loses admission on removal", async () => {
+  const group = id(100);
+  const events: CallSignal[] = [];
+  const roster = new Set([caller.pubkey, callee.pubkey, third.pubkey]);
+  let nonce = 1000;
+  const now = Date.now();
+  const revoked: string[] = [];
+  const remoteHangup = new Map<string, () => void>();
+  const offline = new Set<string>();
+  const build = (localKey: string) => {
+    const instance = createCallController({
+      localKey,
+      now: () => now,
+      randomId: () => id(nonce++),
+      authorizeGroup: async (id, peers) =>
+        id === group &&
+        roster.has(localKey) &&
+        peers.every((key) => roster.has(key)),
+      prepareInvite: async () => invitation(now).offer,
+      send: async (signal) => {
+        events.push(signal);
+        return !offline.has(signal.recipientKey);
+      },
+      openMedia: async ({
+        invite,
+        peerKey,
+        onAuthenticated,
+        onParticipants,
+        onHangup,
+      }) => {
+        const notifyHangup = async () => {};
+        remoteHangup.set(localKey, onHangup);
+        onAuthenticated({ notifyHangup });
+        onParticipants?.(
+          (invite.conference?.roster ?? [peerKey])
+            .filter((key) => key !== localKey)
+            .map((key) => ({
+              key,
+              muted: false,
+              silenced: false,
+              volume: 100,
+              speaking: false,
+            })),
+        );
+        return {
+          notifyHangup,
+          close() {},
+          mute() {},
+          async route() {},
+          conference: {
+            async reserve() {
+              return true;
+            },
+            async authorize() {
+              return true;
+            },
+            revokePeer(key) {
+              revoked.push(key);
+            },
+            release() {},
+            silence() {},
+            volume() {},
+          },
+        };
+      },
+      record() {},
+      tone() {},
+    });
+    instance.setForeground(true);
+    return instance;
+  };
+  const alice = build(caller.pubkey);
+  const bob = build(callee.pubkey);
+  const charlie = build(third.pubkey);
+  const clients = new Map([
+    [caller.pubkey, alice],
+    [callee.pubkey, bob],
+    [third.pubkey, charlie],
+  ]);
+  async function deliver() {
+    for (let i = 0; i < 5; i++) {
+      for (const event of events.splice(0))
+        clients.get(event.recipientKey)?.receive(event);
+      await Bun.sleep(0);
+    }
+  }
+  try {
+    expect(await alice.startGroup(group)).toBe(true);
+    const lobby = alice.store.getState().groupLobby;
+    if (!lobby) throw new Error("Group lobby missing");
+    expect(alice.store.getState().call).toBeNull();
+    expect(await bob.join(group, lobby.callId, [caller.pubkey])).toBe(true);
+    await deliver();
+    const call = alice.store.getState().call;
+    if (call?.phase !== "connected")
+      throw new Error("Initial conference did not connect");
+    alice.end();
+    remoteHangup.get(callee.pubkey)?.();
+    offline.add(caller.pubkey);
+    expect(bob.store.getState().groupLobby).toEqual({
+      callId: call.id,
+      groupId: group,
+    });
+    expect(
+      await charlie.join(group, call.id, [caller.pubkey, callee.pubkey]),
+    ).toBe(true);
+    expect(
+      events
+        .filter((event) => event.type === "call.join")
+        .map((event) => event.recipientKey),
+    ).toEqual([caller.pubkey, callee.pubkey]);
+    await deliver();
+    expect(charlie.store.getState().call).toMatchObject({
+      phase: "connected",
+      id: call.id,
+      groupId: group,
+    });
+    expect(charlie.store.getState().joining).toBeUndefined();
+    const connected = bob.store.getState().participants;
+    offline.delete(caller.pubkey);
+    bob.store.setState({
+      participants: Array.from({ length: 5 }, (_, index) => ({
+        key: id(1500 + index),
+        muted: false,
+        silenced: false,
+        volume: 100,
+        speaking: false,
+      })),
+    });
+    expect(await alice.join(group, call.id, [callee.pubkey])).toBe(true);
+    await deliver();
+    expect(alice.store.getState().fullGroupCall?.callId).toBe(call.id);
+    expect(alice.store.getState().joining).toBeUndefined();
+    bob.store.setState({ participants: connected });
+    roster.delete(third.pubkey);
+    charlie.reconcileGroup(group, roster);
+    expect(charlie.store.getState().call?.phase).toBe("ended");
+    expect(await charlie.join(group, call.id, [callee.pubkey])).toBe(false);
+    expect(bob.store.getState().call?.phase).toBe("connected");
+    expect(revoked).toEqual([]);
+  } finally {
+    for (const client of clients.values()) client.end();
+  }
+});
 
 test("answer starts transport while waiting for relay acknowledgment and closes it when publication fails", async () => {
   const acknowledgment = Promise.withResolvers<boolean>();

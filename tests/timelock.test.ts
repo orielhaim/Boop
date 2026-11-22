@@ -1,30 +1,31 @@
-import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { Buffer } from "node:buffer";
-import NDK, { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { toDetailMessage } from "../src/components/messages/detail-adapter";
+import { Buffer } from "node:buffer";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  parseRumor,
-  unwrapPrivateEvent,
-  wrapRumor,
-} from "../src/core/messaging/nip17";
-import { createMessagingService } from "../src/core/messaging/runtime";
+  purgeExpiredOpenedMessages,
+  readOpenedMessage,
+  removeOpenedMessage,
+  saveOpenedMessage,
+} from "../src/db/open-later";
+import { setPreference } from "../src/db/queries";
+import * as schema from "../src/db/schema";
+import { initializeTestDatabase } from "./db-fixture";
+import {
+  createOpenLaterResolver,
+  type OpenLaterState,
+} from "../src/core/messaging/special-messages/open-conversation";
 import {
   createTimeLockOpener,
   encryptTimeLock,
   maxTimeLockDate,
-  maxTimeLockEnvelope,
   parseTimeLock,
   scheduleUnlock,
   TimeLockError,
-  timeLockKind,
 } from "../src/core/messaging/special-messages/timelock";
-import { createUnlockScheduler } from "../src/core/messaging/special-messages/unlock-scheduler";
-import { createMessagingRepository } from "../src/db/messaging";
-import { initializeTestDatabase } from "./db-fixture";
-import * as schema from "../src/db/schema";
-import { createTranslationCache } from "../src/db/translations";
 
 // Generated with official tle v1.2.0: -e -f -a -r 1000000
 const body = "Boop Quicknet שלום 🌙";
@@ -70,6 +71,136 @@ const historical = (() => {
   if (!content) throw new Error("Go Quicknet fixture did not parse");
   return content;
 })();
+
+test("opened plaintext survives a SQLite reopen and is removed on delete or expiration", () => {
+  const directory = mkdtempSync(join(tmpdir(), "boop-open-later-"));
+  const path = join(directory, "cache.db");
+  try {
+    {
+      using sqlite = new Database(path);
+      initializeTestDatabase(sqlite);
+      const db = drizzle(sqlite, { schema });
+      saveOpenedMessage(db, "opened", body);
+      setPreference(
+        db,
+        "marmot.opened.expired",
+        JSON.stringify({ body, expiresAt: 1 }),
+      );
+    }
+    using sqlite = new Database(path);
+    const db = drizzle(sqlite, { schema });
+    expect(readOpenedMessage(db, "opened")).toBe(body);
+    expect(readOpenedMessage(db, "expired")).toBeNull();
+    removeOpenedMessage(db, "opened");
+    purgeExpiredOpenedMessages(db);
+    expect(sqlite.query("SELECT key FROM settings").all()).toEqual([]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("conversation open resolves every due loaded message, adds pages, and reopens cached messages offline", async () => {
+  let clock = roundTime - 1;
+  const text = JSON.stringify(historical);
+  const cache = new Map<string, string>();
+  const states = new Map<string, OpenLaterState>();
+  let fetches = 0;
+  const open = createTimeLockOpener(undefined, async () => {
+    fetches++;
+    return beacon;
+  });
+  const options = {
+    now: () => clock,
+    read: ({ id }: { id: string }) => cache.get(id) ?? null,
+    save: ({ id }: { id: string }, decoded: string) => {
+      cache.set(id, decoded);
+    },
+    allowed: () => true,
+    publish: (next: ReadonlyMap<string, OpenLaterState>) => {
+      states.clear();
+      for (const [id, state] of next) states.set(id, state);
+    },
+  };
+  const recent = [
+    { id: "offscreen", text },
+    { id: "visible", text },
+  ];
+  const locked = createOpenLaterResolver({ ...options, open });
+  locked.scan(recent);
+  clock = roundTime;
+  locked.scan(recent);
+  expect(fetches).toBe(0);
+  expect(states.get("offscreen")?.kind).toBe("locked");
+  locked.stop();
+
+  const opened = createOpenLaterResolver({ ...options, open });
+  opened.scan(recent);
+  opened.scan([...recent, { id: "older", text }]);
+  await waitFor(() => cache.size === 3);
+  expect(cache.get("offscreen")).toBe(body);
+  expect(cache.get("older")).toBe(body);
+  expect(fetches).toBe(1);
+  opened.stop();
+
+  const reopened = createOpenLaterResolver({
+    ...options,
+    open: async () => {
+      throw new Error("Offline");
+    },
+  });
+  reopened.scan([
+    ...recent,
+    { id: "older", text },
+    { id: "expired", text, expiresAt: roundTime / 1000 },
+  ]);
+  expect(states.get("offscreen")).toEqual({ kind: "opened", text: body });
+  expect(states.has("expired")).toBe(false);
+  reopened.stop();
+});
+
+test("Open Later errors wait for explicit retry and authorization loss discards completions", async () => {
+  let allowed = true;
+  let attempts = 0;
+  let writes = 0;
+  const message = { id: "pending", text: JSON.stringify(historical) };
+  let resolveUnlock: ((result: string) => void) | undefined;
+  let state: OpenLaterState | undefined;
+  const resolver = createOpenLaterResolver({
+    now: () => roundTime,
+    read: () => null,
+    save: () => {
+      writes++;
+    },
+    allowed: () => allowed,
+    open: async () => {
+      if (++attempts === 1) throw new TimeLockError("network");
+      return new Promise((resolve) => {
+        resolveUnlock = resolve;
+      });
+    },
+    publish: (states) => {
+      state = states.get(message.id);
+    },
+  });
+  resolver.scan([message]);
+  await waitFor(() => state?.kind === "failed");
+  resolver.scan([message]);
+  expect(attempts).toBe(1);
+  resolver.retry(message.id);
+  expect(attempts).toBe(2);
+  allowed = false;
+  resolver.scan([]);
+  resolveUnlock?.(body);
+  await Promise.resolve();
+  expect(writes).toBe(0);
+  expect(state).toBeUndefined();
+  resolver.stop();
+});
+
+async function waitFor(condition: () => boolean) {
+  for (let i = 0; i < 100 && !condition(); i++) await Bun.sleep(2);
+  expect(condition()).toBe(true);
+}
 
 test("chooses the first scheduled round at or after UTC instants", () => {
   const genesis = 1_692_803_367_000;
@@ -219,187 +350,4 @@ test("rejects wrong rounds and signatures before using the decryption key", asyn
     throw new TimeLockError("network");
   });
   await expect(offline(historical)).rejects.toMatchObject({ code: "network" });
-});
-
-const alice = new NDKPrivateKeySigner("01".repeat(32));
-const bob = new NDKPrivateKeySigner("02".repeat(32));
-const ndk = new NDK({ enableOutboxModel: false });
-const peerKey = bob.pubkey;
-const participants = { self: { _id: alice.pubkey }, peer: { _id: bob.pubkey } };
-
-function database(sqlite: Database) {
-  initializeTestDatabase(sqlite);
-  return drizzle(sqlite, { schema });
-}
-
-function arrival(id: string) {
-  return {
-    id,
-    eventId: id,
-    peerKey,
-    direction: "incoming" as const,
-    body: "",
-    senderKey: bob.pubkey,
-    recipientKey: alice.pubkey,
-    replyTo: null,
-    sentAt: roundTime - 5_000,
-    timeLock: historical,
-  };
-}
-
-test("queues special and standard messages together and wraps only ciphertext for both identities", async () => {
-  using sqlite = new Database(":memory:");
-  const chat = createMessagingRepository(database(sqlite));
-  const runtime = createMessagingService({
-    signer: alice,
-    chat,
-    readState: () => null,
-    writeState: () => {},
-    createId: () => crypto.randomUUID(),
-  });
-  runtime.setUnlockActive(true);
-  try {
-    const quoteId = await runtime.send({
-      peerKey,
-      body: "ordinary message",
-      replyTo: null,
-    });
-    const secret = "界".repeat(4_000);
-    chat.saveDraft(peerKey, secret, quoteId);
-    const id = await runtime.send({
-      peerKey,
-      body: secret,
-      replyTo: quoteId,
-      unlockAt: Date.now() + 60_000,
-    });
-    expect(chat.draft(peerKey)).toMatchObject({
-      draft: "",
-      draftReplyTo: null,
-    });
-    const row = chat.pending().find((item) => item.id === id);
-    expect(row?.body).toBe("");
-    expect(row?.rumorJson).not.toContain("界");
-    const rumor = parseRumor(JSON.parse(row?.rumorJson ?? "null"));
-    if (!rumor) throw new Error("Missing outgoing rumor");
-    expect(rumor.kind).toBe(timeLockKind);
-    const quoteEventId = chat.message(peerKey, quoteId)?.eventId;
-    if (!quoteEventId) throw new Error("Missing quoted event");
-    expect(rumor.tags).toContainEqual(["e", quoteEventId]);
-    for (const recipient of [alice, bob]) {
-      const wrap = await wrapRumor(ndk, rumor, recipient.pubkey, alice);
-      expect(JSON.stringify(wrap.rawEvent()).length).toBeLessThan(
-        maxTimeLockEnvelope,
-      );
-      const event = await unwrapPrivateEvent(wrap.rawEvent(), recipient);
-      expect(event).toMatchObject({ type: "timelock", id: rumor.id });
-      expect(JSON.stringify(event)).not.toContain("界");
-    }
-  } finally {
-    runtime.setUnlockActive(false);
-    runtime.stop();
-  }
-});
-
-test("retains order, unread state and replies across cache reload, and never requeues a committed unlock", async () => {
-  using sqlite = new Database(":memory:");
-  const db = database(sqlite);
-  const chat = createMessagingRepository(db);
-  chat.receive(arrival("older"));
-  expect(chat.receive({ ...arrival("older"), id: "duplicate-wrap" })).toBe(
-    false,
-  );
-  expect(chat.conversation(peerKey)).toMatchObject({
-    preview: "",
-    lockedUntil: roundTime,
-    unread: 1,
-  });
-  const translations = createTranslationCache(db);
-  expect(translations.matchesIncoming("older", "")).toBe(false);
-  chat.markRead(peerKey, ["older"]);
-  expect(chat.unreadCount()).toBe(1);
-  chat.receive({
-    ...arrival("reply"),
-    timeLock: undefined,
-    body: "My reply",
-    replyTo: "older",
-    sentAt: roundTime + 4_000,
-  });
-  const initial = createMessagingRepository(db);
-  const before = initial.history(peerKey).messages;
-  expect(before[0]).toMatchObject({
-    id: "older",
-    body: "",
-    locked: { requestedAt: roundTime },
-  });
-  const reply = before[1];
-  if (!reply) throw new Error("Missing reply");
-  expect(
-    toDetailMessage(reply, before[0], participants, "Missing", "Locked message")
-      .replyMessage,
-  ).toMatchObject({ _id: "older", text: "Locked message" });
-
-  const [job] = initial.dueUnlocks(Date.now());
-  if (!job) throw new Error("Missing pending unlock");
-  const opened = await createTimeLockOpener(
-    undefined,
-    async () => beacon,
-  )(job.content);
-  if (opened === null) throw new Error("Open failed");
-  initial.commitUnlock(job, opened, Date.now());
-  initial.commitUnlock(job, "stale", Date.now());
-  using reopenedSqlite = Database.deserialize(sqlite.serialize());
-  const reopenedDb = drizzle(reopenedSqlite, { schema });
-  const reopened = createMessagingRepository(reopenedDb);
-  expect(reopened.nextUnlock()).toBeNull();
-  expect(
-    createTranslationCache(reopenedDb).matchesIncoming("older", body),
-  ).toBe(true);
-  const after = reopened.history(peerKey).messages;
-  expect(after.map(({ id, body }) => [id, body])).toEqual([
-    ["older", body],
-    ["reply", "My reply"],
-  ]);
-  expect(
-    toDetailMessage(reply, after[0], participants, "Missing").replyMessage,
-  ).toMatchObject({ _id: "older", text: body });
-  expect(reopened.unreadCount()).toBe(2);
-  reopened.markRead(peerKey, ["older"]);
-  expect(reopened.unreadCount()).toBe(1);
-  expect(
-    sqlite.query("SELECT ciphertext FROM message_timelocks").get(),
-  ).toEqual({ ciphertext });
-});
-
-test("backgrounds a shared worker and ignores a result for a deleted message", async () => {
-  using sqlite = new Database(":memory:");
-  const chat = createMessagingRepository(database(sqlite));
-  let unblock: (() => void) | undefined;
-  let started: (() => void) | undefined;
-  const began = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const blocked = new Promise<void>((resolve) => {
-    unblock = resolve;
-  });
-  const scheduler = createUnlockScheduler(chat, async () => {
-    started?.();
-    await blocked;
-    return body;
-  });
-  const incoming = arrival("late");
-  chat.receive(incoming);
-  scheduler.setActive(true);
-  try {
-    await began;
-    chat.deleteMessages(peerKey, [incoming.id]);
-    expect(chat.receive({ ...incoming, id: "same-rumor" })).toBe(false);
-    scheduler.setActive(false);
-    unblock?.();
-    await Bun.sleep(25);
-    expect(chat.history(peerKey).messages).toEqual([]);
-    expect(chat.nextUnlock()).toBeNull();
-    expect(chat.unreadCount()).toBe(0);
-  } finally {
-    scheduler.setActive(false);
-  }
 });

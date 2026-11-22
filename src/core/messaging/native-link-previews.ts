@@ -5,17 +5,22 @@ import { removeMediaFile, sweepFiles } from "@/core/media/files";
 import type { Privacy } from "@/core/privacy";
 import type { Database } from "@/db";
 import { openLinkPreviewCache } from "@/db/link-previews";
-import type { MessagingRepository } from "@/db/messaging";
-import { authorizePreview, createLinkPreviews } from "./link-previews";
+import { createLinkPreviews } from "./link-previews";
 
 const imageName = /^[a-f0-9-]{36}\.jpg$/u;
 
 export function createNativeLinkPreviews(
   db: Database,
-  chat: MessagingRepository,
   privacy: Privacy,
   media: MediaSdk,
-  canLoad: () => boolean,
+  authorizer: {
+    authorizePreview(target: {
+      peer: string;
+      id: string;
+      url: string;
+    }): boolean;
+    subscribe(listener: () => void): () => void;
+  },
 ) {
   const root = new Directory(Paths.cache, "link-previews");
   const removeImage = (name: string) => {
@@ -47,9 +52,7 @@ export function createNativeLinkPreviews(
     ...cache,
     removeImage,
     policy: privacy.linkPreviewPolicy,
-    authorize(target) {
-      return canLoad() && authorizePreview(target, chat, privacy);
-    },
+    authorize: authorizer.authorizePreview,
     async html(url, signal) {
       const file = await transfer(url, false, signal);
       try {
@@ -63,9 +66,7 @@ export function createNativeLinkPreviews(
     },
   });
   privacy.subscribe(previews.revalidate);
-  chat.subscribe(({ history }) => {
-    if (history) previews.revalidate();
-  });
+  authorizer.subscribe(previews.revalidate);
   return {
     ...previews,
     imageUri(name: string | undefined) {

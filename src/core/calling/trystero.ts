@@ -8,7 +8,12 @@ import type {
 import { z } from "zod";
 import { publicKeySchema } from "../identity/keys";
 import { captureCamera } from "./camera";
-import { admission, callCapacity, type ParticipantVolume } from "./conference";
+import {
+  admission,
+  callCapacity,
+  reservationRequest,
+  type ParticipantVolume,
+} from "./conference";
 import { bindConferenceVideo } from "./conference-video";
 import type { OpenMedia } from "./controller";
 import { callMetric, traceAudioPackets } from "./diagnostics";
@@ -254,6 +259,7 @@ export function trysteroMedia(
     peerKey,
     signal,
     acceptance,
+    authorizePeers,
     onDisconnect,
     onHangup,
     onRemoteMute,
@@ -666,19 +672,37 @@ export function trysteroMedia(
           .catch(() => undefined);
       }
       subscriptions.push(
-        reserve.onRequest((data, { peerId }) => {
+        reserve.onRequest(async (data, { peerId }) => {
           const link = links.get(peerId);
+          const request = reservationRequest.safeParse(data).data;
           return (
-            !!link && isMember(peerId) && reservations.reserve(data, link.key)
+            !!link &&
+            !!request &&
+            isMember(peerId) &&
+            (!authorizePeers ||
+              (await authorizePeers([
+                request.recipient,
+                ...request.invitation.roster,
+              ]))) &&
+            isMember(peerId) &&
+            reservations.reserve(request, link.key)
           );
         }),
-        grant.onRequest((data, { peerId }) => {
+        grant.onRequest(async (data, { peerId }) => {
           const link = links.get(peerId);
           const id = opaqueId.safeParse(data).data;
+          const seat = reservations.current();
           return (
             !!link &&
             isMember(peerId) &&
             !!id &&
+            seat?.request.invitation.id === id &&
+            (!authorizePeers ||
+              (await authorizePeers([
+                seat.request.recipient,
+                ...seat.request.invitation.roster,
+              ]))) &&
+            isMember(peerId) &&
             reservations.authorize(id, link.key)
           );
         }),
@@ -805,6 +829,8 @@ export function trysteroMedia(
               await new Promise((resolve) => setTimeout(resolve, 200));
             }
           }
+          if (authorizePeers && !(await authorizePeers([key])))
+            throw new Error("Peer authorization expired");
           if (
             closed ||
             isBlocked(key) ||
@@ -863,6 +889,9 @@ export function trysteroMedia(
             throw new Error("Peer session unavailable");
           const [track] = localStream.getAudioTracks();
           if (!track) throw new Error("No microphone");
+          if (authorizePeers && !(await authorizePeers([key])))
+            throw new Error("Peer authorization expired");
+          operation.throwIfAborted();
           await transceiver.sender.replaceTrack(
             track as unknown as MediaStreamTrack,
           );
@@ -1108,6 +1137,24 @@ export function trysteroMedia(
           return conferenceVideo ?? video;
         },
         conference: {
+          revokePeer(key) {
+            initial.delete(key);
+            stopRecovery(key);
+            const seat = reservations.current();
+            if (
+              seat &&
+              (seat.request.recipient === key ||
+                seat.request.invitation.roster.includes(key))
+            )
+              revoke(seat.request.invitation.id);
+            signaling.remove(key);
+            for (const link of links.values()) {
+              if (link.key === key) {
+                leave(link.id, true);
+                link.connection.close();
+              }
+            }
+          },
           async reserve(request) {
             if (!reservations.reserve(request, localKey)) return false;
             const targets = members().map((link) => link.id);

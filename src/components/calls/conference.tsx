@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, {
@@ -22,6 +22,7 @@ import {
 } from "@/core/calling/conference";
 import type { VideoState } from "@/core/calling/video";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
+import { marmot } from "@/core/marmot/native";
 import { nameOrAddress, useContacts } from "@/db/contacts";
 import { useLocal } from "@/services/local-context";
 import { VideoTile } from "./video-stage";
@@ -93,9 +94,38 @@ export function ConferenceSheet({
   activeVideo: VideoState | null;
 }) {
   const { t } = useTranslation(["calls", "common", "contacts", "video"]);
-  const { calling, identity } = useLocal();
+  const { calling, identity, privacy } = useLocal();
   const invitations = useStore(calling.store, (state) => state.invitations);
+  const group = useStore(calling.store, (state) => state.call?.groupId);
   const [query, setQuery] = useState("");
+  const [groupPeers, setGroupPeers] = useState<{
+    group: string;
+    members: { publicKey: string; name: string }[];
+  }>();
+  useEffect(() => {
+    if (!open || !group || mode !== "add") return;
+    let active = true;
+    void marmot
+      .groupDetails(group)
+      .then((details) => {
+        if (!active || details.membership !== "member") return;
+        setGroupPeers({
+          group,
+          members: details.members
+            .filter((member) => !member.self)
+            .map((member) => ({
+              publicKey: member.id,
+              name: member.name || member.npub,
+            })),
+        });
+      })
+      .catch(() => {
+        if (active) setGroupPeers({ group, members: [] });
+      });
+    return () => {
+      active = false;
+    };
+  }, [group, mode, open]);
   const pending = invitations.some(
     ({ phase }) =>
       phase === "inviting" || phase === "ringing" || phase === "connecting",
@@ -103,11 +133,17 @@ export function ConferenceSheet({
   const occupied = pending || peers.members.length + 1 >= callCapacity;
   const matching = query.trim().toLocaleLowerCase();
   const key = parsePublicKey(query);
-  const contacts = peers.contacts.filter(
+  const candidates = group
+    ? groupPeers?.group === group
+      ? groupPeers.members
+      : []
+    : peers.contacts;
+  const contacts = candidates.filter(
     (contact) =>
-      !matching ||
-      contact.name.toLocaleLowerCase().includes(matching) ||
-      toNpub(contact.publicKey).startsWith(matching),
+      !privacy.isBlocked(contact.publicKey) &&
+      (!matching ||
+        contact.name.toLocaleLowerCase().includes(matching) ||
+        toNpub(contact.publicKey).startsWith(matching)),
   );
   const unavailable = (key: string) =>
     key === identity.publicKey ||
@@ -151,7 +187,7 @@ export function ConferenceSheet({
                   )}
                 </Ink>
               )}
-              {key && !peers.byKey.has(key) && !unavailable(key) && (
+              {!group && key && !peers.byKey.has(key) && !unavailable(key) && (
                 <Action variant="prominent" onPress={() => invite(key)}>
                   {t("calls:inviteAddress")}
                 </Action>

@@ -26,6 +26,7 @@ import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { LockScreen } from "@/components/settings/lock-screen";
 import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink } from "@/components/ui/kit";
+import { IncompatibleDatabaseError } from "@/db";
 import {
   directionFor,
   namespaces,
@@ -34,7 +35,7 @@ import {
 } from "@/i18n";
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
-import { initializeLocal, MessagingLifecycle } from "@/services/local";
+import { initializeLocal, LocalSessionLifecycle } from "@/services/local";
 import { LocalContext } from "@/services/local-context";
 import { themes, useAppPreferences } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
@@ -59,7 +60,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation(namespaces);
   const [data, setData] =
     useState<Awaited<ReturnType<typeof initializeLocal>>>();
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<"database" | "startup">();
   const { colors, theme } = useTheme();
   useEffect(() => {
     let live = true;
@@ -73,8 +74,11 @@ function Boot({ onRetry }: { onRetry: () => void }) {
         });
         setData(result);
       })
-      .catch(() => {
-        if (live) setFailed(true);
+      .catch((error) => {
+        if (live)
+          setFailed(
+            error instanceof IncompatibleDatabaseError ? "database" : "startup",
+          );
       });
     return () => {
       live = false;
@@ -108,7 +112,13 @@ function Boot({ onRetry }: { onRetry: () => void }) {
           <Ink kind="title">Boop</Ink>
           {failed ? (
             <>
-              <Ink muted>{t("errors:startup")}</Ink>
+              <Ink muted>
+                {t(
+                  failed === "database"
+                    ? "errors:databaseBaseline"
+                    : "errors:startup",
+                )}
+              </Ink>
               <Action onPress={onRetry}>{t("common:retry")}</Action>
             </>
           ) : (
@@ -134,8 +144,8 @@ function ProtectedApplication({
   const { colors } = useTheme();
   const { db, calling, lock } = data;
   const chatsEnabled = useSyncExternalStore(
-    data.messaging.subscribeStatus,
-    data.messaging.getChatsEnabled,
+    data.chatPreferences.subscribe,
+    data.chatPreferences.enabled,
   );
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const obscured = state.enabled && (state.locked || !state.active);
@@ -194,7 +204,7 @@ function ProtectedApplication({
   if (!state.hasOpened) return <LockScreen lock={lock} state={state} />;
   return (
     <LocalContext.Provider value={data}>
-      <MessagingLifecycle />
+      <LocalSessionLifecycle />
       <LocaleProvider direction={direction}>
         <View
           style={[styles.root, { direction }, obscured && styles.obscured]}
@@ -221,10 +231,6 @@ function ProtectedApplication({
               <Stack.Screen
                 name="requests"
                 options={{ title: t("security:pendingRequests") }}
-              />
-              <Stack.Screen
-                name="requests/[key]"
-                options={{ headerShown: false }}
               />
             </Stack.Protected>
             <Stack.Screen

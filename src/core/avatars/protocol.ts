@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { publicMediaUrl as publicImageUrl } from "../media/url";
-import { verifiedEvent } from "../messaging/nip17";
+import { verifiedEvent } from "../nostr/gift-wrap";
 
 export const profilePhotoPolicies = ["everyone", "contacts", "nobody"] as const;
 export type ProfilePhotoPolicy = (typeof profilePhotoPolicies)[number];

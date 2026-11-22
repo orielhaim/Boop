@@ -5,7 +5,6 @@ import { Icon } from "@/components/ui/kit";
 import type { UnlockFailure } from "@/core/messaging/special-messages/timelock";
 import { resolveLanguage } from "@/i18n";
 import { formatDateTime } from "@/i18n/format";
-import type { DetailMessage } from "./detail-adapter";
 
 const statusLabels = {
   "not-ready": "lockedNotReady",
@@ -26,7 +25,7 @@ export const LockedMessageBubble = memo(function LockedMessageBubble({
   color,
   rtl,
 }: {
-  lock: NonNullable<DetailMessage["locked"]>;
+  lock: { requestedAt: number; error: UnlockFailure | null };
   color: string;
   rtl: boolean;
 }) {

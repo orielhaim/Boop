@@ -17,9 +17,10 @@ import { useLocal } from "@/services/local-context";
 
 export default function CallRoute() {
   const { t } = useTranslation(namespaces);
-  const { key, callId } = useLocalSearchParams<{
+  const { key, callId, group } = useLocalSearchParams<{
     key: string;
     callId?: string;
+    group?: string;
   }>();
   const { calling, identity } = useLocal();
   const peerKey = typeof key === "string" ? parsePublicKey(key) : null;
@@ -28,6 +29,7 @@ export default function CallRoute() {
   const initiated = useRef(false);
   const navigation = useRootNavigationState();
   const [focused, setFocused] = useState(false);
+  const [failed, setFailed] = useState(false);
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
@@ -44,8 +46,12 @@ export default function CallRoute() {
     )
       return;
     initiated.current = true;
-    void calling.dial(peerKey);
-  }, [calling, callId, identity.publicKey, peerKey]);
+    void calling
+      .dial(peerKey, typeof group === "string" ? group : undefined)
+      .then((success) => {
+        if (!success) setFailed(true);
+      });
+  }, [calling, callId, group, identity.publicKey, peerKey]);
 
   const close = () => {
     if (call?.phase === "ended") calling.dismiss(call.id);
@@ -74,7 +80,13 @@ export default function CallRoute() {
       else router.replace("/");
     }, [call, callId, calling]),
   );
-  if (!call && peerKey && peerKey !== identity.publicKey && !callId) {
+  if (
+    !call &&
+    peerKey &&
+    peerKey !== identity.publicKey &&
+    !callId &&
+    !failed
+  ) {
     return (
       <Screen>
         <ActivityIndicator accessibilityLabel={t("calls:starting")} />

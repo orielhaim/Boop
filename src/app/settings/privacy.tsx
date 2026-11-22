@@ -16,7 +16,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function Privacy() {
   const { t } = useTranslation(namespaces);
-  const { lock, messaging } = useLocal();
+  const { lock, chatPreferences } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const privacy = usePrivacy();
   const selected = privacy.preferences();
@@ -88,7 +88,7 @@ export default function Privacy() {
           title={t("common:chats")}
           detail={t("security:chatsHelp")}
           value={chatsEnabled}
-          onChange={(value) => save(() => messaging.setChatsEnabled(value))}
+          onChange={(value) => save(() => chatPreferences.setEnabled(value))}
         />
         <SettingsMenuRow
           title={t("security:whoCanMessage")}

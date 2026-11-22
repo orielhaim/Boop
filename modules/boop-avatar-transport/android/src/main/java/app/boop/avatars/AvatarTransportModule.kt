@@ -11,6 +11,7 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.BufferedSink
@@ -101,6 +102,32 @@ class AvatarTransportModule : Module() {
     }
     AsyncFunction("downloadPreview") { id: String, url: String, output: String, image: Boolean ->
       download(id, url, output, null, null, image)
+    }
+    AsyncFunction("blossomCommand") { id: String, url: String, headers: Map<String, String>, body: String? ->
+      val job = jobs[id] ?: throw IOException("Media operation missing")
+      try {
+        val address = url.toHttpUrl()
+        require(address.isHttps && address.port == 443 && address.username.isEmpty() &&
+          address.password.isEmpty() && allowedHost.matches(address.host) &&
+          !localSuffix.containsMatchIn(address.host) &&
+          address.encodedPath == (if (body == null) "/upload" else "/mirror") &&
+          (body == null || body.toByteArray().size <= 8192) &&
+          address.query == null && address.fragment == null)
+        val request = Request.Builder().url(address)
+        if (body == null) request.head()
+        else request.put(body.toRequestBody("application/json".toMediaType()))
+        headers.forEach { (key, value) -> request.header(key, value) }
+        val call = client.newCall(request.build())
+        job.call = call
+        if (job.cancelled.get()) call.cancel()
+        call.execute().use { response ->
+          val data = if (body == null) null else response.body?.source()
+          if (data?.request(8193) == true) throw IOException("Media response too large")
+          mapOf("status" to response.code, "body" to (data?.readUtf8() ?: ""))
+        }
+      } finally {
+        jobs.remove(id, job)
+      }
     }
     AsyncFunction("uploadAttachment") { id: String, url: String, source: String, headers: Map<String, String>, size: Int ->
       uploadAttachment(id, url, source, headers, size)

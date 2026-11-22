@@ -13,9 +13,9 @@ export function useLocal() {
 }
 
 export function useChatsEnabled() {
-  const { messaging } = useLocal();
+  const { chatPreferences } = useLocal();
   return useSyncExternalStore(
-    messaging.subscribeStatus,
-    messaging.getChatsEnabled,
+    chatPreferences.subscribe,
+    chatPreferences.enabled,
   );
 }

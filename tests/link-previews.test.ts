@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import {
-  authorizePreview,
   createLinkPreviews,
   extractPreview,
   firstPreviewUrl,
@@ -10,9 +9,8 @@ import {
   type LinkPreviewPolicy,
 } from "../src/core/messaging/link-previews";
 import { createPrivacy } from "../src/core/privacy";
-import { scheduleUnlock } from "../src/core/messaging/special-messages/timelock";
+import { createMarmotViewport } from "../src/core/marmot/viewport";
 import { openLinkPreviewCache } from "../src/db/link-previews";
-import { createMessagingRepository } from "../src/db/messaging";
 import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 
@@ -29,20 +27,6 @@ const target = { peer, id: "visible", url: page };
 function database(sqlite: Database) {
   initializeTestDatabase(sqlite);
   return drizzle(sqlite, { schema });
-}
-
-function incoming(id: string, body: string, peerKey = peer) {
-  return {
-    id,
-    body,
-    peerKey,
-    eventId: id,
-    sentAt: 1,
-    direction: "incoming" as const,
-    senderKey: peerKey,
-    recipientKey: own,
-    replyTo: null,
-  };
 }
 
 test("reads Open Graph, standard and Twitter metadata as inert text", () => {
@@ -143,32 +127,32 @@ test("Off and untouched On Demand dispatch zero HTTP requests and an explicit lo
   expect(afterRestart.snapshot(page)).toBeUndefined();
 });
 
-test("Always only loads visible accepted messages and rechecks block, rejection, request and lock state", async () => {
+test("Always only loads visible accepted messages and rechecks block and lock state", async () => {
   using sqlite = new Database(":memory:");
   const db = database(sqlite);
-  const chat = createMessagingRepository(db);
-  const privacy = createPrivacy(db, chat, own);
+  const privacy = createPrivacy(db, own);
   const blocked = "3".repeat(64);
-  const pending = "4".repeat(64);
-  const lock = "5".repeat(64);
-  chat.receive(incoming("visible", page));
-  chat.receive(incoming("blocked", "https://blocked.example.com/", blocked));
   privacy.block(blocked);
-  privacy.queue(incoming("request", "https://pending.example.com/", pending));
-  chat.receive({
-    ...incoming("sealed", "", lock),
-    timeLock: {
-      ...scheduleUnlock(Date.now() + 60_000),
-      type: "timelock",
-      v: 1,
-      ciphertext: "ciphertext",
-    },
+  let unlocked = false;
+  const viewport = createMarmotViewport(own, () => unlocked, privacy.isBlocked);
+  const row = (id: string, text: string, sender = peer, eventKind = 9) => ({
+    id,
+    text,
+    sender,
+    eventKind,
+    deleted: false,
+    attachments: [],
   });
+  const clear = viewport.update(peer, [
+    row("visible", page),
+    row("blocked", "https://blocked.example.com/", blocked),
+    row("sealed", "https://hidden.example.com/", peer, 24881),
+  ]);
   const calls: string[] = [];
   const previews = createLinkPreviews({
     ...openLinkPreviewCache(db, () => {}),
     policy: () => "always",
-    authorize: (next) => authorizePreview(next, chat, privacy),
+    authorize: viewport.authorizePreview,
     html: async (url) => {
       calls.push(url);
       return "<title>Accepted</title>";
@@ -178,25 +162,19 @@ test("Always only loads visible accepted messages and rechecks block, rejection,
     },
     removeImage() {},
   });
-  const visible = new Set(["visible", "blocked", "request", "sealed"]);
-  const submit = (id: string, url: string, from = peer) =>
-    previews.request({ id, url, peer: from }, false, () => visible.has(id));
-  for (let i = 0; i < 1000; i++) {
-    const id = `history-${i}`;
-    const url = `https://public.example.com/${i}`;
-    chat.receive(incoming(id, url));
-    submit(id, url);
-  }
-  submit("blocked", "https://blocked.example.com/", blocked);
-  submit("request", "https://pending.example.com/", pending);
-  submit("sealed", "https://hidden.example.com/", lock);
-  privacy.set("messages", "contacts");
+  const submit = (id: string, url: string) =>
+    previews.request({ id, url, peer }, false, () => true);
   submit("visible", page);
   expect(calls).toEqual([]);
-  privacy.set("messages", "everyone");
+  unlocked = true;
+  submit("blocked", "https://blocked.example.com/");
+  submit("request", "https://pending.example.com/");
+  submit("sealed", "https://hidden.example.com/");
   submit("visible", page);
   await Bun.sleep(0);
   expect(calls).toEqual([page]);
+  clear();
+  expect(viewport.authorizePreview(target)).toBe(false);
 });
 
 test("cancels running and queued work on policy change and ignores stale results", async () => {

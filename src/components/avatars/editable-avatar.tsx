@@ -3,18 +3,20 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import { ActionMenu } from "@/components/ui/action-menu";
-import { Icon, tapFeedback } from "@/components/ui/kit";
+import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { useTheme } from "@/theme";
 import type { AvatarPhotoSource } from "./picker";
 
 export function EditableAvatar({
   disabled = false,
+  showLabel = false,
   onPick,
   onRemove,
   children,
 }: {
   disabled?: boolean;
+  showLabel?: boolean;
   onPick: (source: AvatarPhotoSource) => void;
   onRemove?: () => void;
   children: ReactNode;
@@ -25,20 +27,34 @@ export function EditableAvatar({
     <View
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
+      style={showLabel ? styles.labeled : undefined}
     >
-      {children}
-      {!disabled && (
-        <View
+      <View>
+        {children}
+        {!disabled && (
+          <View
+            style={[
+              styles.badge,
+              {
+                backgroundColor: colors.outgoing,
+                borderColor: colors.background,
+              },
+            ]}
+          >
+            <Icon name="edit" size={13} color={colors.outgoingInk} />
+          </View>
+        )}
+      </View>
+      {showLabel && (
+        <Ink
+          kind="caption"
           style={[
-            styles.badge,
-            {
-              backgroundColor: colors.outgoing,
-              borderColor: colors.background,
-            },
+            styles.caption,
+            { color: disabled ? colors.muted : colors.accent },
           ]}
         >
-          <Icon name="edit" size={13} color={colors.outgoingInk} />
-        </View>
+          {t("settings:photoChange")}
+        </Ink>
       )}
     </View>
   );
@@ -74,6 +90,8 @@ export function EditableAvatar({
 }
 
 const styles = StyleSheet.create({
+  labeled: { alignItems: "center", gap: 4, maxWidth: 92 },
+  caption: { textAlign: "center", fontWeight: "600" },
   badge: {
     position: "absolute",
     end: 0,

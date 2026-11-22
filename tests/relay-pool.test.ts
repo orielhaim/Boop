@@ -7,12 +7,12 @@ import {
   NDKRelayStatus,
 } from "@nostr-dev-kit/ndk";
 import { finalizeEvent } from "nostr-tools/pure";
-import { createMessagingRelays } from "../src/core/nostr/messaging-relays";
+import { createNostrRelays } from "../src/core/nostr/relays-transport";
 
 test("late relay connections remain registered across configuration changes", () => {
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {
-    const transport = createMessagingRelays(
+    const transport = createNostrRelays(
       new NDKPrivateKeySigner("01".repeat(32)),
     );
     const address = "wss://relay.example/";
@@ -55,7 +55,7 @@ test("a responsive relay acknowledges call setup while another relay is still wa
   const release = Promise.withResolvers<void>();
   const servers = [relay(), relay(release.promise)];
   const signer = new NDKPrivateKeySigner("01".repeat(32));
-  const transport = createMessagingRelays(signer);
+  const transport = createNostrRelays(signer);
   const urls = servers.map((server) => `ws://127.0.0.1:${server.port}/`);
   try {
     const event = new NDKEvent(undefined, {
@@ -114,9 +114,7 @@ test("ringing and answer share an in-flight verified inbox lookup within one cal
       },
     },
   });
-  const transport = createMessagingRelays(
-    new NDKPrivateKeySigner("01".repeat(32)),
-  );
+  const transport = createNostrRelays(new NDKPrivateKeySigner("01".repeat(32)));
   const relay = transport.addConfigured(
     `ws://127.0.0.1:${server.port}/`,
     false,
@@ -149,7 +147,7 @@ test("signed profile and Blossom list publication use acknowledged relay events"
   const author = signer.pubkey;
   const watched = Promise.withResolvers<void>();
   const received = Promise.withResolvers<unknown>();
-  const transport = createMessagingRelays(signer);
+  const transport = createNostrRelays(signer);
   let subscriptionId: string | undefined;
   let accepts = true;
   let mediaList: unknown;

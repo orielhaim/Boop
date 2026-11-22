@@ -12,7 +12,7 @@ import {
   SettingsToggle,
 } from "@/components/settings/group";
 import { Action, Icon, Ink } from "@/components/ui/kit";
-import type { RelayState } from "@/core/messaging/runtime";
+import type { RelayState } from "@/core/nostr/relay-service";
 import {
   configuredRelays,
   defaultRelays,
@@ -49,15 +49,12 @@ const inboxLabels = {
 
 export function RelaySettings() {
   const { t, i18n } = useTranslation(namespaces);
-  const { db, messaging } = useLocal();
+  const { db, relays } = useLocal();
   const { colors } = useTheme();
-  const states = useSyncExternalStore(
-    messaging.subscribeStatus,
-    messaging.getRelayStates,
-  );
+  const states = useSyncExternalStore(relays.subscribe, relays.getRelayStates);
   const inboxState = useSyncExternalStore(
-    messaging.subscribeStatus,
-    messaging.getInboxStatus,
+    relays.subscribe,
+    relays.getInboxStatus,
   );
   const query = useMemo(
     () => db.select().from(relaySettings).orderBy(asc(relaySettings.url)),
@@ -165,7 +162,7 @@ export function RelaySettings() {
         />
         <SettingsRow
           title={t("connections:reconnect")}
-          onPress={messaging.reconnect}
+          onPress={relays.reconnect}
         />
       </SettingsGroup>
       <SettingsGroup title={t("connections:privateInbox")}>
