@@ -63,7 +63,13 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
   );
 
   useEffect(() => {
-    if (!enabled || locked || accountStatus === "pending") return;
+    if (
+      !enabled ||
+      locked ||
+      accountStatus === "pending" ||
+      accountStatus === "recovering"
+    )
+      return;
     let cancelled = false;
     let active: MarmotWindow<Snapshot, Direction> | undefined;
     const isCurrent = () =>

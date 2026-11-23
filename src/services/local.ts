@@ -153,8 +153,8 @@ async function start() {
       publicMetadata,
     );
     let beforeAccountClose: (() => Promise<void>) | undefined;
-    const marmotSession = createMarmotSession(
-      async (configuration, mediaOrigin) => {
+    const marmotSession = createMarmotSession({
+      async open(configuration, mediaOrigin) {
         const state = await initializeMarmotIdentity(
           db,
           identity.publicKey,
@@ -170,8 +170,9 @@ async function start() {
         }
         return state;
       },
-      () => beforeAccountClose?.() ?? Promise.resolve(),
-    );
+      close: () => marmot.closeAccount(),
+      beforeClose: () => beforeAccountClose?.(),
+    });
     let previousBlocks = new Set(privacy.blockedKeys());
     privacy.subscribe(() => {
       const current = new Set(privacy.blockedKeys());
@@ -528,6 +529,9 @@ export function LocalSessionLifecycle() {
           .catch(() => undefined);
     }
     const update = (state: typeof AppState.currentState) => {
+      marmotSession.setRetryEnabled(
+        state === "active" && !lock.getState().locked,
+      );
       speech.sync();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
@@ -541,6 +545,9 @@ export function LocalSessionLifecycle() {
       updateBackupConditions();
     };
     const unsubscribeLock = lock.subscribe(() => {
+      marmotSession.setRetryEnabled(
+        AppState.currentState === "active" && !lock.getState().locked,
+      );
       speech.sync();
       updateUnlocks();
       if (
@@ -651,9 +658,15 @@ export function LocalSessionLifecycle() {
       updateBackupConditions();
       void speech.power();
     });
+    let networkWasConnected = false;
     const network = addNetworkStateListener(({ isConnected }) => {
+      const reconnected = isConnected && !networkWasConnected;
+      networkWasConnected = isConnected === true;
       updateBackupConditions();
-      if (isConnected && AppState.currentState === "active") catchUpMessaging();
+      if (isConnected && AppState.currentState === "active") {
+        if (reconnected) marmotSession.reconnected();
+        catchUpMessaging();
+      }
     });
     return () => {
       mounted = false;
@@ -679,6 +692,7 @@ export function LocalSessionLifecycle() {
       subscription.remove();
       dbChanges.remove();
       avatars.setActive(false);
+      marmotSession.setRetryEnabled(false);
       void marmotSession.stop().catch(() => undefined);
       callSignaling.stop();
       relays.stop();

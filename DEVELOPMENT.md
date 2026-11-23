@@ -70,6 +70,8 @@ Queued work continues across screens while the app is active and unlocked. It pa
 
 ## Navigation and motion
 
+Check opening motion in a native release build so the Expo development launcher does not interrupt the native splash handoff. Use a clean emulator profile for account creation and import. The native splash and React Native opening share `assets/images/opening-mark.png` and the system light and dark backgrounds. The opening cover waits for the actual startup destination, which can be Welcome, App Lock, Chats, or a recoverable error.
+
 The root native stack owns the call screen and camera scanner. The pathless `(messenger)` group keeps public paths such as `/chat/[key]`, `/person/[key]`, and `/settings`. It uses Screen Transitions 4.2.0 through Expo Router's standard navigator API. Settings uses a nested BlankStack with the same horizontal motion and edge gestures.
 
 The glass dock uses the Expo Router headless tab state. Its Reanimated adapter slides the previous tab and the selected tab using the dock's displayed order, including the optional Calls tab and Hebrew RTL. A tab keeps its mounted state after its first visit. Back gestures belong to the stack, so horizontal gestures inside Chat Kit stay available.
@@ -83,6 +85,8 @@ The local Expo module opens the SQLCipher-backed MarmotKit account for the activ
 The enabled discovery relays are configured as MarmotKit directory indexers as well as account bootstrap relays. The 0.18.0 UniFFI directory lookup also reads the constructor's relay pool, which includes enabled general and discovery relays. The account's published relay lists still use the configured general and inbox selections. Inbox records can be available on the indexers while KeyPackages are served from the account's general relays.
 
 The protected session gives MarmotKit the relay selections and preferred attachment origin. The Nostr relay service owns inbox publication intent. Media server health and local chat presentation preferences do not reconfigure the Marmot account.
+
+Check first-account startup in a minified Android release. JNA resolves the generated UniFFI API and checksum interfaces by method name, so `marmot.pro` preserves both interfaces in the release. MarmotKit owns KeyPackage generation and publication. If local account open fails transiently, Chats keeps its syncing state while the protected session retries with backoff and wakes on reconnect. Automatic retries pause when the app is inactive or locked. Persistent failures use the existing retry action.
 
 Received message attachments use MarmotKit's host-managed acquisition policy. Chat Kit renders local ThumbHash previews and leases verified files for playback or export. Download and Cancel drive the native attachment job. A gallery may open retained files from its loaded window.
 

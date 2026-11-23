@@ -54,9 +54,10 @@ export const en = {
     noSharedGroups: "No matches in recent groups",
     identityMismatch:
       "The saved key does not match this installation. Restore the original secure storage before retrying.",
-    welcome: "Welcome to Boop",
-    welcomeBody:
-      "Private conversations, without a phone number or email. Keep a backup of your identity key so you can sign in again.",
+    openingTagline: "Mind your own business",
+    skipIntro: "Skip intro",
+    reviewAddressHint:
+      "Check the public address for the identity you’re restoring.",
     create: "Create Account",
     signIn: "Sign In",
     publicName: "Public name",

@@ -9,8 +9,7 @@ import {
 import * as SplashScreen from "expo-splash-screen";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { LoadingStatus } from "@/components/ui/loading-status";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState, Modal, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -20,9 +19,12 @@ import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { MarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import { IdentitySheetProvider } from "@/components/people/identity-sheet";
 import { LockScreen } from "@/components/settings/lock-screen";
-import { BoopLogo } from "@/components/ui/boop-logo";
+import { OpeningMark, openingPalette } from "@/components/opening/brand";
+import { OpeningButton } from "@/components/opening/controls";
+import { OpeningCurtain } from "@/components/opening/curtain";
 import { glassStackBack } from "@/components/ui/back-button";
-import { Action, Ink } from "@/components/ui/kit";
+import { Ink } from "@/components/ui/kit";
+import { ScreenInsets } from "@/components/ui/screen-insets";
 import { IncompatibleDatabaseError } from "@/db";
 import { preference } from "@/db/queries";
 import {
@@ -48,27 +50,40 @@ import { space, useTheme } from "@/theme";
 export const unstable_settings = { initialRouteName: "(messenger)" };
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
+SplashScreen.setOptions({ duration: 0, fade: false });
 
 export default function RootLayout() {
-  const [attempt, retry] = useState(0);
   const selected = useAppPreferences((state) => state.theme);
   return (
     <GestureHandlerRootView style={styles.root}>
       <KeyboardProvider>
         <GlassProvider theme={selected === "system" ? undefined : selected}>
-          <Boot key={attempt} onRetry={() => retry((value) => value + 1)} />
+          <Boot />
         </GlassProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }
 
-function Boot({ onRetry }: { onRetry: () => void }) {
+type LocalResult = Awaited<ReturnType<typeof initializeLocal>>;
+type Startup =
+  | { phase: "boot" }
+  | {
+      phase: "installing";
+      welcome: Extract<LocalResult, { status: "welcome" }>;
+    }
+  | { phase: "loaded"; data: LocalResult }
+  | { phase: "failed"; failure: "database" | "startup" | "identity" };
+
+function Boot() {
   const { t } = useTranslation(namespaces);
-  const [data, setData] =
-    useState<Awaited<ReturnType<typeof initializeLocal>>>();
-  const [failed, setFailed] = useState<"database" | "startup" | "identity">();
+  const [attempt, setAttempt] = useState(0);
+  const [startup, setStartup] = useState<Startup>({ phase: "boot" });
+  const [handedOff, setHandedOff] = useState(false);
+  const [destinationDrawn, setDestinationDrawn] = useState(false);
+  const [revealed, setRevealed] = useState(false);
   const { colors, theme } = useTheme();
+
   useEffect(() => {
     let live = true;
     void initializeLocal()
@@ -89,27 +104,57 @@ function Boot({ onRetry }: { onRetry: () => void }) {
               ? "calls"
               : "chats",
         });
-        setData(result);
+        setStartup({ phase: "loaded", data: result });
       })
       .catch((error) => {
-        if (live)
-          setFailed(
+        if (!live) return;
+        setStartup({
+          phase: "failed",
+          failure:
             error instanceof IncompatibleDatabaseError
               ? "database"
               : error instanceof IdentityMismatchError
                 ? "identity"
                 : "startup",
-          );
+        });
       });
     return () => {
       live = false;
     };
-  }, []);
-  useEffect(() => {
-    if (data || failed) void SplashScreen.hideAsync().catch(() => {});
-  }, [data, failed]);
+  }, [attempt]);
 
+  const handOff = useCallback(() => {
+    if (handedOff) return;
+    // Expo Image has attached the decoded drawable. Keep the same frame in
+    // place when Expo releases the native splash's draw gate.
+    requestAnimationFrame(() => {
+      void SplashScreen.hideAsync()
+        .finally(() => setHandedOff(true))
+        .catch(() => {});
+    });
+  }, [handedOff]);
+  const reveal = useCallback(() => setRevealed(true), []);
+  const welcome =
+    startup.phase === "installing"
+      ? startup.welcome
+      : startup.phase === "loaded" && startup.data.status === "welcome"
+        ? startup.data
+        : undefined;
+  const ready =
+    startup.phase === "loaded" && startup.data.status === "ready"
+      ? startup.data
+      : undefined;
+  const failed = startup.phase === "failed" ? startup.failure : undefined;
+  const covered = !handedOff || (!welcome && !revealed);
   const base = theme === "dark" ? DarkTheme : DefaultTheme;
+
+  function restart(welcome?: Extract<LocalResult, { status: "welcome" }>) {
+    setDestinationDrawn(false);
+    setRevealed(false);
+    setStartup(welcome ? { phase: "installing", welcome } : { phase: "boot" });
+    setAttempt((value) => value + 1);
+  }
+
   return (
     <ThemeProvider
       value={{
@@ -125,34 +170,62 @@ function Boot({ onRetry }: { onRetry: () => void }) {
       }}
     >
       <StatusBar style={theme === "dark" ? "light" : "dark"} />
-      {data ? (
-        data.status === "welcome" ? (
-          <Onboarding data={data} onComplete={onRetry} />
-        ) : (
-          <ProtectedApplication data={data} />
-        )
-      ) : (
-        <View style={[styles.boot, { backgroundColor: colors.background }]}>
-          <BoopLogo />
-          <Ink kind="title">Boop</Ink>
-          {failed ? (
-            <>
-              <Ink muted>
-                {t(
-                  failed === "database"
-                    ? "errors:databaseBaseline"
-                    : failed === "identity"
-                      ? "messenger:identityMismatch"
-                      : "errors:startup",
-                )}
-              </Ink>
-              <Action onPress={onRetry}>{t("common:retry")}</Action>
-            </>
-          ) : (
-            <LoadingStatus label={t("common:opening")} />
-          )}
-        </View>
-      )}
+      <View
+        style={[styles.root, { backgroundColor: openingPalette[theme].base }]}
+      >
+        {handedOff && welcome ? (
+          <Onboarding
+            key={startup.phase === "installing" ? attempt - 1 : attempt}
+            data={welcome}
+            initializing={startup.phase === "installing"}
+            onComplete={() => restart(welcome)}
+          />
+        ) : ready || failed ? (
+          <View
+            key={ready ? "session" : "error"}
+            style={styles.root}
+            onLayout={() => setDestinationDrawn(true)}
+            pointerEvents={covered ? "none" : "auto"}
+            accessibilityElementsHidden={covered}
+            importantForAccessibility={covered ? "no-hide-descendants" : "auto"}
+          >
+            {ready ? (
+              <ProtectedApplication data={ready} />
+            ) : (
+              <ScreenInsets padding={space.xxl} style={styles.boot}>
+                <OpeningMark />
+                <Ink
+                  kind="heading"
+                  accessibilityRole="header"
+                  style={styles.center}
+                >
+                  {t(
+                    failed === "database"
+                      ? "errors:databaseBaseline"
+                      : failed === "identity"
+                        ? "messenger:identityMismatch"
+                        : "errors:startup",
+                  )}
+                </Ink>
+                <OpeningButton
+                  primary
+                  label={t("common:retry")}
+                  onPress={() => restart()}
+                />
+              </ScreenInsets>
+            )}
+          </View>
+        ) : null}
+        {covered && (
+          <OpeningCurtain
+            revealing={destinationDrawn && Boolean(ready || failed)}
+            handedOff={handedOff}
+            label={t("common:opening")}
+            onDrawn={handOff}
+            onRevealed={reveal}
+          />
+        )}
+      </View>
     </ThemeProvider>
   );
 }
@@ -283,11 +356,11 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   obscured: { opacity: 0 },
+  center: { textAlign: "center" },
   boot: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
     gap: space.lg,
-    padding: space.xxl,
   },
 });
