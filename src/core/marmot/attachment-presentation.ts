@@ -9,7 +9,7 @@ import type { marmot } from "./native";
 
 type NativeMedia = Pick<
   typeof marmot,
-  "attachmentStatus" | "openAttachment" | "releaseAttachment"
+  "retainedAttachmentBytes" | "openAttachment" | "releaseAttachment"
 >;
 type Lease = NonNullable<Awaited<ReturnType<NativeMedia["openAttachment"]>>>;
 export type AttachmentTarget = DownloadTarget;
@@ -38,6 +38,10 @@ type Entry = {
   openAfterDownload: boolean;
 };
 const checking: State = { kind: "checking" };
+const isLocal = (state: State) =>
+  state.kind === "cached" ||
+  state.kind === "local" ||
+  state.kind === "preparing";
 
 export function createAttachmentPresentation(
   native: NativeMedia,
@@ -45,16 +49,26 @@ export function createAttachmentPresentation(
     DownloadManager,
     "get" | "subscribe" | "enqueue" | "resume" | "cancel" | "reconcile"
   >,
-  authorize: (target: AttachmentTarget) => MarmotDownload | undefined,
+  sourceFor: (target: AttachmentTarget) => MarmotDownload | undefined,
+  interactive: () => boolean,
 ) {
   const entries = new Map<string, Entry>();
+  const availabilityListeners = new Set<() => void>();
+  let availabilityRevision = 0;
   const allowed = (entry: Entry) =>
     entries.get(attachmentKey(entry.target)) === entry &&
-    Boolean(authorize(entry.target));
+    Boolean(sourceFor(entry.target));
+  const authorize = (target: AttachmentTarget) =>
+    interactive() ? sourceFor(target) : undefined;
 
   function set(entry: Entry, state: State) {
+    const availabilityChanged = isLocal(entry.state) !== isLocal(state);
     entry.state = state;
     for (const notify of entry.listeners) notify();
+    if (availabilityChanged) {
+      availabilityRevision++;
+      for (const notify of availabilityListeners) notify();
+    }
   }
 
   function release(lease: Lease) {
@@ -68,7 +82,8 @@ export function createAttachmentPresentation(
   }
 
   function prepare(entry: Entry) {
-    if (!allowed(entry) || entry.state.kind !== "cached") return;
+    if (!interactive() || !allowed(entry) || entry.state.kind !== "cached")
+      return;
     set(entry, { kind: "preparing" });
     void native.openAttachment(...entry.target).then(
       (lease) => {
@@ -87,6 +102,26 @@ export function createAttachmentPresentation(
     );
   }
 
+  function checkLocal(entry: Entry) {
+    if (!allowed(entry)) return;
+    const pending: State = { kind: "checking" };
+    set(entry, pending);
+    const current = () => allowed(entry) && entry.state === pending;
+    void native.retainedAttachmentBytes(...entry.target).then(
+      (bytes) => {
+        if (!current()) return;
+        set(entry, { kind: bytes === null ? "remote" : "cached" });
+        if (bytes !== null && entry.openAfterDownload) prepare(entry);
+        entry.openAfterDownload = false;
+        if (bytes === null && entry.job?.state === "completed")
+          void downloads.reconcile();
+      },
+      () => {
+        if (current()) set(entry, { kind: "failed" });
+      },
+    );
+  }
+
   function update(entry: Entry, key: string) {
     if (!allowed(entry)) return;
     const job = downloads.get(key);
@@ -100,9 +135,7 @@ export function createAttachmentPresentation(
     }
     if (job.state === "completed") {
       if (before?.state === "completed" || entry.state.kind === "local") return;
-      set(entry, { kind: "cached" });
-      if (entry.openAfterDownload) prepare(entry);
-      entry.openAfterDownload = false;
+      checkLocal(entry);
     } else if (
       job.state === "failed" ||
       job.state === "cancelled" ||
@@ -119,6 +152,16 @@ export function createAttachmentPresentation(
   }
 
   return {
+    availabilityRevision: () => availabilityRevision,
+    subscribeAvailability(notify: () => void) {
+      availabilityListeners.add(notify);
+      return () => availabilityListeners.delete(notify);
+    },
+    hasLocalFile(target: AttachmentTarget) {
+      return isLocal(entries.get(attachmentKey(target))?.state ?? checking);
+    },
+    authorize,
+    sourceFor,
     subscribe(target: AttachmentTarget, notify: () => void) {
       const key = attachmentKey(target);
       let entry = entries.get(key);
@@ -133,17 +176,7 @@ export function createAttachmentPresentation(
         entry = created;
         created.unsubscribe = downloads.subscribe(() => update(created, key));
         update(created, key);
-        if (allowed(created) && created.state === checking)
-          void native.attachmentStatus(...target).then(
-            (ready) => {
-              if (allowed(created) && created.state === checking)
-                set(created, { kind: ready ? "cached" : "remote" });
-            },
-            () => {
-              if (allowed(created) && created.state === checking)
-                set(created, { kind: "failed" });
-            },
-          );
+        if (created.state === checking) checkLocal(created);
       }
       entry.listeners.add(notify);
       return () => {
@@ -178,6 +211,8 @@ export function createAttachmentPresentation(
       }
     },
     cancel(key: string) {
+      const entry = entries.get(key);
+      if (!entry || !authorize(entry.target)) return;
       void downloads.cancel(key).catch(() => undefined);
     },
     async useLocalFile(
@@ -196,8 +231,13 @@ export function createAttachmentPresentation(
     reconcile() {
       for (const [key, entry] of entries) {
         if (!allowed(entry)) {
-          entries.delete(key);
-          dispose(entry);
+          if (entry.state.kind === "local") release(entry.state.lease);
+          entry.job = undefined;
+          entry.openAfterDownload = false;
+          if (entry.state !== checking) set(entry, checking);
+        } else if (entry.state === checking) {
+          update(entry, key);
+          if (entry.state === checking) checkLocal(entry);
         }
       }
     },

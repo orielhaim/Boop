@@ -5,6 +5,7 @@ import { getPublicKey } from "nostr-tools/pure";
 import { hexToBytes } from "nostr-tools/utils";
 import { z } from "zod";
 import type { RelayConfiguration } from "../nostr/config";
+import { mediaUploadArguments } from "./media-send";
 
 export type MarmotRelays = Pick<
   RelayConfiguration,
@@ -137,6 +138,7 @@ const conversationSnapshot = windowRevision.extend({
   lifecycle: z.string(),
   memberCount: z.number().nullish(),
   invited: z.boolean(),
+  authorityReady: z.boolean(),
   canSend: z.boolean(),
   firstUnread: z.string().nullish(),
   draft: z
@@ -148,6 +150,11 @@ const conversationSnapshot = windowRevision.extend({
           z.object({
             id: z.string(),
             size: z.number().int().positive(),
+            duration: z.number().positive().nullish(),
+            waveform: z
+              .array(z.number().int().min(0).max(31))
+              .max(64)
+              .optional(),
           }),
         )
         .max(64),
@@ -458,7 +465,7 @@ type Bridge = {
   saveDraft(group: string, text: string, reply: string | null): Promise<void>;
   stageMediaDraft(
     group: string,
-    files: MarmotUpload[],
+    files: ReturnType<typeof mediaUploadArguments>,
     caption: string,
     token: string,
     reply: string | null,
@@ -472,7 +479,7 @@ type Bridge = {
   ): Promise<void>;
   sendMedia(
     group: string,
-    files: MarmotUpload[],
+    files: ReturnType<typeof mediaUploadArguments>,
     caption: string | null,
     token: string,
     server: string | null,
@@ -485,6 +492,7 @@ type Bridge = {
     source: string,
     index: number,
   ): Promise<boolean>;
+  audioMetadata(path: string): Promise<unknown>;
   inspectMediaFile(
     path: string,
     image: boolean,
@@ -892,7 +900,14 @@ export const marmot = {
     signal.addEventListener("abort", cancel, { once: true });
     try {
       return uploadReceipt.parse(
-        await bridge.sendMedia(group, files, caption, token, server, reply),
+        await bridge.sendMedia(
+          group,
+          mediaUploadArguments(files),
+          caption,
+          token,
+          server,
+          reply,
+        ),
       );
     } finally {
       signal.removeEventListener("abort", cancel);
@@ -915,7 +930,13 @@ export const marmot = {
     });
     signal.addEventListener("abort", cancel, { once: true });
     try {
-      await bridge.stageMediaDraft(group, files, caption, token, reply);
+      await bridge.stageMediaDraft(
+        group,
+        mediaUploadArguments(files),
+        caption,
+        token,
+        reply,
+      );
     } finally {
       signal.removeEventListener("abort", cancel);
       listener.remove();
@@ -928,6 +949,16 @@ export const marmot = {
     source: string,
     index: number,
   ) => native().attachmentStatus(group, id, source, index),
+  audioMetadata: async (path: string) =>
+    z
+      .object({
+        title: z.string().optional(),
+        artist: z.string().optional(),
+        album: z.string().optional(),
+        duration: z.number().positive().optional(),
+        artworkUrl: z.string().optional(),
+      })
+      .parse(await native().audioMetadata(path)),
   inspectMediaFile: async (path: string, image: boolean, poster: boolean) =>
     z
       .object({

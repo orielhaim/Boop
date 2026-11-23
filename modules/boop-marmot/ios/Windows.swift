@@ -251,12 +251,15 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "lifecycle": wireName(snapshot.header.lifecycle),
     "memberCount": bridgeValue(snapshot.header.memberCount.map(Double.init)),
     "invited": snapshot.pendingConfirmation,
+    "authorityReady": snapshot.header.epoch != nil,
     "canSend": snapshot.header.capabilities.canSend,
     "firstUnread": bridgeValue(snapshot.readState.firstUnreadMessageIdHex),
     "draft": bridgeValue(snapshot.draft.draft.map { draft in
       ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
         "attachments": draft.mediaAttachments.map { item -> Document in
-          ["id": item.id, "size": Double(item.plaintextSize)]
+          ["id": item.id, "size": Double(item.plaintextSize),
+            "duration": bridgeValue(item.durationSeconds),
+            "waveform": item.waveformSamples.prefix(64).map { Int((min(1, max(0, $0)) * 31).rounded()) }]
         }]
     }),
     "identities": snapshot.identities.map { ["id": $0.accountIdHex, "name": $0.displayName] },

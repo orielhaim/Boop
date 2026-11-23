@@ -1,5 +1,6 @@
 import { File } from "expo-file-system";
 import type { MediaSdk } from "../media";
+import { localMediaUri } from "../media/open-local-attachment";
 import { sendOnAttachmentServers } from "./media-send";
 import { marmot, type MarmotUpload } from "./native";
 
@@ -12,6 +13,7 @@ export async function sendMarmotAttachment({
   token,
   allowed,
   progress,
+  onStaged,
   mirrorFailed,
   signal,
 }: {
@@ -25,6 +27,7 @@ export async function sendMarmotAttachment({
   token: string;
   allowed: () => boolean;
   progress: (fraction: number) => void;
+  onStaged?: (sizes: readonly number[]) => void;
   mirrorFailed: () => void;
   signal: AbortSignal;
 }) {
@@ -32,7 +35,7 @@ export async function sendMarmotAttachment({
     source.kind === "draft"
       ? source.sizes
       : source.files.map((file) => {
-          const size = new File("file://" + file.path).size;
+          const size = new File(localMediaUri(file.path)).size;
           if (!size) throw new Error("InvalidMediaPath");
           return size;
         });
@@ -46,6 +49,7 @@ export async function sendMarmotAttachment({
       reply,
       signal,
     );
+    onStaged?.(sizes);
     if (signal.aborted || !allowed()) return;
   }
   const files =
@@ -79,4 +83,5 @@ export async function sendMarmotAttachment({
       .catch(() => {
         if (!signal.aborted && allowed()) mirrorFailed();
       });
+  return accepted;
 }

@@ -37,7 +37,7 @@ export default function IdentityKeys() {
   const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
-  const { db, identity, calling, lock, marmotSession } = useLocal();
+  const { db, identity, calling, lock, marmotSession, audio } = useLocal();
   const protection = useId();
   const [protectedWindow, setProtectedWindow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -228,6 +228,7 @@ export default function IdentityKeys() {
               await stageIdentity(db, candidate.secret);
               setCandidate(null);
               setStatus(t("security:restartForIdentity"));
+              await audio.close();
               await marmotSession.stop();
               calling.end();
               await reloadAppAsync("Activate staged identity key").catch(

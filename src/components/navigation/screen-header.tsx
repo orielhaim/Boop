@@ -9,22 +9,30 @@ export type ScreenHeaderProps = {
   title: string;
   action?: ReactNode;
   onBack?: () => void;
+  showBack?: boolean;
 };
 
-export function ScreenHeader({ title, action, onBack }: ScreenHeaderProps) {
+export function ScreenHeader({
+  title,
+  action,
+  onBack,
+  showBack = true,
+}: ScreenHeaderProps) {
   return (
     <View style={styles.row}>
       <View style={styles.side}>
-        <GlassBackButton
-          elevation="none"
-          onPress={
-            onBack ??
-            (() => {
-              if (router.canGoBack()) router.back();
-              else router.replace("/");
-            })
-          }
-        />
+        {showBack && (
+          <GlassBackButton
+            elevation="none"
+            onPress={
+              onBack ??
+              (() => {
+                if (router.canGoBack()) router.back();
+                else router.replace("/");
+              })
+            }
+          />
+        )}
       </View>
       <Ink
         kind="heading"

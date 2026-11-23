@@ -1,4 +1,55 @@
-import type { MarmotConversation } from "./native";
+import type { MarmotConversation, MarmotUpload } from "./native";
+
+// Expo's native string maps cannot represent undefined values.
+export function mediaUploadArguments(files: readonly MarmotUpload[]) {
+  return files.map(
+    ({
+      path,
+      name,
+      type,
+      dimensions,
+      thumbhash,
+      duration,
+      waveform,
+      presentation,
+    }): Record<string, string> => ({
+      path,
+      name,
+      type,
+      ...(dimensions !== undefined && { dimensions }),
+      ...(thumbhash !== undefined && { thumbhash }),
+      ...(duration !== undefined && { duration }),
+      ...(waveform !== undefined && { waveform }),
+      ...(presentation !== undefined && { presentation }),
+    }),
+  );
+}
+
+export async function waitForAttachmentForeground(
+  foreground: { get(): boolean; subscribe(notify: () => void): () => void },
+  signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  if (foreground.get()) return;
+  await new Promise<void>((resolve, reject) => {
+    const dispose = () => {
+      unsubscribe();
+      signal.removeEventListener("abort", cancel);
+    };
+    const cancel = () => {
+      dispose();
+      reject(signal.reason);
+    };
+    const resume = () => {
+      if (!foreground.get()) return;
+      dispose();
+      resolve();
+    };
+    const unsubscribe = foreground.subscribe(resume);
+    signal.addEventListener("abort", cancel, { once: true });
+    resume();
+  });
+}
 
 export function pendingMediaDraft(draft: MarmotConversation["draft"]) {
   const files = draft?.attachments;
@@ -6,6 +57,7 @@ export function pendingMediaDraft(draft: MarmotConversation["draft"]) {
   const first = files[0];
   const [token, count] = first?.id.split(":") ?? [];
   if (
+    !first ||
     !token ||
     !/^[a-f0-9-]{36}$/i.test(token) ||
     Number(count) !== files.length ||
@@ -18,6 +70,10 @@ export function pendingMediaDraft(draft: MarmotConversation["draft"]) {
     kind: "ready",
     token,
     sizes: files.map(({ size }) => size),
+    ...(files.length === 1 &&
+      first.id === `${token}:1:0:voice` && {
+        voice: { duration: first.duration, waveform: first.waveform },
+      }),
   } as const;
 }
 

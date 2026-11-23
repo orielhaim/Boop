@@ -1,3 +1,8 @@
+import { createAudioController } from "@/core/audio/controller";
+import { createNativePlayback, setupPlayback } from "@/core/audio/engine";
+import { createAudioSources } from "@/core/audio/sources";
+import { speeds, voiceOrigin, type Track } from "@/core/audio/types";
+import { audioPersistence } from "@/db/audio";
 import {
   addBatteryStateListener,
   addLowPowerModeListener,
@@ -385,8 +390,83 @@ async function start() {
         admitDownloadedVoice();
       },
     });
+    const read = (key: string) => preference(db, key);
+    const write = (key: string, value: string) => setPreference(db, key, value);
+    const allowed = (track: Track) =>
+      track.kind === "device" ||
+      ((track.source.expiresAt === null ||
+        track.source.expiresAt > Date.now()) &&
+        (track.source.kind === "http" ||
+          (chatPreferences.enabled() &&
+            !privacy.isBlocked(track.source.sender) &&
+            !chatPreferences
+              .hidden(track.source.target[0])
+              .includes(track.source.target[1]))));
+    let closingAudioAttachments = false;
+    const audioSources = createAudioSources({
+      scope: downloadScope,
+      downloads,
+      ready: () =>
+        !closingAudioAttachments && marmotSession.status() === "ready",
+      allowed,
+      canDownload: active,
+      canImport: () => !lock.getState().locked,
+      blocked: privacy.isBlocked,
+      subscribePrivacy: privacy.subscribe,
+    });
+    const playback = audioPersistence({
+      account: identity.publicKey,
+      key: downloadKey,
+      random: (size) => getRandomValues(new Uint8Array(size)),
+      read,
+      write,
+    });
+    const nativePlayback = createNativePlayback();
+    const audio = createAudioController({
+      saved: playback.load(),
+      save: playback.save,
+      preferences: {
+        external: read("audio.open") === "external",
+        voiceSpeed:
+          speeds.find((speed) => String(speed) === read("audio.voiceSpeed")) ??
+          1,
+      },
+      savePreferences({ external, voiceSpeed }) {
+        write("audio.open", external ? "external" : "internal");
+        write("audio.voiceSpeed", String(voiceSpeed));
+      },
+      acquire: audioSources.acquire,
+      setup: setupPlayback,
+      engine: nativePlayback.open,
+      disposeEngine: nativePlayback.dispose,
+      allowed,
+      listened(track) {
+        const origin = voiceOrigin(track);
+        if (origin) chatPreferences.markListened(origin[0], origin[1]);
+        if (
+          track.kind === "attachment" &&
+          track.source.kind === "marmot" &&
+          track.source.voice
+        )
+          speech.availableLocally(track.source.voice, speechPriority.playing);
+      },
+      genericTitle: () => i18n.t("audio:privateTitle"),
+    });
+    audio.revalidate();
+    audio.privacy(lock.getState());
+    lock.subscribe(() => audio.privacy(lock.getState()));
+    privacy.subscribe(audio.revalidate);
+    chatPreferences.subscribe(audio.revalidate);
+    calling.store.subscribe(({ call }) =>
+      audio.call(Boolean(call && call.phase !== "ended")),
+    );
+    marmotSession.subscribe(() => {
+      if (marmotSession.status() === "ready") closingAudioAttachments = false;
+    });
     beforeAccountClose = async () => {
+      closingAudioAttachments = true;
       pendingVoiceNotes.clear();
+      await audio.close();
       await Promise.all([
         speech.beforeAccountClose(),
         downloads.beforeAccountClose(),
@@ -404,6 +484,8 @@ async function start() {
       identity,
       speech,
       downloads,
+      audio,
+      audioSources,
       admitDownloadedVoice,
       avatars,
       previews,

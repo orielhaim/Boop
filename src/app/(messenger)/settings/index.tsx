@@ -100,6 +100,11 @@ export default function Settings() {
           onPress={() => router.push("/settings/calls")}
         />
         <SettingsRow
+          title={t("audio:settings")}
+          icon="audio"
+          onPress={() => router.push("/settings/playback")}
+        />
+        <SettingsRow
           title={t("storage:title")}
           icon="storage"
           accent="#5263A6"

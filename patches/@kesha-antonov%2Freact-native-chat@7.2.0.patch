@@ -118,13 +118,15 @@ index 47d3f1179620bedebac695cf32b48e3c68a45cec..66d30e092907313a7a2be4551d7cede2
    if ($[35] !== canToggleMode || $[36] !== isVoiceEnabled || $[37] !== take.isTakeInProgress) {
      t13 = {
 diff --git a/lib/MessageAudio.d.ts b/lib/MessageAudio.d.ts
-index 04c855531c79b516493453c09e6ae2947732d654..80625db4aac9c6848d0e10f5d2ffa3794e7aa4a9 100644
+index 04c8555..6c6170d 100644
 --- a/lib/MessageAudio.d.ts
 +++ b/lib/MessageAudio.d.ts
-@@ -1,4 +1,23 @@
+@@ -1,4 +1,35 @@
  import React from 'react';
  import { IMessage, MessageAudioProps } from './Models';
 -export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, }: Partial<MessageAudioProps<TMessage>>): React.JSX.Element | null;
+-//# sourceMappingURL=MessageAudio.d.ts.map
+\ No newline at end of file
 +export type VoiceTranscriptPlayback = {
 +    player: {
 +        currentTime: number;
@@ -143,11 +145,23 @@ index 04c855531c79b516493453c09e6ae2947732d654..80625db4aac9c6848d0e10f5d2ffa379
 +    onPress: () => void;
 +    render: (playback: VoiceTranscriptPlayback) => React.ReactNode;
 +};
-+export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, autoPlay, onPlaybackEnded, }: Partial<MessageAudioProps<TMessage>> & { autoPlay?: boolean; onPlaybackEnded?: () => void; onPlaybackStarted?: () => void; transcriptionControl?: VoiceTranscriptionControl; placeholder?: React.ReactNode }): React.JSX.Element | null;
- //# sourceMappingURL=MessageAudio.d.ts.map
++export type ControlledVoicePlayback = {
++    playing?: boolean;
++    currentTime?: number;
++    duration?: number;
++    disabled?: boolean;
++    onPress?: () => void;
++    label?: string;
++    control?: React.ReactNode;
++    accessory?: React.ReactNode;
++    clock?: VoiceTranscriptPlayback['player'];
++    seek?: VoiceTranscriptPlayback['seek'];
++};
++export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, autoPlay, onPlaybackEnded, }: Partial<MessageAudioProps<TMessage>> & { autoPlay?: boolean; onPlaybackEnded?: () => void; onPlaybackStarted?: () => void; transcriptionControl?: VoiceTranscriptionControl; placeholder?: React.ReactNode; controlledPlayback?: ControlledVoicePlayback }): React.JSX.Element | null;
++//# sourceMappingURL=MessageAudio.d.ts.map
 +export declare const VoiceWaveform: (props: { waveform?: number[]; color: string; playedColor?: string; progress?: number; onSeek?: (fraction: number) => void }) => React.JSX.Element;
 diff --git a/lib/MessageAudio.js b/lib/MessageAudio.js
-index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc6835cde1 100644
+index 1118742..74a5bee 100644
 --- a/lib/MessageAudio.js
 +++ b/lib/MessageAudio.js
 @@ -15,6 +15,33 @@ import { TRANSCRIBE_SLOT_WIDTH, VOICE_BUTTON_SIZE, VOICE_COLUMN_GAP, VOICE_META_
@@ -184,7 +198,16 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
  // Optional inline player. Resolved through the optional-peer registry (`src/optional`) so the bundle
  // works whether or not the consumer installed `expo-audio` (Metro treats
  // try/catch-wrapped requires as optional dependencies). When present, audio
-@@ -35,7 +62,11 @@ const ExpoAudioPlayer = t0 => {
+@@ -26,7 +53,7 @@ const isExpoAudioAvailable = !!(expoAudio?.useAudioPlayer && expoAudio?.useAudio
+ // Only mounted when expo-audio resolved, so the hooks below always run in a
+ // stable order.
+ const ExpoAudioPlayer = t0 => {
+-  const $ = _c(140);
++  const $ = _c(51);
+   const {
+     uri,
+     position,
+@@ -35,15 +62,21 @@ const ExpoAudioPlayer = t0 => {
      duration: durationProp,
      message,
      isViewOnce: t1,
@@ -197,7 +220,8 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
    } = t0;
    const isViewOnce = t1 === undefined ? false : t1;
    const player = expoAudio.useAudioPlayer(uri);
-@@ -44,6 +75,9 @@ const ExpoAudioPlayer = t0 => {
+   const status = expoAudio.useAudioPlayerStatus(player);
+-  const styles = useThemedStyles(position === "right" ? createRightStyles : createLeftStyles);
    const playerId = useId();
    const rate = usePlaybackRate();
    const isPlaying = !!status?.playing;
@@ -207,7 +231,7 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
    const duration = status?.duration || durationProp || 0;
    const currentTime = status?.currentTime ?? 0;
    const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
-@@ -52,7 +86,7 @@ const ExpoAudioPlayer = t0 => {
+@@ -52,7 +85,7 @@ const ExpoAudioPlayer = t0 => {
      onTranscribe,
      onViewOnceEnd
    } = useNotePlaybackOptions(messageId);
@@ -216,7 +240,7 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
    const viewOnce = useViewOnce(message, messageId, isViewOnce, onViewOnceEnd);
    const [isHeard, setIsHeard] = useState(false);
    let t2;
-@@ -99,10 +133,6 @@ const ExpoAudioPlayer = t0 => {
+@@ -99,10 +132,6 @@ const ExpoAudioPlayer = t0 => {
        player.setPlaybackRate?.(rate);
        player.play();
        claimPlayback(playerId, onStop);
@@ -227,7 +251,7 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
      };
      $[6] = isMediaUnread;
      $[7] = markReadRef;
-@@ -117,6 +147,21 @@ const ExpoAudioPlayer = t0 => {
+@@ -117,6 +146,21 @@ const ExpoAudioPlayer = t0 => {
      t4 = $[14];
    }
    const play = t4;
@@ -249,53 +273,270 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
    let t5;
    if ($[15] !== currentTime || $[16] !== duration || $[17] !== pause || $[18] !== play || $[19] !== status?.didJustFinish || $[20] !== status?.playing) {
      t5 = () => {
-@@ -402,9 +447,14 @@ const ExpoAudioPlayer = t0 => {
-   } else {
-     t38 = $[94];
+@@ -265,301 +309,117 @@ const ExpoAudioPlayer = t0 => {
    }
-+  const waveformTrack = message?.waveform ? <View style={styles.trackArea}>
-+    <VoiceWaveform waveform={message.waveform} color={styles.track.backgroundColor}
-+      playedColor={styles.trackFill.backgroundColor} progress={fill}
-+      onSeek={duration > 0 ? (fraction) => void player.seekTo(duration * fraction) : undefined} />
-+  </View> : t38;
-   let t39;
-   if ($[95] !== styles.playCircle || $[96] !== styles.transcribeSlot || $[97] !== transcribe.isLoading || $[98] !== transcribe.isOpen || $[99] !== transcribe.isVisible || $[100] !== transcribe.onPress) {
+   useRaiseToListen(t17);
+   const fill = viewOnce.isSpent ? 0 : isViewOnce ? viewOnce.hasStarted ? 1 - progress : 1 : progress;
+-  const isPlayDisabled = viewOnce.isSpent;
+-  const t18 = styles.container;
+-  const t19 = position === "right";
+-  let t20;
+-  if ($[51] !== duration || $[52] !== t19) {
+-    t20 = voiceContentWidth(duration, t19);
+-    $[51] = duration;
+-    $[52] = t19;
+-    $[53] = t20;
+-  } else {
+-    t20 = $[53];
+-  }
+-  let t21;
+-  if ($[54] !== t20) {
+-    t21 = {
+-      width: t20
+-    };
+-    $[54] = t20;
+-    $[55] = t21;
+-  } else {
+-    t21 = $[55];
+-  }
+-  let t22;
+-  if ($[56] !== styles.container || $[57] !== t21) {
+-    t22 = [t18, t21];
+-    $[56] = styles.container;
+-    $[57] = t21;
+-    $[58] = t22;
+-  } else {
+-    t22 = $[58];
+-  }
+-  const t23 = styles.audioRow;
+-  let t24;
+-  if ($[59] !== isPlayDisabled) {
+-    t24 = {
+-      disabled: isPlayDisabled
+-    };
+-    $[59] = isPlayDisabled;
+-    $[60] = t24;
+-  } else {
+-    t24 = $[60];
+-  }
+-  const t25 = isPlaying ? "pause" : "play";
+-  const t26 = isViewOnce ? "plays once" : undefined;
+-  const t27 = isPlayDisabled && styles.playCircleDisabled;
+-  let t28;
+-  if ($[61] !== styles.playCircle || $[62] !== t27) {
+-    t28 = [styles.playCircle, t27];
+-    $[61] = styles.playCircle;
+-    $[62] = t27;
+-    $[63] = t28;
+-  } else {
+-    t28 = $[63];
+-  }
+-  let t29;
+-  if ($[64] !== isPlaying || $[65] !== styles.glyphColor.color) {
+-    t29 = <PlayPauseIcon isPlaying={isPlaying} color={styles.glyphColor.color} size={18} />;
+-    $[64] = isPlaying;
+-    $[65] = styles.glyphColor.color;
+-    $[66] = t29;
+-  } else {
+-    t29 = $[66];
+-  }
+-  let t30;
+-  if ($[67] !== isPlayDisabled || $[68] !== t24 || $[69] !== t25 || $[70] !== t26 || $[71] !== t28 || $[72] !== t29 || $[73] !== togglePlayback) {
+-    t30 = <Pressable onPress={togglePlayback} {...suppressPressAfterHold} disabled={isPlayDisabled} accessibilityRole="button" accessibilityState={t24} accessibilityLabel={t25} accessibilityHint={t26} style={t28}>{t29}</Pressable>;
+-    $[67] = isPlayDisabled;
+-    $[68] = t24;
+-    $[69] = t25;
+-    $[70] = t26;
+-    $[71] = t28;
+-    $[72] = t29;
+-    $[73] = togglePlayback;
+-    $[74] = t30;
+-  } else {
+-    t30 = $[74];
+-  }
+-  let t31;
+-  if ($[75] !== isViewOnce || $[76] !== styles.bubble || $[77] !== styles.glyphColor.color || $[78] !== styles.playCircle || $[79] !== viewOnce.hasStarted) {
+-    t31 = isViewOnce && <ViewOnceBadge isVisible={!viewOnce.hasStarted} color={styles.playCircle.backgroundColor} glyphColor={styles.glyphColor.color} cutColor={styles.bubble.backgroundColor} />;
+-    $[75] = isViewOnce;
+-    $[76] = styles.bubble;
+-    $[77] = styles.glyphColor.color;
+-    $[78] = styles.playCircle;
+-    $[79] = viewOnce.hasStarted;
+-    $[80] = t31;
+-  } else {
+-    t31 = $[80];
+-  }
+-  let t32;
+-  if ($[81] !== t30 || $[82] !== t31) {
+-    t32 = <View>{t30}{t31}</View>;
+-    $[81] = t30;
+-    $[82] = t31;
+-    $[83] = t32;
+-  } else {
+-    t32 = $[83];
+-  }
+-  const t33 = styles.column;
+-  const t34 = `${fill * 100}%`;
+-  let t35;
+-  if ($[84] !== t34) {
+-    t35 = {
+-      width: t34
+-    };
+-    $[84] = t34;
+-    $[85] = t35;
+-  } else {
+-    t35 = $[85];
+-  }
+-  let t36;
+-  if ($[86] !== styles.trackFill || $[87] !== t35) {
+-    t36 = <View style={[styles.trackFill, t35]} />;
+-    $[86] = styles.trackFill;
+-    $[87] = t35;
+-    $[88] = t36;
+-  } else {
+-    t36 = $[88];
+-  }
+-  let t37;
+-  if ($[89] !== styles.track || $[90] !== t36) {
+-    t37 = <View style={styles.track}>{t36}</View>;
+-    $[89] = styles.track;
+-    $[90] = t36;
+-    $[91] = t37;
+-  } else {
+-    t37 = $[91];
+-  }
+-  let t38;
+-  if ($[92] !== styles.trackArea || $[93] !== t37) {
+-    t38 = <View style={styles.trackArea}>{t37}</View>;
+-    $[92] = styles.trackArea;
+-    $[93] = t37;
+-    $[94] = t38;
+-  } else {
+-    t38 = $[94];
+-  }
+-  let t39;
+-  if ($[95] !== styles.playCircle || $[96] !== styles.transcribeSlot || $[97] !== transcribe.isLoading || $[98] !== transcribe.isOpen || $[99] !== transcribe.isVisible || $[100] !== transcribe.onPress) {
 -    t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} /></View>;
-+    t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} label={transcribe.label} /></View>;
-     $[95] = styles.playCircle;
-     $[96] = styles.transcribeSlot;
-     $[97] = transcribe.isLoading;
-@@ -416,10 +466,10 @@ const ExpoAudioPlayer = t0 => {
-     t39 = $[101];
-   }
-   let t40;
+-    $[95] = styles.playCircle;
+-    $[96] = styles.transcribeSlot;
+-    $[97] = transcribe.isLoading;
+-    $[98] = transcribe.isOpen;
+-    $[99] = transcribe.isVisible;
+-    $[100] = transcribe.onPress;
+-    $[101] = t39;
+-  } else {
+-    t39 = $[101];
+-  }
+-  let t40;
 -  if ($[102] !== styles.trackRow || $[103] !== t38 || $[104] !== t39) {
 -    t40 = <View style={styles.trackRow}>{t38}{t39}</View>;
-+  if ($[102] !== styles.trackRow || $[103] !== waveformTrack || $[104] !== t39) {
-+    t40 = <View style={styles.trackRow}>{waveformTrack}{t39}</View>;
-     $[102] = styles.trackRow;
+-    $[102] = styles.trackRow;
 -    $[103] = t38;
-+    $[103] = waveformTrack;
-     $[104] = t39;
-     $[105] = t40;
-   } else {
-@@ -506,6 +556,13 @@ const ExpoAudioPlayer = t0 => {
-   } else {
-     t51 = $[135];
-   }
-+  if (transcriptionControl?.render) {
-+    t51 = <View style={[styles.transcription, transcribe.isOpen && styles.metaSpacer]}>
-+      <TranscriptionText isOpen={transcribe.isOpen}>
-+        {transcriptionControl.render({ player: transcribe.isOpen ? player : null, seek: (seconds) => player.seekTo(seconds), color: styles.transcriptionColor.color })}
-+      </TranscriptionText>
-+    </View>;
-+  }
-   let t52;
-   if ($[136] !== t22 || $[137] !== t50 || $[138] !== t51) {
-     t52 = <View style={t22}>{t50}{t51}</View>;
-@@ -518,48 +575,42 @@ const ExpoAudioPlayer = t0 => {
-   }
-   return t52;
+-    $[104] = t39;
+-    $[105] = t40;
+-  } else {
+-    t40 = $[105];
+-  }
+-  const t41 = styles.timeRow;
+-  const t42 = styles.time;
+-  const t43 = isCurrent ? currentTime : duration;
+-  let t44;
+-  if ($[106] !== t43) {
+-    t44 = formatVoiceDuration(t43);
+-    $[106] = t43;
+-    $[107] = t44;
+-  } else {
+-    t44 = $[107];
+-  }
+-  let t45;
+-  if ($[108] !== styles.time || $[109] !== t44) {
+-    t45 = <Text style={t42}>{t44}</Text>;
+-    $[108] = styles.time;
+-    $[109] = t44;
+-    $[110] = t45;
+-  } else {
+-    t45 = $[110];
+-  }
+-  let t46;
+-  if ($[111] !== isUnread || $[112] !== styles.unreadDot.backgroundColor) {
+-    t46 = <UnreadDot isVisible={isUnread} color={styles.unreadDot.backgroundColor} />;
+-    $[111] = isUnread;
+-    $[112] = styles.unreadDot.backgroundColor;
+-    $[113] = t46;
+-  } else {
+-    t46 = $[113];
+-  }
+-  let t47;
+-  if ($[114] !== styles.dotSlot || $[115] !== t46) {
+-    t47 = <View style={styles.dotSlot}>{t46}</View>;
+-    $[114] = styles.dotSlot;
+-    $[115] = t46;
+-    $[116] = t47;
+-  } else {
+-    t47 = $[116];
+-  }
+-  let t48;
+-  if ($[117] !== styles.timeRow || $[118] !== t45 || $[119] !== t47) {
+-    t48 = <View style={t41}>{t45}{t47}</View>;
+-    $[117] = styles.timeRow;
+-    $[118] = t45;
+-    $[119] = t47;
+-    $[120] = t48;
+-  } else {
+-    t48 = $[120];
+-  }
+-  let t49;
+-  if ($[121] !== styles.column || $[122] !== t40 || $[123] !== t48) {
+-    t49 = <View style={t33}>{t40}{t48}</View>;
+-    $[121] = styles.column;
+-    $[122] = t40;
+-    $[123] = t48;
+-    $[124] = t49;
+-  } else {
+-    t49 = $[124];
+-  }
+-  let t50;
+-  if ($[125] !== styles.audioRow || $[126] !== t32 || $[127] !== t49) {
+-    t50 = <View style={t23}>{t32}{t49}</View>;
+-    $[125] = styles.audioRow;
+-    $[126] = t32;
+-    $[127] = t49;
+-    $[128] = t50;
+-  } else {
+-    t50 = $[128];
+-  }
+-  let t51;
+-  if ($[129] !== styles.metaSpacer || $[130] !== styles.transcription || $[131] !== styles.transcriptionColor || $[132] !== transcribe.isOpen || $[133] !== transcribe.isVisible || $[134] !== transcription) {
+-    t51 = transcribe.isVisible && <View style={[styles.transcription, transcribe.isOpen && styles.metaSpacer]}><TranscriptionText text={transcription} isOpen={transcribe.isOpen} color={styles.transcriptionColor.color} /></View>;
+-    $[129] = styles.metaSpacer;
+-    $[130] = styles.transcription;
+-    $[131] = styles.transcriptionColor;
+-    $[132] = transcribe.isOpen;
+-    $[133] = transcribe.isVisible;
+-    $[134] = transcription;
+-    $[135] = t51;
+-  } else {
+-    t51 = $[135];
+-  }
+-  let t52;
+-  if ($[136] !== t22 || $[137] !== t50 || $[138] !== t51) {
+-    t52 = <View style={t22}>{t50}{t51}</View>;
+-    $[136] = t22;
+-    $[137] = t50;
+-    $[138] = t51;
+-    $[139] = t52;
+-  } else {
+-    t52 = $[139];
+-  }
+-  return t52;
++  return <VoiceAudioView
++    position={position} message={message} duration={duration} fill={fill}
++    currentTime={isCurrent ? currentTime : undefined} playing={isPlaying}
++    isUnread={isUnread} disabled={viewOnce.isSpent} onPress={togglePlayback}
++    isViewOnce={isViewOnce} hasStarted={viewOnce.hasStarted}
++    seek={(seconds) => player.seekTo(seconds)} clock={player}
++    transcribe={transcribe} transcriptionControl={transcriptionControl}
++  />;
  };
 -export function MessageAudio(t0) {
 -  const $ = _c(10);
@@ -306,7 +547,73 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc
 -    audioStyle
 -  } = t0;
 -  const position = t1 === undefined ? "left" : t1;
-+export function MessageAudio({ currentMessage, position = "left", containerStyle, audioStyle, autoPlay, onPlaybackEnded, onPlaybackStarted, transcriptionControl, placeholder }) {
++
++function VoiceAudioView({
++  position, message, duration, fill, currentTime, playing, isUnread, disabled,
++  onPress, label, control, accessory, isViewOnce, hasStarted, seek, clock,
++  transcribe, transcriptionControl, compact,
++}) {
++  const styles = useThemedStyles(position === "right" ? createRightStyles : createLeftStyles);
++  return <View style={[styles.container, { width: voiceContentWidth(duration, position === "right") }]}>
++    <View style={[styles.audioRow, compact && { paddingTop: 8, paddingBottom: 2 }]}>
++      <View>
++        {control ?? <Pressable onPress={onPress} {...suppressPressAfterHold}
++          disabled={disabled} accessibilityRole="button" accessibilityState={{ disabled }}
++          accessibilityLabel={label ?? (playing ? "pause" : "play")}
++          accessibilityHint={isViewOnce ? "plays once" : undefined}
++          style={[styles.playCircle, disabled && styles.playCircleDisabled]}>
++          <PlayPauseIcon isPlaying={playing} color={styles.glyphColor.color} size={18} />
++        </Pressable>}
++        {isViewOnce && <ViewOnceBadge isVisible={!hasStarted}
++          color={styles.playCircle.backgroundColor} glyphColor={styles.glyphColor.color}
++          cutColor={styles.bubble.backgroundColor} />}
++      </View>
++      <View style={styles.column}>
++        <View style={styles.trackRow}>
++          <View style={styles.trackArea}>
++            {message?.waveform ? <VoiceWaveform waveform={message.waveform}
++              color={styles.track.backgroundColor} playedColor={styles.trackFill.backgroundColor}
++              progress={fill} onSeek={seek && duration > 0 ? (fraction) => void seek(duration * fraction) : undefined} />
++              : <View style={styles.track}><View style={[styles.trackFill, { width: `${fill * 100}%` }]} /></View>}
++          </View>
++          {transcribe.isVisible && <View style={styles.transcribeSlot}>
++            <TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading}
++              onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} label={transcribe.label} />
++          </View>}
++        </View>
++        <View style={[styles.timeRow, compact && { minHeight: 24 }]}>
++          <Text style={styles.time}>{formatVoiceDuration(currentTime ?? duration)}</Text>
++          <View style={styles.dotSlot}>
++            <UnreadDot isVisible={isUnread} color={styles.unreadDot.backgroundColor} />
++          </View>
++          {accessory}
++        </View>
++      </View>
++    </View>
++    {(transcribe.isVisible || transcriptionControl?.render) &&
++      <View style={[styles.transcription, transcribe.isOpen && styles.metaSpacer]}>
++        {transcriptionControl?.render ? <TranscriptionText isOpen={transcribe.isOpen}>
++          {transcribe.isOpen && transcriptionControl.render({ player: clock ?? null, seek, color: styles.transcriptionColor.color })}
++        </TranscriptionText> : <TranscriptionText text={message?.transcription} isOpen={transcribe.isOpen} color={styles.transcriptionColor.color} />}
++      </View>}
++  </View>;
++}
++
++function ControlledVoiceNote({ message, position, playback, transcriptionControl }) {
++  const duration = playback.duration ?? message?.duration ?? 0;
++  const fill = duration > 0 ? Math.max(0, Math.min(1, (playback.currentTime ?? 0) / duration)) : 0;
++  const transcribe = useTranscription(message, message?._id, message?.transcription, undefined, transcriptionControl);
++  return <VoiceAudioView
++    {...playback} position={position} message={message} duration={duration} fill={fill} compact
++    isUnread={position === "left" && !!message?.isMediaUnread}
++    transcribe={transcribe} transcriptionControl={transcriptionControl}
++  />;
++}
++
++export function MessageAudio({ currentMessage, position = "left", containerStyle, audioStyle, autoPlay, onPlaybackEnded, onPlaybackStarted, transcriptionControl, placeholder, controlledPlayback }) {
++  if (controlledPlayback) return <View style={[styles.container, containerStyle]}>
++    <ControlledVoiceNote message={currentMessage} position={position} playback={controlledPlayback} transcriptionControl={transcriptionControl} />
++  </View>;
    const uri = currentMessage?.audio;
 -  if (!uri) {
 -    return null;
@@ -642,10 +949,9 @@ index 9f785dd253040679fcae376f13413faab7cfac47..393eec03a037e85fd00c5fa2c840f5ae
      $[6] = playerKey;
      $[7] = t1;
 diff --git a/lib/Models.d.ts b/lib/Models.d.ts
-index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500d630c209 100644
 --- a/lib/Models.d.ts
 +++ b/lib/Models.d.ts
-@@ -51,7 +51,7 @@ export interface MessageReaction {
+@@ -51,7 +51,7 @@
  /** A document attached to a message (`IMessage.file`), drawn as a file bubble. */
  export interface IMessageFile {
      /** Where the file is: a local `file://` path or a remote URL. */
@@ -654,7 +960,7 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500
      /** The file name shown in the bubble, with its extension. */
      name: string;
      /** Size in bytes, shown under the name. */
-@@ -186,6 +186,7 @@ export interface MessageVideoProps<TMessage extends IMessage> {
+@@ -186,6 +186,7 @@
      containerStyle?: StyleProp<ViewStyle>;
      videoStyle?: StyleProp<ViewStyle>;
      videoProps?: object;
@@ -662,7 +968,7 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500
  }
  export interface MessageAudioProps<TMessage extends IMessage> {
      currentMessage: TMessage;
-@@ -198,6 +199,7 @@ export interface MessageFileProps<TMessage extends IMessage> {
+@@ -198,6 +199,7 @@
      currentMessage: TMessage;
      position?: 'left' | 'right';
      containerStyle?: StyleProp<ViewStyle>;
@@ -670,12 +976,13 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500
      /** Override opening the file (the system share sheet with `expo-sharing`, else `Linking`). */
      onPress?: (file: IMessageFile) => void;
  }
-@@ -217,6 +219,12 @@ export interface MessageLocationProps<TMessage extends IMessage> {
+@@ -217,6 +219,13 @@
   * `expo-audio` peer dependency; when it is absent the mic button is hidden.
   */
  export interface AudioRecordingProps {
 +    onActiveChange?: (active: boolean) => void;
 +    canUseAudioSession?: () => boolean;
++    onAudioSessionChange?: (active: boolean) => void;
 +    canReleaseAudioSession?: () => boolean;
 +    recordingFileName?: () => string;
 +    onDiscardRecording?: (uri: string) => void;
@@ -683,7 +990,7 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500
      /**
       * Show the "view once" toggle above the lock while a take is locked.
       * A take sent with it on arrives in `onSend` with `isViewOnce: true`.
-@@ -254,6 +262,9 @@ export interface VideoRecordingProps {
+@@ -254,6 +263,9 @@
       * off, `true` also falls back to the system camera (`expo-image-picker`) without it.
       */
      isEnabled?: boolean;
@@ -1159,10 +1466,9 @@ index a1328a60adeb27ac63d7df8ec9818ae43ce25e31..96d4a98bea1fb49a07cc2b4bcd3f9b8c
          }, false);
          return;
 diff --git a/lib/components/VoiceMessageInput/useVoiceTake.js b/lib/components/VoiceMessageInput/useVoiceTake.js
-index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244371e01f0 100644
 --- a/lib/components/VoiceMessageInput/useVoiceTake.js
 +++ b/lib/components/VoiceMessageInput/useVoiceTake.js
-@@ -67,6 +67,12 @@ export function useVoiceTake(t0, ref) {
+@@ -67,6 +67,13 @@
    const toggleViewOnce = t3;
    const startedAtRef = useRef(0);
    const isRecordingRef = useRef(false);
@@ -1171,11 +1477,12 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
 +    if (!ownsAudioSession.current) return;
 +    ownsAudioSession.current = false;
 +    if (config?.canReleaseAudioSession?.() !== false) releaseAudioSession();
++    config?.onAudioSessionChange?.(false);
 +  };
    const timerRef = useRef(null);
    let t4;
    if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-@@ -160,7 +166,7 @@ export function useVoiceTake(t0, ref) {
+@@ -160,7 +167,7 @@
          return;
        }
        isRecordingRef.current = false;
@@ -1184,7 +1491,7 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
        clearTimer();
        setIsRecording(false);
        setCancelArmed(false);
-@@ -175,10 +181,13 @@ export function useVoiceTake(t0, ref) {
+@@ -175,10 +182,13 @@
          const uri = recorder.uri;
          const earlier = clipsRef.current;
          if (outcome === "cancel" || !uri) {
@@ -1198,7 +1505,7 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
            config?.onTooShort?.();
            return;
          }
-@@ -202,7 +211,8 @@ export function useVoiceTake(t0, ref) {
+@@ -202,7 +212,8 @@
          clipsRef.current = [];
          onSend?.({
            audio: joined,
@@ -1208,7 +1515,7 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
            ...viewOnceFields(isViewOnceRef.current)
          }, false);
        })().catch(error => {
-@@ -211,7 +221,7 @@ export function useVoiceTake(t0, ref) {
+@@ -211,7 +222,7 @@
        }).finally(() => {
          setIsJoining(false);
          setIsLocked(false);
@@ -1217,12 +1524,13 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
        });
      };
      $[16] = config;
-@@ -258,13 +268,19 @@ export function useVoiceTake(t0, ref) {
+@@ -258,13 +269,20 @@
            config?.onPermissionDenied?.();
            return;
          }
 +        if (startTokenRef.current !== token || config?.canUseAudioSession?.() === false) return;
 +        ownsAudioSession.current = true;
++        config?.onAudioSessionChange?.(true);
          await expoAudio.setAudioModeAsync?.({
            allowsRecording: true,
            playsInSilentMode: true
@@ -1239,7 +1547,7 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
            return;
          }
          recorder_0.record();
-@@ -278,7 +294,12 @@ export function useVoiceTake(t0, ref) {
+@@ -278,7 +296,12 @@
          clearTimer();
          timerRef.current = setInterval(() => {
            const ms = baseElapsedRef.current + Date.now() - startedAtRef.current;
@@ -1253,7 +1561,7 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
            allLevelsRef.current.push(next);
            const previous = levelsRef.current;
            const kept = previous.length >= LEVEL_HISTORY ? previous.slice(previous.length - LEVEL_HISTORY + 1) : previous;
-@@ -286,7 +307,7 @@ export function useVoiceTake(t0, ref) {
+@@ -286,7 +309,7 @@
            meter.level.set(next);
            meter.elapsed.set(ms);
            if (ms >= maxDurationMs) {
@@ -1262,16 +1570,18 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
            }
          }, 100);
        })().catch(error_0 => {
-@@ -296,7 +317,7 @@ export function useVoiceTake(t0, ref) {
+@@ -296,8 +319,9 @@
          setIsRecording(false);
          setIsLocked(false);
          clearTimer();
 -        releaseAudioSession();
 +        releaseOwnedAudioSession();
        }).finally(() => {
++        if (!isRecordingRef.current) releaseOwnedAudioSession();
          setIsResuming(false);
          if (startTokenRef.current === token) {
-@@ -327,9 +348,11 @@ export function useVoiceTake(t0, ref) {
+           startTokenRef.current = 0;
+@@ -327,9 +351,11 @@
        pendingFinishRef.current = null;
        if (isRecordingRef.current) {
          isRecordingRef.current = false;

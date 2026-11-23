@@ -15,9 +15,10 @@ import { namespaces } from "@/i18n";
 
 export default function ChatRoute() {
   const { t } = useTranslation(namespaces);
-  const { key, view } = useLocalSearchParams<{
+  const { key, view, audioMessage } = useLocalSearchParams<{
     key?: string;
     view?: string;
+    audioMessage?: string;
   }>();
   if (key === "new-group") return <NewMarmotGroup />;
   if (typeof key === "string") {
@@ -33,6 +34,7 @@ export default function ChatRoute() {
         <MarmotConversationScreen
           key={group}
           id={group}
+          audioMessage={audioMessage}
           initialPanel={
             view === "search" || view === "media" ? view : undefined
           }

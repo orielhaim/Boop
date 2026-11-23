@@ -153,6 +153,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
   expect(messenger?.children.map((route) => route.route).sort()).toEqual([
     "(tabs)",
     "add-contact",
+    "audio-player",
     "chat/[key]",
     "connect",
     "downloads",
@@ -185,6 +186,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "language/translation/target",
     "language/voice-transcription/index",
     "language/voice-transcription/models",
+    "playback",
     "privacy",
     "privacy/app-lock",
     "privacy/blocked",
