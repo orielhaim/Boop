@@ -9,9 +9,13 @@ import {
   getNetworkStateAsync,
   NetworkStateType,
 } from "expo-network";
+import { createDownloadManager } from "@/core/downloads/manager";
+import { downloadStore } from "@/db/downloads";
+import { priority as speechPriority } from "@/core/speech/scheduler";
 import { createMediaSdk } from "@/core/media";
 import { createNativeLinkPreviews } from "@/core/messaging/native-link-previews";
 import { File } from "expo-file-system";
+import { getRandomValues } from "expo-crypto";
 import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
@@ -50,7 +54,7 @@ import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { loadTranslationEngine } from "@/core/translation/native";
 import { initializeTranslationPreferences } from "@/core/translation/preferences";
 import { createTranslationService } from "@/core/translation/service";
-import { createVoiceTranscription } from "@/core/speech/service";
+import { createVoiceTranscription, speechSource } from "@/core/speech/service";
 import { openDatabase } from "@/db";
 import {
   callById,
@@ -98,7 +102,7 @@ async function start() {
         haptics: preference(db, "haptics") !== "off",
       };
     }
-    const { identity, signer, fresh } = loaded;
+    const { identity, signer, fresh, downloadKey } = loaded;
     messagingMetric("identity ready", {
       ms: performance.now() - identityStarted,
     });
@@ -337,7 +341,61 @@ async function start() {
       blocked: privacy.isBlocked,
       hidden: (group, id) => chatPreferences.hidden(group).includes(id),
     });
-    beforeAccountClose = speech.beforeAccountClose;
+    const pendingVoiceNotes = new Map<
+      string,
+      NonNullable<ReturnType<typeof speechSource>>
+    >();
+    function admitDownloadedVoice() {
+      if (!active() || marmotSession.status() !== "ready") return;
+      for (const [key, voice] of pendingVoiceNotes) {
+        pendingVoiceNotes.delete(key);
+        speech.availableLocally(voice, speechPriority.download);
+      }
+    }
+    const downloads = createDownloadManager({
+      store: downloadStore(db, identity.publicKey, downloadKey, (size) =>
+        getRandomValues(new Uint8Array(size)),
+      ),
+      transport: {
+        transfer: async (target, progress, signal) => {
+          const state = await marmot.downloadAttachment(
+            ...target,
+            (received, total, state) => progress({ received, total, state }),
+            signal,
+          );
+          if (state === "ready" && !signal.aborted) {
+            const bytes = await marmot
+              .retainedAttachmentBytes(...target)
+              .catch(() => null);
+            if (bytes !== null)
+              progress({ state, received: bytes, total: bytes });
+          }
+          return state;
+        },
+        status: (target) => marmot.attachmentTransferState(...target),
+        control: (target, action) =>
+          marmot.controlAttachment(...target, action),
+      },
+      eligible: () =>
+        active() &&
+        chatPreferences.enabled() &&
+        marmotSession.status() === "ready",
+      authorized: ({ sender, target: [group, id] }) =>
+        !privacy.isBlocked(sender) &&
+        !chatPreferences.hidden(group).includes(id),
+      completed: ({ voice }) => {
+        if (!voice) return;
+        pendingVoiceNotes.set(JSON.stringify(voice.target), voice);
+        admitDownloadedVoice();
+      },
+    });
+    beforeAccountClose = async () => {
+      pendingVoiceNotes.clear();
+      await Promise.all([
+        speech.beforeAccountClose(),
+        downloads.beforeAccountClose(),
+      ]);
+    };
     appLock = lock;
     messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
@@ -349,6 +407,8 @@ async function start() {
       ),
       identity,
       speech,
+      downloads,
+      admitDownloadedVoice,
       avatars,
       previews,
       mediaSdk,
@@ -408,14 +468,18 @@ export function LocalSessionLifecycle() {
     profileEditor,
     publicMetadata,
     speech,
+    downloads,
+    admitDownloadedVoice,
     privacy,
   } = useLocal();
   useEffect(() => {
     const stopSpeech = speech.start();
+    const stopDownloads = downloads.start();
     const unsubscribeSpeechCall = calling.store.subscribe(speech.sync);
-    const unsubscribeSpeechPrivacy = privacy.subscribe(
-      () => void speech.reconcile(),
-    );
+    const unsubscribeSpeechPrivacy = privacy.subscribe(() => {
+      void speech.reconcile();
+      void downloads.reconcile();
+    });
     const lowPower = addLowPowerModeListener(speech.power);
     const memory = AppState.addEventListener(
       "memoryWarning",
@@ -533,6 +597,11 @@ export function LocalSessionLifecycle() {
         state === "active" && !lock.getState().locked,
       );
       speech.sync();
+      downloads.sync();
+      if (state === "active") {
+        admitDownloadedVoice();
+        void downloads.reconcile();
+      }
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
       if (state === "active") {
@@ -549,6 +618,9 @@ export function LocalSessionLifecycle() {
         AppState.currentState === "active" && !lock.getState().locked,
       );
       speech.sync();
+      downloads.sync();
+      admitDownloadedVoice();
+      void downloads.reconcile();
       updateUnlocks();
       if (
         lock.getState().authenticating ||
@@ -640,6 +712,8 @@ export function LocalSessionLifecycle() {
     });
     const unsubscribeAccount = marmotSession.subscribe(() => {
       speech.accountReady();
+      if (marmotSession.status() === "ready") downloads.accountReady();
+      admitDownloadedVoice();
       void speech.reconcile();
       updateBackupConditions();
       scheduleProfilePublish();
@@ -659,7 +733,19 @@ export function LocalSessionLifecycle() {
       void speech.power();
     });
     let networkWasConnected = false;
-    const network = addNetworkStateListener(({ isConnected }) => {
+    let networkRevision = 0;
+    const updateDownloadNetwork = ({
+      isConnected,
+      type,
+    }: Awaited<ReturnType<typeof getNetworkStateAsync>>) =>
+      downloads.network(
+        isConnected !== false,
+        type === NetworkStateType.CELLULAR,
+      );
+    const network = addNetworkStateListener((state) => {
+      const { isConnected } = state;
+      networkRevision += 1;
+      updateDownloadNetwork(state);
       const reconnected = isConnected && !networkWasConnected;
       networkWasConnected = isConnected === true;
       updateBackupConditions();
@@ -668,9 +754,15 @@ export function LocalSessionLifecycle() {
         catchUpMessaging();
       }
     });
+    void getNetworkStateAsync()
+      .then((state) => {
+        if (mounted && networkRevision === 0) updateDownloadNetwork(state);
+      })
+      .catch(() => undefined);
     return () => {
       mounted = false;
       stopSpeech();
+      stopDownloads();
       unsubscribeSpeechCall();
       unsubscribeSpeechPrivacy();
       lowPower.remove();
@@ -711,6 +803,8 @@ export function LocalSessionLifecycle() {
     profileEditor,
     publicMetadata,
     speech,
+    downloads,
+    admitDownloadedVoice,
     privacy,
   ]);
   return null;

@@ -11,6 +11,7 @@ import {
   linkPreviewCache,
   settings,
   speechJobs,
+  downloads,
 } from "@/db/schema";
 import { inboxIntentKey } from "../nostr/config";
 import { deriveIdentity, parsePublicKey } from "./keys";
@@ -118,6 +119,7 @@ async function recoverSwitch<TResult>(
           tx.delete(callHistory).run();
           tx.delete(peerPermissions).run();
           tx.delete(speechJobs).run();
+          tx.delete(downloads).run();
           tx.delete(settings)
             .where(
               notInArray(settings.key, [

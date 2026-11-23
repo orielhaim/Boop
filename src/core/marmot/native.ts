@@ -496,12 +496,19 @@ type Bridge = {
     source: string,
     index: number,
     transfer: string,
-  ): Promise<void>;
-  cancelAttachment(
+  ): Promise<string>;
+  attachmentTransferState(
     group: string,
     id: string,
     source: string,
     index: number,
+  ): Promise<string | null>;
+  controlAttachment(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+    action: "cancel" | "remove",
   ): Promise<boolean>;
   openAttachment(
     group: string,
@@ -933,18 +940,28 @@ export const marmot = {
     ) => void,
     signal: AbortSignal,
   ) {
-    if (signal.aborted) return;
+    if (signal.aborted) return "cancelled";
     const bridge = native();
     const transfer = randomUUID();
-    let requested = false;
+    let cancelled = false;
+    let settled = false;
+    let cancellation: Promise<void> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => {
-      if (requested) return;
-      void bridge.cancelAttachment(group, id, source, index).then(
-        (cancelled) => {
-          requested ||= cancelled;
-        },
-        () => {},
-      );
+      if (settled || cancelled || cancellation) return;
+      clearTimeout(retry);
+      cancellation = bridge
+        .controlAttachment(group, id, source, index, "cancel")
+        .then(
+          (accepted) => {
+            cancelled ||= accepted;
+          },
+          () => undefined,
+        )
+        .finally(() => {
+          cancellation = undefined;
+          if (!settled && !cancelled) retry = setTimeout(cancel, 1_000);
+        });
     };
     const listener = bridge.addListener("attachmentProgress", (event) => {
       if (event.transfer !== transfer) return;
@@ -953,12 +970,36 @@ export const marmot = {
     });
     signal.addEventListener("abort", cancel, { once: true });
     try {
-      await bridge.downloadAttachment(group, id, source, index, transfer);
+      return await bridge.downloadAttachment(
+        group,
+        id,
+        source,
+        index,
+        transfer,
+      );
     } finally {
+      settled = true;
+      clearTimeout(retry);
       signal.removeEventListener("abort", cancel);
       listener.remove();
+      await cancellation;
     }
   },
+  attachmentTransferState: async (
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+  ) =>
+    (await native().attachmentTransferState(group, id, source, index)) ??
+    "unavailable",
+  controlAttachment: (
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+    action: "cancel" | "remove",
+  ) => native().controlAttachment(group, id, source, index, action),
   async openAttachment(
     group: string,
     id: string,

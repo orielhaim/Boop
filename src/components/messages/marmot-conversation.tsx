@@ -223,6 +223,7 @@ export function MarmotConversationScreen({
     db,
     marmotSession,
     speech,
+    downloads,
   } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
@@ -346,7 +347,8 @@ export function MarmotConversationScreen({
   const snapshotId = id;
   const presentation = useMemo(
     () =>
-      createAttachmentPresentation(marmot, ([group, id, source, index]) => {
+      createAttachmentPresentation(marmot, downloads, (target) => {
+        const [group, id, source, index] = target;
         const state = window?.getState();
         const app = lock.getState();
         if (
@@ -361,24 +363,47 @@ export function MarmotConversationScreen({
           (state.snapshot.peer && privacy.isBlocked(state.snapshot.peer)) ||
           chatPreferences.hidden(group).includes(id)
         )
-          return false;
-        return state.snapshot.messages.some(
+          return;
+        const row = state.snapshot.messages.find(
           (row) =>
             row.id === id &&
             row.sourceId === source &&
             !row.deleted &&
             !row.invalidated &&
             (row.expiresAt == null || row.expiresAt * 1_000 > Date.now()) &&
-            !privacy.isBlocked(row.sender) &&
-            row.attachments.some((asset) => asset.index === index),
+            !privacy.isBlocked(row.sender),
         );
+        const asset = row?.attachments.find((asset) => asset.index === index);
+        if (!row || !asset) return;
+        return {
+          target,
+          sender: row.sender,
+          expiresAt: row.expiresAt == null ? null : row.expiresAt * 1000,
+          name: asset.name,
+          hash: asset.plaintextHash,
+          type: asset.type,
+          total: asset.size ?? null,
+          voice: speechSource(group, row, asset, identity.publicKey),
+        };
       }),
-    [chatPreferences, focused, foreground, lock, privacy, snapshotId, window],
+    [
+      chatPreferences,
+      downloads,
+      focused,
+      foreground,
+      identity.publicKey,
+      lock,
+      privacy,
+      snapshotId,
+      window,
+    ],
   );
   useLayoutEffect(() => () => presentation.stop(), [presentation]);
   useLayoutEffect(() => {
     presentation.reconcile();
-  }, [blockedKeys, hidden, presentation, snapshot]);
+    for (const row of snapshot?.messages ?? [])
+      if (row.deleted || row.invalidated) downloads.invalidate(id, row.id);
+  }, [blockedKeys, downloads, hidden, id, presentation, snapshot]);
   useEffect(() => {
     if (
       !focused ||
@@ -1396,6 +1421,7 @@ export function MarmotConversationScreen({
                       run(async () => {
                         await marmot.deleteMessage(id, row._id);
                         speech.invalidateMessage(id, String(row._id));
+                        downloads.invalidate(id, String(row._id));
                       })
                   : undefined
               }
@@ -1470,6 +1496,7 @@ export function MarmotConversationScreen({
                   onPress: () => {
                     chatPreferences.hide(id, row.id);
                     speech.invalidateMessage(id, row.id);
+                    downloads.invalidate(id, row.id);
                     if (row.eventKind === timeLockKind)
                       removeOpenedMessage(db, row.id);
                   },

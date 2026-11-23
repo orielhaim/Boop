@@ -40,6 +40,7 @@ export default function MessengerLayout() {
           }}
         />
         <BlankStack.Screen name="requests" />
+        <BlankStack.Screen name="downloads" />
       </BlankStack.Protected>
     </BlankStack>
   );

@@ -1,3 +1,6 @@
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
@@ -53,7 +56,14 @@ export async function initializeIdentity(db: Database) {
   const signer = new NDKPrivateKeySigner(secret);
   if (signer.pubkey !== identity.publicKey)
     throw new Error("Identity mismatch");
-  return { identity, signer, fresh };
+  const downloadKey = hkdf(
+    sha256,
+    hexToBytes(secret),
+    hexToBytes(identity.publicKey),
+    utf8ToBytes("boop/download-queue/v1"),
+    32,
+  );
+  return { identity, signer, fresh, downloadKey };
 }
 
 let installing = false;

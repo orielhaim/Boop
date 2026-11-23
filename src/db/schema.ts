@@ -1,5 +1,11 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+} from "drizzle-orm/sqlite-core";
 
 export const contacts = sqliteTable("contacts", {
   publicKey: text("public_key").primaryKey().notNull(),
@@ -105,3 +111,13 @@ export const avatarCache = sqliteTable("avatar_cache", {
   fetchedAt: integer("fetched_at").notNull(),
   accessedAt: integer("accessed_at").notNull(),
 });
+
+export const downloads = sqliteTable(
+  "downloads",
+  {
+    id: text("id").notNull(),
+    account: text("account").notNull(),
+    job: text("job").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.account, table.id] })],
+);

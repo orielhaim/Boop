@@ -9,6 +9,7 @@
     "@hzblj/expo-speech": "0.4.0",
     "@hzblj/expo-translation": "0.1.4",
     "@kesha-antonov/react-native-chat": "^7.2.0",
+    "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",

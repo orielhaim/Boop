@@ -521,53 +521,65 @@ class BoopMarmotModule : Module() {
           .firstOrNull()?.takeIf { it.reference != null }?.byteCount?.toDouble()
       }
     }
-    AsyncFunction("cancelAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
+    AsyncFunction("attachmentTransferState") Coroutine { group: String, id: String, source: String, index: Int ->
+      withSession { active ->
+        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+        active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()?.state?.name?.lowercase()
+      }
+    }
+    AsyncFunction("controlAttachment") Coroutine { group: String, id: String, source: String, index: Int, action: String ->
       withSession { active ->
         val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
         val item = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
-        item?.reference?.let { active.kit.controlAttachment(active.account, it, AttachmentControlFfi.CANCEL) } ?: false
+        val control = if (action == "remove") AttachmentControlFfi.REMOVE else AttachmentControlFfi.CANCEL
+        item?.reference?.let { active.kit.controlAttachment(active.account, it, control) } ?: false
       }
     }
     AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
-      withSession { active ->
-        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
-        val before = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
-        val reference = when (before?.state) {
-          AttachmentTransferStateFfi.READY -> return@withSession
-          AttachmentTransferStateFfi.REMOVED, AttachmentTransferStateFfi.CLEANED_BY_SETTING,
-          AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
-            active.kit.downloadAttachmentAgain(active.account, group, target)
-          AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
-          AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED,
-          AttachmentTransferStateFfi.PAUSED -> before.reference?.takeIf {
-            active.kit.controlAttachment(active.account, it, AttachmentControlFfi.RETRY)
-          }
-          AttachmentTransferStateFfi.QUEUED, AttachmentTransferStateFfi.DOWNLOADING, AttachmentTransferStateFfi.VERIFYING_CIPHERTEXT,
-          AttachmentTransferStateFfi.DECRYPTING, AttachmentTransferStateFfi.VERIFYING_PLAINTEXT,
-          AttachmentTransferStateFfi.RETRY_SCHEDULED -> before.reference
-          else -> active.kit.requestExplicitAttachment(active.account, group, target)
-        } ?: throw problem("MediaUnavailable")
-        val finished = withTimeoutOrNull(180_000) {
+      val context = requireNotNull(appContext.reactContext).applicationContext
+      try {
+        withSession { active ->
+          val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+          val before = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+          val reference = when (before?.state) {
+            AttachmentTransferStateFfi.READY -> return@withSession "ready"
+            AttachmentTransferStateFfi.REMOVED, AttachmentTransferStateFfi.CLEANED_BY_SETTING,
+            AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
+              active.kit.downloadAttachmentAgain(active.account, group, target)
+            AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
+            AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED,
+            AttachmentTransferStateFfi.PAUSED -> before.reference?.takeIf {
+              active.kit.controlAttachment(active.account, it, AttachmentControlFfi.RETRY)
+            }
+            AttachmentTransferStateFfi.QUEUED, AttachmentTransferStateFfi.DOWNLOADING, AttachmentTransferStateFfi.VERIFYING_CIPHERTEXT,
+            AttachmentTransferStateFfi.DECRYPTING, AttachmentTransferStateFfi.VERIFYING_PLAINTEXT,
+            AttachmentTransferStateFfi.RETRY_SCHEDULED -> before.reference
+            else -> active.kit.requestExplicitAttachment(active.account, group, target)
+          } ?: return@withSession before?.state?.name?.lowercase() ?: "unavailable"
+          AttachmentDownloadService.acquire(context, transfer)
           active.kit.subscribeAttachmentTransfers(active.account, group, listOf(target)).use { updates ->
             while (true) {
-              val item = updates.next()?.items?.firstOrNull() ?: throw problem("MediaUnavailable")
-              if (item.reference != reference) throw problem("MediaUnavailable")
-              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to item.state.name.lowercase()))
+              val item = updates.next()?.items?.firstOrNull() ?: return@withSession "interrupted"
+              if (item.reference != reference) return@withSession "unavailable"
+              val state = item.state.name.lowercase()
+              AttachmentDownloadService.progress(transfer, item.received.toDouble(), item.total?.toDouble(), item.state == AttachmentTransferStateFfi.READY)
+              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to state))
               when (item.state) {
-                AttachmentTransferStateFfi.READY -> break
-                AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
+                AttachmentTransferStateFfi.READY, AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
                 AttachmentTransferStateFfi.POLICY_BLOCKED, AttachmentTransferStateFfi.REMOVED,
                 AttachmentTransferStateFfi.PREVIOUSLY_ACQUIRED_UNAVAILABLE, AttachmentTransferStateFfi.RETRY_EXHAUSTED,
                 AttachmentTransferStateFfi.CANCELLED, AttachmentTransferStateFfi.STORAGE_BLOCKED, AttachmentTransferStateFfi.PAUSED,
                 AttachmentTransferStateFfi.CLEANED_BY_SETTING, AttachmentTransferStateFfi.COMPLETED_UNRETAINED ->
-                  throw problem("MediaUnavailable")
+                  return@withSession state
                 else -> Unit
               }
             }
+            @Suppress("UNREACHABLE_CODE")
+            "interrupted"
           }
-          true
         }
-        if (finished != true) throw problem("MediaTimeout")
+      } finally {
+        AttachmentDownloadService.release(transfer)
       }
     }
     AsyncFunction("openAttachment") Coroutine { group: String, id: String, source: String, index: Int ->

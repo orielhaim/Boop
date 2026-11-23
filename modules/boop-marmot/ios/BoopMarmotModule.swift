@@ -472,20 +472,26 @@ public final class BoopMarmotModule: Module {
         return Double(asset.byteCount)
       }
     }
-    AsyncFunction("cancelAttachment") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
+    AsyncFunction("attachmentTransferState") { (group: String, id: String, source: String, index: UInt32) async throws -> String? in
+      try await self.withAccount { kit, account in
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first.map { wireName($0.state) }
+      }
+    }
+    AsyncFunction("controlAttachment") { (group: String, id: String, source: String, index: UInt32, action: String) async throws -> Bool in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
         guard let reference = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.reference else { return false }
-        return try await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel)
+        return try await kit.controlAttachment(accountRef: account, reference: reference, control: action == "remove" ? .remove : .cancel)
       }
     }
-    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
+    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws -> String in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
         let before = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first
         let reference: String?
         switch before?.state {
-        case .ready: return
+        case .ready: return "ready"
         case .removed, .cleanedBySetting, .previouslyAcquiredUnavailable, .completedUnretained:
           reference = try await kit.downloadAttachmentAgain(accountRef: account, groupIdHex: group, target: target)
         case .failed, .retryExhausted, .cancelled, .storageBlocked, .paused:
@@ -499,28 +505,21 @@ public final class BoopMarmotModule: Module {
         default:
           reference = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
         }
-        guard let reference else { throw problem("MediaUnavailable") }
+        guard let reference else { return before.map { wireName($0.state) } ?? "unavailable" }
+        let backgroundTime = await AttachmentBackgroundTime()
+        defer { Task { @MainActor in backgroundTime.end() } }
         let updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])
-        try await withThrowingTaskGroup(of: Void.self) { tasks in
-          tasks.addTask { [weak self] in
-            while true {
-              guard let item = try await updates.next()?.items.first, item.reference == reference else { throw problem("MediaUnavailable") }
-              self?.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) }), "state": wireName(item.state)])
-              switch item.state {
-              case .ready: return
-              case .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
-                   .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
-                throw problem("MediaUnavailable")
-              default: break
-              }
-            }
+        while true {
+          guard let item = try await updates.next()?.items.first else { return "interrupted" }
+          guard item.reference == reference else { return "unavailable" }
+          let state = wireName(item.state)
+          self.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) }), "state": state])
+          switch item.state {
+          case .ready, .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
+               .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
+            return state
+          default: break
           }
-          tasks.addTask {
-            try await Task.sleep(for: .seconds(180))
-            throw problem("MediaTimeout")
-          }
-          defer { tasks.cancelAll() }
-          _ = try await tasks.next()
         }
       }
     }

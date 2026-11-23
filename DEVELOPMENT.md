@@ -60,6 +60,16 @@ Android reports per-app transmitted and received bytes across all interfaces sin
 
 The interactive donut uses [Gifted Charts 1.4.83](https://www.npmjs.com/package/react-native-gifted-charts/v/1.4.83) with Boop’s existing SVG and Expo gradient dependencies. [Victory Native](https://github.com/FormidableLabs/victory-native-xl) also supports pie charts and requires adding Skia.
 
+### Downloads
+
+Rebuild the native client after a change to the download bridge, Android service or pinned MarmotKit patch. The protected session owns the queue. SQLite migration `0002_downloads` stores encrypted job metadata and order per identity. MarmotKit owns HTTP, resumable ciphertext checkpoints, verification, retention and file leases. A received attachment enters the queue only through an explicit Download action. Profile photos and link previews use their existing temporary cache paths.
+
+The scheduler admits up to two transfers, or one on cellular. MarmotKit can further serialize transfers when disk headroom is limited. A pending row can be moved ahead of other pending rows. Active native transfers keep their slots. Pause cancels the native attempt and resume can reuse a valid checkpoint if Blossom supports range requests and the representation still matches. An expired or invalid checkpoint starts over.
+
+On Android, admitted jobs use a `dataSync` foreground service. The system controls foreground-service starts and time limits. Progress and background completion notifications contain no attachment names and depend on system notification permission. On iOS, admitted jobs request finite UIKit background time. Both platforms recover the protected queue when Boop next opens or unlocks. Jobs that were still waiting for admission stay queued while Boop is suspended. Force-stop does not launch a new worker.
+
+Downloads history is also reachable from **Settings → Storage**. On an emulator with the local Blossom fixture, check that there are zero binary requests before tapping Download. Test leaving Chats or pausing during the transfer, then verify the retained copy after restart. Run `bun test tests/downloads.test.ts` for queue and storage regressions.
+
 ### Voice transcription
 
 Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.

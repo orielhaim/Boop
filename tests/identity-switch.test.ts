@@ -56,6 +56,9 @@ test("same-identity import keeps records and a staged replacement only activates
       sealed: "ciphertext",
     })
     .run();
+  db.insert(schema.downloads)
+    .values({ id: "hash", account: previousKey, job: "sealed queue entry" })
+    .run();
   expect(await stageSwitch(db, storage, previousSecret)).toBe("same");
   expect(db.select().from(schema.contacts).all()).toHaveLength(1);
   expect(await stageSwitch(db, storage, nextSecret)).toBe("staged");
@@ -66,6 +69,7 @@ test("same-identity import keeps records and a staged replacement only activates
   expect(keys.has(originalSlot)).toBe(false);
   expect(keys.has(speechKeySlot(previousKey))).toBe(false);
   expect(db.select().from(schema.speechJobs).all()).toEqual([]);
+  expect(db.select().from(schema.downloads).all()).toEqual([]);
   expect(db.select().from(schema.contacts).all()).toEqual([]);
   expect(db.select().from(schema.peerPermissions).all()).toEqual([]);
   expect(preference(db, "marmot.pins.old")).toBeNull();

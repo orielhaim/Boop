@@ -35,3 +35,24 @@ export function formatDuration(seconds: number) {
 export function isolateText(value: string) {
   return `\u2068${value}\u2069`;
 }
+
+const byteFormatters = new Map<string, Intl.NumberFormat>();
+
+export function formatBytes(bytes: number, locale: string) {
+  const units = ["byte", "kilobyte", "megabyte", "gigabyte", "terabyte"];
+  const index = Math.min(
+    units.length - 1,
+    Math.floor(Math.log10(Math.max(1, bytes)) / 3),
+  );
+  const key = `${locale}:${index}`;
+  let formatter = byteFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, {
+      style: "unit",
+      unit: units[index],
+      maximumFractionDigits: index === 0 ? 0 : 1,
+    });
+    byteFormatters.set(key, formatter);
+  }
+  return formatter.format(bytes / 1000 ** index);
+}

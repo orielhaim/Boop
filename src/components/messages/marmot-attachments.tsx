@@ -1,4 +1,8 @@
 import {
+  localMediaUri as localUri,
+  openLocalAttachment,
+} from "@/core/media/open-local-attachment";
+import {
   type IMessage,
   MediaViewer,
   MediaViewerPage,
@@ -98,7 +102,8 @@ function useAttachment({ asset, message, presentation }: AttachmentProps) {
     isDownloadRequired:
       state.kind === "remote" ||
       state.kind === "failed" ||
-      state.kind === "cancelled",
+      state.kind === "cancelled" ||
+      state.kind === "paused",
     transfer:
       state.kind === "downloading"
         ? {
@@ -109,11 +114,6 @@ function useAttachment({ asset, message, presentation }: AttachmentProps) {
         : undefined,
   };
   return { key, state, uri, shown };
-}
-
-function localUri(path: string) {
-  if (!path.startsWith("/")) throw new Error("InvalidMediaPath");
-  return "file://" + path.split("/").map(encodeURIComponent).join("/");
 }
 
 function posterSize(item: Item, max: number) {
@@ -323,13 +323,8 @@ function Attachment({
             await source.copy(location);
             saved = true;
           }
-        } else if (action === "open" && Platform.OS === "android") {
-          const { startActivityAsync } = await import("expo-intent-launcher");
-          await startActivityAsync("android.intent.action.VIEW", {
-            data: source.contentUri,
-            type: file.type,
-            flags: 1,
-          });
+        } else if (action === "open") {
+          await openLocalAttachment(file);
         } else {
           await shareAsync(source.uri, {
             mimeType: file.type,
@@ -421,12 +416,7 @@ function Attachment({
                   setPlayRequested(true);
                   presentation.prepare(key);
                 } else if (shown.isDownloadRequired)
-                  presentation.download(
-                    key,
-                    source
-                      ? () => speech.availableLocally(source, priority.download)
-                      : undefined,
-                  );
+                  presentation.download(key, false);
               }}
             >
               {progress ? (
