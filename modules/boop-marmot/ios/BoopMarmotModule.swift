@@ -7,6 +7,8 @@ import UIKit
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
   private let uploadLock = NSLock()
+  private let attachmentLock = NSLock()
+  private var attachmentAdmissions: [String: Bool] = [:]
   private var uploads: [String: MediaFileTransferControlFfi] = [:]
 
   public func definition() -> ModuleDefinition {
@@ -485,10 +487,35 @@ public final class BoopMarmotModule: Module {
         return try await kit.controlAttachment(accountRef: account, reference: reference, control: action == "remove" ? .remove : .cancel)
       }
     }
-    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws -> String in
+    Function("registerAttachmentTransfer") { (transfer: String) in
+      self.attachmentLock.withLock { self.attachmentAdmissions[transfer] = false }
+    }
+    AsyncFunction("interruptAttachmentTransfer") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
+      let registered = self.attachmentLock.withLock {
+        guard self.attachmentAdmissions[transfer] != nil else { return false }
+        self.attachmentAdmissions[transfer] = true
+        return true
+      }
+      guard registered else { return }
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        if let reference = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.reference {
+          _ = try await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel)
+        }
+      }
+    }
+    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String, attach: Bool) async throws -> String in
+      defer { _ = self.attachmentLock.withLock { self.attachmentAdmissions.removeValue(forKey: transfer) } }
+      return try await self.withAccount { kit, account in
+        if self.attachmentLock.withLock({ self.attachmentAdmissions[transfer] != false }) { return "cancelled" }
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
         let before = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first
+        if attach {
+          switch before?.state {
+          case .queued, .downloading, .verifyingCiphertext, .decrypting, .verifyingPlaintext, .retryScheduled: break
+          default: return before.map { wireName($0.state) } ?? "interrupted"
+          }
+        }
         let reference: String?
         switch before?.state {
         case .ready: return "ready"
@@ -506,6 +533,10 @@ public final class BoopMarmotModule: Module {
           reference = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
         }
         guard let reference else { return before.map { wireName($0.state) } ?? "unavailable" }
+        if self.attachmentLock.withLock({ self.attachmentAdmissions[transfer] == true }) {
+          _ = try await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel)
+          return "cancelled"
+        }
         let backgroundTime = await AttachmentBackgroundTime()
         defer { Task { @MainActor in backgroundTime.end() } }
         let updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])

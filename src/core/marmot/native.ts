@@ -490,12 +490,21 @@ type Bridge = {
     image: boolean,
     poster: boolean,
   ): Promise<unknown>;
+  registerAttachmentTransfer(transfer: string): void;
+  interruptAttachmentTransfer(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+    transfer: string,
+  ): Promise<void>;
   downloadAttachment(
     group: string,
     id: string,
     source: string,
     index: number,
     transfer: string,
+    attach: boolean,
   ): Promise<string>;
   attachmentTransferState(
     group: string,
@@ -939,34 +948,26 @@ export const marmot = {
       state: string,
     ) => void,
     signal: AbortSignal,
+    attach: boolean,
   ) {
     if (signal.aborted) return "cancelled";
     const bridge = native();
     const transfer = randomUUID();
-    let cancelled = false;
-    let settled = false;
+    bridge.registerAttachmentTransfer(transfer);
     let cancellation: Promise<void> | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => {
-      if (settled || cancelled || cancellation) return;
-      clearTimeout(retry);
-      cancellation = bridge
-        .controlAttachment(group, id, source, index, "cancel")
-        .then(
-          (accepted) => {
-            cancelled ||= accepted;
-          },
-          () => undefined,
-        )
-        .finally(() => {
-          cancellation = undefined;
-          if (!settled && !cancelled) retry = setTimeout(cancel, 1_000);
-        });
+      cancellation = bridge.interruptAttachmentTransfer(
+        group,
+        id,
+        source,
+        index,
+        transfer,
+      );
+      void cancellation.catch(() => undefined);
     };
     const listener = bridge.addListener("attachmentProgress", (event) => {
-      if (event.transfer !== transfer) return;
-      if (signal.aborted) cancel();
-      else onProgress(event.received, event.total ?? undefined, event.state);
+      if (event.transfer === transfer && !signal.aborted)
+        onProgress(event.received, event.total ?? undefined, event.state);
     });
     signal.addEventListener("abort", cancel, { once: true });
     try {
@@ -976,10 +977,9 @@ export const marmot = {
         source,
         index,
         transfer,
+        attach,
       );
     } finally {
-      settled = true;
-      clearTimeout(retry);
       signal.removeEventListener("abort", cancel);
       listener.remove();
       await cancellation;

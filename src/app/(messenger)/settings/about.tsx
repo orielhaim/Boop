@@ -1,3 +1,5 @@
+import { boopLicense } from "@/core/downloads/http";
+import { router } from "expo-router";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import Constants from "expo-constants";
 import { useState } from "react";
@@ -11,7 +13,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function About() {
   const { t } = useTranslation(namespaces);
-  const { calling, relays } = useLocal();
+  const { calling, relays, downloads } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState(false);
@@ -31,6 +33,18 @@ export default function About() {
             config?.ios?.buildNumber ?? config?.android?.versionCode ?? 1,
           )}
           icon="settings"
+        />
+        <SettingsRow
+          title={t("downloads:downloadLicense")}
+          icon="download"
+          onPress={() => {
+            try {
+              downloads.enqueue(boopLicense);
+              router.push("/downloads");
+            } catch {
+              Alert.alert(t("downloads:actionFailed"));
+            }
+          }}
         />
       </SettingsGroup>
 

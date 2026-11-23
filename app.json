@@ -115,9 +115,11 @@
       [
         "expo-build-properties",
         {
-          "ios": { "deploymentTarget": "18.0" },
+          "ios": {
+            "deploymentTarget": "18.0"
+          },
           "android": {
-            "minSdkVersion": 33,
+            "minSdkVersion": 31,
             "targetSdkVersion": 36,
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
@@ -158,7 +160,8 @@
           "microphonePermission": false,
           "speechRecognitionPermission": "Allow Boop to transcribe saved voice messages using on-device speech recognition."
         }
-      ]
+      ],
+      "@kesha-antonov/react-native-background-downloader"
     ],
     "experiments": {
       "typedRoutes": true,

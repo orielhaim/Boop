@@ -8,11 +8,7 @@ import {
 } from "@noble/hashes/utils.js";
 import { and, eq } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import {
-  downloadId,
-  jobSchema,
-  type DownloadJob,
-} from "@/core/downloads/types";
+import { sourceId, jobSchema, type DownloadJob } from "@/core/downloads/types";
 import { downloads } from "./schema";
 import type * as schema from "./schema";
 
@@ -49,9 +45,10 @@ export function downloadStore<Result>(
             const plaintext = new TextDecoder().decode(
               cipher.decrypt(payload.subarray(12)),
             );
-            const decoded = jobSchema.parse(JSON.parse(plaintext));
-            return rowId(decoded.id) === id &&
-              downloadId(decoded.target) === decoded.id
+            const persisted = JSON.parse(plaintext);
+            // PR #5 records predate the transport discriminator.
+            const decoded = jobSchema.parse({ kind: "marmot", ...persisted });
+            return rowId(decoded.id) === id && sourceId(decoded) === decoded.id
               ? [decoded]
               : [];
           } catch {

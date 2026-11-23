@@ -14,6 +14,7 @@ export default function MessengerLayout() {
     <BlankStack screenOptions={push} screenLayout={navigationScene}>
       <BlankStack.Screen name="(tabs)" />
       <BlankStack.Screen name="settings" />
+      <BlankStack.Screen name="downloads" />
       <BlankStack.Screen name="person/[key]" options={detail} />
       <BlankStack.Screen
         name="profile-photo/[key]"
@@ -40,7 +41,6 @@ export default function MessengerLayout() {
           }}
         />
         <BlankStack.Screen name="requests" />
-        <BlankStack.Screen name="downloads" />
       </BlankStack.Protected>
     </BlankStack>
   );

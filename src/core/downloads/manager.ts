@@ -1,12 +1,19 @@
+import { selectDownloads } from "./scheduler";
+import type {
+  DownloadControl,
+  DownloadFile,
+  DownloadTransport,
+} from "./transport";
 import {
   canReorder,
-  downloadId,
   isPending,
+  sourceId,
   type DownloadItem,
   type DownloadJob,
   type DownloadSource,
-  type DownloadTarget,
 } from "./types";
+
+export type { TransferProgress } from "./transport";
 
 type Store = {
   load(): DownloadJob[];
@@ -14,25 +21,6 @@ type Store = {
   remove(id: string): void;
   clear(): void;
 };
-export type TransferProgress = {
-  state: string;
-  received: number;
-  total?: number;
-};
-
-type Transport = {
-  transfer(
-    target: DownloadTarget,
-    progress: (event: TransferProgress) => void,
-    signal: AbortSignal,
-  ): Promise<string>;
-  status(target: DownloadTarget): Promise<string | undefined>;
-  control(
-    target: DownloadTarget,
-    action: "cancel" | "remove",
-  ): Promise<boolean>;
-};
-
 const inFlight = new Set([
   "queued",
   "downloading",
@@ -47,196 +35,206 @@ export function createDownloadManager({
   transport,
   eligible,
   authorized,
+  available = () => true,
   completed,
   concurrency = 2,
   now = Date.now,
 }: {
   store: Store;
-  transport: Transport;
+  transport: DownloadTransport;
   eligible: () => boolean;
+  available?: (source: DownloadSource) => boolean;
   authorized: (source: DownloadSource) => boolean;
   completed?: (source: DownloadSource) => void;
   concurrency?: number;
   now?: () => number;
 }) {
-  const jobs = new Map(
-    store.load().map((job): [string, DownloadItem] => [
-      job.id,
-      {
-        ...job,
-        state: job.state === "active" ? "queued" : job.state,
-        speed: 0,
-        verifying: false,
-      },
-    ]),
+  const jobs = new Map<string, DownloadItem>(
+    store
+      .load()
+      .map((job) => [
+        job.id,
+        { ...job, speed: 0, verifying: false } satisfies DownloadItem,
+      ]),
   );
   const listeners = new Set<() => void>();
   const running = new Map<
     string,
     { abort: AbortController; done: Promise<void> }
   >();
-  const mutating = new Map<string, Promise<void>>();
-  const compare = (a: DownloadItem, b: DownloadItem) =>
-    a.order - b.order || a.createdAt - b.createdAt;
-  const read = () => [...jobs.values()].sort(compare);
-  function summarize(): { selected: DownloadItem | undefined; count: number } {
-    const pending = snapshot.filter(isPending);
-    const selected =
-      pending.find(
-        (job) =>
-          job.state === "active" &&
-          job.nativeState !== "queued" &&
-          job.nativeState !== "retry_scheduled",
-      ) ??
-      pending.find((job) => job.state === "active") ??
-      pending[0];
-    return { selected, count: pending.length };
-  }
+  const commands = new Map<string, Promise<void>>();
+  const read = () =>
+    [...jobs.values()].sort(
+      (a, b) => a.order - b.order || a.createdAt - b.createdAt,
+    );
   let snapshot = read();
+  let layout = snapshot;
   let indicator = summarize();
+  let order = snapshot.reduce(
+    (maximum, job) => Math.max(maximum, job.order),
+    0,
+  );
+  let phase: "stopped" | "recovering" | "ready" = "stopped";
+  let marmotClosing = false;
+  let discovery: Promise<void> | undefined;
+  let recovery: Promise<void> | undefined;
+  let clearing: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let progressTimer: ReturnType<typeof setTimeout> | undefined;
-  let mounted = false;
   let online = true;
   let metered = false;
-  let clearing: Promise<void> | undefined;
-  let closing = false;
   let reordering = false;
-  let recovering: Promise<void> | undefined;
-  let needsRecovery = true;
-  let order = Math.max(0, ...snapshot.map((job) => job.order));
-  let checking: Promise<void> | undefined;
-  let reconcileAgain = false;
-
   const allowed = (job: DownloadSource) =>
     (job.expiresAt === null || job.expiresAt > now()) && authorized(job);
+
+  const usable = (job: DownloadSource) =>
+    !(job.kind === "marmot" && marmotClosing) && available(job);
+  const runningSession = () => phase !== "stopped";
+
+  function summarize(): { selected: DownloadItem | undefined; count: number } {
+    const pending = snapshot.filter(isPending);
+    const active = pending.filter((job) => job.state === "active");
+    return {
+      selected:
+        active.find(
+          (job) => job.nativeState === "downloading" || job.verifying,
+        ) ??
+        active[0] ??
+        pending[0],
+      count: pending.length,
+    };
+  }
 
   function publish() {
     clearTimeout(progressTimer);
     progressTimer = undefined;
     snapshot = read();
+    if (
+      layout.length !== snapshot.length ||
+      snapshot.some((job, index) => {
+        const before = layout[index];
+        return (
+          before.id !== job.id ||
+          before.state !== job.state ||
+          before.intent !== job.intent
+        );
+      })
+    )
+      layout = snapshot;
     const next = summarize();
     if (indicator.selected !== next.selected || indicator.count !== next.count)
       indicator = next;
     for (const listener of listeners) listener();
   }
 
-  function persistent({
-    speed: _speed,
-    verifying: _verifying,
-    nativeState: _state,
-    ...job
-  }: DownloadItem): DownloadJob {
-    return job;
-  }
-
   function save(...items: DownloadItem[]) {
-    store.save(items.map(persistent));
-    for (const job of items) jobs.set(job.id, job);
+    store.save(
+      items.map(
+        ({
+          speed: _speed,
+          verifying: _verifying,
+          nativeState: _native,
+          ...row
+        }) => row,
+      ),
+    );
+    for (const item of items) jobs.set(item.id, item);
     publish();
   }
-
-  function patch(job: DownloadItem, changes: Partial<DownloadItem>) {
+  function patch(
+    job: DownloadItem,
+    changes: Partial<
+      Pick<
+        DownloadItem,
+        | "state"
+        | "received"
+        | "total"
+        | "issue"
+        | "intent"
+        | "nativeState"
+        | "speed"
+        | "verifying"
+        | "retryAt"
+        | "retries"
+      >
+    >,
+  ) {
     save({ ...job, ...changes, changedAt: now() });
   }
-
   function forget(id: string) {
     store.remove(id);
     jobs.delete(id);
     publish();
   }
+  function finish(job: DownloadItem) {
+    patch(job, {
+      state: "completed",
+      intent: undefined,
+      issue: undefined,
+      speed: 0,
+      verifying: false,
+      received: job.total ?? job.received,
+    });
+    completed?.(job);
+  }
 
   function pump() {
     clearTimeout(timer);
-    if (!mounted || !eligible() || clearing || closing || reordering) return;
-    if (recovering) return;
-    if (needsRecovery) {
-      needsRecovery = false;
-      recovering = (async () => {
-        for (const job of read()) {
-          if (closing || !mounted) break;
-          if (job.state !== "paused" && job.state !== "cancelled") continue;
-          const state = await transport
-            .status(job.target)
-            .catch(() => undefined);
-          if (
-            !closing &&
-            mounted &&
-            jobs.get(job.id) === job &&
-            state &&
-            inFlight.has(state)
-          )
-            await transport.control(job.target, "cancel").catch(() => false);
-        }
-      })().finally(() => {
-        recovering = undefined;
-        pump();
-      });
+    if (!eligible() || clearing || phase === "stopped") return;
+    if (phase === "recovering") {
+      if (!recovery) void reconcile();
       return;
     }
-    const time = now();
-    const hashes = new Set(
-      [...running.keys()].map((id) => jobs.get(id)?.hash).filter(Boolean),
+    if (reordering) return;
+    const capacity = online
+      ? Math.max(0, (metered ? 1 : concurrency) - running.size)
+      : 0;
+    const { ready, wakeAt } = selectDownloads(
+      read().filter((job) => allowed(job) && usable(job)),
+      new Set([...running.keys(), ...commands.keys()]),
+      capacity,
+      now(),
     );
-    let next = Infinity;
-    for (const job of read()) {
-      if (running.has(job.id) || mutating.has(job.id) || !allowed(job))
-        continue;
-      if (!online || running.size >= (metered ? 1 : concurrency)) break;
-      if (!canReorder(job) || (job.hash && hashes.has(job.hash))) continue;
-      if (job.retryAt > time) {
-        next = Math.min(next, job.retryAt);
-        continue;
-      }
+    for (const job of ready) {
       try {
         run(job);
       } catch {
         jobs.set(job.id, { ...job, state: "failed", issue: "storage" });
         publish();
-        continue;
       }
-      if (job.hash) hashes.add(job.hash);
     }
-    for (const job of jobs.values()) {
-      if (job.expiresAt !== null && job.expiresAt > time)
-        next = Math.min(next, job.expiresAt);
-    }
-    if (Number.isFinite(next))
+    const deadline = read().reduce(
+      (minimum, job) =>
+        job.expiresAt !== null && job.expiresAt > now()
+          ? Math.min(minimum, job.expiresAt)
+          : minimum,
+      wakeAt,
+    );
+    if (Number.isFinite(deadline))
       timer = setTimeout(
-        () => {
-          reconcile();
-          pump();
-        },
-        Math.min(2_147_483_647, Math.max(1, next - now())),
+        () => void reconcile(),
+        Math.min(2_147_483_647, Math.max(1, deadline - now())),
       );
   }
 
-  function run(job: DownloadItem) {
-    const admitted = {
-      ...job,
-      state: "active",
-      nativeState: "queued",
-      issue: undefined,
-      changedAt: now(),
-    } satisfies DownloadItem;
-    store.save([persistent(admitted)]);
-    jobs.set(job.id, admitted);
+  function run(job: DownloadItem, attach = false) {
     const abort = new AbortController();
+    if (job.state !== "active")
+      patch(job, { state: "active", issue: undefined, nativeState: "queued" });
     let sample = { time: now(), bytes: job.received };
     const done = Promise.resolve()
       .then(async () => {
         if (abort.signal.aborted) return;
-        let phase: string;
+        let result: string;
         try {
-          phase = await transport.transfer(
-            job.target,
+          result = await transport.transfer(
+            job,
             ({ state, received, total }) => {
               const current = jobs.get(job.id);
-              if (!current || abort.signal.aborted) return;
+              if (abort.signal.aborted || !current) return;
               let speed = current.speed;
               const time = now();
-              const transferring = state === "downloading";
-              if (!transferring || received < sample.bytes) {
+              if (state !== "downloading" || received < sample.bytes) {
                 speed = 0;
                 sample = { time, bytes: received };
               } else if (time - sample.time >= 600) {
@@ -257,135 +255,217 @@ export function createDownloadManager({
               progressTimer ??= setTimeout(publish, 200);
             },
             abort.signal,
+            attach,
           );
         } catch {
-          phase = "interrupted";
+          result = "interrupted";
         }
-        if (abort.signal.aborted || !mounted) return;
         const current = jobs.get(job.id);
-        if (!current) return;
+        if (
+          !current ||
+          current.intent ||
+          abort.signal.aborted ||
+          phase === "stopped"
+        )
+          return;
         if (!allowed(current)) {
-          await transport.control(current.target, "remove").catch(() => false);
-          if (jobs.get(job.id) === current) forget(job.id);
-        } else if (phase === "ready") {
-          patch(current, {
-            state: "completed",
-            speed: 0,
-            verifying: false,
-            received: current.total ?? current.received,
-          });
-          completed?.(current);
-        } else {
-          if (phase === "storage_blocked")
-            await transport.control(job.target, "cancel").catch(() => false);
-          if (abort.signal.aborted || !mounted || jobs.get(job.id) !== current)
-            return;
-          const transient = phase === "interrupted";
-          const issue =
-            phase === "storage_blocked"
-              ? "storage"
-              : transient
-                ? "interrupted"
-                : [
-                      "unavailable",
-                      "remote",
-                      "policy_blocked",
-                      "removed",
-                      "completed_unretained",
-                      "previously_acquired_unavailable",
-                      "cleaned_by_setting",
-                    ].includes(phase)
-                  ? "unavailable"
-                  : "transfer";
+          patch(current, { intent: "remove" });
+          await applyControl(job.id, "remove");
+        } else if (result === "ready") finish(current);
+        else {
+          if (result === "storage_blocked")
+            await transport.control(current, "cancel").catch(() => undefined);
+          if (jobs.get(job.id) !== current || abort.signal.aborted) return;
+          const interrupted =
+            result === "interrupted" || result === "cancelled";
+          const unavailable = [
+            "unavailable",
+            "remote",
+            "policy_blocked",
+            "removed",
+            "completed_unretained",
+            "previously_acquired_unavailable",
+            "cleaned_by_setting",
+          ].includes(result);
           const retries = current.retries + 1;
-          const retry = transient && retries <= 3;
+          const retry = interrupted && retries <= 3;
           patch(current, {
             state: retry ? "waiting" : "failed",
-            retries,
             retryAt: retry ? now() + 2_000 * 2 ** (retries - 1) : 0,
-            issue,
+            retries,
             speed: 0,
             verifying: false,
+            issue:
+              result === "storage_blocked"
+                ? "storage"
+                : unavailable
+                  ? "unavailable"
+                  : interrupted
+                    ? "interrupted"
+                    : "transfer",
           });
         }
       })
       .catch(() => {
         const current = jobs.get(job.id);
-        if (
-          !mounted ||
-          !current ||
-          current.state !== "active" ||
-          abort.signal.aborted
-        )
-          return;
-        jobs.set(job.id, {
-          ...current,
-          state: "failed",
-          issue: "storage",
-          speed: 0,
-          verifying: false,
-        });
-        publish();
+        if (current && !current.intent && !abort.signal.aborted) {
+          jobs.set(job.id, {
+            ...current,
+            state: "failed",
+            issue: "storage",
+            speed: 0,
+            verifying: false,
+          });
+          publish();
+        }
       })
       .finally(() => {
         running.delete(job.id);
         pump();
       });
     running.set(job.id, { abort, done });
-    publish();
   }
 
-  function control(
+  async function applyControl(
     id: string,
-    action: "paused" | "cancelled" | "remove",
-  ): Promise<void> {
-    if (!mounted || closing) return Promise.resolve();
-    const previous = mutating.get(id);
+    action: DownloadControl,
+    wait = false,
+  ) {
+    const job = jobs.get(id);
+    if (!job) return;
+    const run = running.get(id);
+    if (job.kind === "marmot" && run && wait) {
+      run.abort.abort();
+      await run.done;
+      if (action === "remove") await transport.control(job, action);
+      else {
+        const status = await transport.status(job);
+        if (status && inFlight.has(status))
+          await transport.control(job, action);
+      }
+    } else {
+      await transport.control(job, action);
+      run?.abort.abort();
+      if (wait) await run?.done;
+    }
+    const current = jobs.get(id);
+    if (!current) return;
+    if (action === "remove") forget(id);
+    else if ((await transport.status(current)) === "ready" && allowed(current))
+      finish(current);
+    else
+      patch(current, {
+        state: action === "pause" ? "paused" : "cancelled",
+        intent: undefined,
+        speed: 0,
+        verifying: false,
+      });
+  }
+
+  function control(id: string, action: DownloadControl): Promise<void> {
+    if (phase === "stopped") return Promise.resolve();
+    const previous = commands.get(id);
     if (previous) return previous.then(() => control(id, action));
-    const operation = Promise.resolve()
+    const command = Promise.resolve()
       .then(async () => {
         const job = jobs.get(id);
-        if (!job || !mounted || closing) return;
-        const active = running.get(id);
-        if (action !== "remove")
-          patch(job, { state: action, speed: 0, verifying: false });
-        active?.abort.abort();
-        await active?.done;
-        if (action === "remove") {
-          await transport.control(job.target, "remove");
-          if (mounted) forget(id);
-        } else if (!clearing && active && mounted && allowed(job)) {
-          const state = await transport
-            .status(job.target)
-            .catch(() => undefined);
-          const current = jobs.get(id);
-          if (state === "ready" && current && mounted && !closing) {
-            patch(current, {
-              state: "completed",
-              received: current.total ?? current.received,
-            });
-            completed?.(current);
-          }
-        }
+        if (!job || phase === "stopped" || !usable(job)) return;
+        patch(job, { intent: action });
+        await discovery;
+        if (!runningSession()) return;
+        await applyControl(id, action, true);
       })
       .finally(() => {
-        mutating.delete(id);
+        commands.delete(id);
         pump();
       });
-    mutating.set(id, operation);
-    return operation;
+    commands.set(id, command);
+    return command;
+  }
+
+  function reconcile(): Promise<void> {
+    if (recovery) return recovery;
+    if (!eligible() || phase === "stopped" || clearing)
+      return Promise.resolve();
+    const discover = phase === "recovering";
+    if (discover && transport.recover)
+      discovery = Promise.resolve()
+        .then(() => transport.recover?.(read()))
+        .finally(() => {
+          discovery = undefined;
+        });
+    recovery = (async () => {
+      if (discover) await discovery;
+      for (const job of read()) {
+        if (!eligible() || !runningSession()) return;
+        if (!usable(job) || commands.has(job.id)) continue;
+        if (!allowed(job)) {
+          await control(job.id, "remove").catch(() => undefined);
+        } else if (job.intent) {
+          await control(job.id, job.intent).catch(() => undefined);
+        } else if (
+          !running.has(job.id) &&
+          (discover || job.state === "active" || job.state === "completed")
+        ) {
+          const state = await transport.status(job).catch(() => undefined);
+          if (
+            !runningSession() ||
+            !usable(job) ||
+            jobs.get(job.id) !== job ||
+            commands.has(job.id)
+          )
+            continue;
+          if (!state) continue;
+          if (state === "ready" && isPending(job)) finish(job);
+          else if (job.state === "completed" && state !== "ready")
+            forget(job.id);
+          else if (
+            inFlight.has(state) &&
+            (job.state === "active" || canReorder(job))
+          )
+            run(job, true);
+          else if (job.state === "active") {
+            patch(job, {
+              state:
+                state === "paused" && job.kind === "http" ? "paused" : "queued",
+              speed: 0,
+              verifying: false,
+            });
+          } else if (
+            (job.state === "cancelled" || job.state === "paused") &&
+            inFlight.has(state)
+          ) {
+            await control(
+              job.id,
+              job.state === "paused" ? "pause" : "cancel",
+            ).catch(() => undefined);
+          }
+        }
+      }
+      if (phase === "recovering") phase = "ready";
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        recovery = undefined;
+        if (phase === "recovering") {
+          clearTimeout(timer);
+          timer = setTimeout(pump, 3_000);
+        } else pump();
+      });
+    return recovery;
   }
 
   function resume(id: string) {
-    if (!mounted || closing || clearing) return;
-    const pending = mutating.get(id);
-    if (pending) {
-      void pending.then(() => resume(id)).catch(() => undefined);
+    if (phase === "stopped" || clearing) return;
+    const previous = commands.get(id);
+    if (previous) {
+      void previous.then(() => resume(id)).catch(() => undefined);
       return;
     }
     const job = jobs.get(id);
     if (
       !job ||
+      job.intent ||
       !allowed(job) ||
       !["paused", "failed", "cancelled"].includes(job.state)
     )
@@ -394,44 +474,11 @@ export function createDownloadManager({
     pump();
   }
 
-  function reconcile() {
-    if (checking) {
-      reconcileAgain = true;
-      return checking;
-    }
-    checking = (async () => {
-      if (!mounted || closing || !eligible()) return;
-      for (const job of read()) {
-        if (!mounted || closing || !eligible()) break;
-        if (mutating.has(job.id)) continue;
-        if (!allowed(job)) {
-          await control(job.id, "remove").catch(() => undefined);
-          continue;
-        }
-        if (job.state !== "completed") continue;
-        const state = await transport.status(job.target).catch(() => undefined);
-        if (mounted && jobs.get(job.id) === job && state && state !== "ready")
-          forget(job.id);
-      }
-    })().finally(() => {
-      checking = undefined;
-      if (reconcileAgain) {
-        reconcileAgain = false;
-        void reconcile();
-      }
-    });
-    return checking;
-  }
-
   return {
     snapshot: () => snapshot,
+    layout: () => layout,
     indicator: () => indicator,
     get: (id: string) => jobs.get(id),
-    accountReady() {
-      needsRecovery ||= closing;
-      closing = false;
-      void reconcile().then(pump);
-    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -439,25 +486,32 @@ export function createDownloadManager({
       };
     },
     start() {
-      mounted = true;
-      needsRecovery = true;
+      phase = "recovering";
       pump();
-      void reconcile();
       return () => {
-        mounted = false;
+        phase = "stopped";
         clearTimeout(timer);
         clearTimeout(progressTimer);
+        for (const run of running.values()) run.abort.abort();
       };
     },
+    accountReady() {
+      marmotClosing = false;
+      void reconcile();
+    },
     sync: pump,
+    reconcile,
     setReordering(value: boolean) {
       reordering = value;
       if (!value) pump();
     },
-    reconcile,
     invalidate(group: string, message: string) {
       for (const job of jobs.values())
-        if (job.target[0] === group && job.target[1] === message)
+        if (
+          job.kind === "marmot" &&
+          job.target[0] === group &&
+          job.target[1] === message
+        )
           void control(job.id, "remove").catch(() => undefined);
     },
     network(connected: boolean, cellular: boolean) {
@@ -466,10 +520,10 @@ export function createDownloadManager({
       pump();
     },
     enqueue(source: DownloadSource) {
-      if (!mounted || clearing || closing || !eligible() || !allowed(source))
+      if (phase === "stopped" || clearing || !eligible() || !allowed(source))
         return;
-      const id = downloadId(source.target);
-      if (mutating.has(id)) return;
+      const id = sourceId(source);
+      if (commands.has(id)) return;
       const old = jobs.get(id);
       if (old) {
         if (!isPending(old) && old.state !== "completed") resume(id);
@@ -490,9 +544,25 @@ export function createDownloadManager({
       });
       pump();
     },
+    async open(id: string, consume: (file: DownloadFile) => Promise<void>) {
+      const job = jobs.get(id);
+      if (
+        !job ||
+        job.state !== "completed" ||
+        job.intent ||
+        !eligible() ||
+        !usable(job) ||
+        !allowed(job)
+      )
+        return;
+      await transport.open?.(job, async (file) => {
+        if (eligible() && jobs.get(id) === job && allowed(job))
+          await consume(file);
+      });
+    },
     resume,
-    pause: (id: string) => control(id, "paused"),
-    cancel: (id: string) => control(id, "cancelled"),
+    pause: (id: string) => control(id, "pause"),
+    cancel: (id: string) => control(id, "cancel"),
     remove: (id: string) => control(id, "remove"),
     reorder(id: string, before: string | undefined) {
       const pending = read().filter(canReorder);
@@ -514,20 +584,17 @@ export function createDownloadManager({
       pump();
     },
     async beforeAccountClose() {
-      closing = true;
-      const active = [...running.entries()];
-      for (const [id, run] of active) {
-        const job = jobs.get(id);
-        run.abort.abort();
-        if (mounted && job?.state === "active")
-          jobs.set(id, { ...job, state: "queued", speed: 0, verifying: false });
-      }
-      if (mounted && active.length) publish();
+      marmotClosing = true;
+      const active = [...running].filter(
+        ([id]) => jobs.get(id)?.kind === "marmot",
+      );
+      for (const [, run] of active) run.abort.abort();
       await Promise.allSettled([
         ...active.map(([, run]) => run.done),
-        ...mutating.values(),
-        recovering,
-        checking,
+        ...[...commands]
+          .filter(([id]) => jobs.get(id)?.kind === "marmot")
+          .map(([, command]) => command),
+        recovery,
         clearing,
       ]);
     },
@@ -536,13 +603,12 @@ export function createDownloadManager({
       clearing = Promise.resolve()
         .then(async () => {
           await Promise.all(
-            read()
-              .filter(isPending)
-              .map((job) => control(job.id, "cancelled")),
+            read().map((job) =>
+              control(job.id, job.kind === "http" ? "remove" : "cancel"),
+            ),
           );
-          if (!mounted || closing) return;
+          if (phase === "stopped") return;
           await clearNative();
-          if (!mounted) return;
           store.clear();
           jobs.clear();
           publish();
@@ -555,5 +621,4 @@ export function createDownloadManager({
     },
   };
 }
-
 export type DownloadManager = ReturnType<typeof createDownloadManager>;

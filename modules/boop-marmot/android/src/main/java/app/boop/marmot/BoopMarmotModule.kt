@@ -18,6 +18,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileNotFoundException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
@@ -25,6 +27,7 @@ class BoopMarmotModule : Module() {
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
+  private val attachmentAdmissions = ConcurrentHashMap<String, AtomicBoolean>()
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
@@ -535,12 +538,32 @@ class BoopMarmotModule : Module() {
         item?.reference?.let { active.kit.controlAttachment(active.account, it, control) } ?: false
       }
     }
-    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
+    Function("registerAttachmentTransfer") { transfer: String ->
+      attachmentAdmissions[transfer] = AtomicBoolean()
+    }
+    AsyncFunction("interruptAttachmentTransfer") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
+      val admission = attachmentAdmissions[transfer] ?: return@Coroutine
+      admission.set(true)
+      withSession { active ->
+        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+        val item = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+        item?.reference?.let { active.kit.controlAttachment(active.account, it, AttachmentControlFfi.CANCEL) }
+        Unit
+      }
+    }
+    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String, attach: Boolean ->
       val context = requireNotNull(appContext.reactContext).applicationContext
+      val admission = attachmentAdmissions[transfer] ?: throw problem("MediaUnavailable")
       try {
         withSession { active ->
+          if (admission.get()) return@withSession "cancelled"
           val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
           val before = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+          if (attach && before?.state !in setOf(
+              AttachmentTransferStateFfi.QUEUED, AttachmentTransferStateFfi.DOWNLOADING,
+              AttachmentTransferStateFfi.VERIFYING_CIPHERTEXT, AttachmentTransferStateFfi.DECRYPTING,
+              AttachmentTransferStateFfi.VERIFYING_PLAINTEXT, AttachmentTransferStateFfi.RETRY_SCHEDULED,
+          )) return@withSession before?.state?.name?.lowercase() ?: "interrupted"
           val reference = when (before?.state) {
             AttachmentTransferStateFfi.READY -> return@withSession "ready"
             AttachmentTransferStateFfi.REMOVED, AttachmentTransferStateFfi.CLEANED_BY_SETTING,
@@ -556,13 +579,18 @@ class BoopMarmotModule : Module() {
             AttachmentTransferStateFfi.RETRY_SCHEDULED -> before.reference
             else -> active.kit.requestExplicitAttachment(active.account, group, target)
           } ?: return@withSession before?.state?.name?.lowercase() ?: "unavailable"
-          AttachmentDownloadService.acquire(context, transfer)
+          if (admission.get()) {
+            active.kit.controlAttachment(active.account, reference, AttachmentControlFfi.CANCEL)
+            return@withSession "cancelled"
+          }
+          AttachmentDownloadService.acquire(context, transfer) {
+            observer.launch { runCatching { active.kit.controlAttachment(active.account, reference, AttachmentControlFfi.CANCEL) } }
+          }
           active.kit.subscribeAttachmentTransfers(active.account, group, listOf(target)).use { updates ->
             while (true) {
               val item = updates.next()?.items?.firstOrNull() ?: return@withSession "interrupted"
               if (item.reference != reference) return@withSession "unavailable"
               val state = item.state.name.lowercase()
-              AttachmentDownloadService.progress(transfer, item.received.toDouble(), item.total?.toDouble(), item.state == AttachmentTransferStateFfi.READY)
               sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to state))
               when (item.state) {
                 AttachmentTransferStateFfi.READY, AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
@@ -579,6 +607,7 @@ class BoopMarmotModule : Module() {
           }
         }
       } finally {
+        attachmentAdmissions.remove(transfer)
         AttachmentDownloadService.release(transfer)
       }
     }

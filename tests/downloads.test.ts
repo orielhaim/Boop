@@ -5,13 +5,14 @@ import {
   createDownloadManager,
   type TransferProgress,
 } from "../src/core/downloads/manager";
-import { downloadId, type DownloadSource } from "../src/core/downloads/types";
+import { downloadId, type MarmotDownload } from "../src/core/downloads/types";
 import { createAttachmentPresentation } from "../src/core/marmot/attachment-presentation";
 import { downloadStore } from "../src/db/downloads";
 import * as schema from "../src/db/schema";
 import { initializeTestDatabase } from "./db-fixture";
 
-const source = (id: string, hash?: string): DownloadSource => ({
+const source = (id: string, hash?: string): MarmotDownload => ({
+  kind: "marmot",
   target: ["group", id, "verified-source", 0],
   name: "private attachment " + id,
   type: "image/jpeg",
@@ -49,20 +50,23 @@ function fixture(sqlite: Database) {
       now: () => time,
       eligible: () => eligible,
       authorized: () => authorized,
-      completed: (item) => completed.push(item.target[1]),
+      completed: (item) => {
+        if (item.kind === "marmot") completed.push(item.target[1]);
+      },
       transport: {
-        async status(target) {
-          return statuses.get(target[1]) ?? "not_requested";
+        async status(item) {
+          if (item.kind !== "marmot") throw new Error("Unexpected transport");
+          return statuses.get(item.target[1]) ?? "not_requested";
         },
-        async control(target, action) {
-          statuses.set(
-            target[1],
-            action === "cancel" ? "cancelled" : "removed",
-          );
-          return true;
+        async control(item, action) {
+          if (item.kind !== "marmot") throw new Error("Unexpected transport");
+          const name = item.target[1];
+          if (statuses.get(name) === "ready" && action !== "remove") return;
+          statuses.set(name, action === "remove" ? "removed" : "cancelled");
         },
-        async transfer(target, progress, signal) {
-          const name = target[1];
+        async transfer(item, progress, signal) {
+          if (item.kind !== "marmot") throw new Error("Unexpected transport");
+          const name = item.target[1];
           calls.push(name);
           statuses.set(name, "downloading");
           const result = Promise.withResolvers<string>();
@@ -363,5 +367,173 @@ test("storage clear stops active work before clearing retained files and deletes
   });
   expect(f.store.load()).toEqual([]);
   expect(manager.snapshot()).toEqual([]);
+  stop();
+});
+
+test("startup attaches to native HTTP work while offline and recovers completed files without dispatching them", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const http = {
+    kind: "http",
+    artifact: "boop-license",
+    name: "License.txt",
+    type: "text/plain",
+    total: 20,
+    expiresAt: null,
+  } as const;
+  const row = {
+    ...http,
+    id: "http:boop-license",
+    state: "active",
+    received: 0,
+    retries: 0,
+    retryAt: 0,
+    order: 1,
+    createdAt: 1,
+    changedAt: 1,
+  } as const;
+  store.save([row]);
+  const terminal = Promise.withResolvers<string>();
+  const calls: string[] = [];
+  let native = "downloading";
+  const create = () =>
+    createDownloadManager({
+      store,
+      eligible: () => true,
+      authorized: () => true,
+      transport: {
+        async recover(sources) {
+          calls.push(`discover:${sources[0]?.kind}`);
+        },
+        async status() {
+          return native;
+        },
+        async control() {},
+        async transfer(_item, _progress, _signal, attach) {
+          calls.push(attach ? "attached" : "started");
+          return terminal.promise;
+        },
+      },
+    });
+  const manager = create();
+  manager.network(false, false);
+  const stop = manager.start();
+  await manager.reconcile();
+  expect(calls).toEqual(["discover:http", "attached"]);
+  expect(manager.get(row.id)?.state).toBe("active");
+  native = "ready";
+  terminal.resolve("ready");
+  await tick();
+  expect(store.load()[0]?.state).toBe("completed");
+  stop();
+  store.save([row]);
+  const reopened = create();
+  const stopReopened = reopened.start();
+  await reopened.reconcile();
+  expect(reopened.get(row.id)?.state).toBe("completed");
+  expect(calls).toEqual(["discover:http", "attached", "discover:http"]);
+  stopReopened();
+});
+
+test("a failed native cancellation leaves a durable intent for the next recovery", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const row = {
+    ...source("one"),
+    id: id("one"),
+    state: "active",
+    received: 4,
+    retries: 0,
+    retryAt: 0,
+    order: 1,
+    createdAt: 1,
+    changedAt: 1,
+  } as const;
+  store.save([row]);
+  let canCancel = false;
+  let native = "downloading";
+  const create = () =>
+    createDownloadManager({
+      store,
+      eligible: () => true,
+      authorized: () => true,
+      transport: {
+        async status() {
+          return native;
+        },
+        async transfer(_item, _progress, signal) {
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true }),
+          );
+          return "interrupted";
+        },
+        async control() {
+          if (!canCancel) throw new Error("Device busy");
+          native = "cancelled";
+        },
+      },
+    });
+  const manager = create();
+  const stop = manager.start();
+  await manager.reconcile();
+  await expect(manager.cancel(row.id)).rejects.toThrow("Device busy");
+  expect(store.load()[0]).toMatchObject({ state: "active", intent: "cancel" });
+  stop();
+  canCancel = true;
+  const reopened = create();
+  const stopReopened = reopened.start();
+  await reopened.reconcile();
+  expect(store.load()[0]?.state).toBe("cancelled");
+  expect(store.load()[0]?.intent).toBeUndefined();
+  stopReopened();
+});
+
+test("removal during native discovery waits for the transfer before deleting its record", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const row = {
+    ...source("one"),
+    id: id("one"),
+    state: "active",
+    received: 0,
+    retries: 0,
+    retryAt: 0,
+    order: 1,
+    createdAt: 1,
+    changedAt: 1,
+  } as const;
+  store.save([row]);
+  const discovered = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  const manager = createDownloadManager({
+    store,
+    eligible: () => true,
+    authorized: () => true,
+    transport: {
+      async recover() {
+        await discovered.promise;
+        calls.push("discovered");
+      },
+      async status() {
+        return "downloading";
+      },
+      async transfer() {
+        calls.push("transfer");
+        return "ready";
+      },
+      async control(_source, action) {
+        calls.push(action);
+      },
+    },
+  });
+  const stop = manager.start();
+  const remove = manager.remove(row.id);
+  await tick();
+  expect(store.load()[0]?.intent).toBe("remove");
+  expect(calls).toEqual([]);
+  discovered.resolve();
+  await remove;
+  expect(calls).toEqual(["discovered", "remove"]);
+  expect(store.load()).toEqual([]);
   stop();
 });

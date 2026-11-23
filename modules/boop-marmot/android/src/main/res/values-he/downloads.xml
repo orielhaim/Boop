@@ -1,5 +1,4 @@
 <resources>
   <string name="boop_download_channel">הורדות</string>
   <string name="boop_download_running">הקבצים המצורפים בהורדה</string>
-  <string name="boop_download_completed">הקובץ המצורף זמין במצב לא מקוון</string>
 </resources>

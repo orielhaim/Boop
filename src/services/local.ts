@@ -10,6 +10,11 @@ import {
   NetworkStateType,
 } from "expo-network";
 import { createDownloadManager } from "@/core/downloads/manager";
+import { createHttpDownloads } from "@/core/downloads/http";
+import { marmotDownloads } from "@/core/downloads/marmot";
+import { downloadTransports } from "@/core/downloads/transport";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { downloadStore } from "@/db/downloads";
 import { priority as speechPriority } from "@/core/speech/scheduler";
 import { createMediaSdk } from "@/core/media";
@@ -356,35 +361,21 @@ async function start() {
       store: downloadStore(db, identity.publicKey, downloadKey, (size) =>
         getRandomValues(new Uint8Array(size)),
       ),
-      transport: {
-        transfer: async (target, progress, signal) => {
-          const state = await marmot.downloadAttachment(
-            ...target,
-            (received, total, state) => progress({ received, total, state }),
-            signal,
-          );
-          if (state === "ready" && !signal.aborted) {
-            const bytes = await marmot
-              .retainedAttachmentBytes(...target)
-              .catch(() => null);
-            if (bytes !== null)
-              progress({ state, received: bytes, total: bytes });
-          }
-          return state;
-        },
-        status: (target) => marmot.attachmentTransferState(...target),
-        control: (target, action) =>
-          marmot.controlAttachment(...target, action),
-      },
-      eligible: () =>
-        active() &&
-        chatPreferences.enabled() &&
-        marmotSession.status() === "ready",
-      authorized: ({ sender, target: [group, id] }) =>
-        !privacy.isBlocked(sender) &&
-        !chatPreferences.hidden(group).includes(id),
-      completed: ({ voice }) => {
-        if (!voice) return;
+      transport: downloadTransports(
+        marmotDownloads,
+        createHttpDownloads(bytesToHex(sha256(downloadKey))),
+      ),
+      eligible: active,
+      available: (source) =>
+        source.kind === "http" ||
+        (chatPreferences.enabled() && marmotSession.status() === "ready"),
+      authorized: (source) =>
+        source.kind === "http" ||
+        (!privacy.isBlocked(source.sender) &&
+          !chatPreferences.hidden(source.target[0]).includes(source.target[1])),
+      completed: (source) => {
+        if (source.kind !== "marmot" || !source.voice) return;
+        const { voice } = source;
         pendingVoiceNotes.set(JSON.stringify(voice.target), voice);
         admitDownloadedVoice();
       },

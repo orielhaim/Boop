@@ -376,6 +376,7 @@ export function MarmotConversationScreen({
         const asset = row?.attachments.find((asset) => asset.index === index);
         if (!row || !asset) return;
         return {
+          kind: "marmot",
           target,
           sender: row.sender,
           expiresAt: row.expiresAt == null ? null : row.expiresAt * 1000,

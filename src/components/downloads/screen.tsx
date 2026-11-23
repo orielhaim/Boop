@@ -10,28 +10,15 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Alert,
-  Pressable,
-  StyleSheet,
-  View,
-  useWindowDimensions,
-} from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
 import Animated, {
-  clamp,
-  measure,
-  scrollTo,
   useAnimatedRef,
-  useAnimatedScrollHandler,
   useAnimatedStyle,
-  useDerivedValue,
-  useFrameCallback,
   useSharedValue,
   withTiming,
-  type SharedValue,
 } from "react-native-reanimated";
-import { scheduleOnRN } from "react-native-worklets";
+import Sortable from "react-native-sortables";
+import { useAppPreferences } from "@/stores/preferences";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { Action, Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
 import {
@@ -39,7 +26,6 @@ import {
   isPending,
   type DownloadItem,
 } from "@/core/downloads/types";
-import { marmot } from "@/core/marmot/native";
 import { openLocalAttachment } from "@/core/media/open-local-attachment";
 import { formatBytes } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
@@ -62,7 +48,7 @@ function Progress({ fraction }: { fraction: number }) {
 }
 
 const DownloadRow = memo(function DownloadRow({
-  job,
+  job: initial,
   handle,
   offline,
 }: {
@@ -70,7 +56,11 @@ const DownloadRow = memo(function DownloadRow({
   handle?: ReactNode;
   offline: boolean;
 }) {
-  const { downloads, lock, privacy, chatPreferences } = useLocal();
+  const { downloads } = useLocal();
+  const job = useSyncExternalStore(
+    downloads.subscribe,
+    () => downloads.get(initial.id) ?? initial,
+  );
   const { t, i18n } = useTranslation("downloads");
   const { colors } = useTheme();
   const locale = i18n.language;
@@ -125,27 +115,9 @@ const DownloadRow = memo(function DownloadRow({
   }
 
   function open() {
-    const [group, id] = job.target;
-    const authorized = () =>
-      !lock.getState().locked &&
-      !privacy.isBlocked(job.sender) &&
-      !chatPreferences.hidden(group).includes(id) &&
-      (job.expiresAt === null || job.expiresAt > Date.now()) &&
-      downloads.get(job.id)?.state === "completed";
-    void (async () => {
-      if (!authorized()) return;
-      const file = await marmot.openAttachment(...job.target);
-      if (!file) {
-        void downloads.reconcile();
-        throw new Error("MediaUnavailable");
-      }
-      try {
-        if (authorized()) await openLocalAttachment(file);
-      } finally {
-        await marmot.releaseAttachment(file.lease);
-      }
-    })().catch(() => {
-      if (authorized()) Alert.alert(t("openFailed"));
+    void downloads.open(job.id, openLocalAttachment).catch(() => {
+      void downloads.reconcile();
+      Alert.alert(t("openFailed"));
     });
   }
 
@@ -283,142 +255,53 @@ function RowButton({
   );
 }
 
-type Drag = {
-  from: SharedValue<number>;
-  translation: SharedValue<number>;
-  scroll: SharedValue<number>;
-  startScroll: SharedValue<number>;
-  finger: SharedValue<number>;
-  settling: SharedValue<boolean>;
-  viewport: SharedValue<{ top: number; height: number }>;
-  to: SharedValue<number>;
-};
-
-function SortableDownload({
-  job,
-  index,
-  height,
-  drag,
-  offline,
-  onPick,
-  onDrop,
-  onRelease,
-  onMeasure,
-  onPlace,
-}: {
-  job: DownloadItem;
-  index: number;
-  height: number;
-  drag: Drag;
-  offline: boolean;
-  onPick: () => void;
-  onDrop: (id: string, target: number) => void;
-  onRelease: () => void;
-  onPlace: (id: string, target: number) => void;
-  onMeasure: () => void;
-}) {
-  const { t } = useTranslation("downloads");
-  const { reduceMotion, colors } = useTheme();
-  const { scroll, startScroll, translation, from, to, finger, settling } = drag;
-  const pan = Gesture.Pan()
-    .activateAfterLongPress(280)
-    .onStart(({ absoluteY }) => {
-      "worklet";
-      if (from.value >= 0) return;
-      onMeasure();
-      startScroll.set(scroll.value);
-      translation.set(0);
-      finger.set(absoluteY);
-      from.set(index);
-      scheduleOnRN(onPick);
-    })
-    .onUpdate(({ translationY, absoluteY }) => {
-      "worklet";
-      if (from.value !== index) return;
-      translation.set(translationY);
-      finger.set(absoluteY);
-    })
-    .onEnd((_event, success) => {
-      "worklet";
-      if (!success || from.value !== index) return;
-      const destination = to.value;
-      const offset =
-        (destination - index) * height + startScroll.value - scroll.value;
-      settling.set(true);
-      translation.set(
-        withTiming(offset, { duration: reduceMotion ? 0 : 145 }, (finished) => {
-          if (finished && from.value === index)
-            scheduleOnRN(onPlace, job.id, destination);
-        }),
-      );
-    })
-    .onFinalize(() => {
-      "worklet";
-      if (from.value !== index || settling.value) return;
-      from.set(-1);
-      scheduleOnRN(onRelease);
-    });
-  const motion = useAnimatedStyle(() => {
-    const lifted = index === from.value;
-    let shift = 0;
-    if (from.value >= 0) {
-      if (index > from.value && index <= to.value) shift = -height;
-      if (index < from.value && index >= to.value) shift = height;
-    }
-    return {
-      zIndex: lifted ? 2 : 0,
-      elevation: lifted ? 7 : 0,
-      transform: [
-        {
-          translateY: lifted
-            ? translation.value + scroll.value - startScroll.value
-            : withTiming(shift, { duration: reduceMotion ? 0 : 170 }),
-        },
-        {
-          scale: withTiming(lifted && !reduceMotion ? 1.025 : 1, {
-            duration: reduceMotion ? 0 : 150,
-          }),
-        },
-      ],
-    };
-  });
-
-  const handle = (
-    <GestureDetector gesture={pan}>
-      <View
-        accessible
-        accessibilityRole="adjustable"
-        accessibilityLabel={t("reorder", { name: job.name })}
-        accessibilityActions={[
-          { name: "decrement", label: t("moveUp") },
-          { name: "increment", label: t("moveDown") },
-        ]}
-        onAccessibilityAction={({ nativeEvent }) => {
-          onDrop(
-            job.id,
-            index + (nativeEvent.actionName === "increment" ? 1 : -1),
-          );
-        }}
-        style={styles.button}
-      >
-        <Icon name="reorder" size={20} color={colors.muted} />
-      </View>
-    </GestureDetector>
+function DownloadSummary({ offline }: { offline: boolean }) {
+  const { downloads } = useLocal();
+  const { colors } = useTheme();
+  const { t, i18n } = useTranslation("downloads");
+  const rows = useSyncExternalStore(downloads.subscribe, downloads.snapshot);
+  const pending = rows.filter(isPending);
+  const active = pending.filter((job) => job.state === "active");
+  const speed = active.reduce((sum, item) => sum + item.speed, 0);
+  const remaining = pending.reduce(
+    (sum, row) => sum + Math.max(0, (row.total ?? 0) - row.received),
+    0,
   );
+  const bytes = (value: number) => formatBytes(value, i18n.language);
   return (
-    <Animated.View style={[{ height, paddingBottom: space.sm }, motion]}>
-      <DownloadRow job={job} handle={handle} offline={offline} />
-    </Animated.View>
+    <LinearGradient
+      colors={[colors.heroStart, colors.heroEnd]}
+      style={[styles.hero, { borderColor: colors.line }]}
+    >
+      <Icon name="download" size={26} />
+      <Ink kind="heading" accessibilityRole="header">
+        {t("activity")}
+      </Ink>
+      <Ink kind="label">
+        {[
+          t("activeCount", { count: active.length }),
+          t("pendingCount", { count: pending.length - active.length }),
+          speed > 0 && !offline ? t("speed", { size: bytes(speed) }) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </Ink>
+      {remaining > 0 && pending.every((job) => job.total !== null) && (
+        <Ink kind="caption" muted>
+          {t("remaining", { size: bytes(remaining) })}
+        </Ink>
+      )}
+    </LinearGradient>
   );
 }
 
 export function DownloadsScreen() {
   const { downloads } = useLocal();
-  const { t, i18n } = useTranslation("downloads");
-  const { colors } = useTheme();
-  const { fontScale } = useWindowDimensions();
+  const { t } = useTranslation("downloads");
+  const { colors, reduceMotion } = useTheme();
+  const haptics = useAppPreferences((state) => state.haptics);
   const { isConnected } = useNetworkState();
-  const rows = useSyncExternalStore(downloads.subscribe, downloads.snapshot);
+  const rows = useSyncExternalStore(downloads.subscribe, downloads.layout);
   const active = rows.filter((job) => job.state === "active");
   const queue = rows.filter(canReorder);
   const editable = queue.length >= 2;
@@ -428,83 +311,11 @@ export function DownloadsScreen() {
     .sort((a, b) => b.changedAt - a.changedAt);
   const [historyLimit, setHistoryLimit] = useState(40);
   const offline = isConnected === false;
-  const bytes = (value: number) => formatBytes(value, i18n.language);
-  const speed = active.reduce((sum, item) => sum + item.speed, 0);
-  const pending = [...active, ...queue, ...paused];
-  const remaining = pending.reduce(
-    (sum, row) => sum + Math.max(0, (row.total ?? 0) - row.received),
-    0,
-  );
-  const rowHeight = Math.max(94, 45 * fontScale + 45);
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
-  const scroll = useSharedValue(0);
-  const contentHeight = useSharedValue(0);
-  const from = useSharedValue(-1);
-  const translation = useSharedValue(0);
-  const startScroll = useSharedValue(0);
-  const finger = useSharedValue(0);
-  const settling = useSharedValue(false);
-  const viewport = useSharedValue({ top: 0, height: 0 });
-  const count = queue.length;
-  const to = useDerivedValue(() =>
-    clamp(
-      from.value +
-        Math.round(
-          (translation.value + scroll.value - startScroll.value) / rowHeight,
-        ),
-      0,
-      Math.max(0, count - 1),
-    ),
+  const release = useCallback(
+    () => downloads.setReordering(false),
+    [downloads],
   );
-  const drag = {
-    from,
-    translation,
-    scroll,
-    startScroll,
-    finger,
-    viewport,
-    settling,
-    to,
-  };
-  const scrollHandler = useAnimatedScrollHandler(({ contentOffset }) => {
-    scroll.set(contentOffset.y);
-  });
-
-  const autoScroll = useFrameCallback(({ timeSincePreviousFrame }) => {
-    if (
-      from.value < 0 ||
-      settling.value ||
-      !viewport.value.height ||
-      timeSincePreviousFrame == null
-    )
-      return;
-    const position = finger.value - viewport.value.top;
-    const edge = 58;
-    const intensity =
-      position < edge
-        ? -clamp((edge - position) / edge, 0, 1)
-        : clamp((position - viewport.value.height + edge) / edge, 0, 1);
-    if (!intensity) return;
-    const next = clamp(
-      scroll.value + intensity * Math.min(28, timeSincePreviousFrame) * 0.45,
-      0,
-      Math.max(0, contentHeight.value - viewport.value.height),
-    );
-    if (next !== scroll.value) scrollTo(scrollRef, 0, next, false);
-  }, false);
-  const setAutoScroll = autoScroll.setActive;
-  const pick = useCallback(() => {
-    downloads.setReordering(true);
-    setAutoScroll(true);
-    tapFeedback();
-  }, [downloads, setAutoScroll]);
-  const release = useCallback(() => {
-    setAutoScroll(false);
-    from.set(-1);
-    settling.set(false);
-    downloads.setReordering(false);
-  }, [downloads, from, setAutoScroll, settling]);
-
   useFocusEffect(
     useCallback(() => {
       void downloads.reconcile();
@@ -512,7 +323,7 @@ export function DownloadsScreen() {
     }, [downloads, release]),
   );
 
-  function drop(id: string, position: number) {
+  function drop(id: string, position: number, accessibility = false) {
     const available = downloads.snapshot().filter(canReorder);
     const current = available.findIndex((item) => item.id === id);
     if (
@@ -525,7 +336,7 @@ export function DownloadsScreen() {
     available.splice(current, 1);
     try {
       downloads.reorder(id, available[position]?.id);
-      tapFeedback();
+      if (accessibility) tapFeedback();
     } catch {
       Alert.alert(t("actionFailed"));
     }
@@ -538,12 +349,11 @@ export function DownloadsScreen() {
     >
       <Animated.ScrollView
         ref={scrollRef}
-        onScroll={scrollHandler}
-        scrollEventThrottle={16}
-        onContentSizeChange={(_width, height) => {
-          contentHeight.set(height);
-        }}
-        contentContainerStyle={styles.content}
+        style={styles.viewport}
+        contentContainerStyle={[
+          styles.content,
+          rows.length === 0 && styles.emptyContent,
+        ]}
       >
         {rows.length === 0 ? (
           <View style={styles.empty}>
@@ -560,32 +370,7 @@ export function DownloadsScreen() {
         ) : (
           <>
             {active.length + queue.length + paused.length > 0 && (
-              <LinearGradient
-                colors={[colors.heroStart, colors.heroEnd]}
-                style={[styles.hero, { borderColor: colors.line }]}
-              >
-                <Icon name="download" size={26} />
-                <Ink kind="heading" accessibilityRole="header">
-                  {t("activity")}
-                </Ink>
-                <Ink kind="label">
-                  {[
-                    t("activeCount", { count: active.length }),
-                    t("pendingCount", { count: queue.length + paused.length }),
-                    speed > 0 && !offline
-                      ? t("speed", { size: bytes(speed) })
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </Ink>
-                {remaining > 0 &&
-                  pending.every((job) => job.total !== null) && (
-                    <Ink kind="caption" muted>
-                      {t("remaining", { size: bytes(remaining) })}
-                    </Ink>
-                  )}
-              </LinearGradient>
+              <DownloadSummary offline={offline} />
             )}
             {active.map((job) => (
               <DownloadRow key={job.id} job={job} offline={offline} />
@@ -599,41 +384,65 @@ export function DownloadsScreen() {
                 {t("queue")}
               </Ink>
             )}
-            <View>
-              {queue.map((job, index) =>
-                editable ? (
-                  <SortableDownload
+            {editable ? (
+              <Sortable.Flex
+                flexDirection="column"
+                gap={space.sm}
+                customHandle
+                scrollableRef={scrollRef}
+                dragActivationDelay={280}
+                hapticsEnabled={haptics}
+                activeItemScale={reduceMotion ? 1 : 1.025}
+                onDragStart={() => downloads.setReordering(true)}
+                onDragEnd={({ fromIndex, toIndex }) => {
+                  try {
+                    const job = queue[fromIndex];
+                    if (job) drop(job.id, toIndex);
+                  } finally {
+                    release();
+                  }
+                }}
+              >
+                {queue.map((job, index) => (
+                  <DownloadRow
                     key={job.id}
                     job={job}
-                    index={index}
-                    height={rowHeight}
-                    drag={drag}
-                    onPick={pick}
-                    onDrop={drop}
-                    onPlace={(id, position) => {
-                      try {
-                        drop(id, position);
-                      } finally {
-                        release();
-                      }
-                    }}
-                    onRelease={release}
                     offline={offline}
-                    onMeasure={() => {
-                      "worklet";
-                      const bounds = measure(scrollRef);
-                      if (bounds)
-                        viewport.set({
-                          top: bounds.pageY,
-                          height: bounds.height,
-                        });
-                    }}
+                    handle={
+                      <Sortable.Handle>
+                        <View
+                          accessible
+                          accessibilityRole="adjustable"
+                          accessibilityLabel={t("reorder", { name: job.name })}
+                          accessibilityValue={{
+                            min: 1,
+                            max: queue.length,
+                            now: index + 1,
+                          }}
+                          accessibilityActions={[
+                            { name: "decrement", label: t("moveUp") },
+                            { name: "increment", label: t("moveDown") },
+                          ]}
+                          onAccessibilityAction={({ nativeEvent }) => {
+                            if (nativeEvent.actionName === "increment")
+                              drop(job.id, index + 1, true);
+                            if (nativeEvent.actionName === "decrement")
+                              drop(job.id, index - 1, true);
+                          }}
+                          style={styles.button}
+                        >
+                          <Icon name="reorder" size={20} color={colors.muted} />
+                        </View>
+                      </Sortable.Handle>
+                    }
                   />
-                ) : (
-                  <DownloadRow key={job.id} job={job} offline={offline} />
-                ),
-              )}
-            </View>
+                ))}
+              </Sortable.Flex>
+            ) : (
+              queue.map((job) => (
+                <DownloadRow key={job.id} job={job} offline={offline} />
+              ))
+            )}
             {paused.map((job) => (
               <DownloadRow key={job.id} job={job} offline={offline} />
             ))}
@@ -667,13 +476,14 @@ export function DownloadsScreen() {
 }
 
 const styles = StyleSheet.create({
+  viewport: { flex: 1 },
   content: {
-    flexGrow: 1,
     paddingHorizontal: space.lg,
     paddingTop: space.md,
     paddingBottom: space.xl,
     gap: space.sm,
   },
+  emptyContent: { flexGrow: 1 },
   hero: {
     borderWidth: 1,
     borderRadius: 24,
@@ -686,7 +496,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     minHeight: 80,
-    flexGrow: 1,
     borderWidth: 1,
     borderRadius: 19,
     paddingStart: 4,

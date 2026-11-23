@@ -1,7 +1,7 @@
 import {
   downloadId,
   type DownloadItem,
-  type DownloadSource,
+  type MarmotDownload,
   type DownloadTarget,
 } from "../downloads/types";
 import type { DownloadManager } from "../downloads/manager";
@@ -45,7 +45,7 @@ export function createAttachmentPresentation(
     DownloadManager,
     "get" | "subscribe" | "enqueue" | "resume" | "cancel" | "reconcile"
   >,
-  authorize: (target: AttachmentTarget) => DownloadSource | undefined,
+  authorize: (target: AttachmentTarget) => MarmotDownload | undefined,
 ) {
   const entries = new Map<string, Entry>();
   const allowed = (entry: Entry) =>
