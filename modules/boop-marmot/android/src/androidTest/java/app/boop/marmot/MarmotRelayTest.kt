@@ -548,6 +548,18 @@ class MarmotRelayTest {
     ), persisted.tags.filter { it.values.first() == "boop-media" }.map { it.values })
     assertEquals(row.messageIdHex, persisted.replyToMessageIdHex)
     assertEquals("arbitrary-filename.mp4", (persisted.media[1] as MediaAttachmentOutcomeFfi.Accepted).reference.fileName)
+    val anchored = ConversationWindow(recipient.kit.openConversationWindow(
+      recipient.key, group, ConversationOpenModeFfi.MESSAGE, accepted.messageIdHex, 3u, 15_000u,
+    ))
+    try {
+      val messages = checkNotNull(anchored.initial())["messages"] as List<*>
+      val message = messages.filterIsInstance<Map<*, *>>().single { it["id"] == accepted.messageIdHex }
+      val attachments = (message["attachments"] as List<*>).filterIsInstance<Map<*, *>>()
+      assertEquals(true, attachments[0]["voice"])
+      assertEquals(3.5, attachments[0]["duration"])
+      assertEquals(listOf(0, 15, 31), attachments[0]["waveform"])
+      assertEquals(true, attachments[1]["round"])
+    } finally { anchored.stop() }
   }
 
   private fun latestTimeline(group: String, search: String? = null) =

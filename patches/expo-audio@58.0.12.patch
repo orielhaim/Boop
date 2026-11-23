@@ -1,0 +1,282 @@
+diff --git a/android/src/main/java/expo/modules/audio/AudioModule.kt b/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 6c81fce3dd518d3b82e3280940a001c7be84dd0a..236b561f5685ba6a9bd7bfd20a4e2341a2478d95 100644
+--- a/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -1093,6 +1093,12 @@ class AudioModule : Module() {
+         }
+       }
+ 
++      Function("setPlaybackDeadline") { playlist: AudioPlaylist, at: Double? ->
++        runOnMain {
++          playlist.setPlaybackDeadline(at)
++        }
++      }
++
+       Function("setActiveForLockScreen") { ref: AudioPlaylist, active: Boolean, metadata: Metadata?, options: AudioLockScreenOptions? ->
+         runOnMain {
+           ref.setActiveForLockScreen(active, metadata, options)
+diff --git a/android/src/main/java/expo/modules/audio/AudioPlaylist.kt b/android/src/main/java/expo/modules/audio/AudioPlaylist.kt
+index bf3f9c5e5535ddf5e98484310642aa73bd6ae86c..18f1356bebcfc90dfe05c524a2580621b8f38d9c 100644
+--- a/android/src/main/java/expo/modules/audio/AudioPlaylist.kt
++++ b/android/src/main/java/expo/modules/audio/AudioPlaylist.kt
+@@ -1,6 +1,7 @@
+ package expo.modules.audio
+ 
+ import android.content.Context
++import android.os.Handler
+ import androidx.media3.common.AudioAttributes
+ import androidx.media3.common.MediaItem
+ import androidx.media3.common.PlaybackException
+@@ -39,6 +40,20 @@ class AudioPlaylist(
+   private var sources: MutableList<AudioSource> = initialSources.toMutableList()
+   private var currentRate = 1f
+   private var previousMediaItemIndex = 0
++  private val deadlineHandler = Handler(context.mainLooper)
++  private val expiry = Runnable {
++    ref.pause()
++    clearLockScreenControls()
++    sendStatusUpdate(mapOf("remoteCommand" to "stop"))
++    clear()
++  }
++
++  fun setPlaybackDeadline(at: Double?) {
++    deadlineHandler.removeCallbacks(expiry)
++    if (at != null) {
++      deadlineHandler.postDelayed(expiry, (at.toLong() - System.currentTimeMillis()).coerceAtLeast(0))
++    }
++  }
+ 
+   override var isActiveForLockScreen = false
+   override var metadata: Metadata? = null
+@@ -134,11 +149,16 @@ class AudioPlaylist(
+   }
+ 
+   override fun nextTrack() {
+-    next()
++    sendStatusUpdate(mapOf("remoteCommand" to "next"))
+   }
+ 
+   override fun previousTrack() {
+-    previous()
++    sendStatusUpdate(mapOf("remoteCommand" to "previous"))
++  }
++
++  fun stopFromSession() {
++    ref.pause()
++    sendStatusUpdate(mapOf("remoteCommand" to "stop"))
+   }
+ 
+   fun skipTo(index: Int) {
+@@ -152,6 +172,7 @@ class AudioPlaylist(
+     val mediaItem = createMediaItemForSource?.invoke(source) ?: return
+     sources.add(source)
+     ref.addMediaItem(mediaItem)
++    if (ref.playbackState == Player.STATE_IDLE) ref.prepare()
+     sendStatusUpdate(mapOf("trackCount" to trackCount))
+   }
+ 
+@@ -248,6 +269,7 @@ class AudioPlaylist(
+   }
+ 
+   override fun releasePlayer() {
++    deadlineHandler.removeCallbacks(expiry)
+     serviceConnection.release()
+     mediaSession.release()
+     if (isActiveForLockScreen) {
+diff --git a/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+--- a/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -424,8 +424,21 @@
+         if (isLive) {
+           commands.remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+         }
++        if (playable is expo.modules.audio.AudioPlaylist) {
++          if (options?.showNextTrack == true) {
++            commands.add(Player.COMMAND_SEEK_TO_NEXT)
++            commands.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
++          }
++          if (options?.showPreviousTrack == true) {
++            commands.add(Player.COMMAND_SEEK_TO_PREVIOUS)
++            commands.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
++          }
++        }
+         return commands.build()
+       }
++
++      override fun isCommandAvailable(command: Int): Boolean =
++        availableCommands.contains(command)
+     }
+   }
+ 
+@@ -505,6 +518,8 @@
+     playable?.assignBasicMediaSession()
+     currentPlayable = null
+     stopForeground(STOP_FOREGROUND_REMOVE)
++    hideNotification()
++    stopSelf()
+   }
+ 
+   override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+@@ -583,6 +598,23 @@
+     currentPlayable?.takeIf { it.supportsPreviousTrack }?.previousTrack()
+   }
+ 
++  fun dispatchPlaylistCommand(command: Int): Boolean {
++    val playlist = currentPlayable as? expo.modules.audio.AudioPlaylist ?: return false
++    when (command) {
++      Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
++        if (currentOptions?.showNextTrack != true) return false
++        playlist.nextTrack()
++      }
++      Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
++        if (currentOptions?.showPreviousTrack != true) return false
++        playlist.previousTrack()
++      }
++      Player.COMMAND_STOP -> playlist.stopFromSession()
++      else -> return false
++    }
++    return true
++  }
++
+   fun supportsNextTrack(): Boolean {
+     return currentPlayable?.supportsNextTrack == true
+   }
+diff --git a/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt b/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
+index ee83be1fa02e01f15d9040e6f5fedb3c7e1ac34a..75f78161f40209468c8898f05fbf9c226fd5f4cf 100644
+--- a/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
++++ b/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
+@@ -57,6 +57,16 @@ class AudioMediaSessionCallback(
+     }
+   }
+ 
++  @Suppress("DEPRECATION")
++  override fun onPlayerCommandRequest(
++    session: MediaSession,
++    controller: MediaSession.ControllerInfo,
++    playerCommand: Int
++  ): Int {
++    if (service.dispatchPlaylistCommand(playerCommand)) return SessionResult.RESULT_ERROR_NOT_SUPPORTED
++    return super.onPlayerCommandRequest(session, controller, playerCommand)
++  }
++
+   override fun onCustomCommand(
+     session: MediaSession,
+     controller: MediaSession.ControllerInfo,
+diff --git a/ios/AudioModule.swift b/ios/AudioModule.swift
+index 6d26c72148005a36361168310dca6ebdeead8d85..a80c70a0f21be550e51272958ab5e49020d8510a 100644
+--- a/ios/AudioModule.swift
++++ b/ios/AudioModule.swift
+@@ -425,6 +425,10 @@ public class AudioModule: Module {
+         playlist.clear()
+       }
+ 
++      Function("setPlaybackDeadline") { (playlist: AudioPlaylist, at: Double?) in
++        playlist.setPlaybackDeadline(at)
++      }
++
+       Function("setActiveForLockScreen") { (playlist: AudioPlaylist, active: Bool, metadata: Metadata?, options: LockScreenOptions?) in
+         playlist.setActiveForLockScreen(active, metadata: metadata, options: options)
+       }
+diff --git a/ios/AudioPlaylist.swift b/ios/AudioPlaylist.swift
+index 38e158fb0dc78dec36779a4b36686d696052e372..b32c2c98f9bc386832db3fb225198b9ad44947c2 100644
+--- a/ios/AudioPlaylist.swift
++++ b/ios/AudioPlaylist.swift
+@@ -38,6 +38,22 @@ public class AudioPlaylist: SharedRef<AVQueuePlayer>, Playable, LockScreenPlayab
+   private var timeToken: Any?
+   private var cancellables = Set<AnyCancellable>()
+   private var endObserver: NSObjectProtocol?
++  private var expiry: DispatchWorkItem?
++
++  func setPlaybackDeadline(_ at: Double?) {
++    expiry?.cancel()
++    expiry = nil
++    guard let at else { return }
++    let work = DispatchWorkItem { [weak self] in
++      guard let self else { return }
++      self.pause()
++      self.setActiveForLockScreen(false, options: nil)
++      self.updateStatus(with: ["remoteCommand": "stop"])
++      self.clear()
++    }
++    expiry = work
++    DispatchQueue.main.asyncAfter(deadline: .now() + max(0, at / 1000 - Date().timeIntervalSince1970), execute: work)
++  }
+ 
+   weak var owningRegistry: AudioComponentRegistry?
+ 
+@@ -132,11 +148,16 @@ public class AudioPlaylist: SharedRef<AVQueuePlayer>, Playable, LockScreenPlayab
+   }
+ 
+   func nextTrack() {
+-    next()
++    updateStatus(with: ["remoteCommand": "next"])
+   }
+ 
+   func previousTrack() {
+-    previous()
++    updateStatus(with: ["remoteCommand": "previous"])
++  }
++
++  func stopFromSession() {
++    ref.pause()
++    updateStatus(with: ["remoteCommand": "stop"])
+   }
+ 
+   func skipTo(index: Int) {
+@@ -324,6 +345,12 @@ public class AudioPlaylist: SharedRef<AVQueuePlayer>, Playable, LockScreenPlayab
+   }
+ 
+   private func setupPublisher() {
++    ref.publisher(for: \.timeControlStatus)
++      .sink { [weak self] status in
++        self?.updateStatus(with: ["playing": status == .playing])
++      }
++      .store(in: &cancellables)
++
+     ref.publisher(for: \.currentItem?.status)
+       .sink { [weak self] status in
+         guard let self, let status else {
+@@ -331,6 +358,8 @@ public class AudioPlaylist: SharedRef<AVQueuePlayer>, Playable, LockScreenPlayab
+         }
+         if status == .readyToPlay {
+           self.updateStatus(with: ["isLoaded": true])
++        } else if status == .failed {
++          self.updateStatus(with: ["error": true])
+         }
+       }
+       .store(in: &cancellables)
+@@ -413,6 +442,7 @@ public class AudioPlaylist: SharedRef<AVQueuePlayer>, Playable, LockScreenPlayab
+   }
+ 
+   public override func sharedObjectWillRelease() {
++    expiry?.cancel()
+     ref.currentItem?.cancelPendingSeeks()
+     owningRegistry?.remove(self)
+     cancellables.removeAll()
+diff --git a/ios/MediaController.swift b/ios/MediaController.swift
+index 9b66e45411fab8e869144994c35c54c947626cf2..28c3cfa422e78259247612ee41c696dea957844c 100644
+--- a/ios/MediaController.swift
++++ b/ios/MediaController.swift
+@@ -306,6 +306,14 @@ class MediaController {
+     }
+     remoteCommandTargets.append((remoteCommandCenter.playCommand, playTarget))
+ 
++    let stopTarget = remoteCommandCenter.stopCommand.addTarget { [weak self] _ in
++      guard let playlist = self?.activePlayable as? AudioPlaylist else { return .noActionableNowPlayingItem }
++      DispatchQueue.main.async { playlist.stopFromSession() }
++      return .success
++    }
++    remoteCommandTargets.append((remoteCommandCenter.stopCommand, stopTarget))
++    remoteCommandCenter.stopCommand.isEnabled = activePlayable is AudioPlaylist
++
+     let pauseTarget = remoteCommandCenter.pauseCommand.addTarget { [weak self] _ in
+       guard let playable = self?.activePlayable else {
+         return .commandFailed
+@@ -421,6 +429,7 @@ class MediaController {
+ 
+   private func disableRemoteCommands() {
+     remoteCommandCenter.playCommand.isEnabled = false
++    remoteCommandCenter.stopCommand.isEnabled = false
+     remoteCommandCenter.pauseCommand.isEnabled = false
+     remoteCommandCenter.togglePlayPauseCommand.isEnabled = false
+     remoteCommandCenter.changePlaybackPositionCommand.isEnabled = false

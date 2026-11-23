@@ -69,9 +69,18 @@ const icons = {
   missed: { ios: "phone.down.fill", android: "call_missed" },
   hangup: { ios: "xmark", android: "close" },
   file: { ios: "doc", android: "insert_drive_file" },
+  skipPrevious: { ios: "backward.end.fill", android: "skip_previous" },
+  skipNext: { ios: "forward.end.fill", android: "skip_next" },
+  shuffle: { ios: "shuffle", android: "shuffle" },
+  repeat: { ios: "repeat", android: "repeat" },
+  repeatOne: { ios: "repeat.1", android: "repeat_one" },
   pause: { ios: "pause.fill", android: "pause" },
   reorder: { ios: "line.3.horizontal", android: "drag_handle" },
+  addToQueue: { ios: "text.badge.plus", android: "playlist_add" },
   download: { ios: "arrow.down", android: "download" },
+  share: { ios: "square.and.arrow.up", android: "share" },
+  openExternal: { ios: "arrow.up.right.square", android: "open_in_new" },
+  report: { ios: "flag", android: "outlined_flag" },
   refresh: { ios: "arrow.clockwise", android: "refresh" },
   play: { ios: "play.fill", android: "play_arrow" },
   storage: { ios: "internaldrive", android: "storage" },
@@ -168,12 +177,18 @@ export function IconButton({
   onPress,
   disabled,
   tone = "normal",
+  iconColor,
+  iconSize,
+  style,
 }: {
   icon: IconName;
   label: string;
   onPress?: () => void;
   disabled?: boolean;
   tone?: "normal" | "danger" | "accent" | "plain";
+  iconColor?: string;
+  iconSize?: number;
+  style?: ViewStyle;
 }) {
   const { colors, reduceMotion } = useTheme();
   const scale = useSharedValue(1);
@@ -219,9 +234,10 @@ export function IconButton({
         style={[
           styles.iconButton,
           { backgroundColor: background, opacity: disabled ? 0.5 : 1 },
+          style,
         ]}
       >
-        <Icon name={icon} color={tint} />
+        <Icon name={icon} color={iconColor ?? tint} size={iconSize} />
       </Pressable>
     </Animated.View>
   );

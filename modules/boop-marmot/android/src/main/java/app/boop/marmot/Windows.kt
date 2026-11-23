@@ -178,11 +178,14 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "lifecycle" to snapshot.header.lifecycle.name.lowercase(),
   "memberCount" to snapshot.header.memberCount?.toDouble(),
   "invited" to snapshot.pendingConfirmation,
+  "authorityReady" to (snapshot.header.epoch != null),
   "canSend" to snapshot.header.capabilities.canSend,
   "firstUnread" to snapshot.readState.firstUnreadMessageIdHex,
   "draft" to snapshot.draft.draft?.let { draft ->
     mapOf("text" to draft.content, "replyTo" to draft.replyToMessageIdHex, "attachments" to draft.mediaAttachments.map { item ->
-      mapOf("id" to item.id, "size" to item.plaintextSize.toDouble())
+      mapOf("id" to item.id, "size" to item.plaintextSize.toDouble(),
+        "duration" to item.durationSeconds,
+        "waveform" to item.waveformSamples.take(64).map { kotlin.math.round(it.coerceIn(0.0, 1.0) * 31).toInt() })
     })
   },
   "identities" to snapshot.identities.map { mapOf("id" to it.accountIdHex, "name" to it.displayName) },

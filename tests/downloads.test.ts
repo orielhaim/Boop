@@ -322,7 +322,8 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
   const released: string[] = [];
   const presentation = createAttachmentPresentation(
     {
-      attachmentStatus: async () => f.statuses.get("one") === "ready",
+      retainedAttachmentBytes: async () =>
+        f.statuses.get("one") === "ready" ? 400 : null,
       openAttachment: async () =>
         f.statuses.get("one") === "ready" ? local : null,
       releaseAttachment: async (lease) => {
@@ -331,7 +332,12 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
     },
     manager,
     () => source("one"),
+    () => true,
   );
+  const availability: boolean[] = [];
+  const offAvailability = presentation.subscribeAvailability(() => {
+    availability.push(presentation.hasLocalFile(target));
+  });
   const off = presentation.subscribe(target, () => {});
   await tick();
   expect(presentation.state(id("one"))).toEqual({ kind: "remote" });
@@ -345,6 +351,7 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
   await tick();
   expect(f.completed).toEqual(["one"]);
   const reopened = presentation.subscribe(target, () => {});
+  await tick();
   expect(presentation.state(id("one"))).toEqual({ kind: "cached" });
   presentation.prepare(id("one"));
   await tick();
@@ -354,6 +361,120 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
   });
   reopened();
   expect(released).toEqual(["lease"]);
+  expect(availability).toEqual([true, false]);
+  offAvailability();
+  stop();
+});
+
+test("a previously downloaded attachment needs Download again if no local bytes remain", async () => {
+  using sqlite = new Database(":memory:");
+  const f = fixture(sqlite);
+  const manager = f.create();
+  const stop = manager.start();
+  const target = source("one").target;
+  const lookup = Promise.withResolvers<number | null>();
+  let nextLookup = lookup.promise;
+  const presentation = createAttachmentPresentation(
+    {
+      retainedAttachmentBytes: () => nextLookup,
+      openAttachment: async () => null,
+      releaseAttachment: async () => {},
+    },
+    manager,
+    () => source("one"),
+    () => true,
+  );
+
+  manager.enqueue(source("one"));
+  await tick();
+  f.finish("one");
+  await tick();
+  expect(manager.get(id("one"))?.state).toBe("completed");
+
+  f.statuses.set("one", "previously_acquired_unavailable");
+  const unsubscribe = presentation.subscribe(target, () => {});
+  expect(presentation.hasLocalFile(target)).toBe(false);
+  lookup.resolve(null);
+  await tick();
+  expect(presentation.state(id("one"))).toEqual({ kind: "remote" });
+  expect(f.calls).toEqual(["one"]);
+
+  presentation.download(id("one"), false);
+  await tick();
+  expect(f.calls).toEqual(["one", "one"]);
+  nextLookup = Promise.resolve(400);
+  f.finish("one");
+  await tick();
+  expect(presentation.hasLocalFile(target)).toBe(true);
+  unsubscribe();
+  stop();
+});
+
+test("the document picker preserves confirmed local attachments and suspends chat actions", async () => {
+  using sqlite = new Database(":memory:");
+  const f = fixture(sqlite);
+  const manager = f.create();
+  const stop = manager.start();
+  const attachment = source("one");
+  const { target } = attachment;
+  const key = id("one");
+  const lease = {
+    path: "/verified/file.jpg",
+    lease: "picker-test-lease",
+    name: "file.jpg",
+    type: "image/jpeg",
+  };
+  const released: string[] = [];
+  let checks = 0;
+  let opens = 0;
+  let interactive = true;
+  let authorized = true;
+  const presentation = createAttachmentPresentation(
+    {
+      retainedAttachmentBytes: async () => {
+        checks++;
+        return 400;
+      },
+      openAttachment: async () => {
+        opens++;
+        return lease;
+      },
+      releaseAttachment: async (value) => {
+        released.push(value);
+      },
+    },
+    manager,
+    () => (authorized ? attachment : undefined),
+    () => interactive,
+  );
+  const unsubscribe = presentation.subscribe(target, () => {});
+  await tick();
+  presentation.prepare(key);
+  await tick();
+
+  interactive = false;
+  presentation.reconcile();
+  expect(presentation.sourceFor(target)).toEqual(attachment);
+  expect(presentation.authorize(target)).toBeUndefined();
+  await presentation.useLocalFile(target, async () => {
+    throw new Error("A hidden chat cannot open a file");
+  });
+  expect(presentation.state(key)).toEqual({ kind: "local", lease });
+  expect(released).toEqual([]);
+
+  interactive = true;
+  presentation.reconcile();
+  expect(presentation.authorize(target)).toEqual(attachment);
+  expect(presentation.state(key)).toEqual({ kind: "local", lease });
+  expect(checks).toBe(1);
+  expect(opens).toBe(1);
+  expect(f.calls).toEqual([]);
+
+  authorized = false;
+  presentation.reconcile();
+  expect(presentation.hasLocalFile(target)).toBe(false);
+  expect(released).toEqual([lease.lease]);
+  unsubscribe();
   stop();
 });
 

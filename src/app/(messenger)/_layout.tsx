@@ -1,47 +1,91 @@
-import { BlankStack } from "react-native-screen-transitions/expo-router";
+import {
+  AudioFrame,
+  audioNavigationScene,
+} from "@/components/audio/mini-player";
+import {
+  BlankStack,
+  type BlankStackNavigationOptions,
+} from "react-native-screen-transitions/expo-router";
 import { useNavigationMotion } from "@/components/navigation/motion";
 import { ProfilePhotoControls } from "@/components/people/profile-photo-controls";
-import { navigationScene } from "@/components/navigation/scene";
+import { Easing } from "react-native-reanimated";
+import { useTheme } from "@/theme";
 import { useChatsEnabled } from "@/services/local-context";
+
+const audioPlayerOptions: BlankStackNavigationOptions = {
+  gestureEnabled: false,
+  transitionSpec: {
+    open: { duration: 0 },
+    close: { duration: 180, easing: Easing.in(Easing.quad) },
+  },
+  screenStyleInterpolator: ({ current, layouts }) => {
+    "worklet";
+    if (current.route.name !== "audio-player" || !current.closing) return null;
+    return {
+      content: {
+        transform: [
+          { translateY: (1 - current.progress) * layouts.screen.height },
+        ],
+      },
+    };
+  },
+};
 
 export const unstable_settings = { initialRouteName: "(tabs)" };
 
 export default function MessengerLayout() {
   const chats = useChatsEnabled();
+  const { reduceMotion } = useTheme();
   const { push, detail, media, modal } = useNavigationMotion();
 
   return (
-    <BlankStack screenOptions={push} screenLayout={navigationScene}>
-      <BlankStack.Screen name="(tabs)" />
-      <BlankStack.Screen name="settings" />
-      <BlankStack.Screen name="downloads" />
-      <BlankStack.Screen name="person/[key]" options={detail} />
-      <BlankStack.Screen
-        name="profile-photo/[key]"
-        options={{
-          ...media,
-          overlayShown: true,
-          overlay: ProfilePhotoControls,
-        }}
-      />
-      <BlankStack.Screen name="connect" options={modal} />
-      <BlankStack.Screen name="add-contact" options={modal} />
-      <BlankStack.Protected guard={chats}>
+    <AudioFrame>
+      <BlankStack screenOptions={push} screenLayout={audioNavigationScene}>
+        <BlankStack.Screen name="(tabs)" />
+        <BlankStack.Screen name="settings" />
+        <BlankStack.Screen name="downloads" />
         <BlankStack.Screen
-          name="chat/[key]"
-          options={({ route }) => {
-            const params = route.params;
-            if (params && "view" in params && params.view === "details")
-              return detail;
-            if (params && "view" in params && params.view === "edit")
-              return { ...push, gestureEnabled: false };
-            if (params && "key" in params && params.key === "new-group")
-              return { ...push, gestureEnabled: false };
-            return push;
+          name="audio-player"
+          options={
+            reduceMotion
+              ? {
+                  ...audioPlayerOptions,
+                  transitionSpec: {
+                    open: { duration: 0 },
+                    close: { duration: 0 },
+                  },
+                }
+              : audioPlayerOptions
+          }
+        />
+        <BlankStack.Screen name="person/[key]" options={detail} />
+        <BlankStack.Screen
+          name="profile-photo/[key]"
+          options={{
+            ...media,
+            overlayShown: true,
+            overlay: ProfilePhotoControls,
           }}
         />
-        <BlankStack.Screen name="requests" />
-      </BlankStack.Protected>
-    </BlankStack>
+        <BlankStack.Screen name="connect" options={modal} />
+        <BlankStack.Screen name="add-contact" options={modal} />
+        <BlankStack.Protected guard={chats}>
+          <BlankStack.Screen
+            name="chat/[key]"
+            options={({ route }) => {
+              const params = route.params;
+              if (params && "view" in params && params.view === "details")
+                return detail;
+              if (params && "view" in params && params.view === "edit")
+                return { ...push, gestureEnabled: false };
+              if (params && "key" in params && params.key === "new-group")
+                return { ...push, gestureEnabled: false };
+              return push;
+            }}
+          />
+          <BlankStack.Screen name="requests" />
+        </BlankStack.Protected>
+      </BlankStack>
+    </AudioFrame>
   );
 }

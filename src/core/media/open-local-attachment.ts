@@ -7,11 +7,14 @@ export function localMediaUri(path: string) {
   return "file://" + path.split("/").map(encodeURIComponent).join("/");
 }
 
-export async function openLocalAttachment(file: {
-  path: string;
-  type: string;
-  name: string;
-}) {
+export async function openLocalAttachment(
+  file: {
+    path: string;
+    type: string;
+    name: string;
+  },
+  excludeBoop = false,
+) {
   const source = new File(localMediaUri(file.path));
   if (Platform.OS === "android") {
     const { startActivityAsync } = await import("expo-intent-launcher");
@@ -20,6 +23,7 @@ export async function openLocalAttachment(file: {
         data: source.contentUri,
         type: file.type,
         flags: 1,
+        excludeCurrentActivity: excludeBoop,
       });
       return;
     } catch {

@@ -436,6 +436,41 @@ public final class BoopMarmotModule: Module {
         return true
       }
     }
+    AsyncFunction("audioMetadata") { (path: String) async throws -> Document in
+      try await protocolCall {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
+        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard file.path.hasPrefix(home), try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+          throw problem("InvalidMediaPath")
+        }
+        let asset = AVURLAsset(url: file)
+        var result: Document = [:]
+        if let duration = try? await asset.load(.duration).seconds, duration.isFinite, duration > 0 {
+          result["duration"] = duration
+        }
+        let metadata = (try? await asset.load(.commonMetadata)) ?? []
+        let fields: [(String, AVMetadataIdentifier)] = [
+          ("title", .commonIdentifierTitle), ("artist", .commonIdentifierArtist), ("album", .commonIdentifierAlbumName)
+        ]
+        for (key, identifier) in fields {
+          if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: identifier).first,
+            let value = try? await item.load(.stringValue), !value.isEmpty {
+            result[key] = String(value.prefix(500))
+          }
+        }
+        if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtwork).first,
+          let data = try? await item.load(.dataValue), data.count <= 512 * 1024,
+          let image = CGImageSourceCreateWithData(data as CFData, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int, (1...2048).contains(width),
+          let height = properties[kCGImagePropertyPixelHeight] as? Int, (1...2048).contains(height),
+          let type = CGImageSourceGetType(image) {
+          let mime = type as String == "public.jpeg" ? "image/jpeg" : type as String == "public.png" ? "image/png" : nil
+          if let mime { result["artworkUrl"] = "data:\(mime);base64,\(data.base64EncodedString())" }
+        }
+        return result
+      }
+    }
     AsyncFunction("inspectMediaFile") { (path: String, image: Bool, poster: Bool) async throws -> Document in
       try await protocolCall {
         let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"

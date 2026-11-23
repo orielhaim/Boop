@@ -482,6 +482,39 @@ class BoopMarmotModule : Module() {
     AsyncFunction("cancelUpload") Coroutine { token: String ->
       synchronized(uploads) { uploads[token]?.also { it.cancel() } != null }
     }
+    AsyncFunction("audioMetadata") Coroutine { path: String ->
+      protocol {
+        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
+        val base = File(context.applicationInfo.dataDir).canonicalFile
+        val file = File(path).canonicalFile
+        if (!file.toPath().startsWith(base.toPath()) || !file.isFile) throw problem("InvalidMediaPath")
+        MediaMetadataRetriever().use { reader ->
+          reader.setDataSource(file.path)
+          val data = mutableMapOf<String, Any>()
+          val keys = mapOf(
+            "title" to MediaMetadataRetriever.METADATA_KEY_TITLE,
+            "artist" to MediaMetadataRetriever.METADATA_KEY_ARTIST,
+            "album" to MediaMetadataRetriever.METADATA_KEY_ALBUM
+          )
+          for ((key, field) in keys) {
+            reader.extractMetadata(field)?.trim()?.take(500)?.takeIf { it.isNotEmpty() }?.let { data[key] = it }
+          }
+          reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }?.let { data["duration"] = it / 1000 }
+          reader.embeddedPicture?.takeIf { it.size <= 512 * 1024 }?.let { picture ->
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(picture, 0, picture.size, options)
+            val mime = options.outMimeType
+            if (mime in setOf("image/jpeg", "image/png", "image/webp") &&
+              options.outWidth in 1..2048 && options.outHeight in 1..2048
+            ) {
+              data["artworkUrl"] = "data:$mime;base64," + android.util.Base64.encodeToString(picture, android.util.Base64.NO_WRAP)
+            }
+          }
+          data
+        }
+      }
+    }
     AsyncFunction("inspectMediaFile") Coroutine { path: String, image: Boolean, poster: Boolean ->
       protocol {
         val context = appContext.reactContext ?: throw problem("ContextUnavailable")

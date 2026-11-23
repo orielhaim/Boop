@@ -81,6 +81,8 @@ function chatTheme(
       outgoingBubble: material?.outgoing[0] ?? colors.outgoing,
       outgoingText: colors.outgoingInk,
       outgoingMeta: "#E5EBFF",
+      outgoingVoiceFill: colors.outgoingInk,
+      outgoingVoiceTrack: "#FFFFFF80",
       inputBarBackground: material ? "transparent" : colors.background,
       inputBackground: material?.panel ?? colors.surface,
       inputFieldBorder: material?.rim ?? colors.line,

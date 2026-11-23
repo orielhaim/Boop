@@ -23,6 +23,13 @@
       "predictiveBackGestureEnabled": true,
       "package": "com.orielhaim.boop",
       "permissions": ["android.permission.BLUETOOTH_CONNECT"],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": ["DEFAULT"],
+          "data": [{ "scheme": "content", "mimeType": "audio/*" }]
+        }
+      ],
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
@@ -133,7 +140,7 @@
         {
           "microphonePermission": "Record voice and video messages and talk during peer-to-peer calls.",
           "enableBackgroundRecording": false,
-          "enableBackgroundPlayback": false
+          "enableBackgroundPlayback": true
         }
       ],
       "expo-asset",

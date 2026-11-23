@@ -1,0 +1,55 @@
+diff --git a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherParams.kt b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherParams.kt
+--- a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherParams.kt
++++ b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherParams.kt
+@@ -25,5 +25,8 @@
+   val packageName: String?,
+ 
+   @Field
+-  val className: String?
++  val className: String?,
++
++  @Field
++  val excludeCurrentActivity: Boolean = false
+ ) : Record
+diff --git a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
+--- a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
++++ b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
+@@ -86,7 +86,15 @@
+       params.category?.let { intent.addCategory(it) }
+ 
+       try {
+-        appContext.throwingActivity.startActivityForResult(intent, REQUEST_CODE)
++        val activity = appContext.throwingActivity
++        val launchIntent = if (params.excludeCurrentActivity) {
++          Intent.createChooser(intent, null).apply {
++            putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(activity.componentName))
++          }
++        } else {
++          intent
++        }
++        activity.startActivityForResult(launchIntent, REQUEST_CODE)
+         pendingPromise = promise
+       } catch (e: Throwable) {
+         promise.reject(e.toCodedException())
+diff --git a/src/IntentLauncher.ts b/src/IntentLauncher.ts
+--- a/src/IntentLauncher.ts
++++ b/src/IntentLauncher.ts
+@@ -230,6 +230,7 @@
+ 
+ // @needsAudit
+ export interface IntentLauncherParams {
++  excludeCurrentActivity?: boolean;
+   /**
+    * A string specifying the MIME type of the data represented by the data parameter. Ignore this
+    * argument to allow Android to infer the correct MIME type.
+diff --git a/build/IntentLauncher.d.ts b/build/IntentLauncher.d.ts
+--- a/build/IntentLauncher.d.ts
++++ b/build/IntentLauncher.d.ts
+@@ -223,6 +223,7 @@
+     ZEN_MODE_SETTINGS = "android.settings.ZEN_MODE_SETTINGS"
+ }
+ export interface IntentLauncherParams {
++    excludeCurrentActivity?: boolean;
+     /**
+      * A string specifying the MIME type of the data represented by the data parameter. Ignore this
+      * argument to allow Android to infer the correct MIME type.

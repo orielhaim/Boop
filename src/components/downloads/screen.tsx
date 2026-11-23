@@ -1,3 +1,6 @@
+import { useAudioActions } from "@/components/audio/actions";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { audioFile, type Track } from "@/core/audio/types";
 import { LinearGradient } from "expo-linear-gradient";
 import { useNetworkState } from "expo-network";
 import { useFocusEffect } from "expo-router";
@@ -46,6 +49,8 @@ const DownloadRow = memo(function DownloadRow({
   offline: boolean;
 }) {
   const { downloads } = useLocal();
+  const audio = useAudioActions();
+  const { t: playback } = useTranslation("audio");
   const job = useSyncExternalStore(
     downloads.subscribe,
     () => downloads.get(initial.id) ?? initial,
@@ -103,7 +108,19 @@ const DownloadRow = memo(function DownloadRow({
     void downloads[action](job.id).catch(() => Alert.alert(t("actionFailed")));
   }
 
+  const track: Track | undefined = audioFile(job.name, job.type)
+    ? {
+        kind: "attachment",
+        source: job,
+        title: job.name,
+        voice: job.kind === "marmot" && !!job.voice,
+      }
+    : undefined;
   function open() {
+    if (track) {
+      void audio.open(track);
+      return;
+    }
     void downloads.open(job.id, openLocalAttachment).catch(() => {
       void downloads.reconcile();
       Alert.alert(t("openFailed"));
@@ -111,7 +128,7 @@ const DownloadRow = memo(function DownloadRow({
   }
 
   const completed = job.state === "completed";
-  const icon = job.type.startsWith("audio/")
+  const icon = track
     ? "audio"
     : job.type.startsWith("video/")
       ? "camera"
@@ -210,6 +227,28 @@ const DownloadRow = memo(function DownloadRow({
         </Pressable>
       ) : (
         <View style={styles.info}>{summary}</View>
+      )}
+      {completed && track && (
+        <ActionMenu
+          label={playback("trackActions", { title: track.title })}
+          actions={[
+            { id: "play", title: playback("playNow") },
+            { id: "next", title: playback("playNext") },
+            { id: "add", title: playback("addQueue") },
+            ...(!track.voice
+              ? [{ id: "external", title: playback("external") }]
+              : []),
+          ]}
+          onSelect={(id) => {
+            if (id === "play" || id === "external")
+              void audio.open(track, id === "play" ? "internal" : "external");
+            else audio.queue(track, id === "next");
+          }}
+        >
+          <View style={styles.button}>
+            <Icon name="more" size={20} />
+          </View>
+        </ActionMenu>
       )}
       {!completed && primary && (
         <RowButton

@@ -771,3 +771,37 @@ diff --git a/crates/marmot-app/src/runtime/account_worker/attachments.rs b/crate
          {
              match shared
                  .attachment_transfer
+diff --git a/crates/marmot-uniffi/src/conversions/conversation_window.rs b/crates/marmot-uniffi/src/conversions/conversation_window.rs
+index 3e736a4..90088e4 100644
+--- a/crates/marmot-uniffi/src/conversions/conversation_window.rs
++++ b/crates/marmot-uniffi/src/conversions/conversation_window.rs
+@@ -371,7 +371,7 @@ impl From<app::SelectedMessageDraft> for SelectedMessageDraftFfi {
+     }
+ }
+ /// Timeline content plus bounded display references. Use references.reactions for UI;
+-/// custom-event tags and NIP-30 `emoji` tags on chats are preserved; other typed-row tags use
++/// custom-event tags and allowlisted `emoji` and `boop-media` tags on chats are preserved; other typed-row tags use
+ /// structured fields and reactions use references.
+ #[derive(Clone, uniffi::Record)]
+ pub struct ConversationMessageFfi {
+@@ -392,7 +392,7 @@ pub struct ConversationWindowSnapshotFfi {
+     pub has_more_before: bool,
+     pub has_more_after: bool,
+ }
+-// Borrow raw rows and retain only custom-event tags and chat NIP-30 `emoji` tags in the
++// Borrow raw rows and retain only custom-event tags and allowlisted chat tags in the
+ // FFI presentation. MDK-owned tags and full reactor collections use prepared references.
+ fn conversation_sticker_ref(row: &app::TimelineMessageRecord) -> Option<app::AppStickerRef> {
+     if row.deleted {
+@@ -416,7 +416,10 @@ fn presented_custom_tags(row: &app::TimelineMessageRecord) -> Cow<'_, [Vec<Strin
+     Cow::Owned(
+         row.tags
+             .iter()
+-            .filter(|tag| tag.len() >= 3 && tag[0] == "emoji")
++            .filter(|tag| {
++                (tag.len() >= 3 && tag[0] == "emoji")
++                    || (tag.len() == 6 && tag[0] == "boop-media")
++            })
+             .cloned()
+             .collect(),
+     )

@@ -221,7 +221,7 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
 export default function StorageSettings() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { marmotSession, avatars, previews, lock, speech, downloads } =
+  const { marmotSession, avatars, previews, lock, speech, downloads, audio } =
     useLocal();
   const chatsEnabled = useChatsEnabled();
   const network = useNetworkState();
@@ -283,6 +283,7 @@ export default function StorageSettings() {
               if (key === "downloads") {
                 await marmotSession.ready();
                 if (!mayClear()) return;
+                audio.clearAttachments();
                 await downloads.clear(marmot.clearDownloads);
                 await speech.reconcile(true);
               } else if (key === "profileCache") {

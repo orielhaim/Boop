@@ -1,8 +1,78 @@
 import { expect, test } from "bun:test";
 import {
+  mediaUploadArguments,
   pendingMediaDraft,
   sendOnAttachmentServers,
+  waitForAttachmentForeground,
 } from "../src/core/marmot/media-send";
+
+test("picked music crosses the native string-map boundary without undefined image metadata", () => {
+  expect(
+    mediaUploadArguments([
+      {
+        path: "/cache/track.mp3",
+        name: "track.mp3",
+        type: "audio/mpeg",
+        dimensions: undefined,
+        duration: "120",
+      },
+      {
+        path: "/cache/voice.m4a",
+        name: "voice.m4a",
+        type: "audio/mp4",
+        presentation: "voice",
+        waveform: "0,15,31",
+      },
+    ]),
+  ).toStrictEqual([
+    {
+      path: "/cache/track.mp3",
+      name: "track.mp3",
+      type: "audio/mpeg",
+      duration: "120",
+    },
+    {
+      path: "/cache/voice.m4a",
+      name: "voice.m4a",
+      type: "audio/mp4",
+      presentation: "voice",
+      waveform: "0,15,31",
+    },
+  ]);
+});
+
+test("a file returned before Android resumes waits for foreground and is discarded if cancelled", async () => {
+  let active = false;
+  const listeners = new Set<() => void>();
+  const foreground = {
+    get: () => active,
+    subscribe(notify: () => void) {
+      listeners.add(notify);
+      return () => {
+        listeners.delete(notify);
+      };
+    },
+  };
+  const controller = new AbortController();
+  const cancelled = new AbortController();
+  const staged: string[] = [];
+  const keep = waitForAttachmentForeground(foreground, controller.signal).then(
+    () => staged.push("selected.mp3"),
+  );
+  const discard = waitForAttachmentForeground(
+    foreground,
+    cancelled.signal,
+  ).then(() => staged.push("cancelled.mp3"));
+  expect(staged).toEqual([]);
+  cancelled.abort(new Error("picker cancelled"));
+  await expect(discard).rejects.toThrow("picker cancelled");
+
+  active = true;
+  for (const notify of listeners) notify();
+  await keep;
+  expect(staged).toEqual(["selected.mp3"]);
+  expect(listeners.size).toBe(0);
+});
 
 test("an interrupted draft resumes with its original token only after all encrypted copies are staged", () => {
   const token = "00000000-0000-4000-8000-000000000000";
@@ -47,4 +117,26 @@ test("attachment upload skips incompatibility, falls back for pre-admission fail
   await expect(sendOnAttachmentServers(options)).rejects.toBe(ambiguous);
   expect(checked).toEqual(["too-small", "transient", "next"]);
   expect(attempts).toEqual(["transient", "next"]);
+});
+
+test("a staged recording keeps its metadata and original send token for inline retry", () => {
+  const token = "00000000-0000-4000-8000-000000000000";
+  const recording = { size: 300, duration: 3.5, waveform: [0, 15, 31] };
+  expect(
+    pendingMediaDraft({
+      text: "",
+      attachments: [{ ...recording, id: `${token}:1:0:voice` }],
+    }),
+  ).toEqual({
+    kind: "ready",
+    token,
+    sizes: [300],
+    voice: { duration: 3.5, waveform: [0, 15, 31] },
+  });
+  expect(
+    pendingMediaDraft({
+      text: "",
+      attachments: [{ ...recording, id: `${token}:1:0:file` }],
+    }),
+  ).toEqual({ kind: "ready", token, sizes: [300] });
 });
