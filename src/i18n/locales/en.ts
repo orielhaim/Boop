@@ -128,7 +128,6 @@ export const en = {
     clearDetail_linkPreviews:
       "Remove stored link previews. The links stay in your chats.",
     clearError: "Could not finish clearing storage.",
-    cacheDetail: "Clearing these caches keeps your messages and identity keys.",
     network: "Network usage",
     connection: "Connection",
     received: "Data received",
@@ -1071,7 +1070,11 @@ export const en = {
     },
   },
   downloads: {
-    downloadLicense: "Download Boop’s license",
+    addLink: "Blossom link",
+    invalidLink:
+      "Enter a Blossom URI or an HTTPS link ending in a SHA-256 hash.",
+    startDownload: "Download",
+    failedSection: "Failed downloads",
     more: "Show more",
     title: "Downloads",
     indicator_one: "Downloads, {{count}} unfinished",
@@ -1094,7 +1097,6 @@ export const en = {
     paused: "Paused",
     waiting: "Waiting to retry",
     failed: "Download failed",
-    completed: "Ready offline",
     cancelled: "Cancelled",
     verifying: "Verifying file",
     offline: "Waiting for connection",

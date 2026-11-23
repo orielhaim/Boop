@@ -17,8 +17,8 @@ export function createPublicMetadata(
       .filter((relay) => targets.has(relay.url))
       .slice(0, 8);
   };
-  async function readMediaList() {
-    return transport.lookupLists(publicKey, listRelays(), [serverListKind]);
+  async function readMediaList(author = publicKey) {
+    return transport.lookupLists(author, listRelays(), [serverListKind]);
   }
 
   const profileRelays = () =>
@@ -64,8 +64,8 @@ export function createPublicMetadata(
       );
       return () => stops.forEach((stop) => stop());
     },
-    async discoverBlossomServers() {
-      const { general, complete } = await readMediaList();
+    async discoverBlossomServers(author?: string) {
+      const { general, complete } = await readMediaList(author);
       if (!complete && !general) throw new Error("media-list-unavailable");
       return parseServerOrigins(general?.tags ?? []);
     },

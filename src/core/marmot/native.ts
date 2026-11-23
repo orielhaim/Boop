@@ -504,7 +504,6 @@ type Bridge = {
     source: string,
     index: number,
     transfer: string,
-    attach: boolean,
   ): Promise<string>;
   attachmentTransferState(
     group: string,
@@ -948,7 +947,6 @@ export const marmot = {
       state: string,
     ) => void,
     signal: AbortSignal,
-    attach: boolean,
   ) {
     if (signal.aborted) return "cancelled";
     const bridge = native();
@@ -977,7 +975,6 @@ export const marmot = {
         source,
         index,
         transfer,
-        attach,
       );
     } finally {
       signal.removeEventListener("abort", cancel);

@@ -3,17 +3,21 @@ const { getDefaultConfig } = require("expo/metro-config");
 
 const config = getDefaultConfig(__dirname);
 
-// Keep native build caches and the separate website out of the mobile file map.
+// Keep generated native projects, local exports and the website out of Metro.
 const unusedTrees = [
   ".expo/marmot-relay-fixture",
   ".expo/marmotkit",
+  "android",
   "dist",
+  "ios",
   "modules/boop-marmot/sdk",
+  "web-build",
   "website",
 ];
 
 config.resolver.blockList = [
   ...config.resolver.blockList,
+  /(?:^|[\\/])(?:modules|node_modules)[\\/](?:@[^\\/]+[\\/])?[^\\/]+[\\/]android[\\/](?:build|\.cxx|\.gradle)(?:[\\/]|$)/,
   ...unusedTrees.map((directory) => {
     const absolutePath = path
       .resolve(__dirname, directory)

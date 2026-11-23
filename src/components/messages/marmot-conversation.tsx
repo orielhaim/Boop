@@ -1559,6 +1559,7 @@ export function MarmotConversationScreen({
                       group={id}
                       id={row.id}
                       body={row.text}
+                      author={row.sender}
                       eligible={
                         focused &&
                         visible.has(row.id) &&

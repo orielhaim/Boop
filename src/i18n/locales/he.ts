@@ -126,7 +126,6 @@ export const he = {
     clearDetail_linkPreviews:
       "תצוגות מקדימות שנשמרו יוסרו. הקישורים יישארו בצ׳אטים.",
     clearError: "לא ניתן היה להשלים את ניקוי האחסון.",
-    cacheDetail: "הניקוי שומר את ההודעות ואת מפתחות הזהות שלך.",
     network: "שימוש ברשת",
     connection: "חיבור",
     received: "נתונים שהתקבלו",
@@ -1039,7 +1038,11 @@ export const he = {
     },
   },
   downloads: {
-    downloadLicense: "הורדת רישיון Boop",
+    addLink: "קישור Blossom",
+    invalidLink:
+      "יש להזין כתובת Blossom או קישור HTTPS המסתיים בגיבוב SHA-256.",
+    startDownload: "הורדה",
+    failedSection: "הורדות שנכשלו",
     more: "הצגת פריטים נוספים",
     title: "הורדות",
     indicator_one: "הורדות, {{count}} בהמתנה",
@@ -1065,7 +1068,6 @@ export const he = {
     paused: "מושהה",
     waiting: "ממתין לניסיון נוסף",
     failed: "ההורדה נכשלה",
-    completed: "זמין במצב לא מקוון",
     cancelled: "בוטל",
     verifying: "הקובץ בבדיקה",
     offline: "ממתין לחיבור",

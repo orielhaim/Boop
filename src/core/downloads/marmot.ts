@@ -3,12 +3,11 @@ import type { DownloadTransport } from "./transport";
 import type { MarmotDownload } from "./types";
 
 export const marmotDownloads: DownloadTransport<MarmotDownload> = {
-  async transfer({ target }, progress, signal, attach) {
+  async transfer({ target }, progress, signal) {
     const state = await marmot.downloadAttachment(
       ...target,
       (received, total, state) => progress({ received, total, state }),
       signal,
-      attach,
     );
     if (state === "ready" && !signal.aborted) {
       const bytes = await marmot
@@ -20,6 +19,8 @@ export const marmotDownloads: DownloadTransport<MarmotDownload> = {
   },
   status: ({ target }) => marmot.attachmentTransferState(...target),
   async control({ target }, action) {
+    // MarmotKit cancellation retains the resumable ciphertext checkpoint.
+    // Pause keeps the job eligible for Resume. Remove also deletes local media.
     const changed = await marmot.controlAttachment(
       ...target,
       action === "remove" ? "remove" : "cancel",

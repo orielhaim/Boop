@@ -10,7 +10,7 @@ import {
   NetworkStateType,
 } from "expo-network";
 import { createDownloadManager } from "@/core/downloads/manager";
-import { createHttpDownloads } from "@/core/downloads/http";
+import { createBlossomDownloads } from "@/core/downloads/blossom-transfer";
 import { marmotDownloads } from "@/core/downloads/marmot";
 import { downloadTransports } from "@/core/downloads/transport";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -357,13 +357,18 @@ async function start() {
         speech.availableLocally(voice, speechPriority.download);
       }
     }
+    const downloadScope = bytesToHex(sha256(downloadKey));
     const downloads = createDownloadManager({
       store: downloadStore(db, identity.publicKey, downloadKey, (size) =>
         getRandomValues(new Uint8Array(size)),
       ),
       transport: downloadTransports(
         marmotDownloads,
-        createHttpDownloads(bytesToHex(sha256(downloadKey))),
+        createBlossomDownloads(
+          downloadScope,
+          () => mediaSdk.configured("attachment").map(({ origin }) => origin),
+          publicMetadata.discoverBlossomServers,
+        ),
       ),
       eligible: active,
       available: (source) =>
@@ -465,6 +470,7 @@ export function LocalSessionLifecycle() {
   } = useLocal();
   useEffect(() => {
     const stopSpeech = speech.start();
+    downloads.network(false, false);
     const stopDownloads = downloads.start();
     const unsubscribeSpeechCall = calling.store.subscribe(speech.sync);
     const unsubscribeSpeechPrivacy = privacy.subscribe(() => {
@@ -584,15 +590,12 @@ export function LocalSessionLifecycle() {
           .catch(() => undefined);
     }
     const update = (state: typeof AppState.currentState) => {
+      downloads.sync();
       marmotSession.setRetryEnabled(
         state === "active" && !lock.getState().locked,
       );
       speech.sync();
-      downloads.sync();
-      if (state === "active") {
-        admitDownloadedVoice();
-        void downloads.reconcile();
-      }
+      if (state === "active") admitDownloadedVoice();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
       if (state === "active") {
@@ -605,13 +608,12 @@ export function LocalSessionLifecycle() {
       updateBackupConditions();
     };
     const unsubscribeLock = lock.subscribe(() => {
+      downloads.sync();
       marmotSession.setRetryEnabled(
         AppState.currentState === "active" && !lock.getState().locked,
       );
       speech.sync();
-      downloads.sync();
       admitDownloadedVoice();
-      void downloads.reconcile();
       updateUnlocks();
       if (
         lock.getState().authenticating ||

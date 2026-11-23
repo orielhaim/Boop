@@ -10,7 +10,6 @@
         "@hzblj/expo-flags-kit": "^0.1.3",
         "@hzblj/expo-speech": "0.4.0",
         "@hzblj/expo-translation": "0.1.4",
-        "@kesha-antonov/react-native-background-downloader": "5.1.0",
         "@kesha-antonov/react-native-chat": "^7.2.0",
         "@noble/ciphers": "2.4.0",
         "@noble/curves": "2.4.0",
@@ -18,6 +17,7 @@
         "@nostr-dev-kit/ndk": "^3.0.3",
         "@shopify/flash-list": "2.3.2",
         "@trystero-p2p/core": "0.27.0",
+        "blossom-client-sdk": "5.2.0",
         "dayjs": "^1.11.23",
         "drand-client": "1.4.2",
         "drizzle-orm": "^0.45.4",
@@ -449,8 +449,6 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@kesha-antonov/react-native-background-downloader": ["@kesha-antonov/react-native-background-downloader@5.1.0", "", { "peerDependencies": { "react-native": ">=0.57.0" }, "bin": { "react-native-background-downloader": "bin/react-native-background-downloader.js" } }, "sha512-e0FkURZ8y5m/xEQfEFFbBs5/6dWFaEKZr/tcfBW0FrJpYn6G5/5YsNEh8JW903IlNappSPriip4arLuHAZ6knA=="],
-
     "@kesha-antonov/react-native-chat": ["@kesha-antonov/react-native-chat@7.2.0", "", { "dependencies": { "@legendapp/list": "^3.7.1", "dayjs": "^1.11.23", "react-native-zoom-reanimated": "^1.6.0" }, "peerDependencies": { "@lodev09/react-native-true-sheet": ">=3.0.0", "@react-native-async-storage/async-storage": "*", "@react-native-clipboard/clipboard": "*", "expo-audio": "*", "expo-blur": "*", "expo-clipboard": "*", "expo-device": "*", "expo-document-picker": "*", "expo-file-system": "*", "expo-haptics": "*", "expo-image": "*", "expo-image-picker": "*", "expo-location": "*", "expo-media-library": "*", "expo-sharing": "*", "expo-video": "*", "react": ">=19.0.0", "react-native": ">=0.82.0", "react-native-audio-api": "*", "react-native-gesture-handler": ">=3.0.0", "react-native-keyboard-controller": ">=1.21.7", "react-native-reanimated": ">=3.0.0 || ^4.0.0", "react-native-safe-area-context": ">=5.0.0", "react-native-streamdown": "*", "react-native-svg": "*", "react-native-vision-camera": ">=5.0.0" }, "optionalPeers": ["@lodev09/react-native-true-sheet", "@react-native-async-storage/async-storage", "@react-native-clipboard/clipboard", "expo-audio", "expo-blur", "expo-clipboard", "expo-device", "expo-document-picker", "expo-file-system", "expo-haptics", "expo-image", "expo-image-picker", "expo-location", "expo-media-library", "expo-sharing", "expo-video", "react-native-audio-api", "react-native-streamdown", "react-native-svg", "react-native-vision-camera"] }, "sha512-n45nroDtqxjpJzZ7UMSf3v8wkkY8BISl/sAQB9ibdWZUxh8M/Xv0l3Iwrvfetmj5xofBfNc/q2Q4jL3jm7DxJA=="],
 
     "@legendapp/list": ["@legendapp/list@3.7.3", "", { "dependencies": { "use-sync-external-store": "^1.5.0" }, "peerDependencies": { "react": "*", "react-dom": "*", "react-native": "*" }, "optionalPeers": ["react-dom", "react-native"] }, "sha512-trGu1i4xo1+r6gG6GI3qrrZAfYHbB25uVj32/KnxhaQ7/eW4AqzhM5cW21Oye4dpg+180Ts1aejRuI8z6Xc4eg=="],
@@ -756,6 +754,8 @@
     "baseline-browser-mapping": ["baseline-browser-mapping@2.11.38", "", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-rMgy5YW7x28SMfXHLlVZDBqlWzYZ0x2rVR/6FWrNBF0chjigARK1H6nM0hKA1Um3kPOlkQFVtjJs00d2N1ezuw=="],
 
     "big-integer": ["big-integer@1.6.52", "", {}, "sha512-QxD8cf2eVqJOOz63z6JIN9BzvVs/dlySa5HGSBH5xtR8dPteIRQnBxxKqkNTiT6jbDTF6jAfrd4oMcND9RGbQg=="],
+
+    "blossom-client-sdk": ["blossom-client-sdk@5.2.0", "", { "dependencies": { "@noble/hashes": "^2.4.0" }, "peerDependencies": { "hls.js": "^1.6.16" }, "optionalPeers": ["hls.js"] }, "sha512-3/gLZe+Q9tWolzayL1qhZeyet9mwkZ/l5Lj4eZBP/X092QkGiegO9uqszn50WRy4UxE/QJGI5EbrNeZoCLRbRA=="],
 
     "boolbase": ["boolbase@1.0.0", "", {}, "sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww=="],
 

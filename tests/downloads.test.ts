@@ -5,7 +5,12 @@ import {
   createDownloadManager,
   type TransferProgress,
 } from "../src/core/downloads/manager";
-import { downloadId, type MarmotDownload } from "../src/core/downloads/types";
+import {
+  downloadId,
+  sourceId,
+  type BlossomDownload,
+  type MarmotDownload,
+} from "../src/core/downloads/types";
 import { createAttachmentPresentation } from "../src/core/marmot/attachment-presentation";
 import { downloadStore } from "../src/db/downloads";
 import * as schema from "../src/db/schema";
@@ -48,6 +53,7 @@ function fixture(sqlite: Database) {
       store,
       concurrency,
       now: () => time,
+      random: () => 0.5,
       eligible: () => eligible,
       authorized: () => authorized,
       completed: (item) => {
@@ -157,6 +163,25 @@ test("shared content waits for native verified reuse, while unrelated work can s
   stop();
 });
 
+test("moving to cellular checkpoints excess transfers and resumes them in order", async () => {
+  using sqlite = new Database(":memory:");
+  const f = fixture(sqlite);
+  const manager = f.create();
+  const stop = manager.start();
+  for (const name of ["one", "two", "three"]) manager.enqueue(source(name));
+  await tick();
+  expect(f.calls).toEqual(["one", "two"]);
+  manager.network(true, true);
+  await tick();
+  expect([...f.held.keys()]).toEqual(["one"]);
+  expect(manager.get(id("two"))?.state).toBe("queued");
+  f.finish("one");
+  await tick();
+  expect(f.calls).toEqual(["one", "two", "two"]);
+  expect([...f.held.keys()]).toEqual(["two"]);
+  stop();
+});
+
 test("encrypted rows recover after restart and remain scoped to the current identity", async () => {
   using sqlite = new Database(":memory:");
   const f = fixture(sqlite);
@@ -238,22 +263,29 @@ test("an interrupted job backs off while another finishes and offline admission 
   stop();
 });
 
-test("pause and cancel stop the native attempt, while a successful cancel race preserves a ready file", async () => {
+test("paused jobs stay out of the header and a cancel race preserves the verified copy", async () => {
   using sqlite = new Database(":memory:");
   const f = fixture(sqlite);
   const manager = f.create(1);
   const stop = manager.start();
   manager.enqueue(source("one"));
+  manager.enqueue(source("two"));
   await tick();
+  await manager.pause(id("two"));
+  expect(manager.get(id("two"))?.state).toBe("paused");
+  expect(manager.indicator().count).toBe(2);
+  expect(f.held.size).toBe(1);
   await manager.pause(id("one"));
   expect(manager.get(id("one"))?.state).toBe("paused");
-  expect(f.held.size).toBe(0);
+  expect(manager.indicator()).toEqual({ selected: undefined, count: 0 });
   manager.resume(id("one"));
   await tick();
   f.finish("one");
   await manager.cancel(id("one"));
   expect(manager.get(id("one"))?.state).toBe("completed");
+  expect(manager.indicator()).toEqual({ selected: undefined, count: 0 });
   await manager.remove(id("one"));
+  await manager.remove(id("two"));
   expect(f.store.load()).toEqual([]);
   expect(f.statuses.get("one")).toBe("removed");
   stop();
@@ -325,7 +357,7 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
   stop();
 });
 
-test("an admitted transfer can finish while new work waits for the protected session", async () => {
+test("backgrounding aborts active work and foregrounding reconciles it before restarting", async () => {
   using sqlite = new Database(":memory:");
   const f = fixture(sqlite);
   const manager = f.create(1);
@@ -335,14 +367,20 @@ test("an admitted transfer can finish while new work waits for the protected ses
   await tick();
   f.eligible(false);
   manager.sync();
-  f.finish("one");
   await tick();
   expect(f.calls).toEqual(["one"]);
-  expect(manager.indicator().selected?.id).toBe(id("two"));
-  expect(manager.indicator().count).toBe(1);
+  expect(f.store.load().find((job) => job.id === id("one"))).toMatchObject({
+    state: "active",
+  });
+  expect(f.held.size).toBe(0);
   f.eligible(true);
   manager.sync();
   await tick();
+  expect(f.calls).toEqual(["one", "one"]);
+  expect(manager.get(id("one"))?.state).toBe("active");
+  f.finish("one");
+  await tick();
+  expect(f.calls).toEqual(["one", "one", "two"]);
   f.finish("two");
   await tick();
   expect(manager.indicator()).toEqual({ selected: undefined, count: 0 });
@@ -370,20 +408,24 @@ test("storage clear stops active work before clearing retained files and deletes
   stop();
 });
 
-test("startup attaches to native HTTP work while offline and recovers completed files without dispatching them", async () => {
+test("startup restarts retained Blossom work in foreground and recovers completed files", async () => {
   using sqlite = new Database(":memory:");
   const { store } = fixture(sqlite);
-  const http = {
+  const http: BlossomDownload = {
     kind: "http",
-    artifact: "boop-license",
-    name: "License.txt",
-    type: "text/plain",
-    total: 20,
+    artifact: "blossom",
+    hash: "a".repeat(64),
+    expectedSize: null,
+    total: null,
+    name: "blob.bin",
+    type: "application/octet-stream",
+    urls: [],
+    authors: [],
     expiresAt: null,
-  } as const;
+  };
   const row = {
     ...http,
-    id: "http:boop-license",
+    id: sourceId(http),
     state: "active",
     received: 0,
     retries: 0,
@@ -408,18 +450,21 @@ test("startup attaches to native HTTP work while offline and recovers completed 
         async status() {
           return native;
         },
-        async control() {},
-        async transfer(_item, _progress, _signal, attach) {
-          calls.push(attach ? "attached" : "started");
+        async control(_item, action) {
+          calls.push(action);
+        },
+        async transfer() {
+          calls.push("started");
           return terminal.promise;
         },
       },
     });
   const manager = create();
-  manager.network(false, false);
+  manager.network(true, false);
   const stop = manager.start();
   await manager.reconcile();
-  expect(calls).toEqual(["discover:http", "attached"]);
+  await tick();
+  expect(calls).toEqual(["discover:http", "pause", "started"]);
   expect(manager.get(row.id)?.state).toBe("active");
   native = "ready";
   terminal.resolve("ready");
@@ -431,7 +476,7 @@ test("startup attaches to native HTTP work while offline and recovers completed 
   const stopReopened = reopened.start();
   await reopened.reconcile();
   expect(reopened.get(row.id)?.state).toBe("completed");
-  expect(calls).toEqual(["discover:http", "attached", "discover:http"]);
+  expect(calls).toEqual(["discover:http", "pause", "started", "discover:http"]);
   stopReopened();
 });
 
@@ -536,4 +581,100 @@ test("removal during native discovery waits for the transfer before deleting its
   expect(calls).toEqual(["discovered", "remove"]);
   expect(store.load()).toEqual([]);
   stop();
+});
+
+test("rapid background cycles drain attempts and preserve durable Blossom jobs", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const publicSource = (hash: string): BlossomDownload => ({
+    kind: "http",
+    artifact: "blossom",
+    hash,
+    expectedSize: null,
+    total: null,
+    name: "blob.bin",
+    type: "application/octet-stream",
+    urls: [],
+    authors: [],
+    expiresAt: null,
+  });
+  const first = publicSource("a".repeat(64));
+  const second = publicSource("b".repeat(64));
+  const order: string[] = [];
+  const pending = new Map<string, (state: string) => void>();
+  let eligible = true;
+  const manager = createDownloadManager({
+    store,
+    concurrency: 1,
+    eligible: () => eligible,
+    authorized: () => true,
+    transport: {
+      async status() {
+        return "unavailable";
+      },
+      async control() {},
+      async transfer(source, progress, signal) {
+        const id = sourceId(source);
+        order.push(id);
+        const { resolve, promise } = Promise.withResolvers<string>();
+        pending.set(id, resolve);
+        signal.addEventListener("abort", () => resolve("cancelled"), {
+          once: true,
+        });
+        progress({ state: "downloading", received: 18, total: 24 });
+        return promise;
+      },
+    },
+  });
+  const stop = manager.start();
+  manager.enqueue(first);
+  manager.enqueue(second);
+  manager.enqueue({ ...second, urls: [`https://alt.cdn.org/${second.hash}`] });
+  await tick();
+  eligible = false;
+  manager.sync();
+  eligible = true;
+  manager.sync();
+  eligible = false;
+  manager.sync();
+  eligible = true;
+  manager.sync();
+  await tick();
+  expect(order).toEqual([sourceId(first), sourceId(first)]);
+  expect(store.load().find((job) => job.id === sourceId(first))).toMatchObject({
+    state: "active",
+  });
+  expect(store.load().find((job) => job.id === sourceId(second))).toMatchObject(
+    {
+      state: "queued",
+      urls: [`https://alt.cdn.org/${second.hash}`],
+    },
+  );
+  pending.get(sourceId(first))?.("ready");
+  await tick();
+  expect(order).toEqual([sourceId(first), sourceId(first), sourceId(second)]);
+  stop();
+});
+
+test("explicit pause and cancel survive manager restart", async () => {
+  using sqlite = new Database(":memory:");
+  const f = fixture(sqlite);
+  const manager = f.create(2);
+  const stop = manager.start();
+  manager.enqueue(source("paused"));
+  manager.enqueue(source("cancelled"));
+  await tick();
+  await manager.pause(id("paused"));
+  await manager.cancel(id("cancelled"));
+  expect(manager.get(id("paused"))?.state).toBe("paused");
+  expect(manager.get(id("cancelled"))?.state).toBe("cancelled");
+  stop();
+
+  const reopened = f.create(2);
+  const stopReopened = reopened.start();
+  await tick();
+  expect(reopened.get(id("paused"))?.state).toBe("paused");
+  expect(reopened.get(id("cancelled"))?.state).toBe("cancelled");
+  expect(f.calls).toEqual(["paused", "cancelled"]);
+  stopReopened();
 });

@@ -1,24 +1,17 @@
 import { router } from "expo-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated, {
-  Easing,
-  cancelAnimation,
-  useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
-  withRepeat,
   withTiming,
 } from "react-native-reanimated";
-import Svg, { Circle } from "react-native-svg";
 import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 
-const Ring = Animated.createAnimatedComponent(Circle);
-const radius = 16;
-const perimeter = 2 * Math.PI * radius;
+import { DownloadProgressRing } from "./progress-ring";
 
 export function DownloadsIndicator() {
   const { downloads } = useLocal();
@@ -36,7 +29,6 @@ export function DownloadsIndicator() {
   const finishing =
     !reduceMotion && last?.state === "completed" && shown !== selectedId;
   const displayed = finishing ? last : selected;
-  const displayedId = displayed?.id;
 
   useEffect(() => {
     if (shown === selectedId) return;
@@ -45,6 +37,7 @@ export function DownloadsIndicator() {
   }, [finishing, selectedId, shown]);
 
   const visible = Boolean(selected || finishing);
+  const actionable = visible && count > 0;
   const unknown =
     displayed?.state === "active" &&
     !displayed.total &&
@@ -58,64 +51,31 @@ export function DownloadsIndicator() {
     ? 1
     : displayed?.total
       ? Math.min(0.99, displayed.received / displayed.total)
-      : unknown
-        ? 0.16
-        : 0;
+      : 0;
   const width = useSharedValue(visible ? 46 : 0);
-  const fill = useSharedValue(0);
-  const spin = useSharedValue(0);
-  const previousId = useRef(displayedId);
   const shownWidth = useAnimatedStyle(() => ({
     width: width.value,
     opacity: width.value / 46,
   }));
-  const rotation = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${spin.value}deg` }],
-  }));
-  const arc = useAnimatedProps(() => ({
-    strokeDashoffset: perimeter * (1 - fill.value),
-  }));
-
   useEffect(() => {
     width.set(
       withTiming(visible ? 46 : 0, { duration: reduceMotion ? 0 : 180 }),
     );
   }, [reduceMotion, visible, width]);
-  useEffect(() => {
-    if (previousId.current !== displayedId) fill.set(0);
-    previousId.current = displayedId;
-    fill.set(
-      withTiming(fraction, {
-        duration: reduceMotion ? 0 : 240,
-        easing: Easing.out(Easing.cubic),
-      }),
-    );
-  }, [displayedId, fill, fraction, reduceMotion]);
-  useEffect(() => {
-    spin.set(0);
-    if (unknown && !reduceMotion)
-      spin.set(
-        withRepeat(
-          withTiming(360, { duration: 1_100, easing: Easing.linear }),
-          -1,
-        ),
-      );
-    return () => cancelAnimation(spin);
-  }, [reduceMotion, spin, unknown]);
 
   return (
     <Animated.View
       style={[styles.slot, shownWidth]}
-      pointerEvents={count ? "auto" : "none"}
+      pointerEvents={actionable ? "auto" : "none"}
     >
       <Pressable
-        accessible={count > 0}
+        accessible={actionable}
         accessibilityRole="button"
         accessibilityLabel={[t("indicator", { count }), status]
           .filter(Boolean)
           .join(". ")}
         accessibilityValue={
-          displayed?.total
+          !finishing && displayed?.total
             ? { min: 0, max: 100, now: Math.round(fraction * 100) }
             : undefined
         }
@@ -125,43 +85,25 @@ export function DownloadsIndicator() {
         }}
         style={styles.button}
       >
-        <Animated.View style={[styles.ring, rotation]}>
-          <Svg width={38} height={38}>
-            <Circle
-              cx={19}
-              cy={19}
-              r={radius}
-              stroke={colors.line}
-              strokeWidth={2}
-              fill="none"
-            />
-            <Ring
-              cx={19}
-              cy={19}
-              r={radius}
-              stroke={colors.accent}
-              strokeWidth={2}
-              strokeLinecap="round"
-              fill="none"
-              strokeDasharray={[perimeter, perimeter]}
-              rotation={-90}
-              origin="19,19"
-              animatedProps={arc}
-            />
-          </Svg>
-        </Animated.View>
-        <Icon
-          name={
-            finishing
-              ? "check"
-              : paused
-                ? "pause"
-                : waiting
-                  ? "refresh"
-                  : "download"
-          }
-          size={18}
-        />
+        <DownloadProgressRing
+          key={displayed?.id}
+          size={40}
+          fraction={fraction}
+          indeterminate={unknown}
+        >
+          <Icon
+            name={
+              finishing
+                ? "check"
+                : paused
+                  ? "pause"
+                  : waiting
+                    ? "refresh"
+                    : "download"
+            }
+            size={18}
+          />
+        </DownloadProgressRing>
         {count > 1 && (
           <View
             style={[
@@ -194,7 +136,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  ring: { position: "absolute" },
   badge: {
     position: "absolute",
     top: 1,

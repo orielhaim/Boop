@@ -4,23 +4,26 @@ import { useFocusEffect } from "expo-router";
 import {
   memo,
   useCallback,
-  useEffect,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
-import Animated, {
-  useAnimatedRef,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
+import Animated, { useAnimatedRef } from "react-native-reanimated";
 import Sortable from "react-native-sortables";
 import { useAppPreferences } from "@/stores/preferences";
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { Action, Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
+import {
+  Action,
+  Icon,
+  IconButton,
+  Ink,
+  Screen,
+  tapFeedback,
+} from "@/components/ui/kit";
+import { GlassInput } from "@/components/glassyui/glass-input";
+import { blossomDownload } from "@/core/downloads/blossom";
 import {
   canReorder,
   isPending,
@@ -31,21 +34,7 @@ import { formatBytes } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
-function Progress({ fraction }: { fraction: number }) {
-  const { colors, reduceMotion } = useTheme();
-  const value = useSharedValue(fraction);
-  const style = useAnimatedStyle(() => ({ width: `${value.value * 100}%` }));
-  useEffect(() => {
-    value.set(withTiming(fraction, { duration: reduceMotion ? 0 : 240 }));
-  }, [fraction, reduceMotion, value]);
-  return (
-    <View style={[styles.track, { backgroundColor: colors.line }]}>
-      <Animated.View
-        style={[styles.fill, { backgroundColor: colors.accent }, style]}
-      />
-    </View>
-  );
-}
+import { DownloadProgressRing } from "./progress-ring";
 
 const DownloadRow = memo(function DownloadRow({
   job: initial,
@@ -129,11 +118,20 @@ const DownloadRow = memo(function DownloadRow({
       : job.type.startsWith("image/")
         ? "media"
         : "file";
-  const status = job.state === "failed" && job.issue ? t(job.issue) : t(state);
+  const status =
+    state === "completed"
+      ? null
+      : job.state === "failed" && job.issue
+        ? t(job.issue)
+        : t(state);
   const primary = completed
     ? ({ icon: "continue", label: t("open"), run: open } as const)
     : job.state === "active" || canReorder(job)
-      ? ({ icon: "pause", label: t("pause"), run: () => act("pause") } as const)
+      ? ({
+          icon: "pause",
+          label: t("pause"),
+          run: () => act("pause"),
+        } as const)
       : ({
           icon: job.state === "paused" ? "play" : "refresh",
           label: t(job.state === "paused" ? "resume" : "retry"),
@@ -148,29 +146,43 @@ const DownloadRow = memo(function DownloadRow({
 
   const summary = (
     <>
-      <View style={[styles.file, { backgroundColor: colors.accentSoft }]}>
-        <Icon name={icon} size={20} />
+      <View style={styles.fileSlot}>
+        {unfinished ? (
+          <DownloadProgressRing
+            fraction={fraction}
+            indeterminate={
+              state === "active" &&
+              job.nativeState === "downloading" &&
+              fraction === undefined
+            }
+          >
+            <Icon name={icon} size={20} />
+          </DownloadProgressRing>
+        ) : (
+          <View style={[styles.file, { backgroundColor: colors.accentSoft }]}>
+            <Icon name={icon} size={20} />
+          </View>
+        )}
       </View>
       <View style={styles.copy}>
         <Ink kind="label" numberOfLines={1}>
           {job.name || t("open")}
         </Ink>
-        <Ink
-          kind="caption"
-          numberOfLines={job.state === "failed" ? 2 : 1}
-          style={{
-            color: job.state === "failed" ? colors.danger : colors.muted,
-          }}
-        >
-          {status}
-        </Ink>
+        {status && (
+          <Ink
+            kind="caption"
+            numberOfLines={job.state === "failed" ? 2 : 1}
+            style={{
+              color: job.state === "failed" ? colors.danger : colors.muted,
+            }}
+          >
+            {status}
+          </Ink>
+        )}
         {details ? (
           <Ink kind="caption" muted numberOfLines={1} style={styles.numbers}>
             {details}
           </Ink>
-        ) : null}
-        {unfinished && fraction !== undefined && fraction > 0 ? (
-          <Progress fraction={fraction} />
         ) : null}
       </View>
     </>
@@ -199,7 +211,7 @@ const DownloadRow = memo(function DownloadRow({
       ) : (
         <View style={styles.info}>{summary}</View>
       )}
-      {!completed && (
+      {!completed && primary && (
         <RowButton
           icon={primary.icon}
           label={primary.label}
@@ -207,7 +219,7 @@ const DownloadRow = memo(function DownloadRow({
         />
       )}
       <RowButton
-        icon={unfinished ? "hangup" : "erase"}
+        icon={unfinished ? "hangup" : "trash"}
         label={t(unfinished ? "cancel" : "remove")}
         onPress={() => {
           if (unfinished) act("cancel");
@@ -306,10 +318,14 @@ export function DownloadsScreen() {
   const queue = rows.filter(canReorder);
   const editable = queue.length >= 2;
   const paused = rows.filter((job) => job.state === "paused");
+  const failed = rows.filter((job) => job.state === "failed");
   const history = rows
-    .filter((job) => !isPending(job))
+    .filter((job) => !isPending(job) && job.state !== "failed")
     .sort((a, b) => b.changedAt - a.changedAt);
   const [historyLimit, setHistoryLimit] = useState(40);
+  const [adding, setAdding] = useState(false);
+  const [link, setLink] = useState("");
+  const [invalid, setInvalid] = useState(false);
   const offline = isConnected === false;
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const release = useCallback(
@@ -342,19 +358,80 @@ export function DownloadsScreen() {
     }
   }
 
+  function addBlossomLink() {
+    const source = blossomDownload(link.trim());
+    if (!source) {
+      setInvalid(true);
+      return;
+    }
+    try {
+      downloads.enqueue(source);
+      setLink("");
+      setAdding(false);
+    } catch {
+      Alert.alert(t("actionFailed"));
+    }
+  }
+
   return (
     <Screen
       scroll={false}
-      navigationHeader={<ScreenHeader title={t("title")} />}
+      navigationHeader={
+        <ScreenHeader
+          title={t("title")}
+          action={
+            <IconButton
+              icon={adding ? "hangup" : "add"}
+              label={adding ? t("cancel", { ns: "common" }) : t("addLink")}
+              onPress={() => {
+                setAdding(!adding);
+                setLink("");
+                setInvalid(false);
+              }}
+            />
+          }
+        />
+      }
     >
       <Animated.ScrollView
         ref={scrollRef}
         style={styles.viewport}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={[
           styles.content,
           rows.length === 0 && styles.emptyContent,
         ]}
       >
+        {adding && (
+          <View style={styles.composer}>
+            <GlassInput
+              accessibilityLabel={t("addLink")}
+              placeholder={t("addLink")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              value={link}
+              onChangeText={(value) => {
+                setLink(value);
+                setInvalid(false);
+              }}
+              onSubmitEditing={addBlossomLink}
+              maxLength={2048}
+              style={{ writingDirection: "ltr" }}
+            />
+            {invalid && (
+              <Ink
+                accessibilityLiveRegion="polite"
+                style={{ color: colors.danger }}
+              >
+                {t("invalidLink")}
+              </Ink>
+            )}
+            <Action onPress={addBlossomLink} disabled={!link.trim()}>
+              {t("startDownload")}
+            </Action>
+          </View>
+        )}
         {rows.length === 0 ? (
           <View style={styles.empty}>
             <View
@@ -443,7 +520,28 @@ export function DownloadsScreen() {
                 <DownloadRow key={job.id} job={job} offline={offline} />
               ))
             )}
+            {paused.length > 0 && (
+              <Ink
+                kind="heading"
+                accessibilityRole="header"
+                style={styles.section}
+              >
+                {t("paused")}
+              </Ink>
+            )}
             {paused.map((job) => (
+              <DownloadRow key={job.id} job={job} offline={offline} />
+            ))}
+            {failed.length > 0 && (
+              <Ink
+                kind="heading"
+                accessibilityRole="header"
+                style={styles.section}
+              >
+                {t("failedSection")}
+              </Ink>
+            )}
+            {failed.slice(0, historyLimit).map((job) => (
               <DownloadRow key={job.id} job={job} offline={offline} />
             ))}
             {history.length > 0 && (
@@ -458,15 +556,15 @@ export function DownloadsScreen() {
                 {history.slice(0, historyLimit).map((job) => (
                   <DownloadRow key={job.id} job={job} offline={offline} />
                 ))}
-                {historyLimit < history.length && (
-                  <Action
-                    variant="soft"
-                    onPress={() => setHistoryLimit((count) => count + 40)}
-                  >
-                    {t("more")}
-                  </Action>
-                )}
               </>
+            )}
+            {historyLimit < Math.max(history.length, failed.length) && (
+              <Action
+                variant="soft"
+                onPress={() => setHistoryLimit((count) => count + 40)}
+              >
+                {t("more")}
+              </Action>
             )}
           </>
         )}
@@ -477,6 +575,7 @@ export function DownloadsScreen() {
 
 const styles = StyleSheet.create({
   viewport: { flex: 1 },
+  composer: { gap: space.sm },
   content: {
     paddingHorizontal: space.lg,
     paddingTop: space.md,
@@ -509,8 +608,8 @@ const styles = StyleSheet.create({
     gap: space.sm,
     paddingVertical: space.sm,
   },
+  fileSlot: { width: 42, alignItems: "center", marginStart: space.xs },
   file: {
-    marginStart: space.xs,
     width: 36,
     height: 36,
     borderRadius: 12,
@@ -525,8 +624,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  track: { height: 3, borderRadius: 2, overflow: "hidden", marginTop: 4 },
-  fill: { height: 3, borderRadius: 2 },
   numbers: { fontVariant: ["tabular-nums"] },
   empty: {
     flex: 1,

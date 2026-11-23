@@ -20,13 +20,28 @@ const marmotSource = metadata.extend({
   sender: z.string(),
   voice: voiceSourceSchema.optional(),
 });
-const httpSource = metadata.extend({
+export const blossomSource = metadata.extend({
   kind: z.literal("http"),
-  artifact: z.literal("boop-license"),
+  artifact: z.literal("blossom"),
+  hash: z.string().regex(/^[a-f0-9]{64}$/u),
+  total: z
+    .number()
+    .int()
+    .min(0)
+    .max(1024 ** 3)
+    .nullable(),
+  expectedSize: z
+    .number()
+    .int()
+    .min(0)
+    .max(1024 ** 3)
+    .nullable(),
+  urls: z.array(z.string().max(2048)).max(8),
+  authors: z.array(z.string().regex(/^[a-f0-9]{64}$/u)).max(3),
 });
 export const sourceSchema = z.discriminatedUnion("kind", [
   marmotSource,
-  httpSource,
+  blossomSource,
 ]);
 const jobFields = {
   id: z.string(),
@@ -52,12 +67,12 @@ const jobFields = {
 };
 export const jobSchema = z.discriminatedUnion("kind", [
   marmotSource.extend(jobFields),
-  httpSource.extend(jobFields),
+  blossomSource.extend(jobFields),
 ]);
 
 export type DownloadSource = z.infer<typeof sourceSchema>;
 export type MarmotDownload = z.infer<typeof marmotSource>;
-export type HttpDownload = z.infer<typeof httpSource>;
+export type BlossomDownload = z.infer<typeof blossomSource>;
 export type DownloadJob = z.infer<typeof jobSchema>;
 export type DownloadItem = DownloadJob & {
   speed: number;
@@ -70,7 +85,7 @@ export const downloadId = (target: DownloadTarget) => JSON.stringify(target);
 export const sourceId = (source: DownloadSource) =>
   source.kind === "marmot"
     ? downloadId(source.target)
-    : `http:${source.artifact}`;
+    : `http:blossom:${source.hash}`;
 
 export function isPending(job: DownloadJob) {
   return ["active", "queued", "waiting", "paused"].includes(job.state);

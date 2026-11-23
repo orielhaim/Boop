@@ -83,6 +83,7 @@ const icons = {
   forward: { ios: "arrowshape.turn.up.right", android: "forward" },
   edit: { ios: "pencil", android: "edit" },
   erase: { ios: "delete.left", android: "backspace" },
+  trash: { ios: "trash", android: "delete_outline" },
   mic: { ios: "mic.slash", android: "mic_off" },
   microphone: { ios: "mic.fill", android: "mic" },
   camera: { ios: "video.fill", android: "videocam" },

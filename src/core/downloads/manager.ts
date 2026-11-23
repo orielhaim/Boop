@@ -39,6 +39,7 @@ export function createDownloadManager({
   completed,
   concurrency = 2,
   now = Date.now,
+  random = Math.random,
 }: {
   store: Store;
   transport: DownloadTransport;
@@ -48,6 +49,7 @@ export function createDownloadManager({
   completed?: (source: DownloadSource) => void;
   concurrency?: number;
   now?: () => number;
+  random?: () => number;
 }) {
   const jobs = new Map<string, DownloadItem>(
     store
@@ -75,6 +77,9 @@ export function createDownloadManager({
     0,
   );
   let phase: "stopped" | "recovering" | "ready" = "stopped";
+  let wasEligible = false;
+  let lifecycle = 0;
+  let cleaned = false;
   let marmotClosing = false;
   let discovery: Promise<void> | undefined;
   let recovery: Promise<void> | undefined;
@@ -93,15 +98,16 @@ export function createDownloadManager({
 
   function summarize(): { selected: DownloadItem | undefined; count: number } {
     const pending = snapshot.filter(isPending);
-    const active = pending.filter((job) => job.state === "active");
+    const runnable = pending.filter((job) => job.state !== "paused");
+    const active = runnable.filter((job) => job.state === "active");
     return {
       selected:
         active.find(
           (job) => job.nativeState === "downloading" || job.verifying,
         ) ??
         active[0] ??
-        pending[0],
-      count: pending.length,
+        runnable[0],
+      count: runnable.length ? pending.length : 0,
     };
   }
 
@@ -180,7 +186,7 @@ export function createDownloadManager({
 
   function pump() {
     clearTimeout(timer);
-    if (!eligible() || clearing || phase === "stopped") return;
+    if (clearing || phase === "stopped" || !eligible()) return;
     if (phase === "recovering") {
       if (!recovery) void reconcile();
       return;
@@ -217,14 +223,14 @@ export function createDownloadManager({
       );
   }
 
-  function run(job: DownloadItem, attach = false) {
+  function run(job: DownloadItem) {
     const abort = new AbortController();
     if (job.state !== "active")
       patch(job, { state: "active", issue: undefined, nativeState: "queued" });
     let sample = { time: now(), bytes: job.received };
     const done = Promise.resolve()
       .then(async () => {
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || !eligible()) return;
         let result: string;
         try {
           result = await transport.transfer(
@@ -255,7 +261,6 @@ export function createDownloadManager({
               progressTimer ??= setTimeout(publish, 200);
             },
             abort.signal,
-            attach,
           );
         } catch {
           result = "interrupted";
@@ -291,7 +296,10 @@ export function createDownloadManager({
           const retry = interrupted && retries <= 3;
           patch(current, {
             state: retry ? "waiting" : "failed",
-            retryAt: retry ? now() + 2_000 * 2 ** (retries - 1) : 0,
+            retryAt: retry
+              ? now() +
+                Math.round(2_000 * 2 ** (retries - 1) * (0.75 + random() * 0.5))
+              : 0,
             retries,
             speed: 0,
             verifying: false,
@@ -326,6 +334,40 @@ export function createDownloadManager({
     running.set(job.id, { abort, done });
   }
 
+  function interrupt(ids: Iterable<string>) {
+    lifecycle++;
+    phase = "recovering";
+    const interrupted: DownloadItem[] = [];
+    for (const id of ids) {
+      running.get(id)?.abort.abort();
+      const job = jobs.get(id);
+      if (job?.state === "active") interrupted.push(job);
+    }
+    // Leave active rows recoverable. Only the user can put a row in Paused.
+    if (interrupted.length) {
+      try {
+        save(
+          ...interrupted.map((job) => ({
+            ...job,
+            speed: 0,
+            verifying: false,
+            nativeState: undefined,
+          })),
+        );
+      } catch {
+        // The pre-admission write already persisted each active job.
+      }
+    }
+  }
+
+  function sync() {
+    if (!runningSession()) return;
+    const foreground = eligible();
+    if (wasEligible && !foreground) interrupt(running.keys());
+    wasEligible = foreground;
+    pump();
+  }
+
   async function applyControl(
     id: string,
     action: DownloadControl,
@@ -357,6 +399,8 @@ export function createDownloadManager({
       patch(current, {
         state: action === "pause" ? "paused" : "cancelled",
         intent: undefined,
+        received:
+          action === "cancel" && current.kind === "http" ? 0 : current.received,
         speed: 0,
         verifying: false,
       });
@@ -370,6 +414,21 @@ export function createDownloadManager({
       .then(async () => {
         const job = jobs.get(id);
         if (!job || phase === "stopped" || !usable(job)) return;
+        if (
+          action === "pause" &&
+          job.kind === "marmot" &&
+          !running.has(id) &&
+          job.state !== "active"
+        ) {
+          if (canReorder(job) || job.intent === "pause")
+            patch(job, {
+              state: "paused",
+              intent: undefined,
+              speed: 0,
+              verifying: false,
+            });
+          return;
+        }
         patch(job, { intent: action });
         await discovery;
         if (!runningSession()) return;
@@ -387,17 +446,29 @@ export function createDownloadManager({
     if (recovery) return recovery;
     if (!eligible() || phase === "stopped" || clearing)
       return Promise.resolve();
-    const discover = phase === "recovering";
-    if (discover && transport.recover)
+    const generation = lifecycle;
+    const currentSession = () =>
+      runningSession() && eligible() && generation === lifecycle;
+    const recovering = phase === "recovering";
+    if (recovering && !cleaned)
       discovery = Promise.resolve()
-        .then(() => transport.recover?.(read()))
+        .then(async () => {
+          await transport.recover?.(read());
+          cleaned = true;
+        })
         .finally(() => {
           discovery = undefined;
         });
     recovery = (async () => {
-      if (discover) await discovery;
+      if (recovering)
+        await Promise.allSettled(
+          [...running.values()]
+            .filter(({ abort }) => abort.signal.aborted)
+            .map(({ done }) => done),
+        );
+      await discovery;
       for (const job of read()) {
-        if (!eligible() || !runningSession()) return;
+        if (!currentSession()) return;
         if (!usable(job) || commands.has(job.id)) continue;
         if (!allowed(job)) {
           await control(job.id, "remove").catch(() => undefined);
@@ -405,49 +476,60 @@ export function createDownloadManager({
           await control(job.id, job.intent).catch(() => undefined);
         } else if (
           !running.has(job.id) &&
-          (discover || job.state === "active" || job.state === "completed")
+          (recovering || job.state === "active" || job.state === "completed")
         ) {
           const state = await transport.status(job).catch(() => undefined);
           if (
-            !runningSession() ||
+            !currentSession() ||
             !usable(job) ||
             jobs.get(job.id) !== job ||
             commands.has(job.id)
           )
             continue;
           if (!state) continue;
-          if (state === "ready" && isPending(job)) finish(job);
-          else if (job.state === "completed" && state !== "ready")
-            forget(job.id);
-          else if (
-            inFlight.has(state) &&
-            (job.state === "active" || canReorder(job))
-          )
-            run(job, true);
-          else if (job.state === "active") {
-            patch(job, {
-              state:
-                state === "paused" && job.kind === "http" ? "paused" : "queued",
-              speed: 0,
-              verifying: false,
-            });
-          } else if (
-            (job.state === "cancelled" || job.state === "paused") &&
-            inFlight.has(state)
-          ) {
-            await control(
-              job.id,
-              job.state === "paused" ? "pause" : "cancel",
-            ).catch(() => undefined);
+          if (state === "ready" && isPending(job) && job.state !== "paused") {
+            const total = await transport.retainedSize?.(job).catch(() => null);
+            if (
+              jobs.get(job.id) !== job ||
+              !currentSession() ||
+              !usable(job) ||
+              !allowed(job) ||
+              commands.has(job.id)
+            )
+              continue;
+            finish({ ...job, total: total ?? job.total });
+          } else if (job.state === "completed" && state !== "ready") {
+            if (state === "integrity")
+              patch(job, { state: "failed", issue: "transfer" });
+            else if (!inFlight.has(state)) forget(job.id);
+          } else {
+            if (inFlight.has(state)) {
+              // A crash can leave an SDK worker registered. Stop it before a
+              // foreground attempt acquires a queue slot.
+              await transport.control(job, "pause");
+              if (
+                !currentSession() ||
+                jobs.get(job.id) !== job ||
+                commands.has(job.id)
+              )
+                continue;
+            }
+            if (job.state === "active")
+              patch(job, {
+                state: "queued",
+                speed: 0,
+                verifying: false,
+                nativeState: undefined,
+              });
           }
         }
       }
-      if (phase === "recovering") phase = "ready";
+      if (currentSession() && phase === "recovering") phase = "ready";
     })()
       .catch(() => undefined)
       .finally(() => {
         recovery = undefined;
-        if (phase === "recovering") {
+        if (phase === "recovering" && eligible() && generation === lifecycle) {
           clearTimeout(timer);
           timer = setTimeout(pump, 3_000);
         } else pump();
@@ -456,7 +538,7 @@ export function createDownloadManager({
   }
 
   function resume(id: string) {
-    if (phase === "stopped" || clearing) return;
+    if (phase === "stopped" || clearing || !eligible()) return;
     const previous = commands.get(id);
     if (previous) {
       void previous.then(() => resume(id)).catch(() => undefined);
@@ -487,19 +569,20 @@ export function createDownloadManager({
     },
     start() {
       phase = "recovering";
-      pump();
+      wasEligible = false;
+      sync();
       return () => {
+        interrupt(running.keys());
         phase = "stopped";
         clearTimeout(timer);
         clearTimeout(progressTimer);
-        for (const run of running.values()) run.abort.abort();
       };
     },
     accountReady() {
       marmotClosing = false;
       void reconcile();
     },
-    sync: pump,
+    sync,
     reconcile,
     setReordering(value: boolean) {
       reordering = value;
@@ -515,8 +598,14 @@ export function createDownloadManager({
           void control(job.id, "remove").catch(() => undefined);
     },
     network(connected: boolean, cellular: boolean) {
+      const newlyMetered = connected && cellular && (!online || !metered);
       online = connected;
       metered = cellular;
+      if (newlyMetered && eligible() && runningSession()) {
+        const admitted = read().filter((job) => running.has(job.id));
+        const excess = admitted.filter((job) => !job.verifying).slice(1);
+        if (excess.length) interrupt(excess.map(({ id }) => id));
+      }
       pump();
     },
     enqueue(source: DownloadSource) {
@@ -526,6 +615,27 @@ export function createDownloadManager({
       if (commands.has(id)) return;
       const old = jobs.get(id);
       if (old) {
+        if (
+          old.kind === "http" &&
+          old.artifact === "blossom" &&
+          source.kind === "http" &&
+          source.artifact === "blossom" &&
+          old.state !== "completed"
+        ) {
+          const urls = [...new Set([...source.urls, ...old.urls])].slice(0, 8);
+          const authors = [
+            ...new Set([...source.authors, ...old.authors]),
+          ].slice(0, 3);
+          const expectedSize = !isPending(old)
+            ? source.expectedSize
+            : old.expectedSize;
+          if (
+            expectedSize !== old.expectedSize ||
+            JSON.stringify(urls) !== JSON.stringify(old.urls) ||
+            JSON.stringify(authors) !== JSON.stringify(old.authors)
+          )
+            save({ ...old, urls, authors, expectedSize });
+        }
         if (!isPending(old) && old.state !== "completed") resume(id);
         return;
       }

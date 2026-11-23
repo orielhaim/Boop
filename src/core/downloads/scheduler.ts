@@ -1,5 +1,12 @@
 import { canReorder, type DownloadItem } from "./types";
 
+function contentKey(job: DownloadItem) {
+  if (!job.hash) return undefined;
+  return job.kind === "marmot"
+    ? `marmot:${job.hash}`
+    : `${job.artifact}:${job.hash}`;
+}
+
 export function selectDownloads(
   ordered: DownloadItem[],
   occupied: ReadonlySet<string>,
@@ -10,24 +17,21 @@ export function selectDownloads(
   const hashes = new Set(
     ordered
       .filter((job) => occupied.has(job.id))
-      .map((job) => job.hash)
+      .map(contentKey)
       .filter(Boolean),
   );
   let wakeAt = Infinity;
   for (const job of ordered) {
+    const hash = contentKey(job);
     if (job.expiresAt !== null && job.expiresAt > now)
       wakeAt = Math.min(wakeAt, job.expiresAt);
-    if (
-      !canReorder(job) ||
-      occupied.has(job.id) ||
-      (job.hash && hashes.has(job.hash))
-    )
+    if (!canReorder(job) || occupied.has(job.id) || (hash && hashes.has(hash)))
       continue;
     if (job.retryAt > now) {
       wakeAt = Math.min(wakeAt, job.retryAt);
     } else if (ready.length < capacity) {
       ready.push(job);
-      if (job.hash) hashes.add(job.hash);
+      if (hash) hashes.add(hash);
     }
   }
   return { ready, wakeAt };

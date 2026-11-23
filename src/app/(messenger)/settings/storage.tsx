@@ -355,34 +355,6 @@ export default function StorageSettings() {
           {t("storage:measurementError")}
         </SettingsDescription>
       )}
-      {snapshot && (
-        <>
-          <SettingsGroup title={t("storage:manage")}>
-            {clearable.map((key) => (
-              <SettingsRow
-                key={key}
-                title={t(`storage:clear_${key}`)}
-                disabled={disabled}
-                value={clearing === key ? t("storage:clearing") : undefined}
-                trailing={<Icon name="erase" size={18} color={colors.muted} />}
-                onPress={() => confirmClear(key)}
-              />
-            ))}
-          </SettingsGroup>
-          <SettingsDescription>{t("storage:cacheDetail")}</SettingsDescription>
-        </>
-      )}
-      {chatsEnabled && (
-        <SettingsGroup>
-          <SettingsRow
-            title={t("downloads:title")}
-            onPress={() => router.push("/downloads")}
-          />
-        </SettingsGroup>
-      )}
-      {chatsEnabled && (
-        <SpeechStorage showLink onChange={() => void refresh()} />
-      )}
       <SettingsGroup title={t("storage:network")}>
         <SettingsRow
           title={t("storage:connection")}
@@ -422,6 +394,31 @@ export default function StorageSettings() {
         <SettingsDescription>
           {t(details ? "storage:sinceBoot" : "storage:trafficUnavailable")}
         </SettingsDescription>
+      )}
+      {snapshot && (
+        <SettingsGroup title={t("storage:manage")}>
+          {clearable.map((key) => (
+            <SettingsRow
+              key={key}
+              title={t(`storage:clear_${key}`)}
+              disabled={disabled}
+              value={clearing === key ? t("storage:clearing") : undefined}
+              trailing={<Icon name="trash" size={18} color={colors.muted} />}
+              onPress={() => confirmClear(key)}
+            />
+          ))}
+        </SettingsGroup>
+      )}
+      {chatsEnabled && (
+        <SettingsGroup>
+          <SettingsRow
+            title={t("downloads:title")}
+            onPress={() => router.push("/downloads")}
+          />
+        </SettingsGroup>
+      )}
+      {chatsEnabled && (
+        <SpeechStorage showLink onChange={() => void refresh()} />
       )}
     </Screen>
   );

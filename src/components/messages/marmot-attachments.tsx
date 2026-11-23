@@ -350,7 +350,6 @@ function Attachment({
       <MessageVideo
         currentMessage={{
           ...shown,
-          _id: props.message._id,
           video: uri,
           videoNote: round,
         }}
@@ -375,7 +374,6 @@ function Attachment({
       <MessageAudio
         currentMessage={{
           ...shown,
-          _id: props.message._id,
           audio: uri,
           transcription: transcript?.text,
         }}

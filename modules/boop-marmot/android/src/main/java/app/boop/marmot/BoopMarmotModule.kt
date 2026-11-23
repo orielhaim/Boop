@@ -8,6 +8,8 @@ import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
 import android.util.AtomicFile
 import android.util.Size
+import android.os.SystemClock
+import android.util.Log
 import dev.ipf.marmotkit.*
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
@@ -21,20 +23,34 @@ import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val ATTACHMENT_STALL_TIMEOUT_MS = 180_000L
+private const val ATTACHMENT_CANCEL_TIMEOUT_MS = 10_000L
+
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
+  private var closingAccount = false
   private val attachmentAdmissions = ConcurrentHashMap<String, AtomicBoolean>()
+  private val attachmentControls = ConcurrentHashMap<String, AttachmentTransferControl>()
+  @Volatile private var downloadsForeground = true
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
     Events("windowChanged", "windowClosed", "attachmentProgress")
+    OnActivityEntersForeground { downloadsForeground = true }
+    OnActivityEntersBackground {
+      downloadsForeground = false
+      attachmentAdmissions.values.forEach { it.set(true) }
+      val controls = attachmentControls.values.toList()
+      observer.launch { controls.forEach { runCatching { it.cancel() } } }
+    }
 
     AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?, generated: Boolean ->
       lifecycle.withLock {
+        if (closingAccount) throw problem("AccountBusy")
         protocol {
           val current = session
           if (current != null) {
@@ -364,10 +380,7 @@ class BoopMarmotModule : Module() {
           draft.destroy()
           draft = updated
           MediaFileTransferControlFfi().use { control ->
-            synchronized(uploads) {
-              if (uploads.containsKey(token)) throw problem("TransferInProgress")
-              uploads[token] = control
-            }
+            registerUpload(active, token, control)
             try {
               sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to 0.0, "state" to "preparing"))
               for ((index, input) in inputs.withIndex()) {
@@ -421,10 +434,7 @@ class BoopMarmotModule : Module() {
             mediaPresentation(file["presentation"], input.mediaType))
         } + reply?.let { id -> listOf(listOf("e", id, "", "reply")) }.orEmpty()
         MediaFileTransferControlFfi().use { control ->
-          synchronized(uploads) {
-            if (uploads.containsKey(token)) throw problem("TransferInProgress")
-            uploads[token] = control
-          }
+          registerUpload(active, token, control)
           try {
             coroutineScope {
               val total = (inputs.sumOf { it.expectedSize?.toLong() ?: 0L } + draftFiles.sumOf { it.plaintextSize.toLong() }) * 3.0
@@ -539,31 +549,22 @@ class BoopMarmotModule : Module() {
       }
     }
     Function("registerAttachmentTransfer") { transfer: String ->
-      attachmentAdmissions[transfer] = AtomicBoolean()
+      val admission = AtomicBoolean()
+      attachmentAdmissions[transfer] = admission
+      if (!downloadsForeground) admission.set(true)
     }
     AsyncFunction("interruptAttachmentTransfer") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
       val admission = attachmentAdmissions[transfer] ?: return@Coroutine
       admission.set(true)
-      withSession { active ->
-        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
-        val item = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
-        item?.reference?.let { active.kit.controlAttachment(active.account, it, AttachmentControlFfi.CANCEL) }
-        Unit
-      }
+      attachmentControls[transfer]?.cancel()
     }
-    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String, attach: Boolean ->
-      val context = requireNotNull(appContext.reactContext).applicationContext
+    AsyncFunction("downloadAttachment") Coroutine { group: String, id: String, source: String, index: Int, transfer: String ->
       val admission = attachmentAdmissions[transfer] ?: throw problem("MediaUnavailable")
       try {
         withSession { active ->
           if (admission.get()) return@withSession "cancelled"
           val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
           val before = active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
-          if (attach && before?.state !in setOf(
-              AttachmentTransferStateFfi.QUEUED, AttachmentTransferStateFfi.DOWNLOADING,
-              AttachmentTransferStateFfi.VERIFYING_CIPHERTEXT, AttachmentTransferStateFfi.DECRYPTING,
-              AttachmentTransferStateFfi.VERIFYING_PLAINTEXT, AttachmentTransferStateFfi.RETRY_SCHEDULED,
-          )) return@withSession before?.state?.name?.lowercase() ?: "interrupted"
           val reference = when (before?.state) {
             AttachmentTransferStateFfi.READY -> return@withSession "ready"
             AttachmentTransferStateFfi.REMOVED, AttachmentTransferStateFfi.CLEANED_BY_SETTING,
@@ -583,15 +584,36 @@ class BoopMarmotModule : Module() {
             active.kit.controlAttachment(active.account, reference, AttachmentControlFfi.CANCEL)
             return@withSession "cancelled"
           }
-          AttachmentDownloadService.acquire(context, transfer) {
-            observer.launch { runCatching { active.kit.controlAttachment(active.account, reference, AttachmentControlFfi.CANCEL) } }
+          val control = AttachmentTransferControl(active.kit, active.account, reference)
+          attachmentControls[transfer] = control
+          if (admission.get()) {
+            control.cancel()
+            return@withSession "cancelled"
           }
           active.kit.subscribeAttachmentTransfers(active.account, group, listOf(target)).use { updates ->
+            var lastProgress = before?.takeIf { it.reference == reference }?.let { it.state.name.lowercase() to it.received }
+            var lastProgressAt = SystemClock.elapsedRealtime()
             while (true) {
-              val item = updates.next()?.items?.firstOrNull() ?: return@withSession "interrupted"
+              val remaining = (ATTACHMENT_STALL_TIMEOUT_MS - (SystemClock.elapsedRealtime() - lastProgressAt)).coerceAtLeast(1L)
+              val (timedOut, snapshot) = withTimeoutOrNull(remaining) { false to updates.next() } ?: (true to null)
+              val item = if (timedOut) {
+                active.kit.attachmentTransferSnapshot(active.account, group, listOf(target)).items.firstOrNull()
+              } else {
+                snapshot?.items?.firstOrNull()
+              }
+              if (item == null) {
+                if (admission.get()) return@withSession "cancelled"
+                control.cancel()
+                return@withSession "interrupted"
+              }
               if (item.reference != reference) return@withSession "unavailable"
               val state = item.state.name.lowercase()
-              sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to state))
+              val progress = state to item.received
+              if (progress != lastProgress) {
+                lastProgress = progress
+                lastProgressAt = SystemClock.elapsedRealtime()
+                sendEvent("attachmentProgress", mapOf("transfer" to transfer, "received" to item.received.toDouble(), "total" to item.total?.toDouble(), "state" to state))
+              }
               when (item.state) {
                 AttachmentTransferStateFfi.READY, AttachmentTransferStateFfi.FAILED, AttachmentTransferStateFfi.UNAVAILABLE,
                 AttachmentTransferStateFfi.POLICY_BLOCKED, AttachmentTransferStateFfi.REMOVED,
@@ -601,14 +623,22 @@ class BoopMarmotModule : Module() {
                   return@withSession state
                 else -> Unit
               }
+              if (timedOut) {
+                if (admission.get()) {
+                  control.cancel()
+                  return@withSession "cancelled"
+                }
+                control.cancel()
+                return@withSession "interrupted"
+              }
             }
             @Suppress("UNREACHABLE_CODE")
             "interrupted"
           }
         }
       } finally {
+        attachmentControls.remove(transfer)
         attachmentAdmissions.remove(transfer)
-        AttachmentDownloadService.release(transfer)
       }
     }
     AsyncFunction("openAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
@@ -805,30 +835,67 @@ class BoopMarmotModule : Module() {
   }
 
   private suspend fun shutdown() = withContext(NonCancellable + Dispatchers.IO) {
-    lifecycle.withLock {
-      val active = session ?: return@withLock
+    val closing = lifecycle.withLock {
+      val active = session ?: return@withLock null
+      closingAccount = true
       session = null
-      synchronized(uploads) { uploads.values.forEach { it.cancel() } }
+      active.closing = true
+      if (active.activeCalls == 0) active.callsDrained.complete(Unit)
+      synchronized(uploads) { uploads.values.toList() }.also { controls -> controls.forEach { it.cancel() } }
+      attachmentAdmissions.values.forEach { it.set(true) }
+      val transferControls = attachmentControls.values.toList()
       val open = windows.toMap()
       windows.clear()
+      Triple(active, open, transferControls)
+    } ?: return@withContext
+    val (active, open, transferControls) = closing
+    transferControls.forEach { runCatching { it.cancel() } }
+    try {
+      for ((id, window) in open) {
+        window.stop()
+        sendEvent("windowClosed", mapOf("id" to id, "code" to "AccountClosed"))
+      }
+    } finally {
+      active.callsDrained.await()
       try {
-        for ((id, window) in open) {
-          window.stop()
-          sendEvent("windowClosed", mapOf("id" to id, "code" to "AccountClosed"))
-        }
-      } finally {
         try { active.kit.shutdownAndClose() } finally { active.kit.close() }
+      } finally {
+        lifecycle.withLock { closingAccount = false }
       }
     }
   }
 
   private fun requireSession() = session ?: throw problem("AccountClosed")
-  private suspend fun <T> withSession(work: suspend (Session) -> T): T =
-    protocol { work(lifecycle.withLock { requireSession() }) }
+  private suspend fun <T> withSession(work: suspend (Session) -> T): T = protocol {
+    val active = lifecycle.withLock {
+      requireSession().also { it.activeCalls += 1 }
+    }
+    try { work(active) } finally {
+      lifecycle.withLock {
+        active.activeCalls -= 1
+        if (active.closing && active.activeCalls == 0) active.callsDrained.complete(Unit)
+      }
+    }
+  }
+  private suspend fun registerUpload(active: Session, token: String, control: MediaFileTransferControlFfi) {
+    lifecycle.withLock {
+      if (session !== active || active.closing) throw problem("AccountClosed")
+      synchronized(uploads) {
+        if (uploads.containsKey(token)) throw problem("TransferInProgress")
+        uploads[token] = control
+      }
+    }
+  }
   private suspend fun <T> withWindow(id: String, work: suspend (NativeWindow) -> T): T =
     protocol { work(lifecycle.withLock { windows[id] ?: throw problem("WindowClosed") }) }
 
-  private data class Session(val account: String, val kit: Marmot) {
+  private data class Session(
+    val account: String,
+    val kit: Marmot,
+    var activeCalls: Int = 0,
+    var closing: Boolean = false,
+    val callsDrained: CompletableDeferred<Unit> = CompletableDeferred(),
+  ) {
     fun readiness() = kit.accountSetupReadiness(account).name.lowercase()
   }
 
@@ -891,6 +958,25 @@ class BoopMarmotModule : Module() {
       MarmotAndroid.initialize(context)
       initialized = true
     }
+  }
+}
+
+private class AttachmentTransferControl(
+  private val kit: Marmot,
+  private val account: String,
+  private val reference: String,
+) {
+  private val cancellation = Mutex()
+  private var cancelled = false
+
+  suspend fun cancel(): Unit = cancellation.withLock {
+    if (cancelled) return@withLock
+    val completed = withTimeoutOrNull(ATTACHMENT_CANCEL_TIMEOUT_MS) {
+      kit.controlAttachment(account, reference, AttachmentControlFfi.CANCEL)
+      true
+    } ?: false
+    cancelled = completed
+    if (!completed) Log.w("BoopMarmot", "Attachment cancellation did not settle before its deadline")
   }
 }
 

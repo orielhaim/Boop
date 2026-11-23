@@ -160,8 +160,7 @@
           "microphonePermission": false,
           "speechRecognitionPermission": "Allow Boop to transcribe saved voice messages using on-device speech recognition."
         }
-      ],
-      "@kesha-antonov/react-native-background-downloader"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

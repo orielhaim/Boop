@@ -1,4 +1,4 @@
-import type { DownloadSource } from "./types";
+import type { BlossomDownload, DownloadSource, MarmotDownload } from "./types";
 
 export type TransferProgress = {
   state: string;
@@ -14,9 +14,9 @@ export type DownloadTransport<S extends DownloadSource = DownloadSource> = {
     source: S,
     progress: (event: TransferProgress) => void,
     signal: AbortSignal,
-    attach: boolean,
   ): Promise<string>;
   status(source: S): Promise<string | undefined>;
+  retainedSize?(source: S): Promise<number | null>;
   control(source: S, action: DownloadControl): Promise<void>;
   open?(
     source: S,
@@ -25,26 +25,39 @@ export type DownloadTransport<S extends DownloadSource = DownloadSource> = {
 };
 
 export function downloadTransports(
-  marmot: DownloadTransport<Extract<DownloadSource, { kind: "marmot" }>>,
-  http: DownloadTransport<Extract<DownloadSource, { kind: "http" }>>,
+  marmot: DownloadTransport<MarmotDownload>,
+  blossom: DownloadTransport<BlossomDownload>,
 ): DownloadTransport {
+  function apply<T>(
+    source: DownloadSource,
+    invoke: <S extends DownloadSource>(
+      transport: DownloadTransport<S>,
+      target: S,
+    ) => T,
+  ): T {
+    if (source.kind === "marmot") return invoke(marmot, source);
+    return invoke(blossom, source);
+  }
   return {
-    recover: (sources) =>
-      http.recover?.(sources.filter((s) => s.kind === "http")) ??
-      Promise.resolve(),
-    transfer: (source, progress, signal, attach) =>
-      source.kind === "marmot"
-        ? marmot.transfer(source, progress, signal, attach)
-        : http.transfer(source, progress, signal, attach),
-    status: (source) =>
-      source.kind === "marmot" ? marmot.status(source) : http.status(source),
-    control: (source, action) =>
-      source.kind === "marmot"
-        ? marmot.control(source, action)
-        : http.control(source, action),
-    open: async (source, consume) => {
-      if (source.kind === "marmot") await marmot.open?.(source, consume);
-      else await http.open?.(source, consume);
+    async recover(sources) {
+      await blossom.recover?.(
+        sources.filter((source) => source.kind === "http"),
+      );
     },
+    transfer: (source, progress, signal) =>
+      apply(source, (transport, target) =>
+        transport.transfer(target, progress, signal),
+      ),
+    status: (source) =>
+      apply(source, (transport, target) => transport.status(target)),
+    retainedSize: async (source) =>
+      apply(
+        source,
+        (transport, target) => transport.retainedSize?.(target) ?? null,
+      ),
+    control: (source, action) =>
+      apply(source, (transport, target) => transport.control(target, action)),
+    open: async (source, consume) =>
+      apply(source, (transport, target) => transport.open?.(target, consume)),
   };
 }
