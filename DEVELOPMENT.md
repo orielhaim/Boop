@@ -60,6 +60,16 @@ Android reports per-app transmitted and received bytes across all interfaces sin
 
 The interactive donut uses [Gifted Charts 1.4.83](https://www.npmjs.com/package/react-native-gifted-charts/v/1.4.83) with Boop’s existing SVG and Expo gradient dependencies. [Victory Native](https://github.com/FormidableLabs/victory-native-xl) also supports pie charts and requires adding Skia.
 
+### Downloads
+
+Rebuild the development client after native transport changes. Android has a minimum API level of 33. Add a public Blossom link in Downloads or tap the download action for a Blossom link in an accepted chat. The SDK parses BUD-10 URIs. Boop checks HTTPS URLs and discovers BUD-03 servers with the existing signed Nostr list lookup. Each native connection uses checked public DNS, including up to three HTTPS redirect hops. The checked transfer writes a resumable partial in account-scoped private storage, verifies SHA-256 incrementally, and publishes the file only after verification. This path supports resources up to 1 GiB and sends no authorization header. Authenticated encrypted attachments stay with MarmotKit.
+
+The protected React Native session owns one encrypted SQLite queue. Transfers run while Boop is active and unlocked, including during navigation. AppState changes and App Lock stop admission and interrupt running transfers while preserving their checkpoints. Interrupted rows remain eligible for automatic resume. Reopening waits for in-flight attempts to stop, checks retained files and MarmotKit snapshots, then resumes pending jobs in queue order. Cold startup uses the same reconciliation for jobs left active by process termination.
+
+Pause, Cancel and Remove use persisted user intents until native acknowledgment. Paused jobs require explicit Resume. Cancelled and failed jobs require explicit Retry. MarmotKit keeps a verified ciphertext checkpoint after interruption until expiry or pruning. Public Blossom Pause and lifecycle suspension keep a private partial. Resume uses a validated Range response or starts the file again when the origin serves a full response. A public Blossom Cancel discards the partial. Remove clears the retained file. The scheduler admits up to two transfers, with one on cellular and a native disk-headroom check for encrypted attachments.
+
+Downloads history is reachable from Settings → Storage. With the Marmot test fixture, confirm zero binary requests before Download and verify resumed ciphertext and retained plaintext after retry. Sortables owns drag and edge scrolling for pending rows. Run `bun test tests/downloads.test.ts tests/blossom-downloads.test.ts` for queue, persistence, protocol validation and fallback regressions.
+
 ### Voice transcription
 
 Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.

@@ -9,6 +9,7 @@ import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -16,12 +17,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.BufferedSink
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.Inet6Address
 import java.net.Proxy
 import java.net.URI
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -30,10 +33,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AvatarTransportModule : Module() {
   private class Job {
     val cancelled = AtomicBoolean(false)
+    @Volatile var cancelOnBackground = false
     @Volatile var call: Call? = null
+    private val publishLock = Any()
+
+    fun cancel() = synchronized(publishLock) {
+      cancelled.set(true)
+      call?.cancel()
+    }
+
+    fun publish(action: () -> Unit): Boolean = synchronized(publishLock) {
+      if (cancelled.get()) false else {
+        action()
+        true
+      }
+    }
   }
 
   private val jobs = ConcurrentHashMap<String, Job>()
+  @Volatile private var downloadsForeground = true
   private val allowedHost = Regex("(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{1,62}")
   private val localSuffix = Regex("\\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$")
   private val maxBytes = 2 * 1024 * 1024
@@ -86,19 +104,25 @@ class AvatarTransportModule : Module() {
 
     Function("available") { true }
 
+    OnActivityEntersForeground { downloadsForeground = true }
+    OnActivityEntersBackground {
+      downloadsForeground = false
+      jobs.values.filter { it.cancelOnBackground }.forEach { it.cancel() }
+    }
+
     Function("prepare") { id: String ->
       require(jobs.putIfAbsent(id, Job()) == null)
     }
 
     Function("cancel") { id: String ->
-      jobs[id]?.let {
-        it.cancelled.set(true)
-        it.call?.cancel()
-      }
+      jobs[id]?.cancel()
     }
 
     AsyncFunction("download") { id: String, url: String, output: String, expectedHash: String?, attachmentLimit: Int? ->
       download(id, url, output, expectedHash, attachmentLimit, null)
+    }
+    AsyncFunction("downloadBlossom") { id: String, url: String, output: String, expectedHash: String, expectedSize: Int? ->
+      downloadBlossom(id, url, output, expectedHash, expectedSize)
     }
     AsyncFunction("downloadNip05") { id: String, url: String, output: String ->
       download(id, url, output, null, null, false, true)
@@ -135,6 +159,192 @@ class AvatarTransportModule : Module() {
     AsyncFunction("uploadAttachment") { id: String, url: String, source: String, headers: Map<String, String>, size: Int ->
       uploadAttachment(id, url, source, headers, size)
     }
+  }
+
+  private fun downloadBlossom(id: String, url: String, output: String, expectedHash: String, expectedSize: Int?): Int {
+    val job = jobs[id] ?: throw IOException("MEDIA_OPERATION_MISSING")
+    job.cancelOnBackground = true
+    if (!downloadsForeground) job.cancel()
+    val maxBlossomBytes = 1024L * 1024 * 1024
+    val expectedBytes = expectedSize?.toLong()
+    try {
+      if (job.cancelled.get()) throw IOException("MEDIA_CANCELLED")
+      require(expectedHash.matches(Regex("[a-f0-9]{64}")) &&
+        (expectedBytes == null || expectedBytes in 0..maxBlossomBytes)) { "MEDIA_DESTINATION" }
+      var address = url.toHttpUrl()
+      require(isBlossomAddress(address)) { "MEDIA_DESTINATION" }
+      val context = appContext.reactContext ?: throw IOException("MEDIA_UNAVAILABLE")
+      val blossomRoot = File(context.filesDir.canonicalFile, "blossom-downloads")
+      val root = blossomRoot.canonicalFile
+      require(root == blossomRoot) { "MEDIA_DESTINATION" }
+      val target = File(URI(output)).canonicalFile
+      require(target.parentFile?.parentFile == root &&
+        target.parentFile?.name?.matches(Regex("[a-f0-9]{64}")) == true &&
+        target.name == "$expectedHash.bin" && expectedHash.matches(Regex("[a-f0-9]{64}"))) {
+        "MEDIA_DESTINATION"
+      }
+      if (!target.parentFile!!.exists() && !target.parentFile!!.mkdirs()) throw IOException("MEDIA_STORAGE")
+      val incoming = File(target.path + ".download")
+      require(!Files.isSymbolicLink(incoming.toPath())) { "MEDIA_DESTINATION" }
+      require(!incoming.exists() || (incoming.isFile && incoming.canonicalFile.path == incoming.absolutePath &&
+        incoming.canonicalFile.parentFile == target.parentFile)) { "MEDIA_DESTINATION" }
+      if (target.exists()) throw IOException("MEDIA_EXISTS")
+      var offset = if (incoming.isFile) incoming.length() else 0L
+      if (offset > maxBlossomBytes || (expectedBytes != null && offset > expectedBytes)) {
+        incoming.delete()
+        offset = 0
+      }
+      val digest = MessageDigest.getInstance("SHA-256")
+      if (offset > 0) incoming.inputStream().use { source ->
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+          if (job.cancelled.get()) throw IOException("MEDIA_CANCELLED")
+          val read = source.read(buffer)
+          if (read < 0) break
+          digest.update(buffer, 0, read)
+        }
+      }
+      var restarted = false
+      var redirects = 0
+      val blossomClient = attachmentClient.newBuilder().callTimeout(3600, TimeUnit.SECONDS).build()
+      while (true) {
+        if (job.cancelled.get()) throw IOException("MEDIA_CANCELLED")
+        val request = Request.Builder().url(address)
+          .header("Accept-Encoding", "identity")
+          .apply { if (offset > 0) header("Range", "bytes=$offset-") }
+          .get().build()
+        val call = blossomClient.newCall(request)
+        job.call = call
+        if (job.cancelled.get()) call.cancel()
+        val followedRedirect = call.execute().use { response ->
+          if (response.code in listOf(301, 302, 303, 307, 308)) {
+            val next = response.header("Location")?.let(address::resolve)
+            if (redirects >= 3 || next == null || !isBlossomAddress(next)) throw IOException("MEDIA_REDIRECT")
+            address = next
+            redirects += 1
+            return@use true
+          }
+          if (response.code == 404) throw IOException("MEDIA_MISSING")
+          if (offset > 0 && response.code == 200) {
+            if (restarted) throw IOException("MEDIA_RANGE")
+            incoming.delete()
+            offset = 0
+            digest.reset()
+            restarted = true
+            return@use false
+          }
+          if (offset > 0 && response.code == 416 && !restarted) {
+            incoming.delete()
+            offset = 0
+            digest.reset()
+            restarted = true
+            return@use false
+          }
+          if (response.code != if (offset > 0) 206 else 200) throw mediaHttpError(response.code)
+          val body = response.body ?: throw IOException("MEDIA_RESPONSE")
+          val total = if (response.code == 206) {
+            val range = parseContentRange(response.header("Content-Range")) ?: throw IOException("MEDIA_RANGE")
+            if (range.start != offset || range.end + 1 != range.total ||
+              body.contentLength() < 0 || range.end - range.start + 1 != body.contentLength())
+              throw IOException("MEDIA_RANGE")
+            range.total
+          } else body.contentLength().takeIf { it >= 0 }
+          if (total != null && (total > maxBlossomBytes || (expectedBytes != null && total != expectedBytes))) {
+            incoming.delete()
+            throw IOException("MEDIA_INTEGRITY")
+          }
+          try {
+            body.byteStream().use { source ->
+              val outputStream = try { FileOutputStream(incoming, offset > 0) }
+                catch (error: IOException) { throw mediaIoError(error) }
+              outputStream.use { sink ->
+              val buffer = ByteArray(64 * 1024)
+              var received = offset
+              var lastProgress = received
+              while (true) {
+                val read = source.read(buffer)
+                if (read < 0) break
+                if (job.cancelled.get()) throw IOException("MEDIA_CANCELLED")
+                received += read
+                if (received > maxBlossomBytes || (expectedBytes != null && received > expectedBytes)) {
+                  incoming.delete()
+                  throw IOException("MEDIA_TOO_LARGE")
+                }
+                digest.update(buffer, 0, read)
+                try { sink.write(buffer, 0, read) }
+                catch (error: IOException) { throw mediaIoError(error) }
+                if (received - lastProgress >= 64 * 1024 || (total != null && received == total)) {
+                  lastProgress = received
+                  sendEvent("attachmentProgress", mapOf("id" to id, "received" to received, "total" to (expectedBytes ?: total ?: -1L)))
+                }
+              }
+              try { sink.fd.sync() } catch (error: IOException) { throw mediaIoError(error) }
+              if (total != null && received != total) throw IOException("MEDIA_INTERRUPTED")
+              if (expectedBytes != null && received != expectedBytes) {
+                incoming.delete()
+                throw IOException("MEDIA_INTEGRITY")
+              }
+              val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+              if (actualHash != expectedHash) {
+                incoming.delete()
+                throw IOException("MEDIA_INTEGRITY")
+              }
+              if (!job.publish {
+                if (target.exists()) throw IOException("MEDIA_EXISTS")
+                try { Files.move(incoming.toPath(), target.toPath()) }
+                catch (_: java.nio.file.FileAlreadyExistsException) { throw IOException("MEDIA_EXISTS") }
+                catch (error: Exception) { throw mediaIoError(error, "MEDIA_PUBLISH") }
+              }) throw IOException("MEDIA_CANCELLED")
+              sendEvent("attachmentProgress", mapOf("id" to id, "received" to received, "total" to (expectedBytes ?: total ?: -1L)))
+              return target.length().toInt()
+              }
+            }
+          } catch (error: IOException) {
+            throw mediaIoError(error, "MEDIA_INTERRUPTED")
+          }
+        }
+        if (followedRedirect || (incoming.length() == 0L && offset == 0L && restarted)) continue
+        throw IOException("MEDIA_TRANSFER")
+      }
+    } finally {
+      jobs.remove(id, job)
+    }
+  }
+
+  private fun isBlossomAddress(address: HttpUrl) =
+    address.isHttps && address.port == 443 && address.username.isEmpty() &&
+      address.password.isEmpty() && allowedHost.matches(address.host) &&
+      !localSuffix.containsMatchIn(address.host)
+
+  internal data class ContentRange(val start: Long, val end: Long, val total: Long)
+
+  internal fun parseContentRange(value: String?): ContentRange? {
+    val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(value ?: "") ?: return null
+    val start = match.groupValues[1].toLongOrNull() ?: return null
+    val end = match.groupValues[2].toLongOrNull() ?: return null
+    val total = match.groupValues[3].toLongOrNull() ?: return null
+    if (total <= 0 || start > end || end >= total) return null
+    return ContentRange(start, end, total)
+  }
+
+  private fun mediaHttpError(code: Int) = IOException(
+    if (code == 408 || code == 425 || code == 429 || code in 500..599)
+      "MEDIA_HTTP_TEMPORARY_$code"
+    else "MEDIA_HTTP_PERMANENT_$code"
+  )
+
+  private fun mediaIoError(error: Exception, fallback: String = "MEDIA_STORAGE"): IOException {
+    var current: Throwable? = error
+    while (current != null) {
+      if (current is android.system.ErrnoException && current.errno == android.system.OsConstants.ENOSPC)
+        return IOException("MEDIA_STORAGE_FULL", error)
+      if (current.message?.contains("ENOSPC", ignoreCase = true) == true ||
+        current.message?.contains("No space left on device", ignoreCase = true) == true)
+        return IOException("MEDIA_STORAGE_FULL", error)
+      current = current.cause
+    }
+    return if (error is IOException && error.message?.startsWith("MEDIA_") == true) error
+      else IOException(fallback, error)
   }
 
   private fun uploadAttachment(id: String, url: String, source: String, headers: Map<String, String>, size: Int): Map<String, Any> {

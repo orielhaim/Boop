@@ -4,14 +4,34 @@ import Foundation
 import ImageIO
 import UIKit
 
+private let attachmentStallTimeout: TimeInterval = 180
+
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
   private let uploadLock = NSLock()
+  private let attachmentLock = NSLock()
+  private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
+  private var isForeground = true
+  private var foregroundGeneration: UInt64 = 0
   private var uploads: [String: MediaFileTransferControlFfi] = [:]
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
     Events("windowChanged", "windowClosed", "attachmentProgress")
+    OnAppEntersBackground {
+      let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
+        self.isForeground = false
+        self.foregroundGeneration &+= 1
+        return Array(self.attachmentAdmissions.values)
+      }
+      Task { for attempt in pending { await attempt.cancel() } }
+    }
+    OnAppBecomesActive {
+      self.attachmentLock.withLock {
+        self.isForeground = true
+        self.foregroundGeneration &+= 1
+      }
+    }
 
     AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?, generated: Bool) async throws -> String in
       try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin, generated: generated) }
@@ -472,20 +492,47 @@ public final class BoopMarmotModule: Module {
         return Double(asset.byteCount)
       }
     }
-    AsyncFunction("cancelAttachment") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
+    AsyncFunction("attachmentTransferState") { (group: String, id: String, source: String, index: UInt32) async throws -> String? in
+      try await self.withAccount { kit, account in
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first.map { wireName($0.state) }
+      }
+    }
+    AsyncFunction("controlAttachment") { (group: String, id: String, source: String, index: UInt32, action: String) async throws -> Bool in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
         guard let reference = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.reference else { return false }
-        return try await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel)
+        return try await kit.controlAttachment(accountRef: account, reference: reference, control: action == "remove" ? .remove : .cancel)
       }
     }
-    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
-      try await self.withAccount { kit, account in
+    Function("registerAttachmentTransfer") { (transfer: String) in
+      self.attachmentLock.withLock {
+        self.attachmentAdmissions[transfer] = AttachmentCancellation(
+          admitted: self.isForeground,
+          generation: self.foregroundGeneration
+        )
+      }
+    }
+    AsyncFunction("interruptAttachmentTransfer") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws in
+      _ = (group, id, source, index)
+      guard let attempt = self.attachmentLock.withLock({ self.attachmentAdmissions[transfer] }) else { return }
+      await attempt.cancel()
+    }
+    AsyncFunction("downloadAttachment") { (group: String, id: String, source: String, index: UInt32, transfer: String) async throws -> String in
+      let attempt = self.attachmentLock.withLock { self.attachmentAdmissions[transfer] }
+      defer { _ = self.attachmentLock.withLock { self.attachmentAdmissions.removeValue(forKey: transfer) } }
+      guard let attempt else { return "cancelled" }
+      let foreground = self.attachmentLock.withLock { (self.isForeground, self.foregroundGeneration) }
+      guard await attempt.start(isForeground: foreground.0, generation: foreground.1) else { return "cancelled" }
+      return try await withAttachmentAttempt(attempt) {
+        try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
         let before = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first
+        let currentForeground = self.attachmentLock.withLock { (self.isForeground, self.foregroundGeneration) }
+        guard await attempt.isAdmitted(isForeground: currentForeground.0, generation: currentForeground.1) else { return "cancelled" }
         let reference: String?
         switch before?.state {
-        case .ready: return
+        case .ready: return "ready"
         case .removed, .cleanedBySetting, .previouslyAcquiredUnavailable, .completedUnretained:
           reference = try await kit.downloadAttachmentAgain(accountRef: account, groupIdHex: group, target: target)
         case .failed, .retryExhausted, .cancelled, .storageBlocked, .paused:
@@ -499,28 +546,67 @@ public final class BoopMarmotModule: Module {
         default:
           reference = try await kit.requestExplicitAttachment(accountRef: account, groupIdHex: group, target: target)
         }
-        guard let reference else { throw problem("MediaUnavailable") }
-        let updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])
-        try await withThrowingTaskGroup(of: Void.self) { tasks in
-          tasks.addTask { [weak self] in
-            while true {
-              guard let item = try await updates.next()?.items.first, item.reference == reference else { throw problem("MediaUnavailable") }
-              self?.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) }), "state": wireName(item.state)])
-              switch item.state {
-              case .ready: return
-              case .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
-                   .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
-                throw problem("MediaUnavailable")
-              default: break
+        guard let reference else { return before.map { wireName($0.state) } ?? "unavailable" }
+        await attempt.installControl { _ = try? await kit.controlAttachment(accountRef: account, reference: reference, control: .cancel) }
+        let foregroundAfterSnapshot = self.attachmentLock.withLock { (self.isForeground, self.foregroundGeneration) }
+        guard await attempt.isAdmitted(isForeground: foregroundAfterSnapshot.0, generation: foregroundAfterSnapshot.1) else { return "cancelled" }
+        var updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])
+        var lastProgress = before.map { "\(wireName($0.state)):\($0.received)" }
+        var lastProgressAt = ProcessInfo.processInfo.systemUptime
+        while true {
+          let remaining = max(0.001, attachmentStallTimeout - (ProcessInfo.processInfo.systemUptime - lastProgressAt))
+          let timedOut: Bool
+          let snapshot: AttachmentTransferSnapshotFfi?
+          do {
+            (timedOut, snapshot) = try await nextAttachmentSnapshot(updates, timeout: remaining)
+          } catch {
+            await attempt.cancel()
+            return "interrupted"
+          }
+          guard let item = snapshot?.items.first else {
+            if timedOut {
+              updates.cancel()
+              let current = try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first
+              guard let current, current.reference == reference else {
+                await attempt.cancel()
+                return "interrupted"
               }
+              let currentKey = "\(wireName(current.state)):\(current.received)"
+              if currentKey != lastProgress {
+                lastProgress = currentKey
+                lastProgressAt = ProcessInfo.processInfo.systemUptime
+                let currentState = wireName(current.state)
+                self.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(current.received), "total": bridgeValue(current.total.map { Double($0) }), "state": currentState])
+                switch current.state {
+                case .ready, .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
+                     .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
+                  return currentState
+                default: break
+                }
+                updates = try await kit.subscribeAttachmentTransfers(accountRef: account, groupIdHex: group, targets: [target])
+                continue
+              }
+              await attempt.cancel()
+              return "interrupted"
             }
+            await attempt.cancel()
+            return "interrupted"
           }
-          tasks.addTask {
-            try await Task.sleep(for: .seconds(180))
-            throw problem("MediaTimeout")
+          guard item.reference == reference else { return "unavailable" }
+          let state = wireName(item.state)
+          let progress = "\(state):\(item.received)"
+          if progress != lastProgress {
+            lastProgress = progress
+            lastProgressAt = ProcessInfo.processInfo.systemUptime
+            self.sendEvent("attachmentProgress", ["transfer": transfer, "received": Double(item.received), "total": bridgeValue(item.total.map { Double($0) }), "state": state])
           }
-          defer { tasks.cancelAll() }
-          _ = try await tasks.next()
+          switch item.state {
+          case .ready, .failed, .unavailable, .policyBlocked, .removed, .previouslyAcquiredUnavailable,
+               .retryExhausted, .cancelled, .paused, .storageBlocked, .cleanedBySetting, .completedUnretained:
+            return state
+          default: break
+          }
+        }
         }
       }
     }
@@ -695,6 +781,105 @@ public final class BoopMarmotModule: Module {
       let account = try await runtime.account()
       return try await call(account.kit, account.key)
     }
+  }
+}
+
+private func nextAttachmentSnapshot(
+  _ updates: AttachmentTransferSubscription,
+  timeout: TimeInterval
+) async throws -> (timedOut: Bool, snapshot: AttachmentTransferSnapshotFfi?) {
+  try await withThrowingTaskGroup(of: (Bool, AttachmentTransferSnapshotFfi?).self) { group in
+    group.addTask { (false, try await updates.next()) }
+    group.addTask {
+      try await Task.sleep(for: .seconds(timeout))
+      return (true, nil)
+    }
+    guard let first = try await group.next() else { return (true, nil) }
+    if first.0 { updates.cancel() }
+    group.cancelAll()
+    return (first.0, first.1)
+  }
+}
+
+private func withAttachmentAttempt<T>(
+  _ attempt: AttachmentCancellation,
+  operation: () async throws -> T
+) async rethrows -> T {
+  do {
+    let result = try await operation()
+    await attempt.finish()
+    return result
+  } catch {
+    await attempt.finish()
+    throw error
+  }
+}
+
+private struct AttachmentCancelControl: @unchecked Sendable {
+  let run: () async -> Void
+}
+
+private actor AttachmentCancellation {
+  private let admittedAtRegistration: Bool
+  private let generationAtRegistration: UInt64
+  private var started = false
+  private var cancelled = false
+  private var finished = false
+  private var control: AttachmentCancelControl?
+  private var controlWaiter: CheckedContinuation<AttachmentCancelControl?, Never>?
+  private var cancellationTask: Task<Void, Never>?
+
+  init(admitted: Bool, generation: UInt64) {
+    admittedAtRegistration = admitted
+    generationAtRegistration = generation
+  }
+
+  func start(isForeground: Bool, generation: UInt64) -> Bool {
+    guard admittedAtRegistration, isForeground, generation == generationAtRegistration,
+          !cancelled, !finished else { return false }
+    started = true
+    return true
+  }
+
+  func isAdmitted(isForeground: Bool, generation: UInt64) -> Bool {
+    admittedAtRegistration && isForeground && generation == generationAtRegistration && !cancelled && !finished
+  }
+
+  func installControl(_ operation: @escaping () async -> Void) async {
+    let installed = AttachmentCancelControl(run: operation)
+    control = installed
+    controlWaiter?.resume(returning: installed)
+    controlWaiter = nil
+    if let cancellationTask { await cancellationTask.value }
+  }
+
+  func cancel() async {
+    guard !finished else { return }
+    cancelled = true
+    guard started else {
+      finished = true
+      return
+    }
+    if cancellationTask == nil {
+      cancellationTask = Task { [weak self] in
+        guard let operation = await self?.waitForControl() else { return }
+        await operation.run()
+      }
+    }
+    if let cancellationTask { await cancellationTask.value }
+  }
+
+  func finish() async {
+    finished = true
+    controlWaiter?.resume(returning: nil)
+    controlWaiter = nil
+    if let cancellationTask { await cancellationTask.value }
+  }
+
+  private func waitForControl() async -> AttachmentCancelControl? {
+    if let control { return control }
+    if finished { return nil }
+    return await withCheckedContinuation { controlWaiter = $0 }
   }
 }
 

@@ -25,6 +25,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   expect(baseline.journal.entries.map(({ tag }) => tag)).toEqual([
     "0000_initial",
     "0001_speech_jobs",
+    "0002_downloads",
   ]);
   expect(baseline.migrations.m0000).toBe(
     readFileSync(join(migrationsFolder, "0000_initial.sql"), "utf8"),
@@ -32,13 +33,16 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   expect(baseline.migrations.m0001).toBe(
     readFileSync(join(migrationsFolder, "0001_speech_jobs.sql"), "utf8"),
   );
+  expect(baseline.migrations.m0002).toBe(
+    readFileSync(join(migrationsFolder, "0002_downloads.sql"), "utf8"),
+  );
   const orm = drizzle(db, { schema });
   migrate(orm, { migrationsFolder });
   migrate(orm, { migrationsFolder });
   expect(db.query("PRAGMA user_version").values()).toEqual([[2]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
-  ).toEqual([[2]]);
+  ).toEqual([[3]]);
   expect(
     db
       .query(
@@ -50,6 +54,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
     "avatar_cache",
     "call_history",
     "contacts",
+    "downloads",
     "link_preview_cache",
     "nostr_profiles",
     "peer_permissions",
@@ -150,6 +155,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "add-contact",
     "chat/[key]",
     "connect",
+    "downloads",
     "person/[key]",
     "profile-photo/[key]",
     "requests",

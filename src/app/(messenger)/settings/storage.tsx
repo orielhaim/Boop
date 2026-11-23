@@ -1,7 +1,8 @@
+import { formatBytes } from "@/i18n/format";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { NetworkStateType, useNetworkState } from "expo-network";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -59,19 +60,6 @@ const connections = {
   [NetworkStateType.VPN]: "vpn",
   [NetworkStateType.OTHER]: "otherConnection",
 } as const;
-
-function formatBytes(bytes: number, locale: string) {
-  const units = ["byte", "kilobyte", "megabyte", "gigabyte", "terabyte"];
-  const index = Math.min(
-    units.length - 1,
-    Math.floor(Math.log10(Math.max(1, bytes)) / 3),
-  );
-  return new Intl.NumberFormat(locale, {
-    style: "unit",
-    unit: units[index],
-    maximumFractionDigits: index === 0 ? 0 : 1,
-  }).format(bytes / 1000 ** index);
-}
 
 type Snapshot = NativeUsage & { attachments?: number };
 type Clearable = "downloads" | "profileCache" | "linkPreviews";
@@ -233,7 +221,8 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
 export default function StorageSettings() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { marmotSession, avatars, previews, lock, speech } = useLocal();
+  const { marmotSession, avatars, previews, lock, speech, downloads } =
+    useLocal();
   const chatsEnabled = useChatsEnabled();
   const network = useNetworkState();
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -294,7 +283,7 @@ export default function StorageSettings() {
               if (key === "downloads") {
                 await marmotSession.ready();
                 if (!mayClear()) return;
-                await marmot.clearDownloads();
+                await downloads.clear(marmot.clearDownloads);
                 await speech.reconcile(true);
               } else if (key === "profileCache") {
                 avatars.clear();
@@ -366,26 +355,6 @@ export default function StorageSettings() {
           {t("storage:measurementError")}
         </SettingsDescription>
       )}
-      {snapshot && (
-        <>
-          <SettingsGroup title={t("storage:manage")}>
-            {clearable.map((key) => (
-              <SettingsRow
-                key={key}
-                title={t(`storage:clear_${key}`)}
-                disabled={disabled}
-                value={clearing === key ? t("storage:clearing") : undefined}
-                trailing={<Icon name="erase" size={18} color={colors.muted} />}
-                onPress={() => confirmClear(key)}
-              />
-            ))}
-          </SettingsGroup>
-          <SettingsDescription>{t("storage:cacheDetail")}</SettingsDescription>
-        </>
-      )}
-      {chatsEnabled && (
-        <SpeechStorage showLink onChange={() => void refresh()} />
-      )}
       <SettingsGroup title={t("storage:network")}>
         <SettingsRow
           title={t("storage:connection")}
@@ -425,6 +394,31 @@ export default function StorageSettings() {
         <SettingsDescription>
           {t(details ? "storage:sinceBoot" : "storage:trafficUnavailable")}
         </SettingsDescription>
+      )}
+      {snapshot && (
+        <SettingsGroup title={t("storage:manage")}>
+          {clearable.map((key) => (
+            <SettingsRow
+              key={key}
+              title={t(`storage:clear_${key}`)}
+              disabled={disabled}
+              value={clearing === key ? t("storage:clearing") : undefined}
+              trailing={<Icon name="trash" size={18} color={colors.muted} />}
+              onPress={() => confirmClear(key)}
+            />
+          ))}
+        </SettingsGroup>
+      )}
+      {chatsEnabled && (
+        <SettingsGroup>
+          <SettingsRow
+            title={t("downloads:title")}
+            onPress={() => router.push("/downloads")}
+          />
+        </SettingsGroup>
+      )}
+      {chatsEnabled && (
+        <SpeechStorage showLink onChange={() => void refresh()} />
       )}
     </Screen>
   );

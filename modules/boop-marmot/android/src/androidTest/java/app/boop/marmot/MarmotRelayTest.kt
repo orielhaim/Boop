@@ -448,6 +448,44 @@ class MarmotRelayTest {
       finally { recipient.kit.releaseAttachmentHandoff(reopened.lease) }
     }
     if (fixture) assertEquals(afterDownload, fixtureCall("stats"))
+    // Four native slots reserve up to two 900 MiB copies each. Devices
+    // below the reserve exercise the serial path above.
+    if (fixture && android.os.StatFs(recipient.directory.path).availableBytes > 8_000_000_000L) {
+      val parallelCaption = "Parallel download fixture"
+      val paths = (0..1).map { index ->
+        File(sender.directory, "parallel-$index.txt").apply { writeText("Parallel fixture ${UUID.randomUUID()}") }
+      }
+      val parallelRequest = MediaFileUploadRequestFfi(
+        paths.map { file ->
+          MediaFileUploadAttachmentRequestFfi(file.canonicalPath, file.length().toULong(), file.name, "text/plain", null, null)
+        },
+        parallelCaption, true, blossom, emptyList(),
+      )
+      MediaFileTransferControlFfi().use {
+        assertNotNull(sender.kit.uploadMediaFilesWithClientToken(sender.key, group, parallelRequest, it, "fixture-parallel").acceptance)
+      }
+      recipient.receives(group, sender.key, parallelCaption)
+      val parallelRow = recipient.kit.timelineMessages(recipient.key, TimelineMessageQueryFfi(group, parallelCaption, null, null, null,
+        cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 30u)).messages.single()
+      val targets = paths.indices.map { index ->
+        AttachmentLocalTargetFfi(parallelRow.messageIdHex, checkNotNull(parallelRow.sourceMessageIdHex), index.toUInt())
+      }
+      val parallelStart = fixtureCall("stats")
+      fixtureCall("pause", "POST")
+      try {
+        for (target in targets) {
+          assertNotNull(recipient.kit.requestExplicitAttachment(recipient.key, group, target))
+        }
+        await("both explicit Blossom HTTP requests start before either response finishes") {
+          fixtureCall("stats") == parallelStart + targets.size
+        }
+      } finally {
+        fixtureCall("resume", "POST")
+      }
+      await("parallel attachments are both verified and retained") {
+        recipient.kit.attachmentTransferSnapshot(recipient.key, group, targets).items.all { it.state == AttachmentTransferStateFfi.READY }
+      }
+    }
     val draftToken = "fixture-resumed-upload"
     val voice = File(sender.directory, "fixture-voice.m4a").apply { writeBytes("voice fixture".toByteArray()) }
     val video = File(sender.directory, "arbitrary-filename.mp4").apply { writeBytes("round fixture".toByteArray()) }

@@ -1,9 +1,11 @@
 import { Image } from "expo-image";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { AppState, Linking, StyleSheet, View } from "react-native";
+import { Alert, AppState, Linking, StyleSheet, View } from "react-native";
+import { router } from "expo-router";
 import { Action, Ink } from "@/components/ui/kit";
 import { firstPreviewUrl } from "@/core/messaging/link-previews";
+import { firstBlossomDownload } from "@/core/downloads/blossom";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
@@ -12,16 +14,19 @@ export function MarmotLink({
   group,
   id,
   body,
+  author,
   eligible,
 }: {
   group: string;
   id: string;
   body: string;
+  author: string;
   eligible: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { previews, lock } = useLocal();
-  const url = eligible ? firstPreviewUrl(body) : undefined;
+  const { previews, lock, downloads } = useLocal();
+  const blob = eligible ? firstBlossomDownload(body, author) : undefined;
+  const url = eligible && !blob ? firstPreviewUrl(body) : undefined;
   const subscribe = useCallback(
     (listener: () => void) =>
       url ? previews.subscribe(url, listener) : () => {},
@@ -47,6 +52,24 @@ export function MarmotLink({
   useEffect(() => {
     if (policy === "always" && !state) request(false);
   }, [policy, request, state]);
+  if (blob)
+    return (
+      <Action
+        size="sm"
+        onPress={() => {
+          if (AppState.currentState !== "active" || lock.getState().locked)
+            return;
+          try {
+            downloads.enqueue(blob);
+            router.push("/downloads");
+          } catch {
+            Alert.alert(t("downloads:actionFailed"));
+          }
+        }}
+      >
+        {t("messages:mediaDownload")}
+      </Action>
+    );
   if (!url || policy === "off") return null;
   if (typeof state !== "object") {
     return (

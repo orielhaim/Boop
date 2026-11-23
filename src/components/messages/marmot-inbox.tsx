@@ -1,3 +1,4 @@
+import { DownloadsIndicator } from "@/components/downloads/indicator";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
@@ -233,6 +234,9 @@ export function MarmotInbox({
         isTopInsetApplied={!invitations}
         isSortEnabled={false}
         isSearchEnabled={!invitations}
+        renderHeaderRight={
+          invitations || archived ? undefined : renderDownloadsIndicator
+        }
         filterChat={() => true}
         onSearchChange={setSearch}
         dateFormat={kit.locale === "he" ? "D.M.YY" : undefined}
@@ -456,3 +460,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
   },
 });
+
+function renderDownloadsIndicator() {
+  return <DownloadsIndicator />;
+}

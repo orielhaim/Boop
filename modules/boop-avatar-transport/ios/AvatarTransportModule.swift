@@ -7,16 +7,32 @@ import Network
 import UniformTypeIdentifiers
 
 private enum AvatarTransferError: Error {
-  case unavailable, destination, response, image, size, hash, missing
+  case unavailable, destination, response, image, size, hash, missing, status(Int), range, publish, exists, storageFull
 }
 
 public final class AvatarTransportModule: Module {
   private let lock = NSLock()
   private var jobs: [String: DownloadJob] = [:]
+  private var isForeground = true
+  private var foregroundGeneration: UInt64 = 0
 
   public func definition() -> ModuleDefinition {
     Name("BoopAvatarTransport")
     Events("attachmentProgress", "uploadProgress")
+    OnAppEntersBackground {
+      let pending = self.lock.withLock { () -> [DownloadJob] in
+        self.isForeground = false
+        self.foregroundGeneration &+= 1
+        return self.jobs.values.filter(\.cancelOnBackground)
+      }
+      pending.forEach { $0.cancel() }
+    }
+    OnAppBecomesActive {
+      self.lock.withLock {
+        self.isForeground = true
+        self.foregroundGeneration &+= 1
+      }
+    }
 
     Function("available") {
       if #available(iOS 17.0, *) { return true }
@@ -27,7 +43,7 @@ public final class AvatarTransportModule: Module {
       self.lock.lock()
       defer { self.lock.unlock() }
       guard self.jobs[id] == nil else { throw AvatarTransferError.unavailable }
-      self.jobs[id] = DownloadJob()
+      self.jobs[id] = DownloadJob(foregroundGeneration: self.foregroundGeneration)
     }
 
     Function("cancel") { (id: String) in
@@ -36,6 +52,54 @@ public final class AvatarTransportModule: Module {
 
     AsyncFunction("download") { (id: String, url: String, output: String, hash: String?, attachmentLimit: Int?, promise: Promise) in
       self.transfer(id, url, output, hash, attachmentLimit, nil, promise)
+    }
+    AsyncFunction("downloadBlossom") { (id: String, url: String, output: String, hash: String, expectedSize: Int?, promise: Promise) in
+      guard let job = self.getJob(id) else {
+        promise.reject("MEDIA_OPERATION_MISSING", "Media operation missing")
+        return
+      }
+      let foreground = self.lock.withLock { (self.isForeground, self.foregroundGeneration) }
+      guard job.admitBlossom(isForeground: foreground.0, generation: foreground.1) else {
+        job.cancel()
+        self.removeJob(id)
+        promise.reject("MEDIA_CANCELLED", "Blossom download cancelled")
+        return
+      }
+      let task = Task { @MainActor in
+        defer { self.removeJob(id) }
+        do {
+          guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
+          let size = try await downloadBlossomMedia(url, output, hash, expectedSize, job) { received, total in
+            self.sendEvent("attachmentProgress", ["id": id, "received": received, "total": total])
+          }
+          promise.resolve(size)
+        } catch AvatarTransferError.missing {
+          promise.reject("MEDIA_MISSING", "Media not found")
+        } catch AvatarTransferError.hash {
+          promise.reject("MEDIA_INTEGRITY", "Media hash mismatch")
+        } catch AvatarTransferError.size {
+          promise.reject("MEDIA_TOO_LARGE", "Blossom download exceeded its limit")
+        } catch AvatarTransferError.status(let code) {
+          let kind = code == 408 || code == 425 || code == 429 || (500...599).contains(code)
+            ? "TEMPORARY" : "PERMANENT"
+          promise.reject("MEDIA_HTTP_\(kind)_\(code)", "Blossom download failed with HTTP \(code)")
+        } catch AvatarTransferError.destination {
+          promise.reject("MEDIA_DESTINATION", "Blossom destination rejected")
+        } catch AvatarTransferError.exists {
+          promise.reject("MEDIA_EXISTS", "Blossom file already exists")
+        } catch AvatarTransferError.range {
+          promise.reject("MEDIA_RANGE", "Blossom resume response was invalid")
+        } catch AvatarTransferError.publish {
+          promise.reject("MEDIA_PUBLISH", "Blossom file could not be published")
+        } catch AvatarTransferError.storageFull {
+          promise.reject("MEDIA_STORAGE_FULL", "Not enough storage for the Blossom download")
+        } catch is CancellationError {
+          promise.reject("MEDIA_CANCELLED", "Blossom download cancelled")
+        } catch {
+          promise.reject("MEDIA_DOWNLOAD", "Blossom download failed")
+        }
+      }
+      job.attach(task)
     }
     AsyncFunction("downloadNip05") { (id: String, url: String, output: String, promise: Promise) in
       self.transfer(id, url, output, nil, nil, false, promise, nip05: true)
@@ -120,8 +184,35 @@ public final class AvatarTransportModule: Module {
 
 private final class DownloadJob: @unchecked Sendable {
   private let lock = NSLock()
+  private let foregroundGeneration: UInt64
   private var cancelled = false
   private var task: Task<Void, Never>?
+  private var _cancelOnBackground = false
+
+  init(foregroundGeneration: UInt64) {
+    self.foregroundGeneration = foregroundGeneration
+  }
+
+  var cancelOnBackground: Bool {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return _cancelOnBackground
+    }
+    set {
+      lock.lock()
+      defer { lock.unlock() }
+      _cancelOnBackground = newValue
+    }
+  }
+
+  func admitBlossom(isForeground: Bool, generation: UInt64) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard isForeground, generation == foregroundGeneration, !cancelled else { return false }
+    _cancelOnBackground = true
+    return true
+  }
 
   func attach(_ task: Task<Void, Never>) {
     lock.lock()
@@ -136,6 +227,13 @@ private final class DownloadJob: @unchecked Sendable {
     if cancelled { throw CancellationError() }
   }
 
+  func publish(_ action: () throws -> Void) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    if cancelled { throw CancellationError() }
+    try action()
+  }
+
   func cancel() {
     lock.lock()
     defer { lock.unlock() }
@@ -146,6 +244,243 @@ private final class DownloadJob: @unchecked Sendable {
 
 private let imageTypes = Set(["image/jpeg", "image/png", "image/webp"])
 private let maxBytes = 2 * 1024 * 1024
+private let maxBlossomBytes: Int64 = 1024 * 1024 * 1024
+
+internal struct BlossomContentRange {
+  let start: Int64
+  let end: Int64
+  let total: Int64
+}
+
+internal func parseBlossomContentRange(_ value: String?) -> BlossomContentRange? {
+  guard let value,
+        let match = value.range(of: #"^bytes (\d+)-(\d+)/(\d+)$"#, options: .regularExpression) else {
+    return nil
+  }
+  let fields = value[match].split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "/" })
+  guard fields.count == 4, let start = Int64(fields[1]), let end = Int64(fields[2]),
+        let total = Int64(fields[3]), total > 0, start <= end, end < total else { return nil }
+  return BlossomContentRange(start: start, end: end, total: total)
+}
+
+private func isStorageFull(_ error: Error) -> Bool {
+  let value = error as NSError
+  return (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOSPC)) ||
+    (value.domain == NSCocoaErrorDomain && value.code == CocoaError.Code.fileWriteOutOfSpace.rawValue)
+}
+
+private func writeBlossomChunk(_ data: Data, to handle: FileHandle) throws {
+  do { try handle.write(contentsOf: data) }
+  catch {
+    if isStorageFull(error) { throw AvatarTransferError.storageFull }
+    throw error
+  }
+}
+
+private func blossomHost(_ url: URL) -> String? {
+  guard url.scheme == "https", let host = url.host, url.user == nil, url.password == nil,
+        url.port == nil || url.port == 443,
+        host.range(of: #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"#, options: .regularExpression) != nil,
+        host.range(of: #"\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$"#, options: .regularExpression) == nil
+  else { return nil }
+  return host
+}
+
+@available(iOS 17.0, *)
+private func downloadBlossomMedia(
+  _ input: String, _ output: String, _ hash: String, _ expectedSize: Int?, _ job: DownloadJob,
+  _ progress: (Int64, Int64) -> Void
+) async throws -> Int {
+  guard hash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+        expectedSize == nil || (expectedSize! >= 0 && Int64(expectedSize!) <= maxBlossomBytes),
+        var url = URL(string: input), blossomHost(url) != nil,
+        let destination = URL(string: output), destination.isFileURL,
+        destination.lastPathComponent == "\(hash).bin"
+  else { throw AvatarTransferError.destination }
+  try job.check()
+  let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    .standardizedFileURL.resolvingSymlinksInPath()
+  let root = documents.appendingPathComponent("blossom-downloads", isDirectory: true)
+  let target = destination.standardizedFileURL
+  let scope = target.deletingLastPathComponent()
+  guard scope.lastPathComponent.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+        scope.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL else {
+    throw AvatarTransferError.destination
+  }
+  do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
+  catch {
+    if isStorageFull(error) { throw AvatarTransferError.storageFull }
+    throw error
+  }
+  guard root.resolvingSymlinksInPath() == root.standardizedFileURL else {
+    throw AvatarTransferError.destination
+  }
+  do { try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true) }
+  catch {
+    if isStorageFull(error) { throw AvatarTransferError.storageFull }
+    throw error
+  }
+  let resolvedRoot = root.resolvingSymlinksInPath()
+  let resolvedScope = scope.resolvingSymlinksInPath()
+  guard resolvedRoot == root.standardizedFileURL,
+        resolvedScope.deletingLastPathComponent() == resolvedRoot,
+        target.deletingLastPathComponent().resolvingSymlinksInPath() == resolvedScope else {
+    throw AvatarTransferError.destination
+  }
+  if FileManager.default.fileExists(atPath: target.path) { throw AvatarTransferError.exists }
+  let incoming = target.appendingPathExtension("download")
+  if (try? FileManager.default.destinationOfSymbolicLink(atPath: incoming.path)) != nil {
+    throw AvatarTransferError.destination
+  }
+  var offset: Int64 = 0
+  if FileManager.default.fileExists(atPath: incoming.path) {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: incoming.path),
+          let size = attrs[.size] as? NSNumber else { throw AvatarTransferError.destination }
+    guard (attrs[.type] as? FileAttributeType) == .typeRegular,
+          incoming.resolvingSymlinksInPath() == incoming.standardizedFileURL else {
+      throw AvatarTransferError.destination
+    }
+    offset = size.int64Value
+  } else {
+    guard FileManager.default.createFile(atPath: incoming.path, contents: Data()) else {
+      throw AvatarTransferError.storageFull
+    }
+  }
+  if offset > maxBlossomBytes || (expectedSize != nil && offset > Int64(expectedSize!)) {
+    try? FileManager.default.removeItem(at: incoming)
+    guard FileManager.default.createFile(atPath: incoming.path, contents: Data()) else {
+      throw AvatarTransferError.storageFull
+    }
+    offset = 0
+  }
+  var digest = SHA256()
+  if offset > 0 {
+    let existing = try FileHandle(forReadingFrom: incoming)
+    defer { try? existing.close() }
+    while true {
+      try job.check()
+      let data = try existing.read(upToCount: 64 * 1024) ?? Data()
+      if data.isEmpty { break }
+      digest.update(data: data)
+    }
+  }
+
+  var restarted = false
+  var redirects = 0
+  while true {
+    try job.check()
+    guard let host = blossomHost(url) else { throw AvatarTransferError.destination }
+    let gate = try AvatarConnectGate(host: host, addresses: publicAddresses(host))
+    defer { gate.close() }
+    let endpoint = try await gate.start()
+    try Task.checkCancellation()
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 20
+    configuration.timeoutIntervalForResource = 3600
+    configuration.httpCookieStorage = nil
+    configuration.httpShouldSetCookies = false
+    configuration.urlCredentialStorage = nil
+    configuration.urlCache = nil
+    var proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
+    proxy.allowFailover = false
+    configuration.proxyConfigurations = [proxy]
+    let session = URLSession(configuration: configuration, delegate: NoAvatarRedirect(), delegateQueue: nil)
+    defer { session.invalidateAndCancel() }
+    var request = URLRequest(url: url)
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+    request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+    if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
+    let (stream, response) = try await session.bytes(for: request)
+    guard let http = response as? HTTPURLResponse else { throw AvatarTransferError.response }
+    if [301, 302, 303, 307, 308].contains(http.statusCode) {
+      guard redirects < 3, let location = http.value(forHTTPHeaderField: "Location"),
+            let next = URL(string: location, relativeTo: url)?.absoluteURL, blossomHost(next) != nil
+      else { throw AvatarTransferError.status(http.statusCode) }
+      url = next
+      redirects += 1
+      continue
+    }
+    if http.statusCode == 404 { throw AvatarTransferError.missing }
+    if offset > 0 && (http.statusCode == 200 || http.statusCode == 416) {
+      guard !restarted else { throw AvatarTransferError.range }
+      try? FileManager.default.removeItem(at: incoming)
+      guard FileManager.default.createFile(atPath: incoming.path, contents: Data()) else {
+        throw AvatarTransferError.storageFull
+      }
+      offset = 0
+      digest = SHA256()
+      restarted = true
+      continue
+    }
+    let total: Int64?
+    if http.statusCode == 206 {
+      guard let range = parseBlossomContentRange(http.value(forHTTPHeaderField: "Content-Range")),
+            range.start == offset, range.end + 1 == range.total,
+            response.expectedContentLength >= 0,
+            range.end - range.start + 1 == response.expectedContentLength else {
+        throw AvatarTransferError.range
+      }
+      total = range.total
+    } else if http.statusCode == 200 && offset == 0 {
+      total = response.expectedContentLength >= 0 ? response.expectedContentLength : nil
+    } else {
+      throw AvatarTransferError.status(http.statusCode)
+    }
+    if let total, total > maxBlossomBytes || (expectedSize != nil && total != Int64(expectedSize!)) {
+      try? FileManager.default.removeItem(at: incoming)
+      throw AvatarTransferError.hash
+    }
+    let handle = try FileHandle(forWritingTo: incoming)
+    try handle.seekToEnd()
+    defer { try? handle.close() }
+    var buffer = Data()
+    buffer.reserveCapacity(64 * 1024)
+    var received = offset
+    for try await byte in stream {
+      try job.check()
+      received += 1
+      if received > maxBlossomBytes || (expectedSize != nil && received > Int64(expectedSize!)) {
+        try? FileManager.default.removeItem(at: incoming)
+        throw AvatarTransferError.size
+      }
+      buffer.append(byte)
+      if buffer.count == 64 * 1024 {
+        digest.update(data: buffer)
+        try writeBlossomChunk(buffer, to: handle)
+        buffer.removeAll(keepingCapacity: true)
+        progress(received, Int64(expectedSize ?? Int(total ?? -1)))
+      }
+    }
+    if !buffer.isEmpty {
+      digest.update(data: buffer)
+      try writeBlossomChunk(buffer, to: handle)
+    }
+    do { try handle.synchronize() }
+    catch {
+      if isStorageFull(error) { throw AvatarTransferError.storageFull }
+      throw error
+    }
+    if let total, received != total { throw AvatarTransferError.response }
+    if expectedSize != nil && received != Int64(expectedSize!) {
+      try? FileManager.default.removeItem(at: incoming)
+      throw AvatarTransferError.hash
+    }
+    guard digest.finalize().map({ String(format: "%02x", $0) }).joined() == hash else {
+      try? FileManager.default.removeItem(at: incoming)
+      throw AvatarTransferError.hash
+    }
+    try job.publish {
+      guard !FileManager.default.fileExists(atPath: target.path) else { throw AvatarTransferError.exists }
+      do { try FileManager.default.moveItem(at: incoming, to: target) }
+      catch {
+        if isStorageFull(error) { throw AvatarTransferError.storageFull }
+        throw AvatarTransferError.publish
+      }
+    }
+    progress(received, Int64(expectedSize ?? Int(total ?? -1)))
+    return Int(received)
+  }
+}
 
 @available(iOS 17.0, *)
 private func downloadMedia(

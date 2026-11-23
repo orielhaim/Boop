@@ -14,7 +14,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
-import androidx.core.app.ServiceCompat
 import app.boop.camerapreview.R
 
 class EndCallReceiver : BroadcastReceiver() {
@@ -51,7 +50,7 @@ class OngoingCallService : Service() {
       )
       val types =
         ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-      ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(call), types)
+      startForeground(NOTIFICATION_ID, notification(call), types)
       SystemCallSession.serviceStarted(call.id, this)
     } catch (_: RuntimeException) {
       SystemCallSession.serviceFailed(call.id)

@@ -3,6 +3,17 @@ import { randomUUID } from "expo-crypto";
 import type { AvatarTransport } from "../avatars/service";
 
 type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
+  downloadBlossom?(
+    id: string,
+    url: string,
+    output: string,
+    hash: string,
+    size: number | null,
+  ): Promise<number>;
+  addListener(
+    name: "attachmentProgress",
+    listener: (event: { id: string; received: number; total: number }) => void,
+  ): { remove(): void };
   download(
     id: string,
     url: string,
@@ -29,6 +40,32 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
 const native = requireOptionalNativeModule<NativeAvatarTransport>(
   "BoopAvatarTransport",
 );
+
+export async function downloadBlossomFile(
+  url: string,
+  output: string,
+  hash: string,
+  size: number | null,
+  progress: (received: number, total?: number) => void,
+  signal: AbortSignal,
+) {
+  if (!native?.downloadBlossom) throw new Error("BLOSSOM_UNSUPPORTED");
+  if (signal.aborted) throw new Error("BLOSSOM_INTERRUPTED");
+  const id = randomUUID();
+  native.prepare(id);
+  const listener = native.addListener("attachmentProgress", (event) => {
+    if (event.id === id && !signal.aborted)
+      progress(event.received, event.total < 0 ? undefined : event.total);
+  });
+  const abort = () => native.cancel(id);
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await native.downloadBlossom(id, url, output, hash, size);
+  } finally {
+    signal.removeEventListener("abort", abort);
+    listener.remove();
+  }
+}
 
 export async function blossomCommand(
   url: string,

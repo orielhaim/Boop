@@ -103,6 +103,7 @@
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
       "./plugins/with-system-calling.js",
+      "./plugins/with-android-back-navigation.js",
       "./plugins/with-optional-android-features.js",
       [
         "@hzblj/expo-translation",
@@ -115,7 +116,9 @@
       [
         "expo-build-properties",
         {
-          "ios": { "deploymentTarget": "18.0" },
+          "ios": {
+            "deploymentTarget": "18.0"
+          },
           "android": {
             "minSdkVersion": 33,
             "targetSdkVersion": 36,

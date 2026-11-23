@@ -1,24 +1,30 @@
+import {
+  downloadId,
+  type DownloadItem,
+  type MarmotDownload,
+  type DownloadTarget,
+} from "../downloads/types";
+import type { DownloadManager } from "../downloads/manager";
 import type { marmot } from "./native";
 
 type NativeMedia = Pick<
   typeof marmot,
-  | "attachmentStatus"
-  | "downloadAttachment"
-  | "openAttachment"
-  | "releaseAttachment"
+  "attachmentStatus" | "openAttachment" | "releaseAttachment"
 >;
 type Lease = NonNullable<Awaited<ReturnType<NativeMedia["openAttachment"]>>>;
-export type AttachmentTarget = [
-  group: string,
-  message: string,
-  source: string,
-  index: number,
-];
+export type AttachmentTarget = DownloadTarget;
+export const attachmentKey = downloadId;
 
 type State =
   | {
       kind:
-        "checking" | "remote" | "cached" | "preparing" | "failed" | "cancelled";
+        | "checking"
+        | "remote"
+        | "cached"
+        | "preparing"
+        | "failed"
+        | "cancelled"
+        | "paused";
     }
   | { kind: "downloading"; progress?: number; verifying: boolean }
   | { kind: "local"; lease: Lease };
@@ -27,20 +33,24 @@ type Entry = {
   target: AttachmentTarget;
   state: State;
   listeners: Set<() => void>;
-  operation?: AbortController;
+  unsubscribe?: () => void;
+  job?: DownloadItem;
+  openAfterDownload: boolean;
 };
-
 const checking: State = { kind: "checking" };
-
-export function attachmentKey(target: AttachmentTarget) {
-  return JSON.stringify(target);
-}
 
 export function createAttachmentPresentation(
   native: NativeMedia,
-  allowed: (target: AttachmentTarget) => boolean,
+  downloads: Pick<
+    DownloadManager,
+    "get" | "subscribe" | "enqueue" | "resume" | "cancel" | "reconcile"
+  >,
+  authorize: (target: AttachmentTarget) => MarmotDownload | undefined,
 ) {
   const entries = new Map<string, Entry>();
+  const allowed = (entry: Entry) =>
+    entries.get(attachmentKey(entry.target)) === entry &&
+    Boolean(authorize(entry.target));
 
   function set(entry: Entry, state: State) {
     entry.state = state;
@@ -52,71 +62,60 @@ export function createAttachmentPresentation(
   }
 
   function dispose(entry: Entry) {
-    entry.operation?.abort();
+    entry.unsubscribe?.();
     if (entry.state.kind === "local") release(entry.state.lease);
     set(entry, checking);
   }
 
-  function start(entry: Entry, explicit: boolean, onVerified?: () => void) {
-    if (
-      entry.operation ||
-      !allowed(entry.target) ||
-      entry.state.kind === "local"
-    )
-      return;
-    const operation = new AbortController();
-    entry.operation = operation;
-    const eligible = () => !operation.signal.aborted && allowed(entry.target);
+  function prepare(entry: Entry) {
+    if (!allowed(entry) || entry.state.kind !== "cached") return;
     set(entry, { kind: "preparing" });
-    void (async () => {
-      let lease = await native.openAttachment(...entry.target);
-      if (!lease && explicit && eligible()) {
-        set(entry, { kind: "downloading", verifying: false });
-        await native.downloadAttachment(
-          ...entry.target,
-          (received, total, phase) => {
-            if (eligible())
-              set(entry, {
-                kind: "downloading",
-                progress: total
-                  ? Math.max(0, Math.min(1, received / total))
-                  : undefined,
-                verifying:
-                  phase.startsWith("verifying") || phase === "decrypting",
-              });
-          },
-          operation.signal,
-        );
-        onVerified?.();
-        if (eligible()) {
-          if (onVerified) {
-            set(entry, { kind: "cached" });
-            return;
-          }
-          set(entry, { kind: "preparing" });
-          lease = await native.openAttachment(...entry.target);
+    void native.openAttachment(...entry.target).then(
+      (lease) => {
+        if (!allowed(entry) || entry.state.kind !== "preparing") {
+          if (lease) release(lease);
+          return;
         }
-      }
-      if (!eligible()) {
-        if (lease) release(lease);
-        return;
-      }
-      set(
-        entry,
-        lease
-          ? { kind: "local", lease }
-          : { kind: explicit ? "failed" : "remote" },
-      );
-    })()
-      .catch(() => {
-        if (eligible()) set(entry, { kind: "failed" });
-      })
-      .finally(() => {
-        if (entry.operation === operation) {
-          entry.operation = undefined;
-          if (operation.signal.aborted) set(entry, { kind: "cancelled" });
-        }
+        if (!lease && entry.job?.state === "completed")
+          void downloads.reconcile();
+        set(entry, lease ? { kind: "local", lease } : { kind: "remote" });
+      },
+      () => {
+        if (allowed(entry) && entry.state.kind === "preparing")
+          set(entry, { kind: "failed" });
+      },
+    );
+  }
+
+  function update(entry: Entry, key: string) {
+    if (!allowed(entry)) return;
+    const job = downloads.get(key);
+    if (job === entry.job) return;
+    const before = entry.job;
+    entry.job = job;
+    if (!job) {
+      if (entry.state.kind === "local") release(entry.state.lease);
+      set(entry, { kind: "remote" });
+      return;
+    }
+    if (job.state === "completed") {
+      if (before?.state === "completed" || entry.state.kind === "local") return;
+      set(entry, { kind: "cached" });
+      if (entry.openAfterDownload) prepare(entry);
+      entry.openAfterDownload = false;
+    } else if (
+      job.state === "failed" ||
+      job.state === "cancelled" ||
+      job.state === "paused"
+    ) {
+      set(entry, { kind: job.state });
+    } else {
+      set(entry, {
+        kind: "downloading",
+        progress: job.total ? Math.min(1, job.received / job.total) : undefined,
+        verifying: job.verifying,
       });
+    }
   }
 
   return {
@@ -128,17 +127,20 @@ export function createAttachmentPresentation(
           target,
           state: checking,
           listeners: new Set(),
+          openAfterDownload: false,
         };
         entries.set(key, created);
         entry = created;
-        if (allowed(target))
+        created.unsubscribe = downloads.subscribe(() => update(created, key));
+        update(created, key);
+        if (allowed(created) && created.state === checking)
           void native.attachmentStatus(...target).then(
             (ready) => {
-              if (entries.get(key) === created && created.state === checking)
+              if (allowed(created) && created.state === checking)
                 set(created, { kind: ready ? "cached" : "remote" });
             },
             () => {
-              if (entries.get(key) === created && created.state === checking)
+              if (allowed(created) && created.state === checking)
                 set(created, { kind: "failed" });
             },
           );
@@ -155,31 +157,45 @@ export function createAttachmentPresentation(
     state: (key: string) => entries.get(key)?.state ?? checking,
     prepare(key: string) {
       const entry = entries.get(key);
-      if (entry?.state.kind === "cached") start(entry, false);
+      if (entry) prepare(entry);
     },
-    download(key: string, onVerified?: () => void) {
+    download(key: string, openAfterDownload = true) {
       const entry = entries.get(key);
-      if (entry) start(entry, true, onVerified);
+      if (
+        !entry ||
+        entry.state.kind === "local" ||
+        entry.state.kind === "cached"
+      )
+        return;
+      const source = authorize(entry.target);
+      if (!source) return;
+      entry.openAfterDownload = openAfterDownload;
+      try {
+        if (entry.job?.state === "paused") downloads.resume(key);
+        else downloads.enqueue(source);
+      } catch {
+        set(entry, { kind: "failed" });
+      }
     },
     cancel(key: string) {
-      entries.get(key)?.operation?.abort();
+      void downloads.cancel(key).catch(() => undefined);
     },
     async useLocalFile(
       target: AttachmentTarget,
       consume: (lease: Lease) => Promise<void>,
     ) {
-      if (!allowed(target)) return;
+      if (!authorize(target)) return;
       const lease = await native.openAttachment(...target);
       if (!lease) throw new Error("MediaUnavailable");
       try {
-        if (allowed(target)) await consume(lease);
+        if (authorize(target)) await consume(lease);
       } finally {
         release(lease);
       }
     },
     reconcile() {
       for (const [key, entry] of entries) {
-        if (!allowed(entry.target)) {
+        if (!allowed(entry)) {
           entries.delete(key);
           dispose(entry);
         }

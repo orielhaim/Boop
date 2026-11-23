@@ -738,3 +738,36 @@ index 2a2d2d4..33d0407 100644
      /// Remove only the legacy ambiguous partial-account shape so a subsequent
      /// `login` with the same nsec can recreate it. The acknowledgement is
      /// required because old local state cannot prove that no KeyPackage was
+diff --git a/crates/marmot-app/src/runtime/account_worker/attachments.rs b/crates/marmot-app/src/runtime/account_worker/attachments.rs
+--- a/crates/marmot-app/src/runtime/account_worker/attachments.rs
++++ b/crates/marmot-app/src/runtime/account_worker/attachments.rs
+@@ -1297,17 +1297,19 @@
+             );
+             return Ok(started);
+         }
+-        // Downloads run concurrently only while free space covers every one
+-        // the runtime may run writing the most any account's automatic limit
+-        // allows: none of them then needs to know what the others still
+-        // write. An explicit download may be far larger than that limit, so it
+-        // always runs alone, as a tap did with the single slot. Running alone
+-        // holds every global permit, and admission measures free space with
+-        // nothing else in flight. When others are in flight, wait for all of
+-        // them in the semaphore's FIFO queue: candidates stay queued and due,
+-        // and the wait ends the moment the last one finishes, in any account.
++        // A host-managed client can admit concurrent explicit transfers if
++        // free space covers the maximum native body for every slot. Price
++        // every candidate in that runtime against the same maximum.
++        let concurrent_bound = if host_managed {
++            limit_bound.max(crate::MAX_FILE_MEDIA_CIPHERTEXT_BYTES)
++        } else {
++            limit_bound
++        };
++        // With less space, acquire all permits before admitting a transfer so
++        // its per-job disk checks are the only ones consuming the reserve.
+         if background_permit.num_permits() < limit
+-            && (explicit || !concurrent_admission_fits(&policy, free, limit_bound))
++            && ((explicit && !host_managed)
++                || !concurrent_admission_fits(&policy, free, concurrent_bound))
+         {
+             match shared
+                 .attachment_transfer
