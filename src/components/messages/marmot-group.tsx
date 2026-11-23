@@ -28,6 +28,7 @@ import { GlassInput } from "@/components/glassyui/glass-input";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { ActionMenu } from "@/components/ui/action-menu";
+import { SaveButton } from "@/components/ui/save-button";
 import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
 import {
   Action,
@@ -1000,13 +1001,13 @@ export function MarmotGroupDetailsScreen({
     !!editedName.trim() &&
     (changedName !== null || changedDescription !== null);
 
-  function saveProfile() {
-    if (!canSaveProfile) return;
-    void update(() =>
+  async function saveProfile() {
+    if (!canSaveProfile) return false;
+    const saved = await update(() =>
       marmot.updateGroup(id, changedName, changedDescription),
-    ).then((saved) => {
-      if (saved) setProfileDraft({});
-    });
+    );
+    if (saved) setProfileDraft({});
+    return saved;
   }
 
   return (
@@ -1019,13 +1020,12 @@ export function MarmotGroupDetailsScreen({
             onBack={back}
             action={
               isGroup ? (
-                <Action
+                <SaveButton
                   size="sm"
                   disabled={!canSaveProfile}
-                  onPress={saveProfile}
-                >
-                  {t("messages:marmot.save")}
-                </Action>
+                  label={t("messages:marmot.save")}
+                  onSave={saveProfile}
+                />
               ) : undefined
             }
           />
@@ -1510,18 +1510,17 @@ function GroupMediaSettings({
         autoCapitalize="none"
         multiline
       />
-      <Action
+      <SaveButton
         size="sm"
         disabled={busy || !valid || entry === details.mediaEndpoints.join("\n")}
-        onPress={() => {
-          if (valid)
-            void update(() =>
-              marmot.updateGroupMedia(details.id, [...new Set(origins)]),
-            );
-        }}
-      >
-        {t("messages:marmot.save")}
-      </Action>
+        label={t("messages:marmot.save")}
+        onSave={() =>
+          valid &&
+          update(() =>
+            marmot.updateGroupMedia(details.id, [...new Set(origins)]),
+          )
+        }
+      />
     </View>
   );
 }

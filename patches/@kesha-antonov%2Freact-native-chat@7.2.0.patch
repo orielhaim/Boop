@@ -1,16 +1,153 @@
+diff --git a/lib/Chat/types.d.ts b/lib/Chat/types.d.ts
+--- a/lib/Chat/types.d.ts
++++ b/lib/Chat/types.d.ts
+@@ -228,7 +228,8 @@
+      * composer under an "Editing" banner; sending calls this with the message and the new text
+      * instead of `onSend`.
+      */
+-    onEditMessage?: (message: TMessage, text: string) => void;
++    /** Return false to retain the active edit and its text. */
++    onEditMessage?: (message: TMessage, text: string) => void | false;
+     /** Turns on the "Delete" action. */
+     onDeleteMessage?: (message: TMessage) => void;
+     /**
+diff --git a/lib/Chat/useComposerHandlers.d.ts b/lib/Chat/useComposerHandlers.d.ts
+--- a/lib/Chat/useComposerHandlers.d.ts
++++ b/lib/Chat/useComposerHandlers.d.ts
+@@ -13,7 +13,7 @@
+     textInputRef: RefObject<React.ComponentRef<typeof TextInput>>;
+     messagesContainerRef: RefObject<AnimatedList>;
+     actionCallbacksRef: RefObject<{
+-        onEditMessage?: (message: TMessage, text: string) => void;
++        onEditMessage?: (message: TMessage, text: string) => void | false;
+     }>;
+     textStore: Store<string>;
+     replyStore: Store<ReplyMessage | null>;
+diff --git a/lib/Chat/useComposerHandlers.js b/lib/Chat/useComposerHandlers.js
+--- a/lib/Chat/useComposerHandlers.js
++++ b/lib/Chat/useComposerHandlers.js
+@@ -136,13 +136,13 @@
+       }
+       const [edit] = messages;
+       const editingMessage = editStore.get();
+-      if (editingMessage && messages.length === 1 && typeof edit?.text === "string" && !edit.audio && !edit.video) {
+-        if (shouldResetInputToolbar === true) {
+-          resetInputToolbar();
+-        }
++      if (editingMessage) {
++        if (messages.length !== 1 || typeof edit?.text !== "string" || edit.audio || edit.video || edit.image || edit.file || edit.location)
++          return;
++        if (actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text) === false)
++          return;
+         editStore.set(null);
+         restoreDraft();
+-        actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text);
+         return;
+       }
+       const replyMessage = getReplyMessage();
+diff --git a/lib/Chat/useComposerState.js b/lib/Chat/useComposerState.js
+--- a/lib/Chat/useComposerState.js
++++ b/lib/Chat/useComposerState.js
+@@ -166,7 +166,6 @@
+   let t10;
+   if ($[27] !== editStore || $[28] !== focusComposer || $[29] !== textStore) {
+     t10 = message_1 => {
+-      clearReplyRef.current();
+       if (!isEditingRef.current) {
+         stashedDraftRef.current = textStore.get();
+       }
+diff --git a/lib/Chat/useMessageActions.d.ts b/lib/Chat/useMessageActions.d.ts
+--- a/lib/Chat/useMessageActions.d.ts
++++ b/lib/Chat/useMessageActions.d.ts
+@@ -22,7 +22,7 @@
+ }): {
+     resolvedMessageActions: MessageMenuItem[] | ((message: TMessage) => MessageMenuItem[]) | undefined;
+     actionCallbacksRef: import("react").RefObject<{
+-        onEditMessage: ((message: TMessage, text: string) => void) | undefined;
++        onEditMessage: ((message: TMessage, text: string) => void | false) | undefined;
+         onDeleteMessage: ((message: TMessage) => void) | undefined;
+         onForwardMessage: ((message: TMessage) => void) | undefined;
+         onPinMessage: ((message: TMessage) => void) | undefined;
+diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
+--- a/lib/ChatList/ChatListCell.js
++++ b/lib/ChatList/ChatListCell.js
+@@ -322,7 +322,7 @@
+                     }]} numberOfLines={1}>
+                                 {preview.attachment ? <Text style={{
+                         color: colors.attachment
+-                      }}>{preview.attachment}</Text> : preview.text}
++                      }}>{preview.attachment}</Text> : lastMessage ? preview.text : chat.emptyPreview}
+                               </Text>
+                             </>}
+                       </Animated.View>}
+diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
+--- a/lib/ChatList/types.d.ts
++++ b/lib/ChatList/types.d.ts
+@@ -20,6 +20,8 @@
+     avatar?: string;
+     /** The newest message: its preview, time and (when it is yours) its sent / read checks. */
+     lastMessage?: IMessage;
++    /** A display-only preview shown when the chat has no message, draft or typing status. */
++    emptyPreview?: string;
+     unreadCount?: number;
+     isPinned?: boolean;
+     isMuted?: boolean;
+@@ -90,6 +92,8 @@
+     onReorderPinnedChats?: (ids: TChat['id'][]) => void;
+     /** Shows the round new-chat button. */
+     onPressNewChat?: () => void;
++    /** Reports whether a host-owned new-chat button should be visible. */
++    onNewChatVisibilityChange?: (visible: boolean) => void;
+     /** Ask before deleting. Default true. */
+     isDeleteConfirmed?: boolean;
+     /** Swipe a row to archive it (needs `onArchiveChats`). Default true. */
+diff --git a/lib/InputToolbar/index.js b/lib/InputToolbar/index.js
+index 47d3f1179620bedebac695cf32b48e3c68a45cec..66d30e092907313a7a2be4551d7cede2662cc234 100644
+--- a/lib/InputToolbar/index.js
++++ b/lib/InputToolbar/index.js
+@@ -201,6 +201,11 @@ export function InputToolbar(props) {
+     hasHadTake,
+     cancelRecording
+   } = take;
++  const reportRecording = audioConfig?.onActiveChange;
++  useEffect(() => {
++    reportRecording?.(take.isTakeInProgress);
++    return () => { if (take.isTakeInProgress) reportRecording?.(false); };
++  }, [reportRecording, take.isTakeInProgress]);
+   let t13;
+   if ($[35] !== canToggleMode || $[36] !== isVoiceEnabled || $[37] !== take.isTakeInProgress) {
+     t13 = {
 diff --git a/lib/MessageAudio.d.ts b/lib/MessageAudio.d.ts
-index 04c855531c79b516493453c09e6ae2947732d654..fa14adbbfa53de6122626db0b9dc40059e9fe25c 100644
+index 04c855531c79b516493453c09e6ae2947732d654..80625db4aac9c6848d0e10f5d2ffa3794e7aa4a9 100644
 --- a/lib/MessageAudio.d.ts
 +++ b/lib/MessageAudio.d.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,23 @@
  import React from 'react';
  import { IMessage, MessageAudioProps } from './Models';
 -export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, }: Partial<MessageAudioProps<TMessage>>): React.JSX.Element | null;
-+export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, autoPlay, onPlaybackEnded, }: Partial<MessageAudioProps<TMessage>> & { autoPlay?: boolean; onPlaybackEnded?: () => void }): React.JSX.Element | null;
++export type VoiceTranscriptPlayback = {
++    player: {
++        currentTime: number;
++        playing: boolean;
++        playbackRate?: number;
++        addListener(eventName: never, listener: (event: never) => void): { remove(): void };
++    } | null;
++    seek?: (seconds: number) => void | Promise<void>;
++    color: string;
++};
++export type VoiceTranscriptionControl = {
++    isVisible: boolean;
++    isOpen: boolean;
++    isLoading: boolean;
++    label: string;
++    onPress: () => void;
++    render: (playback: VoiceTranscriptPlayback) => React.ReactNode;
++};
++export declare function MessageAudio<TMessage extends IMessage = IMessage>({ currentMessage, position, containerStyle, audioStyle, autoPlay, onPlaybackEnded, }: Partial<MessageAudioProps<TMessage>> & { autoPlay?: boolean; onPlaybackEnded?: () => void; onPlaybackStarted?: () => void; transcriptionControl?: VoiceTranscriptionControl; placeholder?: React.ReactNode }): React.JSX.Element | null;
  //# sourceMappingURL=MessageAudio.d.ts.map
 +export declare const VoiceWaveform: (props: { waveform?: number[]; color: string; playedColor?: string; progress?: number; onSeek?: (fraction: number) => void }) => React.JSX.Element;
 diff --git a/lib/MessageAudio.js b/lib/MessageAudio.js
-index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb90ee0cdaa 100644
+index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..f6411c9ed887e0f5260fc5027a9cfbbc6835cde1 100644
 --- a/lib/MessageAudio.js
 +++ b/lib/MessageAudio.js
 @@ -15,6 +15,33 @@ import { TRANSCRIBE_SLOT_WIDTH, VOICE_BUTTON_SIZE, VOICE_COLUMN_GAP, VOICE_META_
@@ -47,18 +184,39 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
  // Optional inline player. Resolved through the optional-peer registry (`src/optional`) so the bundle
  // works whether or not the consumer installed `expo-audio` (Metro treats
  // try/catch-wrapped requires as optional dependencies). When present, audio
-@@ -35,7 +62,9 @@ const ExpoAudioPlayer = t0 => {
+@@ -35,7 +62,11 @@ const ExpoAudioPlayer = t0 => {
      duration: durationProp,
      message,
      isViewOnce: t1,
 -    transcription
 +    transcription,
 +    autoPlay,
-+    onPlaybackEnded
++    onPlaybackEnded,
++    onPlaybackStarted,
++    transcriptionControl
    } = t0;
    const isViewOnce = t1 === undefined ? false : t1;
    const player = expoAudio.useAudioPlayer(uri);
-@@ -99,10 +128,6 @@ const ExpoAudioPlayer = t0 => {
+@@ -44,6 +75,9 @@ const ExpoAudioPlayer = t0 => {
+   const playerId = useId();
+   const rate = usePlaybackRate();
+   const isPlaying = !!status?.playing;
++  const onStarted = useRef(onPlaybackStarted);
++  useLayoutEffect(() => { onStarted.current = onPlaybackStarted; }, [onPlaybackStarted]);
++  useEffect(() => { if (isPlaying) onStarted.current?.(); }, [isPlaying]);
+   const duration = status?.duration || durationProp || 0;
+   const currentTime = status?.currentTime ?? 0;
+   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+@@ -52,7 +86,7 @@ const ExpoAudioPlayer = t0 => {
+     onTranscribe,
+     onViewOnceEnd
+   } = useNotePlaybackOptions(messageId);
+-  const transcribe = useTranscription(message, messageId, transcription, onTranscribe);
++  const transcribe = useTranscription(message, messageId, transcription, onTranscribe, transcriptionControl);
+   const viewOnce = useViewOnce(message, messageId, isViewOnce, onViewOnceEnd);
+   const [isHeard, setIsHeard] = useState(false);
+   let t2;
+@@ -99,10 +133,6 @@ const ExpoAudioPlayer = t0 => {
        player.setPlaybackRate?.(rate);
        player.play();
        claimPlayback(playerId, onStop);
@@ -69,7 +227,7 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
      };
      $[6] = isMediaUnread;
      $[7] = markReadRef;
-@@ -117,6 +142,21 @@ const ExpoAudioPlayer = t0 => {
+@@ -117,6 +147,21 @@ const ExpoAudioPlayer = t0 => {
      t4 = $[14];
    }
    const play = t4;
@@ -91,7 +249,7 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
    let t5;
    if ($[15] !== currentTime || $[16] !== duration || $[17] !== pause || $[18] !== play || $[19] !== status?.didJustFinish || $[20] !== status?.playing) {
      t5 = () => {
-@@ -402,6 +442,11 @@ const ExpoAudioPlayer = t0 => {
+@@ -402,9 +447,14 @@ const ExpoAudioPlayer = t0 => {
    } else {
      t38 = $[94];
    }
@@ -102,8 +260,12 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
 +  </View> : t38;
    let t39;
    if ($[95] !== styles.playCircle || $[96] !== styles.transcribeSlot || $[97] !== transcribe.isLoading || $[98] !== transcribe.isOpen || $[99] !== transcribe.isVisible || $[100] !== transcribe.onPress) {
-     t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} /></View>;
-@@ -416,10 +461,10 @@ const ExpoAudioPlayer = t0 => {
+-    t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} /></View>;
++    t39 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} label={transcribe.label} /></View>;
+     $[95] = styles.playCircle;
+     $[96] = styles.transcribeSlot;
+     $[97] = transcribe.isLoading;
+@@ -416,10 +466,10 @@ const ExpoAudioPlayer = t0 => {
      t39 = $[101];
    }
    let t40;
@@ -117,26 +279,104 @@ index 11187428d1e24b5d367bcf6ea73d4bed4cc1ac60..af78239941b8282a5349197983661fb9
      $[104] = t39;
      $[105] = t40;
    } else {
-@@ -524,7 +569,9 @@ export function MessageAudio(t0) {
-     currentMessage,
-     position: t1,
-     containerStyle,
--    audioStyle
-+    audioStyle,
-+    autoPlay,
-+    onPlaybackEnded
-   } = t0;
-   const position = t1 === undefined ? "left" : t1;
-   const uri = currentMessage?.audio;
-@@ -541,7 +588,7 @@ export function MessageAudio(t0) {
+@@ -506,6 +556,13 @@ const ExpoAudioPlayer = t0 => {
+   } else {
+     t51 = $[135];
    }
-   let t3;
-   if ($[2] !== audioStyle || $[3] !== currentMessage || $[4] !== position || $[5] !== uri) {
++  if (transcriptionControl?.render) {
++    t51 = <View style={[styles.transcription, transcribe.isOpen && styles.metaSpacer]}>
++      <TranscriptionText isOpen={transcribe.isOpen}>
++        {transcriptionControl.render({ player: transcribe.isOpen ? player : null, seek: (seconds) => player.seekTo(seconds), color: styles.transcriptionColor.color })}
++      </TranscriptionText>
++    </View>;
++  }
+   let t52;
+   if ($[136] !== t22 || $[137] !== t50 || $[138] !== t51) {
+     t52 = <View style={t22}>{t50}{t51}</View>;
+@@ -518,48 +575,42 @@ const ExpoAudioPlayer = t0 => {
+   }
+   return t52;
+ };
+-export function MessageAudio(t0) {
+-  const $ = _c(10);
+-  const {
+-    currentMessage,
+-    position: t1,
+-    containerStyle,
+-    audioStyle
+-  } = t0;
+-  const position = t1 === undefined ? "left" : t1;
++export function MessageAudio({ currentMessage, position = "left", containerStyle, audioStyle, autoPlay, onPlaybackEnded, onPlaybackStarted, transcriptionControl, placeholder }) {
+   const uri = currentMessage?.audio;
+-  if (!uri) {
+-    return null;
+-  }
+-  let t2;
+-  if ($[0] !== containerStyle) {
+-    t2 = [styles.container, containerStyle];
+-    $[0] = containerStyle;
+-    $[1] = t2;
+-  } else {
+-    t2 = $[1];
+-  }
+-  let t3;
+-  if ($[2] !== audioStyle || $[3] !== currentMessage || $[4] !== position || $[5] !== uri) {
 -    t3 = isWaveformAvailable ? <WaveformPlayer uri={uri} position={position} duration={currentMessage?.duration} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : isExpoAudioAvailable ? <ExpoAudioPlayer uri={uri} position={position} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} duration={currentMessage?.duration} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View style={styles.metaSpacer}><MediaCard kind="audio" uri={uri} position={position} style={audioStyle} /></View>;
-+    t3 = isWaveformAvailable ? <WaveformPlayer uri={uri} position={position} duration={currentMessage?.duration} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : isExpoAudioAvailable ? <ExpoAudioPlayer autoPlay={autoPlay} onPlaybackEnded={onPlaybackEnded} uri={uri} position={position} messageId={currentMessage?._id} isMediaUnread={currentMessage?.isMediaUnread} duration={currentMessage?.duration} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View style={styles.metaSpacer}><MediaCard kind="audio" uri={uri} position={position} style={audioStyle} /></View>;
-     $[2] = audioStyle;
-     $[3] = currentMessage;
-     $[4] = position;
+-    $[2] = audioStyle;
+-    $[3] = currentMessage;
+-    $[4] = position;
+-    $[5] = uri;
+-    $[6] = t3;
+-  } else {
+-    t3 = $[6];
+-  }
+-  let t4;
+-  if ($[7] !== t2 || $[8] !== t3) {
+-    t4 = <View style={t2}>{t3}</View>;
+-    $[7] = t2;
+-    $[8] = t3;
+-    $[9] = t4;
+-  } else {
+-    t4 = $[9];
+-  }
+-  return t4;
++  if (!uri) return placeholder ? <AudioPlaceholder position={position} control={transcriptionControl}>{placeholder}</AudioPlaceholder> : null;
++  const playback = { autoPlay, onPlaybackEnded, onPlaybackStarted, transcriptionControl };
++  const note = {
++    uri,
++    position,
++    messageId: currentMessage?._id,
++    duration: currentMessage?.duration,
++    isMediaUnread: currentMessage?.isMediaUnread,
++    message: currentMessage,
++    isViewOnce: !!currentMessage?.isViewOnce,
++    transcription: currentMessage?.transcription,
++  };
++  return <View style={[styles.container, containerStyle]}>
++    {isWaveformAvailable
++      ? <WaveformPlayer {...note} {...playback} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} />
++      : isExpoAudioAvailable
++        ? <ExpoAudioPlayer {...note} {...playback} />
++        : <AudioPlaceholder position={position} control={transcriptionControl}><MediaCard kind="audio" uri={uri} position={position} style={audioStyle} /></AudioPlaceholder>}
++  </View>;
++}
++function AudioPlaceholder({ position, control, children }) {
++  const styles = useThemedStyles(position === "right" ? createRightStyles : createLeftStyles);
++  if (!control?.isVisible) return children;
++  return <>
++    <View style={{ flexDirection: "row", alignItems: "center" }}>
++      <View style={{ flex: 1 }}>{children}</View>
++      <View style={styles.transcribeSlot}><TranscribeButton {...control} color={styles.playCircle.backgroundColor} /></View>
++    </View>
++    {control.render && <View style={[styles.transcription, control.isOpen && styles.metaSpacer]}>
++      <TranscriptionText isOpen={control.isOpen}>
++        {control.render({ player: null, color: styles.transcriptionColor.color })}
++      </TranscriptionText>
++    </View>}
++  </>;
+ }
+ const makeStyles = (theme, position) => {
+   const palette = getMediaPalette(theme, position);
 diff --git a/lib/MessageFile.js b/lib/MessageFile.js
 index 4a69ce80a45d1178b5626225c0c87a2f922c49d5..2688124de858f4f9f1ca825e495e50f62989ba09 100644
 --- a/lib/MessageFile.js
@@ -402,7 +642,7 @@ index 9f785dd253040679fcae376f13413faab7cfac47..393eec03a037e85fd00c5fa2c840f5ae
      $[6] = playerKey;
      $[7] = t1;
 diff --git a/lib/Models.d.ts b/lib/Models.d.ts
-index 9047ce232bd66320cd34cb767eaf904c77a57167..85b4852b2f0cf22a47cc7dfeb1fc0aa2fc529912 100644
+index 9047ce232bd66320cd34cb767eaf904c77a57167..f3bc9889f58fc4a0e6b4ccb999126500d630c209 100644
 --- a/lib/Models.d.ts
 +++ b/lib/Models.d.ts
 @@ -51,7 +51,7 @@ export interface MessageReaction {
@@ -430,10 +670,11 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..85b4852b2f0cf22a47cc7dfeb1fc0aa2
      /** Override opening the file (the system share sheet with `expo-sharing`, else `Linking`). */
      onPress?: (file: IMessageFile) => void;
  }
-@@ -217,6 +219,11 @@ export interface MessageLocationProps<TMessage extends IMessage> {
+@@ -217,6 +219,12 @@ export interface MessageLocationProps<TMessage extends IMessage> {
   * `expo-audio` peer dependency; when it is absent the mic button is hidden.
   */
  export interface AudioRecordingProps {
++    onActiveChange?: (active: boolean) => void;
 +    canUseAudioSession?: () => boolean;
 +    canReleaseAudioSession?: () => boolean;
 +    recordingFileName?: () => string;
@@ -442,7 +683,7 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..85b4852b2f0cf22a47cc7dfeb1fc0aa2
      /**
       * Show the "view once" toggle above the lock while a take is locked.
       * A take sent with it on arrives in `onSend` with `isViewOnce: true`.
-@@ -254,6 +261,9 @@ export interface VideoRecordingProps {
+@@ -254,6 +262,9 @@ export interface VideoRecordingProps {
       * off, `true` also falls back to the system camera (`expo-image-picker`) without it.
       */
      isEnabled?: boolean;
@@ -452,6 +693,18 @@ index 9047ce232bd66320cd34cb767eaf904c77a57167..85b4852b2f0cf22a47cc7dfeb1fc0aa2
      /** Max video length in seconds. Default 60. */
      maxDuration?: number;
      /** Minimum video length (ms) below which the take is discarded. Default 800. */
+diff --git a/lib/Time.js b/lib/Time.js
+--- a/lib/Time.js
++++ b/lib/Time.js
+@@ -30,6 +30,6 @@
+  * style.
+  */
+ export function formatMessageTime(message, locale, timeFormat, editedLabel) {
+-  const time = formatTimeCached(message.createdAt, locale, timeFormat);
+-  return isMessageEdited(message) ? `${editedLabel} ${time}` : time;
++  const time = formatTimeCached(message.editedAt ?? message.createdAt, locale, timeFormat);
++  return isMessageEdited(message) ? `${editedLabel} · ${time}` : time;
+ }
 diff --git a/lib/attachments/AttachmentMenu/TabPanel.js b/lib/attachments/AttachmentMenu/TabPanel.js
 index a178af0228ac1a7827a3de666e346a09ba890d3d..38b42b734aca43cf1bc56f992fd63984cb2c3b90 100644
 --- a/lib/attachments/AttachmentMenu/TabPanel.js
@@ -590,6 +843,89 @@ index 5db7c3f17dca5bf48c768211998435dc9674764f..ab817808c0e05455bc8ae0d7c2aaf58f
        runOnJS(jsTap)();
      };
      $[45] = t12;
+diff --git a/lib/components/TranscribeButton.js b/lib/components/TranscribeButton.js
+index 88a94fe0b69c4a9da91c2894107de2e28e6d5e84..8637f7d4e315909849020d079b3267e6ce31ad63 100644
+--- a/lib/components/TranscribeButton.js
++++ b/lib/components/TranscribeButton.js
+@@ -37,7 +37,7 @@ export const transcribeTapAction = ({
+  * Asking for one shows the loading outline until `transcription` arrives, and
+  * then opens it.
+  */
+-export const useTranscription = (message, messageId, transcription, onTranscribe) => {
++export const useTranscription = (message, messageId, transcription, onTranscribe, control) => {
+   const $ = _c(19);
+   const [isOpen, setIsOpen] = useState(false);
+   const [requestedFor, setRequestedFor] = useState(null);
+@@ -130,5 +130,5 @@ export const useTranscription = (message, messageId, transcription, onTranscribe
+   } else {
+     t7 = $[18];
+   }
+-  return t7;
++  return control ?? t7;
+ };
+@@ -139,12 +139,13 @@ export const useTranscription = (message, messageId, transcription, onTranscribe
+  * text is open, so the button reads as "collapse".
+  */
+ export function TranscribeButton(t0) {
+-  const $ = _c(46);
++  const $ = _c(47);
+   const {
+     isOpen,
+     isLoading,
+     onPress,
+-    color
++    color,
++    label = "transcribe"
+   } = t0;
+   const turn = useSharedValue(isOpen ? 1 : 0);
+   const loading = useSharedValue(isLoading ? 1 : 0);
+@@ -334,14 +335,15 @@ export function TranscribeButton(t0) {
+     t17 = $[39];
+   }
+   let t18;
+-  if ($[40] !== onPress || $[41] !== t11 || $[42] !== t17 || $[43] !== t7 || $[44] !== t9) {
+-    t18 = <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel="transcribe" accessibilityState={t7} hitSlop={t8} style={buttonStyles.button}>{t9}{t11}{t17}</Pressable>;
++  if ($[40] !== onPress || $[41] !== t11 || $[42] !== t17 || $[43] !== t7 || $[44] !== t9 || $[46] !== label) {
++    t18 = <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={t7} hitSlop={t8} style={buttonStyles.button}>{t9}{t11}{t17}</Pressable>;
+     $[40] = onPress;
+     $[41] = t11;
+     $[42] = t17;
+     $[43] = t7;
+     $[44] = t9;
+     $[45] = t18;
++    $[46] = label;
+   } else {
+     t18 = $[45];
+   }
+@@ -357,7 +359,8 @@ export function TranscriptionText(t0) {
+   const {
+     text,
+     isOpen,
+-    color
++    color,
++    children
+   } = t0;
+   const open = useSharedValue(isOpen ? 1 : 0);
+   const textHeight = useSharedValue(0);
+@@ -412,7 +415,7 @@ export function TranscriptionText(t0) {
+     height: textHeight.value * open.value,
+     opacity: open.value
+   }));
+-  if (!isMounted || !text) {
++  if (!isMounted || (!text && !children)) {
+     return null;
+   }
+   let t6;
+@@ -442,6 +445,9 @@ export function TranscriptionText(t0) {
+   } else {
+     t8 = $[15];
+   }
++  if (children) {
++    return <Animated.View style={[textStyles.clip, style]}><View style={textStyles.measure} onLayout={onTextLayout}>{children}</View></Animated.View>;
++  }
+   let t9;
+   if ($[16] !== onTextLayout || $[17] !== t8) {
+     t9 = <View style={textStyles.measure} onLayout={onTextLayout}>{t8}</View>;
 diff --git a/lib/components/VideoNoteCapture/VideoNoteCaptureView.js b/lib/components/VideoNoteCapture/VideoNoteCaptureView.js
 index f7328206b3a329b9e70d6af1e9c9a85444cde569..20888fbfb8631d9bd3d95d43de211ccca3f68cbd 100644
 --- a/lib/components/VideoNoteCapture/VideoNoteCaptureView.js
@@ -949,6 +1285,187 @@ index 108ce6d68646df40ee5517aa991c98c3b43f7f44..4777dd2e777c9f1cf4ab8404fdcfb244
        onStateChange?.(IDLE_STATE);
      };
      t14 = [clearTimer, onStateChange, recorderRef];
+diff --git a/lib/components/WaveformPlayer/index.js b/lib/components/WaveformPlayer/index.js
+index db6af784021180cd800ef8e69e6ca2798b25eef9..e1bb0426dbb3553f6f3c10a18534ab9f599f01da 100644
+--- a/lib/components/WaveformPlayer/index.js
++++ b/lib/components/WaveformPlayer/index.js
+@@ -1,5 +1,5 @@
+ import { c as _c } from "react/compiler-runtime";
+-import React, { useCallback, useId, useMemo, useState } from 'react';
++import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+ import { Text, View } from 'react-native';
+ import { useSharedValue } from 'react-native-reanimated';
+ import { useThemedStyles } from '../../hooks/useTheme';
+@@ -38,7 +38,11 @@ export function WaveformPlayer(t0) {
+     animateAppear,
+     message,
+     isViewOnce: t2,
+-    transcription
++    transcription,
++    transcriptionControl,
++    autoPlay,
++    onPlaybackEnded,
++    onPlaybackStarted
+   } = t0;
+   const position = t1 === undefined ? "left" : t1;
+   const isViewOnce = t2 === undefined ? false : t2;
+@@ -56,7 +60,7 @@ export function WaveformPlayer(t0) {
+     onTranscribe,
+     onViewOnceEnd
+   } = useNotePlaybackOptions(messageId);
+-  const transcribe = useTranscription(message, messageId, transcription, onTranscribe);
++  const transcribe = useTranscription(message, messageId, transcription, onTranscribe, transcriptionControl);
+   const viewOnce = useViewOnce(message, messageId, isViewOnce, onViewOnceEnd);
+   let t3;
+   if ($[0] !== durationProp || $[1] !== engine || $[2] !== message || $[3] !== playerId || $[4] !== position || $[5] !== trackWidth || $[6] !== transcribe.isVisible || $[7] !== uri) {
+@@ -120,7 +124,10 @@ export function WaveformPlayer(t0) {
+   } else {
+     t4 = $[19];
+   }
+-  const playback = useVoicePlayback(t4);
++  const playback = useVoicePlayback({ ...t4, onPlaybackEnded });
++  useEffect(() => {
++    if (autoPlay && !engine.sourceRef.current) playback.togglePlayback();
++  }, [autoPlay, uri]);
+   const {
+     isPlaying,
+     shownProgress,
+@@ -128,6 +135,7 @@ export function WaveformPlayer(t0) {
+     isUnread,
+     togglePlayback
+   } = playback;
++  useEffect(() => { if (isPlaying) onPlaybackStarted?.(); }, [isPlaying]);
+   let t5;
+   if ($[20] !== engine.durationRef || $[21] !== isDragging || $[22] !== isViewOnce || $[23] !== playback.commitSeek || $[24] !== playback.setShownProgress || $[25] !== progress || $[26] !== togglePlayback || $[27] !== trackWidthSV) {
+     t5 = {
+@@ -369,7 +377,7 @@ export function WaveformPlayer(t0) {
+   }
+   let t20;
+   if ($[99] !== styles.playCircle.backgroundColor || $[100] !== styles.transcribeSlot || $[101] !== transcribe.isLoading || $[102] !== transcribe.isOpen || $[103] !== transcribe.isVisible || $[104] !== transcribe.onPress) {
+-    t20 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} /></View>;
++    t20 = transcribe.isVisible && <View style={styles.transcribeSlot}><TranscribeButton isOpen={transcribe.isOpen} isLoading={transcribe.isLoading} onPress={transcribe.onPress} color={styles.playCircle.backgroundColor} label={transcribe.label} /></View>;
+     $[99] = styles.playCircle.backgroundColor;
+     $[100] = styles.transcribeSlot;
+     $[101] = transcribe.isLoading;
+@@ -460,6 +468,13 @@ export function WaveformPlayer(t0) {
+   } else {
+     t28 = $[137];
+   }
++  if (transcriptionControl?.render) {
++    t28 = <View style={[styles.transcription, transcribe.isOpen && styles.metaSpacer]}>
++      <TranscriptionText isOpen={transcribe.isOpen}>
++        {transcriptionControl.render({ player: transcribe.isOpen ? playback.clock : null, seek: (seconds) => { if (engine.durationRef.current > 0) playback.commitSeek(seconds / engine.durationRef.current); }, color: styles.transcriptionColor.color })}
++      </TranscriptionText>
++    </View>;
++  }
+   let t29;
+   if ($[138] !== t16 || $[139] !== t27 || $[140] !== t28) {
+     t29 = <View style={t16}>{t27}{t28}</View>;
+diff --git a/lib/components/WaveformPlayer/useVoicePlayback.js b/lib/components/WaveformPlayer/useVoicePlayback.js
+index 7db1e8b03df33abfcf1c8b724d6fac3f97835c14..fc886ac7f8829d0050b15b7e86ebe62612a3682f 100644
+--- a/lib/components/WaveformPlayer/useVoicePlayback.js
++++ b/lib/components/WaveformPlayer/useVoicePlayback.js
+@@ -1,5 +1,5 @@
+ import { c as _c } from "react/compiler-runtime";
+-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
++import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+ import { Easing, ReduceMotion, withTiming } from 'react-native-reanimated';
+ import { useRaiseToListen } from '../earpiece';
+ import { claimPlayback, releasePlayback, usePlaybackRate, usePlaylistEntry, useReportNowPlaying } from '../mediaPlayback';
+@@ -29,7 +29,8 @@ export const useVoicePlayback = t0 => {
+     durationRef,
+     pendingPlayRef,
+     playFromRef,
+-    stopRaf
++    stopRaf,
++    onPlaybackEnded
+   } = t0;
+   const [isPlaying, setIsPlaying] = useState(false);
+   const [shownProgress, setShownProgress] = useState(0);
+@@ -37,6 +38,24 @@ export const useVoicePlayback = t0 => {
+   const ctxRef = useRef(null);
+   const startedAtRef = useRef(0);
+   const rateRef = useRef(rate);
++  const endedRef = useRef(onPlaybackEnded);
++  useLayoutEffect(() => { endedRef.current = onPlaybackEnded; }, [onPlaybackEnded]);
++  const clock = useMemo(() => {
++    const listeners = new Set();
++    return {
++      currentTime: 0,
++      playing: false,
++      playbackRate: 1,
++      addListener(event, listener) {
++        if (event === "playbackStatusUpdate") listeners.add(listener);
++        return { remove: () => listeners.delete(listener) };
++      },
++      report(currentTime, playing, playbackRate) {
++        Object.assign(this, { currentTime, playing, playbackRate });
++        for (const listener of listeners) listener(this);
++      }
++    };
++  }, []);
+   let t1;
+   if ($[0] !== rate) {
+     t1 = () => {
+@@ -82,7 +101,8 @@ export const useVoicePlayback = t0 => {
+         return;
+       }
+       const elapsed = (ctx.currentTime - startedAtRef.current) * rateRef.current;
+-      const next_0 = Math.min(1, elapsed / duration);
++      const next_0 = Math.max(0, Math.min(1, elapsed / duration));
++      clock.report(next_0 * duration, next_0 < 1, rateRef.current);
+       progressRef.current = next_0;
+       if (!isDragging.get()) {
+         progress.set(next_0);
+@@ -125,8 +145,13 @@ export const useVoicePlayback = t0 => {
+   let t6;
+   if ($[14] !== sourceRef || $[15] !== stopRaf) {
+     t6 = () => {
++      if (sourceRef.current && ctxRef.current) {
++        const elapsed = (ctxRef.current.currentTime - startedAtRef.current) * rateRef.current;
++        if (durationRef.current > 0) progressRef.current = Math.max(0, Math.min(1, elapsed / durationRef.current));
++      }
+       stopSourceNode(sourceRef.current);
+       sourceRef.current = null;
++      clock.report(progressRef.current * durationRef.current, false, rateRef.current);
+       stopRaf();
+       setIsPlaying(false);
+       setShownProgress(progressRef.current);
+@@ -145,6 +170,7 @@ export const useVoicePlayback = t0 => {
+       if (reason === "replaced") {
+         setProgressValue(0);
+         setShownProgress(0);
++        clock.report(0, false, rateRef.current);
+         viewOnceRef.current.onEnd();
+       }
+     };
+@@ -189,6 +215,8 @@ export const useVoicePlayback = t0 => {
+           setShownProgress(0);
+           stopRaf();
+           viewOnceRef.current.onEnd();
++          clock.report(0, false, rateRef.current);
++          endedRef.current?.();
+           onEndedRef.current();
+         };
+         startedAtRef.current = ctx_0.currentTime - offset / rateRef.current;
+@@ -362,6 +390,7 @@ export const useVoicePlayback = t0 => {
+       const next_1 = Math.max(0, Math.min(1, fraction_0));
+       setProgressValue(next_1);
+       setShownProgress(next_1);
++      if (!sourceRef.current) clock.report(next_1 * durationRef.current, false, rateRef.current);
+       if (sourceRef.current) {
+         playFrom(next_1);
+       }
+@@ -384,7 +413,8 @@ export const useVoicePlayback = t0 => {
+       isCurrent,
+       isUnread,
+       togglePlayback,
+-      commitSeek
++      commitSeek,
++      clock
+     };
+     $[71] = commitSeek;
+     $[72] = isCurrent;
 diff --git a/lib/components/mediaViewer/MediaViewer.d.ts b/lib/components/mediaViewer/MediaViewer.d.ts
 index a02de2badcd07f21697ae8d10c7772b5e06132be..29efb7802b696c2b326d3086e4423d84c9b4be70 100644
 --- a/lib/components/mediaViewer/MediaViewer.d.ts
@@ -1061,109 +1578,24 @@ index c7958761ee01a492015656d21e4ab7e818450d46..cfd791ca06be145fefe44db2fce652e0
 +export { MediaViewerPage } from './components/mediaViewer/MediaViewerPage';
 +export { VideoTransferOverlay } from './MessageVideo/VideoTransferOverlay';
 +export { useMediaTransfer } from './components/mediaTransfer';
-diff --git a/lib/Chat/useComposerState.js b/lib/Chat/useComposerState.js
---- a/lib/Chat/useComposerState.js
-+++ b/lib/Chat/useComposerState.js
-@@ -166,7 +166,6 @@
-   let t10;
-   if ($[27] !== editStore || $[28] !== focusComposer || $[29] !== textStore) {
-     t10 = message_1 => {
--      clearReplyRef.current();
-       if (!isEditingRef.current) {
-         stashedDraftRef.current = textStore.get();
-       }
-diff --git a/lib/Chat/useComposerHandlers.js b/lib/Chat/useComposerHandlers.js
---- a/lib/Chat/useComposerHandlers.js
-+++ b/lib/Chat/useComposerHandlers.js
-@@ -136,13 +136,13 @@
-       }
-       const [edit] = messages;
-       const editingMessage = editStore.get();
--      if (editingMessage && messages.length === 1 && typeof edit?.text === "string" && !edit.audio && !edit.video) {
--        if (shouldResetInputToolbar === true) {
--          resetInputToolbar();
--        }
-+      if (editingMessage) {
-+        if (messages.length !== 1 || typeof edit?.text !== "string" || edit.audio || edit.video || edit.image || edit.file || edit.location)
-+          return;
-+        if (actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text) === false)
-+          return;
-         editStore.set(null);
-         restoreDraft();
--        actionCallbacksRef.current.onEditMessage?.(editingMessage, edit.text);
-         return;
-       }
-       const replyMessage = getReplyMessage();
-diff --git a/lib/Time.js b/lib/Time.js
---- a/lib/Time.js
-+++ b/lib/Time.js
-@@ -30,6 +30,6 @@
-  * style.
-  */
- export function formatMessageTime(message, locale, timeFormat, editedLabel) {
--  const time = formatTimeCached(message.createdAt, locale, timeFormat);
--  return isMessageEdited(message) ? `${editedLabel} ${time}` : time;
-+  const time = formatTimeCached(message.editedAt ?? message.createdAt, locale, timeFormat);
-+  return isMessageEdited(message) ? `${editedLabel} · ${time}` : time;
- }
-diff --git a/lib/Chat/types.d.ts b/lib/Chat/types.d.ts
---- a/lib/Chat/types.d.ts
-+++ b/lib/Chat/types.d.ts
-@@ -228,7 +228,8 @@
-      * composer under an "Editing" banner; sending calls this with the message and the new text
-      * instead of `onSend`.
-      */
--    onEditMessage?: (message: TMessage, text: string) => void;
-+    /** Return false to retain the active edit and its text. */
-+    onEditMessage?: (message: TMessage, text: string) => void | false;
-     /** Turns on the "Delete" action. */
-     onDeleteMessage?: (message: TMessage) => void;
-     /**
-diff --git a/lib/Chat/useComposerHandlers.d.ts b/lib/Chat/useComposerHandlers.d.ts
---- a/lib/Chat/useComposerHandlers.d.ts
-+++ b/lib/Chat/useComposerHandlers.d.ts
-@@ -13,7 +13,7 @@
-     textInputRef: RefObject<React.ComponentRef<typeof TextInput>>;
-     messagesContainerRef: RefObject<AnimatedList>;
-     actionCallbacksRef: RefObject<{
--        onEditMessage?: (message: TMessage, text: string) => void;
-+        onEditMessage?: (message: TMessage, text: string) => void | false;
-     }>;
-     textStore: Store<string>;
-     replyStore: Store<ReplyMessage | null>;
-diff --git a/lib/Chat/useMessageActions.d.ts b/lib/Chat/useMessageActions.d.ts
---- a/lib/Chat/useMessageActions.d.ts
-+++ b/lib/Chat/useMessageActions.d.ts
-@@ -22,7 +22,7 @@
- }): {
-     resolvedMessageActions: MessageMenuItem[] | ((message: TMessage) => MessageMenuItem[]) | undefined;
-     actionCallbacksRef: import("react").RefObject<{
--        onEditMessage: ((message: TMessage, text: string) => void) | undefined;
-+        onEditMessage: ((message: TMessage, text: string) => void | false) | undefined;
-         onDeleteMessage: ((message: TMessage) => void) | undefined;
-         onForwardMessage: ((message: TMessage) => void) | undefined;
-         onPinMessage: ((message: TMessage) => void) | undefined;
-diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
---- a/lib/ChatList/types.d.ts
-+++ b/lib/ChatList/types.d.ts
-@@ -20,6 +20,8 @@
-     avatar?: string;
-     /** The newest message: its preview, time and (when it is yours) its sent / read checks. */
-     lastMessage?: IMessage;
-+    /** A display-only preview shown when the chat has no message, draft or typing status. */
-+    emptyPreview?: string;
-     unreadCount?: number;
-     isPinned?: boolean;
-     isMuted?: boolean;
-diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
---- a/lib/ChatList/ChatListCell.js
-+++ b/lib/ChatList/ChatListCell.js
-@@ -322,7 +322,7 @@
-                     }]} numberOfLines={1}>
-                                 {preview.attachment ? <Text style={{
-                         color: colors.attachment
--                      }}>{preview.attachment}</Text> : preview.text}
-+                      }}>{preview.attachment}</Text> : lastMessage ? preview.text : chat.emptyPreview}
-                               </Text>
-                             </>}
-                       </Animated.View>}
+diff --git a/lib/ChatList/index.js b/lib/ChatList/index.js
+--- a/lib/ChatList/index.js
++++ b/lib/ChatList/index.js
+@@ -215,6 +215,7 @@
+     onDeleteChats,
+     onReorderPinnedChats,
+     onPressNewChat,
++    onNewChatVisibilityChange,
+     isDeleteConfirmed: t1,
+     isSwipeEnabled: t2,
+     isLoading: t3,
+@@ -297,6 +298,9 @@
+   }
+   const setQuery = t13;
+   const isSelectionMode = selectedIds.length > 0;
++  useLayoutEffect(() => {
++    onNewChatVisibilityChange?.(!isArchiveOpen && !isSelectionMode);
++  }, [isArchiveOpen, isSelectionMode, onNewChatVisibilityChange]);
+   let t14;
+   if ($[7] !== chats || $[8] !== isSortEnabled) {
+     t14 = isSortEnabled ? sortChats(chats) : chats;

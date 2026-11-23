@@ -13,8 +13,8 @@ public final class BoopMarmotModule: Module {
     Name("BoopMarmot")
     Events("windowChanged", "windowClosed", "attachmentProgress")
 
-    AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?) async throws -> String in
-      try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin) }
+    AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?, generated: Bool) async throws -> String in
+      try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin, generated: generated) }
     }
     AsyncFunction("closeAccount") { () async throws in
       try await protocolCall { try await self.closeAccount() }
@@ -464,6 +464,14 @@ public final class BoopMarmotModule: Module {
         return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.state == .ready
       }
     }
+    AsyncFunction("retainedAttachmentBytes") { (group: String, id: String, source: String, index: UInt32) async throws -> Double? in
+      try await self.withAccount { kit, account in
+        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
+        let asset = try await kit.attachmentLocalAssets(accountRef: account, groupIdHex: group, targets: [target]).first
+        guard let asset, asset.reference != nil else { return nil }
+        return Double(asset.byteCount)
+      }
+    }
     AsyncFunction("cancelAttachment") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
@@ -539,6 +547,31 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("editMessage") { (group: String, id: String, content: String) async throws in
       try await self.withAccount { _ = try await $0.editMessage(accountRef: $1, groupIdHex: group, targetMessageId: id, content: content) }
+    }
+    AsyncFunction("recentVoiceNotes") { (sender: String, since: UInt64, onlyOutgoing: Bool) async throws -> [Document] in
+      try await self.withAccount { kit, account in
+        let query = TimelineMessageQueryFfi(groupIdHex: nil, search: nil, sender: onlyOutgoing ? sender : nil, since: since, until: nil,
+          attachmentType: 3, searchWallClock: false, cursorGroupId: nil, before: nil, beforeMessageId: nil,
+          after: nil, afterMessageId: nil, limit: 24)
+        let page = try kit.timelineMessages(accountRef: account, query: query)
+        let sources = page.messages.filter { !$0.deleted && $0.invalidationStatus == nil }.flatMap { row -> [Document] in
+          guard let source = row.sourceMessageIdHex else { return [] }
+          return row.media.compactMap { outcome -> Document? in
+            guard case .accepted(let index, let reference) = outcome, reference.version == .v2,
+              reference.mediaType.hasPrefix("audio/") else { return nil }
+            let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" &&
+              $0.values[1] == String(index) && $0.values[5] == "voice" }
+            guard matches.count == 1, let tag = matches.first?.values else { return nil }
+            let target: [Any] = [row.groupIdHex, row.messageIdHex, source, Int(index)]
+            return ["target": target,
+              "hash": reference.plaintextSha256, "sender": row.sender, "incoming": row.sender != sender,
+              "duration": bridgeValue(mediaDuration(tag[3])),
+              "expiresAt": bridgeValue(row.retentionExpiresAt.map { Double($0) * 1000 }),
+              "sentAt": Double(row.timelineAt)]
+          }
+        }
+        return Array(sources.prefix(24))
+      }
     }
     AsyncFunction("deleteMessage") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try await $0.deleteMessage(accountRef: $1, groupIdHex: group, targetMessageId: id) }
@@ -697,7 +730,7 @@ private actor Runtime {
     return active
   }
 
-  func open(key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?) async throws -> String {
+  func open(key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?, generated: Bool) async throws -> String {
     guard !changingAccount else { throw problem("AccountBusy") }
     if let active {
       guard active.key == key else { throw problem("IdentityMismatch") }
@@ -732,7 +765,11 @@ private actor Runtime {
       guard !known.contains(where: { $0.unlinked || $0.signedOut }) else { throw problem("AccountSignedOut") }
       try await kit.start()
       if known.isEmpty {
-        let created = try await kit.login(identity: nsec, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox)
+        let created = if generated {
+          try await kit.createHostIdentity(nsec: nsec, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox)
+        } else {
+          try await kit.login(identity: nsec, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox)
+        }
         guard created.accountIdHex == key, created.label == key else { throw problem("IdentityMismatch") }
       }
       let readiness = try wireName(kit.accountSetupReadiness(accountRef: key))

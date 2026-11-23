@@ -73,6 +73,10 @@ const message = z.object({
       name: z.string(),
       type: z.string(),
       thumbhash: z.string().nullish(),
+      plaintextHash: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/i)
+        .nullish(),
       dimensions: z.string().nullish(),
       size: z.number().nonnegative().nullish(),
       duration: z.number().positive().nullish(),
@@ -359,6 +363,7 @@ type Bridge = {
     inbox: readonly string[],
     discovery: readonly string[],
     mediaOrigin: string | null,
+    generated: boolean,
   ): Promise<unknown>;
   closeAccount(): Promise<void>;
   catchUp(): Promise<void>;
@@ -507,6 +512,17 @@ type Bridge = {
   releaseAttachment(lease: string): Promise<void>;
   storageUsage(): Promise<number>;
   clearDownloads(): Promise<void>;
+  retainedAttachmentBytes(
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+  ): Promise<number | null>;
+  recentVoiceNotes(
+    sender: string,
+    since: number,
+    onlyOutgoing: boolean,
+  ): Promise<unknown>;
   editMessage(group: string, id: string, content: string): Promise<void>;
   deleteMessage(group: string, id: string): Promise<void>;
   reportMessage(group: string, id: string, spam: boolean): Promise<void>;
@@ -561,6 +577,7 @@ export async function openMarmotAccount(
   secret: string,
   relays: MarmotRelays,
   mediaOrigin: string | null,
+  generated: boolean,
 ) {
   const bytes = hexToBytes(secret);
   try {
@@ -574,6 +591,7 @@ export async function openMarmotAccount(
         relays.inbox,
         relays.discovery,
         mediaOrigin,
+        generated,
       ),
     );
   } finally {
@@ -954,6 +972,14 @@ export const marmot = {
   releaseAttachment: (lease: string) => native().releaseAttachment(lease),
   storageUsage: () => native().storageUsage(),
   clearDownloads: () => native().clearDownloads(),
+  retainedAttachmentBytes: (
+    group: string,
+    id: string,
+    source: string,
+    index: number,
+  ) => native().retainedAttachmentBytes(group, id, source, index),
+  recentVoiceNotes: (sender: string, since: number, onlyOutgoing: boolean) =>
+    native().recentVoiceNotes(sender, since, onlyOutgoing),
   editMessage: (group: string, id: string, content: string) =>
     native().editMessage(group, id, content),
   deleteMessage: (group: string, id: string) =>

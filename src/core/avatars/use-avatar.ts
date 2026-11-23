@@ -32,7 +32,10 @@ const viewabilityConfig = {
   minimumViewTime: 100,
 };
 
-export function useAvatarVisibility<T>(publicKey: (item: T) => string) {
+export function useAvatarVisibility<T>(
+  publicKey: (item: T) => string,
+  active = true,
+) {
   const { avatars } = useLocal();
   const focused = useIsFocused();
   const key = useRef(publicKey);
@@ -53,7 +56,7 @@ export function useAvatarVisibility<T>(publicKey: (item: T) => string) {
     [],
   );
   useEffect(() => {
-    const wanted = new Set(focused ? visible.slice(0, 32) : []);
+    const wanted = new Set(focused && active ? visible.slice(0, 32) : []);
     for (const [key, stop] of watching.current) {
       if (wanted.has(key)) continue;
       stop();
@@ -63,7 +66,7 @@ export function useAvatarVisibility<T>(publicKey: (item: T) => string) {
       if (!watching.current.has(key))
         watching.current.set(key, avatars.watch(key));
     }
-  }, [avatars, focused, visible]);
+  }, [active, avatars, focused, visible]);
   useEffect(() => {
     const current = watching.current;
     return () => {

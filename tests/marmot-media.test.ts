@@ -138,6 +138,44 @@ test("cancel aborts the active native transfer and removes any late lease", asyn
   unmount();
 });
 
+test("voice download announces verified retention without opening a playback lease", async () => {
+  let retained = false;
+  let opens = 0;
+  const transfer = Promise.withResolvers<void>();
+  const cached = Promise.withResolvers<void>();
+  const notices: boolean[] = [];
+  const adapter = createAttachmentPresentation(
+    {
+      async attachmentStatus() {
+        return retained;
+      },
+      async openAttachment() {
+        opens += 1;
+        return retained ? local : null;
+      },
+      async releaseAttachment() {},
+      async downloadAttachment() {
+        await transfer.promise;
+        retained = true;
+      },
+    },
+    () => true,
+  );
+  const unsubscribe = adapter.subscribe(target, () => {
+    if (adapter.state(key).kind === "cached") cached.resolve();
+  });
+  await Promise.resolve();
+  expect(opens).toBe(0);
+  adapter.download(key, () => notices.push(retained));
+  await Promise.resolve();
+  expect(notices).toEqual([]);
+  transfer.resolve();
+  await cached.promise;
+  expect(notices).toEqual([true]);
+  expect(opens).toBe(1);
+  unsubscribe();
+});
+
 test("attachment upload skips incompatibility, falls back for pre-admission failures, and stops on uncertain admission", async () => {
   const checked: string[] = [];
   const attempts: string[] = [];

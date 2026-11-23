@@ -33,18 +33,23 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { Action, Icon, Ink } from "@/components/ui/kit";
+import { SaveButton } from "@/components/ui/save-button";
 import {
   attachmentKey,
   type AttachmentPresentation,
   type AttachmentTarget,
 } from "@/core/marmot/attachment-presentation";
 import type { MarmotMessage } from "@/core/marmot/native";
+import { priority } from "@/core/speech/scheduler";
+import { speechSource } from "@/core/speech/service";
+import type { SpeechSource } from "@/core/speech/types";
 import { formatDuration } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
+import { useVoiceTranscript } from "./voice-transcript";
 
 type Item = MarmotMessage["attachments"][number];
-type Asset = { target: AttachmentTarget; item: Item };
+type Asset = { target: AttachmentTarget; item: Item; speech?: SpeechSource };
 type AttachmentProps = {
   asset: Asset;
   message: IMessage;
@@ -135,23 +140,29 @@ export function MarmotAttachments({
   message,
   presentation,
   gallery,
+  visible,
 }: {
   group: string;
   row: MarmotMessage;
   message: IMessage;
   presentation: AttachmentPresentation;
   gallery: GalleryPhoto[];
+  visible: boolean;
 }) {
   const [selected, setSelected] = useState<number>();
   const { reduceMotion } = useTheme();
+  const { identity } = useLocal();
   const assets = useMemo(() => {
     const source = row.sourceId;
     if (!source) return [];
     return row.attachments.map((item): Asset => ({
       item,
       target: [group, row.id, source, item.index],
+      speech: message.isViewOnce
+        ? undefined
+        : speechSource(group, row, item, identity.publicKey),
     }));
-  }, [group, row.attachments, row.id, row.sourceId]);
+  }, [group, identity.publicKey, message.isViewOnce, row]);
   const galleryIndex =
     selected === undefined
       ? -1
@@ -167,6 +178,7 @@ export function MarmotAttachments({
           asset={asset}
           message={message}
           presentation={presentation}
+          visible={visible}
           openPhoto={() => setSelected(asset.item.index)}
         />
       ))}
@@ -238,16 +250,22 @@ function GalleryPage({
 
 function Attachment({
   openPhoto,
+  visible,
   ...props
-}: AttachmentProps & { openPhoto: () => void }) {
+}: AttachmentProps & { openPhoto: () => void; visible: boolean }) {
   const { t } = useTranslation("messages");
   const {
-    asset: { item, target },
+    asset: { item, target, speech: source },
     presentation,
   } = props;
   const { state, key, uri, shown } = useAttachment(props);
   const { colors } = useTheme();
-  const { identity, calling } = useLocal();
+  const { identity, calling, speech } = useLocal();
+  const transcript = useVoiceTranscript(
+    source,
+    state.kind === "cached" || state.kind === "local",
+    visible,
+  );
   const call = useSyncExternalStore(
     calling.store.subscribe,
     calling.store.getState,
@@ -291,15 +309,20 @@ function Attachment({
           ? t("mediaVerifying")
           : undefined;
 
-  function document(action: "open" | "share" | "save") {
-    void presentation
+  async function document(action: "open" | "share" | "save") {
+    let saved = false;
+    await presentation
       .useLocalFile(target, async (file) => {
         const source = new File(localUri(file.path));
         if (action === "save" && (isPhoto || video)) {
           await saveToLibraryAsync(source.uri);
+          saved = true;
         } else if (action === "save" && Platform.OS === "android") {
           const location = await Directory.pickDirectoryAsync();
-          if (location) await source.copy(location);
+          if (location) {
+            await source.copy(location);
+            saved = true;
+          }
         } else if (action === "open" && Platform.OS === "android") {
           const { startActivityAsync } = await import("expo-intent-launcher");
           await startActivityAsync("android.intent.action.VIEW", {
@@ -315,6 +338,7 @@ function Attachment({
         }
       })
       .catch(() => Alert.alert(t("mediaOpenFailed")));
+    return saved;
   }
 
   let body;
@@ -358,10 +382,17 @@ function Attachment({
           ...shown,
           _id: props.message._id,
           audio: uri,
+          transcription: transcript?.text,
         }}
         position={position}
         autoPlay={playRequested}
         onPlaybackEnded={() => setPlayRequested(false)}
+        onPlaybackStarted={
+          source
+            ? () => speech.availableLocally(source, priority.playing)
+            : undefined
+        }
+        transcriptionControl={transcript?.control}
       />
     );
   } else if (audio) {
@@ -374,49 +405,61 @@ function Attachment({
         ? t("voicePlay")
         : t("voiceDownload");
     body = (
-      <View style={styles.audio}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          disabled={(!progress && busy) || (cached && callActive)}
-          style={[styles.play, { borderColor: colors.text }]}
-          onPress={() => {
-            if (progress) presentation.cancel(key);
-            else if (cached) {
-              setPlayRequested(true);
-              presentation.prepare(key);
-            } else if (shown.isDownloadRequired) presentation.download(key);
-          }}
-        >
-          {progress ? (
-            <Icon name="hangup" color={colors.text} size={18} />
-          ) : busy ? (
-            <ActivityIndicator color={colors.text} />
-          ) : (
-            <Icon
-              name={cached ? "play" : "download"}
-              color={colors.text}
-              size={20}
-            />
-          )}
-        </Pressable>
-        <View style={styles.track}>
-          <VoiceWaveform
-            waveform={shown.waveform}
-            color={colors.text}
-            progress={shown.transfer?.progress}
-          />
-          <Ink kind="caption">
-            {progress && state.progress != null
-              ? t("voiceDownloadProgress", {
-                  percent: Math.floor(state.progress * 100),
-                })
-              : item.duration != null
-                ? formatDuration(item.duration)
-                : t("voiceMessage")}
-          </Ink>
-        </View>
-      </View>
+      <MessageAudio
+        position={position}
+        transcriptionControl={transcript?.control}
+        placeholder={
+          <View style={styles.audio}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={label}
+              disabled={(!progress && busy) || (cached && callActive)}
+              style={[styles.play, { borderColor: colors.text }]}
+              onPress={() => {
+                if (progress) presentation.cancel(key);
+                else if (cached) {
+                  setPlayRequested(true);
+                  presentation.prepare(key);
+                } else if (shown.isDownloadRequired)
+                  presentation.download(
+                    key,
+                    source
+                      ? () => speech.availableLocally(source, priority.download)
+                      : undefined,
+                  );
+              }}
+            >
+              {progress ? (
+                <Icon name="hangup" color={colors.text} size={18} />
+              ) : busy ? (
+                <ActivityIndicator color={colors.text} />
+              ) : (
+                <Icon
+                  name={cached ? "play" : "download"}
+                  color={colors.text}
+                  size={20}
+                />
+              )}
+            </Pressable>
+            <View style={styles.track}>
+              <VoiceWaveform
+                waveform={shown.waveform}
+                color={colors.text}
+                progress={shown.transfer?.progress}
+              />
+              <Ink kind="caption">
+                {progress && state.progress != null
+                  ? t("voiceDownloadProgress", {
+                      percent: Math.floor(state.progress * 100),
+                    })
+                  : item.duration != null
+                    ? formatDuration(item.duration)
+                    : t("voiceMessage")}
+              </Ink>
+            </View>
+          </View>
+        }
+      />
     );
   } else {
     body = (
@@ -447,9 +490,11 @@ function Attachment({
       {notice && <Ink kind="caption">{notice}</Ink>}
       {documentAvailable && (
         <View style={styles.actions}>
-          <Action size="sm" onPress={() => document("save")}>
-            {t("mediaSave")}
-          </Action>
+          <SaveButton
+            size="sm"
+            label={t("mediaSave")}
+            onSave={() => document("save")}
+          />
           <Action size="sm" onPress={() => document("share")}>
             {t("mediaShare")}
           </Action>

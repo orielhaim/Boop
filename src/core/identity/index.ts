@@ -2,6 +2,7 @@ import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import type { Database } from "@/db";
+import { preference } from "@/db/queries";
 import { openMarmotAccount, type MarmotRelays } from "../marmot/native";
 import { deriveIdentity } from "./keys";
 import { encryptBackup } from "./backup";
@@ -41,6 +42,7 @@ export async function initializeMarmotIdentity(
     await storedSecret(db, storage),
     relays,
     mediaOrigin,
+    preference(db, "profile.initialBackup") === key,
   );
 }
 

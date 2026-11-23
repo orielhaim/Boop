@@ -23,6 +23,8 @@ export default function SettingsLayout() {
         <BlankStack.Screen name="language/translation/target" />
         <BlankStack.Screen name="language/translation/excluded" />
         <BlankStack.Screen name="language/translation/models" />
+        <BlankStack.Screen name="language/voice-transcription/index" />
+        <BlankStack.Screen name="language/voice-transcription/models" />
       </BlankStack.Protected>
     </BlankStack>
   );

@@ -20,7 +20,7 @@ import { useGlassTheme } from "./glass-provider";
 import { wrapPlainText } from "./lib/plain-text";
 import { GLASS_MOTION, type GlassTone } from "./lib/tokens";
 
-export type GlassAvatarSize = "xs" | "sm" | "md" | "lg" | "xl";
+export type GlassAvatarSize = "xs" | "sm" | "md" | "lg" | "xl" | "xxl";
 
 export type GlassAvatarStatus = "online" | "away" | "busy" | "offline";
 
@@ -46,6 +46,7 @@ const SIZE = {
   md: { diameter: 40, dot: 10 },
   lg: { diameter: 56, dot: 14 },
   xl: { diameter: 80, dot: 18 },
+  xxl: { diameter: 96, dot: 20 },
 } as const;
 
 // Initials sit on one of these gradients, picked by the name so a person keeps their colour.

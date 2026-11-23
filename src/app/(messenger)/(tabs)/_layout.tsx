@@ -7,11 +7,15 @@ import {
 import { router, usePathname } from "expo-router";
 import { TabList, TabTrigger, useTabsWithChildren } from "expo-router/ui";
 import { DirectionalTabs } from "@/components/navigation/directional-tabs";
-import { useLayoutEffect, useRef } from "react";
+import { TabFabVisibility } from "@/components/navigation/tab-fab-visibility";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
 import { Icon, tapFeedback } from "@/components/ui/kit";
+import { MorphFab } from "@/components/ui/molecules/morph-fab";
+import { ScreenInsets } from "@/components/ui/screen-insets";
+import { useIdentitySheet } from "@/components/people/identity-sheet";
 import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
@@ -38,6 +42,9 @@ function DockNavigator() {
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
   const chatsEnabled = useChatsEnabled();
+  const showIdentitySheet = useIdentitySheet();
+  const [chatsVisible, setChatsVisible] = useState(true);
+  const [peopleVisible, setPeopleVisible] = useState(true);
   const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
   const defaultScreen = useAppPreferences((state) => state.defaultScreen);
   const pathname = usePathname();
@@ -144,17 +151,70 @@ function DockNavigator() {
     </TabList>
   );
   const { state, NavigationContent } = useTabsWithChildren({ children: dock });
+  const active = state.routes[state.index]?.name;
+  const showFab =
+    !keyboardVisible &&
+    ((active === "index" && chatsEnabled && chatsVisible) ||
+      (active === "people" && peopleVisible));
 
   return (
     <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
       <View style={styles.navigator}>
         <NavigationContent>
-          <DirectionalTabs
-            active={state.routes[state.index]?.name}
-            order={ordered.map(({ item }) => item.name)}
-            style={{ direction }}
-            reduceMotion={reduceMotion}
-          />
+          <TabFabVisibility.Provider
+            value={{ setChatsVisible, setPeopleVisible }}
+          >
+            <DirectionalTabs
+              active={active}
+              order={ordered.map(({ item }) => item.name)}
+              style={{ direction }}
+              reduceMotion={reduceMotion}
+            />
+          </TabFabVisibility.Provider>
+          {showFab && (
+            <ScreenInsets
+              edges={["left", "right"]}
+              pointerEvents="box-none"
+              style={StyleSheet.absoluteFill}
+            >
+              <View pointerEvents="box-none" style={styles.fabContent}>
+                <MorphFab
+                  {...(active === "people"
+                    ? {
+                        mode: "menu",
+                        label: t("contacts:contactActions"),
+                        actions: [
+                          {
+                            label: t("navigation:addContact"),
+                            icon: (
+                              <Icon
+                                name="addPerson"
+                                color={colors.outgoingInk}
+                              />
+                            ),
+                            onSelect: () => router.push("/add-contact"),
+                          },
+                          {
+                            label: t("contacts:scanQr"),
+                            icon: <Icon name="qr" color={colors.outgoingInk} />,
+                            onSelect: () => router.push("/scan"),
+                          },
+                        ],
+                      }
+                    : {
+                        mode: "action",
+                        label: t("chatKit:labels.chatListNewChat"),
+                        onPress: () => showIdentitySheet("newConversation"),
+                      })}
+                  closeLabel={t("common:close")}
+                  rtl={direction === "rtl"}
+                  trigger={
+                    <Icon name="add" size={29} color={colors.outgoingInk} />
+                  }
+                />
+              </View>
+            </ScreenInsets>
+          )}
           {dock}
         </NavigationContent>
       </View>
@@ -164,6 +224,7 @@ function DockNavigator() {
 
 const styles = StyleSheet.create({
   navigator: { flex: 1, direction: "ltr" },
+  fabContent: { flex: 1 },
   icon: {
     width: 21,
     height: 21,

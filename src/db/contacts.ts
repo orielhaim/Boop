@@ -1,5 +1,6 @@
 import { asc } from "drizzle-orm";
 import { useLiveQuery } from "drizzle-orm/expo-sqlite";
+import { useMemo } from "react";
 import { toNpub } from "@/core/identity/keys";
 import { useLocal } from "@/services/local-context";
 import { contactByKey } from "./queries";
@@ -7,9 +8,13 @@ import { contacts } from "./schema";
 
 export function useContacts() {
   const { db } = useLocal();
-  return useLiveQuery(db.select().from(contacts).orderBy(asc(contacts.name)), [
-    db,
-  ]).data;
+  const query = useMemo(
+    () => db.select().from(contacts).orderBy(asc(contacts.name)),
+    [db],
+  );
+  const stored = useMemo(() => query.all(), [query]);
+  const live = useLiveQuery(query, [query]);
+  return live.updatedAt ? live.data : stored;
 }
 
 export function useContact(publicKey: string) {

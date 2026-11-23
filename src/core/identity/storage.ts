@@ -10,15 +10,18 @@ import {
   contacts,
   linkPreviewCache,
   settings,
+  speechJobs,
 } from "@/db/schema";
 import { inboxIntentKey } from "../nostr/config";
 import { deriveIdentity, parsePublicKey } from "./keys";
+import { speechKeySlot } from "../speech/types";
 
 const key = "boop.identity.v1";
 const pinned = "identity.publicKey";
 const activeSlot = "identity.activeSlot";
 const pendingSwitch = "identity.pendingSwitch";
 const retiredSlot = "identity.retiredSlot";
+const retiredSpeech = "identity.retiredSpeech";
 type Storage = {
   read: (slot: string) => Promise<string | null>;
   write: (slot: string, value: string) => Promise<void>;
@@ -114,6 +117,7 @@ async function recoverSwitch<TResult>(
           tx.delete(nostrProfiles).run();
           tx.delete(callHistory).run();
           tx.delete(peerPermissions).run();
+          tx.delete(speechJobs).run();
           tx.delete(settings)
             .where(
               notInArray(settings.key, [
@@ -128,6 +132,7 @@ async function recoverSwitch<TResult>(
           setPreference(tx, pinned, pending);
           setPreference(tx, activeSlot, pending);
           setPreference(tx, retiredSlot, oldSlot);
+          setPreference(tx, retiredSpeech, speechKeySlot(previous));
         });
       } catch (error) {
         if (preference(db, pinned) !== previous) throw error;
@@ -141,7 +146,10 @@ async function recoverSwitch<TResult>(
   if (retired && retired !== currentSlot(db)) {
     try {
       await storage.remove(retired);
+      const speech = preference(db, retiredSpeech);
+      if (speech) await storage.remove(speech);
       db.delete(settings).where(eq(settings.key, retiredSlot)).run();
+      db.delete(settings).where(eq(settings.key, retiredSpeech)).run();
     } catch {
       return;
     }

@@ -7,9 +7,11 @@ import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { GlassBackButton } from "@/components/ui/back-button";
+import { ScreenHeader } from "@/components/navigation/screen-header";
 import { CompactAction } from "@/components/ui/messenger-ui";
-import { Action, Ink, Screen } from "@/components/ui/kit";
+import { Ink, Screen } from "@/components/ui/kit";
+import { LoadingStatus } from "@/components/ui/loading-status";
+import { SaveButton } from "@/components/ui/save-button";
 import { usePerson } from "@/components/people/use-person";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { profileDetails } from "@/core/avatars/protocol";
@@ -29,8 +31,10 @@ export default function EditProfile() {
     profileEditor.subscribe,
     profileEditor.getSnapshot,
   );
-  const busy = stage !== "idle";
   const details = profileDetails(profile?.fields);
+  const pendingImages =
+    (draft?.photo && draft.photo.kind !== "unchanged") ||
+    (draft?.banner && draft.banner.kind !== "unchanged");
   const picker = useAvatarPicker();
   const bannerPicker = useAvatarPicker();
   const [edits, setEdits] = useState<
@@ -43,41 +47,38 @@ export default function EditProfile() {
     website: draft?.website ?? details.website ?? "",
     nip05: draft?.nip05 ?? details.nip05 ?? "",
   };
-  const dirty = Object.entries(edits).some(
-    ([key, value]) => current[key as keyof typeof current] !== value.trim(),
-  );
+  const changes: typeof edits = {};
+  for (const field of ["name", "about", "website", "nip05"] as const) {
+    const value = edits[field]?.trim();
+    if (value !== undefined && value !== current[field]) changes[field] = value;
+  }
+  const dirty = Object.keys(changes).length > 0;
 
-  async function save() {
-    const changes: typeof edits = {};
-    for (const field of ["name", "about", "website", "nip05"] as const) {
-      const value = edits[field]?.trim();
-      if (value !== undefined && value !== current[field])
-        changes[field] = value;
-    }
-    const nextName = changes.name ?? current.name;
+  function save() {
     if (
-      !nextName ||
+      !(changes.name ?? current.name) ||
       (changes.website && !publicMediaUrl(changes.website)) ||
       (changes.nip05 && !nip05Address(changes.nip05))
     ) {
       setNotice(t("messenger:invalidProfile"));
-      return;
+      return false;
     }
     try {
-      if (Object.keys(changes).length) profileEditor.editFields(changes);
+      profileEditor.editFields(changes);
       setEdits({});
-      const status = await profileEditor.publish();
-      setNotice(
-        t(
-          status === "published"
-            ? "settings:photoPublished"
-            : status === "mirror"
-              ? "settings:photoMirrorFailed"
-              : "messenger:pending",
-        ),
-      );
+      setNotice("");
+      return true;
     } catch {
-      setNotice(t("messenger:pending"));
+      return false;
+    }
+  }
+
+  function removeImage(field: "photo" | "banner") {
+    try {
+      profileEditor.removeImage(field);
+      setNotice("");
+    } catch {
+      setNotice(t("settings:photoProcessFailed"));
     }
   }
 
@@ -93,6 +94,7 @@ export default function EditProfile() {
         onCancel={clear}
         onSave={(file) => {
           profileEditor.prepare(file.uri, wide ? "banner" : "photo");
+          setNotice("");
           clear();
         }}
       />
@@ -105,7 +107,26 @@ export default function EditProfile() {
     { field: "nip05", title: t("messenger:nip05"), limit: 254 },
   ] as const;
   return (
-    <Screen compact topInset>
+    <Screen
+      compact
+      navigationHeader={
+        <ScreenHeader
+          title={t("settings:editProfile")}
+          onBack={() => {
+            if (router.canGoBack()) router.back();
+            else router.replace("/profile");
+          }}
+          action={
+            <SaveButton
+              size="sm"
+              visible={dirty}
+              label={t("common:save")}
+              onSave={save}
+            />
+          }
+        />
+      }
+    >
       <View>
         <View style={[styles.banner, { backgroundColor: colors.accentSoft }]}>
           {draft?.banner?.kind !== "remove" && (bannerPreview || banner) && (
@@ -119,7 +140,7 @@ export default function EditProfile() {
             <CompactAction
               icon="edit"
               label={t("messenger:banner")}
-              disabled={busy || picker.busy || bannerPicker.busy}
+              disabled={picker.busy || bannerPicker.busy}
               onPress={() => void bannerPicker.pick("gallery")}
             />
             {draft?.banner?.kind !== "remove" &&
@@ -128,27 +149,19 @@ export default function EditProfile() {
                   icon="erase"
                   iconOnly
                   label={t("settings:photoRemove")}
-                  disabled={busy}
-                  onPress={() => profileEditor.removeImage("banner")}
+                  onPress={() => removeImage("banner")}
                 />
               )}
           </View>
         </View>
-        <GlassBackButton
-          style={styles.back}
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/profile");
-          }}
-        />
         <View style={[styles.avatar, { backgroundColor: colors.background }]}>
           <EditableAvatar
-            disabled={busy || picker.busy || bannerPicker.busy}
+            disabled={picker.busy || bannerPicker.busy}
             onPick={(source) => void picker.pick(source)}
             onRemove={
               draft?.photo.kind !== "remove" &&
               (profile?.picture || photoPreview)
-                ? () => profileEditor.removeImage("photo")
+                ? () => removeImage("photo")
                 : undefined
             }
           >
@@ -178,10 +191,10 @@ export default function EditProfile() {
               field === "website" || field === "nip05" ? "none" : undefined
             }
             autoCorrect={field !== "website" && field !== "nip05"}
-            editable={!busy}
-            onChangeText={(value) =>
-              setEdits((previous) => ({ ...previous, [field]: value }))
-            }
+            onChangeText={(value) => {
+              setNotice("");
+              setEdits((previous) => ({ ...previous, [field]: value }));
+            }}
           />
         ))}
       </View>
@@ -194,36 +207,14 @@ export default function EditProfile() {
           {picker.error || bannerPicker.error}
         </Ink>
       )}
-      {busy ? (
-        <Ink accessibilityLiveRegion="polite">
-          {t(
+      {pendingImages && stage !== "idle" && (
+        <LoadingStatus
+          label={t(
             stage === "uploading"
               ? "settings:photoUploading"
               : "settings:photoPublishing",
           )}
-        </Ink>
-      ) : (
-        <View style={styles.saveRow}>
-          <Action
-            disabled={!dirty && !draft}
-            variant="prominent"
-            onPress={() => void save()}
-          >
-            {t("settings:photoPublish")}
-          </Action>
-          {(dirty || draft) && (
-            <Action
-              variant="soft"
-              onPress={() => {
-                profileEditor.discard();
-                setEdits({});
-                setNotice("");
-              }}
-            >
-              {t("settings:photoDiscard")}
-            </Action>
-          )}
-        </View>
+        />
       )}
     </Screen>
   );
@@ -237,7 +228,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.round,
   },
   banner: { height: 120, borderRadius: 16, overflow: "hidden" },
-  back: { position: "absolute", top: space.sm, start: space.sm },
   bannerTools: {
     position: "absolute",
     top: space.sm,
@@ -247,5 +237,4 @@ const styles = StyleSheet.create({
   },
   fields: { gap: space.md },
   bio: { minHeight: 65, textAlignVertical: "top" },
-  saveRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
 });

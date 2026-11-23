@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Share, StyleSheet, View } from "react-native";
-import QRCode from "react-native-qrcode-svg";
+import { AnimatedQRCode } from "react-native-animated-codes";
 import { GlassSheetTitle } from "@/components/glassyui/glass-sheet";
 import { Ink } from "@/components/ui/kit";
 import { CompactAction } from "@/components/ui/messenger-ui";
@@ -38,13 +38,18 @@ export function AddressSheetContent({
           {address}
         </Ink>
         {showQr && (
-          <View
+          <AnimatedQRCode
+            value={uri}
+            size={208}
+            quietZone={4}
+            borderRadius={12}
+            animation="ripple"
+            dotTransition="grow"
+            delay={0}
+            duration={750}
             style={styles.qr}
-            accessible
             accessibilityLabel={t("settings:addressQr")}
-          >
-            <QRCode value={uri} size={176} />
-          </View>
+          />
         )}
         <View style={styles.actions}>
           <CompactAction
@@ -83,12 +88,7 @@ export function AddressSheetContent({
 const styles = StyleSheet.create({
   body: { gap: space.md, padding: space.md },
   address: { writingDirection: "ltr", textAlign: "left" },
-  qr: {
-    alignSelf: "center",
-    backgroundColor: "#fff",
-    padding: space.md,
-    borderRadius: 12,
-  },
+  qr: { alignSelf: "center" },
   actions: {
     flexDirection: "row",
     alignItems: "center",

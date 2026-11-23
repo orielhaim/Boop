@@ -272,7 +272,7 @@ export function Screen({
   children,
   scroll = true,
   tab = false,
-  topInset = false,
+  topInset = tab,
   onScroll,
   compact = false,
   navigationHeader,
@@ -290,7 +290,9 @@ export function Screen({
     <ScreenInsets
       edges={
         tab
-          ? ["top", "left", "right"]
+          ? topInset
+            ? ["top", "left", "right"]
+            : ["left", "right"]
           : topInset || navigationHeader
             ? ["top", "left", "right", "bottom"]
             : ["left", "right", "bottom"]

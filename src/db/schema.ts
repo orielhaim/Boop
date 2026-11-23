@@ -69,6 +69,18 @@ export const settings = sqliteTable("settings", {
   value: text().notNull(),
 });
 
+export const speechJobs = sqliteTable(
+  "speech_jobs",
+  {
+    id: text().primaryKey(),
+    account: text().notNull(),
+    attachment: text().notNull(),
+    job: text().notNull(),
+    sealed: text(),
+  },
+  (table) => [index("speech_jobs_account").on(table.account)],
+);
+
 export const peerPermissions = sqliteTable("peer_permissions", {
   publicKey: text("public_key").primaryKey().notNull(),
   blockedAt: integer("blocked_at"),

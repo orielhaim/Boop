@@ -49,6 +49,21 @@ export function createPublicMetadata(
         ? transport.watchProfiles(targets, authors, onEvent, onEose)
         : null;
     },
+    watchOwnProfile(
+      onEvent: (event: unknown, author: string) => void,
+      onEose: (allReplied: boolean) => void,
+    ) {
+      const targets = profileRelays();
+      if (!targets.length) return null;
+      let remaining = targets.length;
+      // A stalled relay must not hide a healthy relay's EOSE from the editor.
+      const stops = targets.map((relay) =>
+        transport.watchProfiles([relay], [publicKey], onEvent, () =>
+          onEose(--remaining === 0),
+        ),
+      );
+      return () => stops.forEach((stop) => stop());
+    },
     async discoverBlossomServers() {
       const { general, complete } = await readMediaList();
       if (!complete && !general) throw new Error("media-list-unavailable");

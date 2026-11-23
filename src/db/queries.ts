@@ -29,6 +29,16 @@ export function saveContact<TResult>(
     .run();
 }
 
+export function removeContact<TResult>(
+  db: Pick<BaseSQLiteDatabase<"sync", TResult, typeof schema>, "delete">,
+  publicKey: string,
+) {
+  return db
+    .delete(schema.contacts)
+    .where(eq(schema.contacts.publicKey, publicKey))
+    .run();
+}
+
 export function updateContactPreferences<TResult>(
   db: Pick<BaseSQLiteDatabase<"sync", TResult, typeof schema>, "update">,
   publicKey: string,

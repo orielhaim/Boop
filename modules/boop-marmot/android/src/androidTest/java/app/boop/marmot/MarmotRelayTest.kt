@@ -20,6 +20,41 @@ import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
+  private val hostSecret = "1".padStart(64, '0')
+
+  @Test fun freshHostIdentityOpensChatsWithoutAReachableRelay() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    MarmotAndroid.initialize(context)
+    val directory = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val relays = listOf("ws://127.0.0.1:1")
+    val store = MemorySecretStore()
+    val key = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    try {
+      repeat(2) { attempt ->
+        val kit = Marmot.newWithConfiguration(directory.canonicalPath, relays, MarmotOptions(
+          relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
+          secretStore = store,
+          deployment = marmotDeploymentNeutral(),
+        ))
+        try {
+          kit.start()
+          if (attempt == 0) {
+            val account = withTimeout(10_000) { kit.createHostIdentity(hostSecret, relays, relays, relays) }
+            assertEquals(key, account.accountIdHex)
+          }
+          assertEquals(key, kit.listAccounts().single().accountIdHex)
+          val filter = listOf(ChatListFilterNodeFfi.Not(1u), ChatListFilterNodeFfi.Condition(ChatListConditionFfi.PENDING_INVITE))
+          val handle = kit.openChatListQueryWindow(key, ChatListViewQueryFfi(ChatListViewFfi.CHATS, filter), 40u)
+          try {
+            assertEquals(emptyList<Any>(), checkNotNull(handle.snapshot()).rows)
+          } finally { handle.close() }
+        } finally {
+          try { kit.shutdownAndClose() } finally { kit.close() }
+        }
+      }
+    } finally { directory.deleteRecursively() }
+  }
+
   @Test fun directAndGroupUseIndependentDurableAccounts() = runBlocking {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val context = instrumentation.targetContext
@@ -35,7 +70,7 @@ class MarmotRelayTest {
       val bob = Client(File(root, "bob"), relay, blossom)
       val carol = Client(File(root, "carol"), relay, blossom)
       try {
-        alice.start()
+        alice.start(hostSecret, generated = true)
         bob.start()
         carol.start()
         for (client in listOf(alice, bob, carol)) {
@@ -379,6 +414,7 @@ class MarmotRelayTest {
       delay(250)
     }
     MediaFileTransferControlFfi().use { control ->
+      assertNull(recipient.kit.attachmentLocalAssets(recipient.key, group, listOf(target)).single().reference)
       assertNull(recipient.kit.openAttachmentHandoff(recipient.key, group, target, control))
       if (fixture) {
         assertEquals(before, fixtureCall("stats"))
@@ -396,6 +432,9 @@ class MarmotRelayTest {
       await("manual encrypted media download") {
         recipient.kit.attachmentTransferSnapshot(recipient.key, group, listOf(target)).items.single().state == AttachmentTransferStateFfi.READY
       }
+      val retained = recipient.kit.attachmentLocalAssets(recipient.key, group, listOf(target)).single()
+      assertNotNull(retained.reference)
+      assertEquals(payload.size.toULong(), retained.byteCount)
       val opened = checkNotNull(recipient.kit.openAttachmentHandoff(recipient.key, group, target, control))
       try { assertArrayEquals(payload, File(opened.path).readBytes()) }
       finally { recipient.kit.releaseAttachmentHandoff(opened.lease) }
@@ -484,7 +523,7 @@ class MarmotRelayTest {
     lateinit var key: String
       private set
 
-    suspend fun start(identity: String? = null) {
+    suspend fun start(identity: String? = null, generated: Boolean = false) {
       val opened = Marmot.newWithConfiguration(
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
@@ -502,9 +541,12 @@ class MarmotRelayTest {
       running = opened
       opened.start()
       if (!::key.isInitialized) {
-        key = if (identity == null)
-          opened.createIdentityWithProfile(listOf(relay), listOf(relay), listOf(relay)).account.accountIdHex
-        else opened.login(identity, listOf(relay), listOf(relay), listOf(relay)).accountIdHex
+        val relays = listOf(relay)
+        key = when {
+          identity == null -> opened.createIdentityWithProfile(relays, relays, relays).account.accountIdHex
+          generated -> opened.createHostIdentity(identity, relays, relays, relays).accountIdHex
+          else -> opened.login(identity, relays, relays, relays).accountIdHex
+        }
       } else {
         assertEquals(key, opened.listAccounts().single().accountIdHex)
       }

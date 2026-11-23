@@ -12,14 +12,21 @@ import {
   SettingsDescription,
   SettingsGroup,
 } from "@/components/settings/group";
+import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ThemePreference } from "@/components/settings/theme-preference";
 import { Ink, Screen } from "@/components/ui/kit";
 import {
   type ChatPresentation,
   chatPresentationControls,
 } from "@/core/marmot/chat-preferences";
+import { setPreference } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useChatPresentation, useLocal } from "@/services/local-context";
+import {
+  favoritesDisplayKey,
+  favoritesDisplays,
+  useAppPreferences,
+} from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 
 const controls = [
@@ -27,12 +34,14 @@ const controls = [
   { key: "rounding", label: "settings:messageRounding" },
 ] as const;
 
-export default function ChatSettings() {
+export default function AppearanceSettings() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors, theme } = useTheme();
-  const { chatPreferences } = useLocal();
+  const { chatPreferences, db } = useLocal();
+  const favoritesDisplay = useAppPreferences((state) => state.favoritesDisplay);
   const presentation = useChatPresentation();
   const [failed, setFailed] = useState(false);
+  const [favoritesFailed, setFavoritesFailed] = useState(false);
   const material = conversationMaterials[theme];
   const message = messagePresentation(presentation);
   const corners = { borderRadius: message.radii.bubble };
@@ -50,10 +59,38 @@ export default function ChatSettings() {
   return (
     <Screen
       compact
-      navigationHeader={<ScreenHeader title={t("common:chats")} />}
+      navigationHeader={<ScreenHeader title={t("settings:appearance")} />}
     >
       <ThemePreference />
       <SettingsGroup>
+        <SettingsMenuRow
+          title={t("settings:favoritesDisplay")}
+          value={favoritesDisplay}
+          options={favoritesDisplays.map((value) => ({
+            value,
+            label: t(
+              value === "normal"
+                ? "settings:favoritesNormal"
+                : "settings:favoritesCool",
+            ),
+          }))}
+          onChange={(value) => {
+            try {
+              setPreference(db, favoritesDisplayKey, value);
+              useAppPreferences.setState({ favoritesDisplay: value });
+              setFavoritesFailed(false);
+            } catch {
+              setFavoritesFailed(true);
+            }
+          }}
+        />
+      </SettingsGroup>
+      {favoritesFailed && (
+        <SettingsDescription>
+          {t("settings:favoritesDisplaySaveError")}
+        </SettingsDescription>
+      )}
+      <SettingsGroup title={t("common:chats")}>
         {controls.map(({ key, label }) => {
           const { min, max, step } = chatPresentationControls[key];
           return (

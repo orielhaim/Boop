@@ -1,4 +1,7 @@
+import { speechHe } from "./speech-he";
+
 export const he = {
+  speech: speechHe,
   translation: {
     excluded: "שפות שלא יתורגמו",
     excludedHelp: "הודעות שזוהו בשפות שבחרת יוצגו בשפת המקור.",
@@ -92,7 +95,6 @@ export const he = {
     publishedName: "שם ציבורי",
     banner: "תמונת כותרת",
     bot: "חשבון אוטומטי",
-    pending: "השינויים בפרופיל נשמרו כאן וממתינים לאישור מממסר.",
     syncingChats: "הצ׳אטים מסתנכרנים…",
     viewProfilePhoto: "הצגת תמונת פרופיל",
     loadImages: "טעינת תמונות פרופיל",
@@ -146,6 +148,10 @@ export const he = {
     partial: "חלק מהקבצים לא נמדדו. הסכום כולל את הקבצים ש-Boop הצליחה לקרוא.",
   },
   common: {
+    save: "שמירה",
+    saved: "נשמר",
+    saving: "שומר…",
+    saveFailed: "נכשל",
     chats: "צ׳אטים",
     ready: "מוכן",
     cancel: "ביטול",
@@ -179,6 +185,9 @@ export const he = {
     addContact: "הוספת איש קשר",
   },
   contacts: {
+    unnamed: "איש קשר ללא שם",
+    nickname: "כינוי",
+    contactActions: "פעולות אנשי קשר",
     nameRequired: "יש להזין שם לאיש הקשר.",
     invalidAddress: "יש להזין כתובת Boop תקינה.",
     ownAddress: "יש להזין כתובת של מישהו אחר.",
@@ -695,15 +704,9 @@ export const he = {
     photoDisplayName: "שם תצוגה",
     photoPublic:
       "הפרסום משתף את התמונה ואת שם התצוגה שלך בפומבי ב־Nostr. שרת המדיה ושירותים אחרים עשויים לשמור עותקים.",
-    photoPublish: "פרסום הפרופיל",
     photoDraft: "שינויים שטרם פורסמו",
-    photoDiscard: "מחיקת טיוטה",
     photoUploading: "מעלה את התמונה…",
     photoPublishing: "ממתין לאישור משרת Nostr…",
-    photoPublished: "שרת Nostr אישר את קבלת הפרופיל.",
-    photoMirrorFailed: "הפרופיל פורסם. השרת השני לא קיבל את העותק.",
-    photoRelayFailed: "לא ניתן לאשר את פרסום הפרופיל. הטיוטה שלך נשמרה.",
-    photoUpload_cancelled: "ההעלאה בוטלה. הטיוטה שלך נשמרה.",
     mediaStorage: "שרתי מדיה",
     mediaMirror: "שמירת עותק של העלאות מאושרות",
     mediaHelp:
@@ -758,6 +761,7 @@ export const he = {
     about: "אודות",
     identity: "מפתחות זהות",
     preferences: "העדפות",
+    appearance: "מראה",
     theme: "ערכת נושא",
     system: "לפי המכשיר",
     light: "בהירה",
@@ -767,6 +771,10 @@ export const he = {
     deviceDefault: "ברירת המחדל של המכשיר",
     haptics: "משוב במגע",
     saveHapticsError: "לא ניתן לשמור את הגדרת המשוב במגע.",
+    favoritesDisplay: "תצוגת מועדפים",
+    favoritesNormal: "רגיל",
+    favoritesCool: "מגניב",
+    favoritesDisplaySaveError: "לא ניתן לשמור את הגדרת תצוגת המועדפים.",
     separateCallsTab: "הצגת שיחות בסרגל התחתון",
     defaultScreen: "מסך ברירת המחדל בפתיחה",
     saveCallNavigationError: "לא ניתן לשמור את הגדרות הניווט לשיחות.",

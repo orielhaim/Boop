@@ -30,7 +30,7 @@ class BoopMarmotModule : Module() {
     Name("BoopMarmot")
     Events("windowChanged", "windowClosed", "attachmentProgress")
 
-    AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String? ->
+    AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?, generated: Boolean ->
       lifecycle.withLock {
         protocol {
           val current = session
@@ -39,7 +39,7 @@ class BoopMarmotModule : Module() {
             current.readiness()
           } else {
             val context = appContext.reactContext ?: throw problem("ContextUnavailable")
-            val (opened, readiness) = open(context, key, secret, nsec, general, inbox, discovery, mediaOrigin)
+            val (opened, readiness) = open(context, key, secret, nsec, general, inbox, discovery, mediaOrigin, generated)
             session = opened
             readiness
           }
@@ -514,6 +514,13 @@ class BoopMarmotModule : Module() {
         it.kit.attachmentTransferSnapshot(it.account, group, listOf(target)).items.firstOrNull()?.state == AttachmentTransferStateFfi.READY
       }
     }
+    AsyncFunction("retainedAttachmentBytes") Coroutine { group: String, id: String, source: String, index: Int ->
+      withSession { active ->
+        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
+        active.kit.attachmentLocalAssets(active.account, group, listOf(target))
+          .firstOrNull()?.takeIf { it.reference != null }?.byteCount?.toDouble()
+      }
+    }
     AsyncFunction("cancelAttachment") Coroutine { group: String, id: String, source: String, index: Int ->
       withSession { active ->
         val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
@@ -583,6 +590,30 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("clearDownloads").Coroutine<Unit> {
       withSession { it.kit.removeAttachmentsOlderThan(it.account, (System.currentTimeMillis() / 1_000 + 1).toULong(), null); Unit }
+    }
+    AsyncFunction("recentVoiceNotes") Coroutine { sender: String, since: Double, onlyOutgoing: Boolean ->
+      withSession { active ->
+        val query = TimelineMessageQueryFfi(null, null, sender.takeIf { onlyOutgoing }, since.toULong(), null,
+          attachmentType = 3u, cursorGroupId = null, before = null,
+          beforeMessageId = null, after = null, afterMessageId = null, limit = 24u)
+        active.kit.timelineMessages(active.account, query).messages
+          .filter { !it.deleted && it.invalidationStatus == null }
+          .flatMap { row ->
+            val source = row.sourceMessageIdHex ?: return@flatMap emptyList()
+            row.media.mapNotNull { media ->
+              val attachment = media as? MediaAttachmentOutcomeFfi.Accepted ?: return@mapNotNull null
+              val reference = attachment.reference
+              if (reference.version != EncryptedMediaVersionFfi.V2 || !reference.mediaType.startsWith("audio/")) return@mapNotNull null
+              val index = attachment.attachmentIndex
+              val tag = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
+                tag.values[1] == index.toString() && tag.values[5] == "voice" }?.values ?: return@mapNotNull null
+              mapOf("target" to listOf(row.groupIdHex, row.messageIdHex, source, index.toInt()),
+                "hash" to reference.plaintextSha256, "sender" to row.sender, "incoming" to (row.sender != sender),
+                "duration" to mediaDuration(tag[3]), "expiresAt" to row.retentionExpiresAt?.toDouble()?.times(1000),
+                "sentAt" to row.timelineAt.toDouble())
+            }
+          }.take(24)
+      }
     }
     AsyncFunction("editMessage") Coroutine { group: String, id: String, content: String ->
       withSession { it.kit.editMessage(it.account, group, id, content); Unit }
@@ -762,7 +793,7 @@ class BoopMarmotModule : Module() {
 
   private suspend fun open(
     context: Context, key: String, secret: String, nsec: String,
-    general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?,
+    general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?, generated: Boolean,
   ): Pair<Session, String> {
     if (!key.matches(HEX) || !secret.matches(HEX)) throw problem("IdentityMismatch")
     initializeBindings(context)
@@ -784,7 +815,8 @@ class BoopMarmotModule : Module() {
       if (known.any { it.unlinked || it.signedOut }) throw problem("AccountSignedOut")
       kit.start()
       if (known.isEmpty()) {
-        val account = kit.login(nsec, general, discovery, inbox)
+        val account = if (generated) kit.createHostIdentity(nsec, general, discovery, inbox)
+          else kit.login(nsec, general, discovery, inbox)
         if (account.accountIdHex != key || account.label != key) throw problem("IdentityMismatch")
       }
       val opened = Session(key, kit)

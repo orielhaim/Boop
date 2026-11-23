@@ -1,3 +1,4 @@
+import { LoadingStatus } from "@/components/ui/loading-status";
 import type { ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
 import { Image } from "expo-image";
@@ -20,6 +21,7 @@ import Animated, {
   useSharedValue,
 } from "react-native-reanimated";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
+import { SaveButton } from "@/components/ui/save-button";
 import { maxAvatarBytes, sanitizeAvatarJpeg } from "@/core/avatars/jpeg";
 import { namespaces } from "@/i18n";
 import { space, useTheme } from "@/theme";
@@ -110,7 +112,7 @@ export function useAvatarPicker() {
 type CropProps = {
   source: ImageResult;
   wide?: boolean;
-  onSave(file: File): void;
+  onSave(file: File): boolean | void;
   onCancel(): void;
 };
 
@@ -152,11 +154,7 @@ export function AvatarPicker({ onSave, onCancel }: Omit<CropProps, "source">) {
       <Action variant="soft" disabled={busy} onPress={onCancel}>
         {t("common:cancel")}
       </Action>
-      {busy && (
-        <Ink muted accessibilityLiveRegion="polite">
-          {t("settings:photoProcessing")}
-        </Ink>
-      )}
+      {busy && <LoadingStatus label={t("settings:photoProcessing")} />}
       {error && <Ink accessibilityRole="alert">{error}</Ink>}
     </View>
   );
@@ -286,8 +284,7 @@ function CropPhoto({ source, wide = false, onSave, onCancel }: CropProps) {
               )
                 throw new Error("Unexpected crop size");
               file.write(verified.bytes);
-              if (active.current) onSave(file);
-              return;
+              return active.current && onSave(file) !== false;
             } finally {
               deleteTemporary(file.uri);
             }
@@ -301,6 +298,7 @@ function CropPhoto({ source, wide = false, onSave, onCancel }: CropProps) {
       }
     } catch {
       setError(true);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -380,15 +378,13 @@ function CropPhoto({ source, wide = false, onSave, onCancel }: CropProps) {
         <Action variant="soft" disabled={busy} onPress={onCancel}>
           {t("common:cancel")}
         </Action>
-        <Action disabled={busy} onPress={() => void save()}>
-          {t("settings:photoUseCrop")}
-        </Action>
+        <SaveButton
+          disabled={busy}
+          label={t("settings:photoUseCrop")}
+          onSave={save}
+        />
       </View>
-      {busy && (
-        <Ink muted accessibilityLiveRegion="polite">
-          {t("settings:photoProcessing")}
-        </Ink>
-      )}
+      {busy && <LoadingStatus label={t("settings:photoProcessing")} />}
       {error && (
         <Ink accessibilityRole="alert">{t("settings:photoProcessFailed")}</Ink>
       )}

@@ -17,7 +17,7 @@ export function PersonAvatar({
   hasName: boolean;
   size?: GlassAvatarSize;
 }) {
-  const cell = size === "xl" ? 6 : 3;
+  const cell = size === "xl" || size === "xxl" ? 6 : 3;
   const pattern = hasName ? undefined : (
     <View style={[styles.pattern, { width: cell * 5 }]}>
       {Array.from({ length: 25 }, (_, index) => {

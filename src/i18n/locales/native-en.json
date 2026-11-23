@@ -2,6 +2,7 @@
   "ios": {
     "NSCameraUsageDescription": "Capture and send photos or videos, scan Boop addresses, and share your camera during calls.",
     "NSMicrophoneUsageDescription": "Record voice and video messages and talk during peer-to-peer calls.",
+    "NSSpeechRecognitionUsageDescription": "Allow Boop to transcribe saved voice messages using on-device speech recognition.",
     "NSFaceIDUsageDescription": "Use Face ID to unlock Boop when App Lock is enabled.",
     "NSLocationWhenInUseUsageDescription": "Share your current location when you choose it in a chat.",
     "NSPhotoLibraryAddUsageDescription": "Save photos and videos you choose to keep.",

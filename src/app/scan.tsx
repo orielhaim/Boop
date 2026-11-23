@@ -3,6 +3,7 @@ import { router, useIsFocused } from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Linking, StyleSheet, View } from "react-native";
+import { ScreenHeader } from "@/components/navigation/screen-header";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicIdentity } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
@@ -15,10 +16,11 @@ export default function ScanAddress() {
   const [error, setError] = useState("");
   const locked = useRef(false);
   const { colors } = useTheme();
+  const header = <ScreenHeader title={t("navigation:scan")} />;
 
   if (!permission?.granted)
     return (
-      <Screen>
+      <Screen navigationHeader={header}>
         <Empty
           icon="qr"
           title={t("contacts:scanTitle")}
@@ -44,7 +46,7 @@ export default function ScanAddress() {
     );
 
   return (
-    <Screen>
+    <Screen navigationHeader={header}>
       <View style={styles.preview}>
         {focused ? (
           <CameraView

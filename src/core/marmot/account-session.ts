@@ -5,6 +5,7 @@ export function createMarmotSession(
     relays: MarmotRelays,
     mediaOrigin: string | null,
   ) => Promise<MarmotReadiness>,
+  beforeClose?: () => Promise<void>,
 ) {
   type Configuration = {
     relays: MarmotRelays;
@@ -28,6 +29,7 @@ export function createMarmotSession(
       if (!error && JSON.stringify(next) === JSON.stringify(active)) return;
       try {
         if (active) {
+          await beforeClose?.();
           await marmot.closeAccount();
           active = null;
         }

@@ -24,6 +24,7 @@ export default function MessengerLayout() {
         }}
       />
       <BlankStack.Screen name="connect" options={modal} />
+      <BlankStack.Screen name="add-contact" options={modal} />
       <BlankStack.Protected guard={chats}>
         <BlankStack.Screen
           name="chat/[key]"

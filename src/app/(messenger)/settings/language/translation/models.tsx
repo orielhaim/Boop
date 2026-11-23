@@ -1,8 +1,9 @@
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useLocalSearchParams } from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
@@ -150,7 +151,9 @@ export default function TranslationModels() {
         onChangeText={setSearch}
         placeholder={t("translation:search")}
       />
-      {(!catalog || !downloaded) && !error && <ActivityIndicator />}
+      {(!catalog || !downloaded) && !error && (
+        <LoadingSkeleton label={t("common:opening")} />
+      )}
       {error && (
         <>
           <SettingsDescription>{t(`translation:${error}`)}</SettingsDescription>

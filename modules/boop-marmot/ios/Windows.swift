@@ -288,6 +288,7 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
           }.prefix(64)) }
           return ["index": Int(index), "name": reference.fileName, "type": reference.mediaType,
             "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
+            "plaintextHash": reference.plaintextSha256,
             "size": bridgeValue(size), "duration": bridgeValue(duration),
             "waveform": bridgeValue(waveform),
             "round": tag?[5] == "round" && reference.mediaType.hasPrefix("video/"),

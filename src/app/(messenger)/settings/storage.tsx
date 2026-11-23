@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { NetworkStateType, useNetworkState } from "expo-network";
 import { useFocusEffect } from "expo-router";
@@ -26,6 +27,7 @@ import {
   tapFeedback,
 } from "@/components/ui/kit";
 import { marmot } from "@/core/marmot/native";
+import { SpeechStorage } from "@/components/settings/speech-storage";
 import { appStorageUsage } from "@/core/storage/native";
 import {
   type NativeUsage,
@@ -231,7 +233,7 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
 export default function StorageSettings() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { marmotSession, avatars, previews, lock } = useLocal();
+  const { marmotSession, avatars, previews, lock, speech } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const network = useNetworkState();
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -293,6 +295,7 @@ export default function StorageSettings() {
                 await marmotSession.ready();
                 if (!mayClear()) return;
                 await marmot.clearDownloads();
+                await speech.reconcile(true);
               } else if (key === "profileCache") {
                 avatars.clear();
               } else {
@@ -328,7 +331,7 @@ export default function StorageSettings() {
         <ScreenHeader
           title={t("storage:title")}
           action={
-            phase === "loading" ? (
+            phase === "loading" && snapshot ? (
               <ActivityIndicator
                 size="small"
                 color={colors.accent}
@@ -349,16 +352,7 @@ export default function StorageSettings() {
       {snapshot ? (
         <Breakdown snapshot={snapshot} />
       ) : phase === "loading" ? (
-        <View
-          style={styles.loading}
-          accessible
-          accessibilityLabel={t("storage:measuring")}
-        >
-          <ActivityIndicator color={colors.accent} />
-          <Ink kind="caption" muted>
-            {t("storage:measuring")}
-          </Ink>
-        </View>
+        <LoadingSkeleton layout="storage" label={t("storage:measuring")} />
       ) : (
         <SettingsDescription>
           {t("storage:measurementError")}
@@ -388,6 +382,9 @@ export default function StorageSettings() {
           </SettingsGroup>
           <SettingsDescription>{t("storage:cacheDetail")}</SettingsDescription>
         </>
+      )}
+      {chatsEnabled && (
+        <SpeechStorage showLink onChange={() => void refresh()} />
       )}
       <SettingsGroup title={t("storage:network")}>
         <SettingsRow
@@ -467,10 +464,4 @@ const styles = StyleSheet.create({
   metricLabel: { flexDirection: "row", alignItems: "center", gap: space.xs },
   metricValue: { fontVariant: ["tabular-nums"] },
   headerProgress: { marginHorizontal: space.lg },
-  loading: {
-    minHeight: 190,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: space.sm,
-  },
 });

@@ -1,7 +1,8 @@
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import {
   SettingsDescription,
   SettingsGroup,
@@ -54,7 +55,7 @@ export default function ExcludedLanguages() {
             </Action>
           </>
         ) : (
-          <ActivityIndicator />
+          <LoadingSkeleton label={t("common:opening")} />
         ))}
       {choices?.length === 0 && (
         <SettingsDescription>

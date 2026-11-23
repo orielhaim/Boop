@@ -1,11 +1,27 @@
+import { CircularList } from "@/components/ui/molecules/circular-list";
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import Transition from "react-native-screen-transitions";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
-import { router, useIsFocused } from "expo-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { router, useFocusEffect, useIsFocused } from "expo-router";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Keyboard, StyleSheet, View } from "react-native";
+import { Keyboard, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
 import { CallHistory } from "@/components/calls/call-history";
+import {
+  GlassSheet,
+  GlassSheetContent,
+  GlassSheetTitle,
+} from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
   GlassSegmentedControl,
@@ -13,25 +29,35 @@ import {
 } from "@/components/glassyui/glass-segmented-control";
 import { useMarmotWindow } from "@/components/messages/marmot-window";
 import {
+  Action,
   Icon,
-  IconButton,
   Ink,
+  Row,
   Screen,
   tapFeedback,
 } from "@/components/ui/kit";
-import { useAvatarVisibility } from "@/core/avatars/use-avatar";
+import {
+  Shimmer,
+  useShimmerProgress,
+} from "@/components/ui/molecules/Shimmer/Shimmer";
+import { useAvatar, useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { CompactHeader, QuietState } from "@/components/ui/messenger-ui";
 import { parseProfile, profileDetails } from "@/core/avatars/protocol";
 import { parsePublicIdentity, toNpub } from "@/core/identity/keys";
 import { marmot } from "@/core/marmot/native";
 import { nip05Address } from "@/core/nostr/nip05";
-import { useContacts } from "@/db/contacts";
-import { namespaces } from "@/i18n";
+import {
+  contactByKey,
+  removeContact,
+  updateContactPreferences,
+} from "@/db/queries";
+import { useContacts, nameOrAddress } from "@/db/contacts";
+import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
-import { space } from "@/theme";
+import { space, useTheme } from "@/theme";
 import { PersonAvatar } from "./person-avatar";
-import { usePerson, useVerifiedIdentifier } from "./use-person";
+import { usePublicProfile, useVerifiedIdentifier } from "./use-person";
 
 const openChats = () => marmot.openChatList("chats");
 type Results = {
@@ -44,16 +70,25 @@ type PersonItem = {
   publicKey: string;
   reference?: string;
   showVerification?: boolean;
+  separated?: boolean;
 };
-type DirectoryItem = { title: string } | PersonItem;
+type SavedContact = ReturnType<typeof useContacts>[number];
+type DirectoryItem =
+  { title: string; separated?: boolean } | PersonItem | { carousel: true };
 
 export function PeopleDirectory() {
   const onScroll = useMinimizeOnScroll();
-  const { t } = useTranslation(namespaces);
+  const { t, i18n } = useTranslation(namespaces);
+  const { colors } = useTheme();
+  const setPeopleFabVisible = useTabFabVisibility()?.setPeopleVisible;
+  const favoritesDisplay = useAppPreferences((state) => state.favoritesDisplay);
   const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
   const [section, setSection] = useState<"contacts" | "calls">("contacts");
   const showCalls = !separateCallsTab && section === "calls";
-  const { avatars, identity, lock, nip05, privacy, publicMetadata } =
+  useLayoutEffect(() => {
+    setPeopleFabVisible?.(!showCalls);
+  }, [setPeopleFabVisible, showCalls]);
+  const { avatars, db, identity, lock, nip05, privacy, publicMetadata } =
     useLocal();
   const contacts = useContacts();
   const enabled = useChatsEnabled();
@@ -62,6 +97,21 @@ export function PeopleDirectory() {
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const { snapshot } = useMarmotWindow(openChats, enabled && !showCalls);
   const [query, setQuery] = useState("");
+  const [carouselVisible, setCarouselVisible] = useState(false);
+  const [contactMenu, setContactMenu] = useState<{
+    key: string;
+    kind: "actions" | "confirmRemoval";
+  }>();
+  const [contactActionError, setContactActionError] = useState(false);
+  useFocusEffect(useCallback(() => () => setContactMenu(undefined), []));
+  useEffect(
+    () =>
+      lock.subscribe(() => {
+        const state = lock.getState();
+        if (state.locked || !state.active) setContactMenu(undefined);
+      }),
+    [lock],
+  );
   const [results, setResults] = useState<Results>();
   const searches = useRef(
     new Map<string, { result: Results; expires: number }>(),
@@ -71,6 +121,9 @@ export function PeopleDirectory() {
   const exactReference = exact ? term : undefined;
   const exactKey = exact?.key;
   const local = contacts.filter((row) => !privacy.isBlocked(row.publicKey));
+  const contactsByKey = new Map(
+    local.map((contact) => [contact.publicKey, contact]),
+  );
   const filtered = term
     ? local.filter((row) => {
         const profile = avatars.profile(row.publicKey);
@@ -219,7 +272,11 @@ export function PeopleDirectory() {
           !privacy.isBlocked(key),
       );
 
-  const savedPeople = filtered.filter((row) => row.publicKey !== exactKey);
+  const favorites = term ? [] : filtered.filter(({ favorite }) => favorite);
+  const savedPeople = filtered.filter(
+    (row) => row.publicKey !== exactKey && (term || !row.favorite),
+  );
+  const normalFavorites = favorites.length > 0 && favoritesDisplay === "normal";
   const items: DirectoryItem[] = [
     ...(term && remote.length
       ? [
@@ -231,22 +288,41 @@ export function PeopleDirectory() {
           })),
         ]
       : []),
-    ...(savedPeople.length
-      ? [
-          { title: t("messenger:saved") },
-          ...savedPeople.map(({ publicKey }) => ({ publicKey })),
-        ]
+    ...(favorites.length
+      ? favoritesDisplay === "cool"
+        ? [{ carousel: true } as const]
+        : favorites
       : []),
+    ...savedPeople.map(({ publicKey }, index) => ({
+      publicKey,
+      separated: normalFavorites && index === 0,
+    })),
     ...(!term && recent.length
       ? [
-          { title: t("messenger:recent") },
+          {
+            title: t("messenger:recent"),
+            separated: normalFavorites && !savedPeople.length,
+          },
           ...recent.map((publicKey) => ({ publicKey })),
         ]
       : []),
   ];
-  const visibility = useAvatarVisibility<DirectoryItem>((item) =>
-    "publicKey" in item ? item.publicKey : "",
+  const { onViewableItemsChanged: onDirectoryViewable, viewabilityConfig } =
+    useAvatarVisibility<DirectoryItem>((item) =>
+      "publicKey" in item ? item.publicKey : "",
+    );
+  const toggleDirectoryVisibility = useCallback(
+    (event: Parameters<typeof onDirectoryViewable>[0]) => {
+      onDirectoryViewable(event);
+      setCarouselVisible(
+        event.viewableItems.some(
+          ({ item, isViewable }) => isViewable && "carousel" in item,
+        ),
+      );
+    },
+    [onDirectoryViewable, setCarouselVisible],
   );
+  const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
   const noMatches =
     term &&
     !remote.length &&
@@ -254,18 +330,56 @@ export function PeopleDirectory() {
     (current?.state === "complete" ||
       term.length > 80 ||
       /^(?:nostr:|nsec1|ncryptsec1|npub1|nprofile1)/i.test(term));
+  const menuContact = local.find((row) => row.publicKey === contactMenu?.key);
+  const menuName =
+    menuContact &&
+    nameOrAddress(
+      menuContact.name || avatars.profile(menuContact.publicKey)?.name,
+      menuContact.publicKey,
+    );
+  const menuOpen =
+    focused && lockState.active && !lockState.locked && !!menuContact;
+
+  function openContactMenu(key: string) {
+    if (!local.some((row) => row.publicKey === key)) return;
+    tapFeedback();
+    Keyboard.dismiss();
+    setContactActionError(false);
+    setContactMenu({ key, kind: "actions" });
+  }
+
+  function applyContactAction(action: "favorite" | "remove" | "message") {
+    if (!menuContact) return;
+    const key = menuContact.publicKey;
+    const state = lock.getState();
+    if (state.locked || !state.active || privacy.isBlocked(key)) {
+      setContactMenu(undefined);
+      return;
+    }
+    try {
+      if (action === "message") {
+        if (enabled && contactByKey(db, key).get()) {
+          setContactMenu(undefined);
+          router.push({ pathname: "/chat/[key]", params: { key } });
+        }
+        return;
+      }
+      db.transaction((tx) => {
+        const saved = contactByKey(tx, key).get();
+        if (!saved) return;
+        if (action === "remove") removeContact(tx, key);
+        else updateContactPreferences(tx, key, { favorite: !saved.favorite });
+      });
+      setContactMenu(undefined);
+    } catch {
+      setContactActionError(true);
+    }
+  }
+
   return (
     <Screen tab scroll={false}>
       <View style={styles.header}>
-        <CompactHeader title={t("messenger:people")}>
-          {!showCalls && (
-            <IconButton
-              icon="qr"
-              label={t("contacts:scanQr")}
-              onPress={() => router.push("/scan")}
-            />
-          )}
-        </CompactHeader>
+        <CompactHeader title={t("messenger:people")} />
         {!separateCallsTab && (
           <GlassSegmentedControl
             value={section}
@@ -297,58 +411,207 @@ export function PeopleDirectory() {
           />
         )}
       </View>
-      {showCalls ? (
-        <CallHistory onScroll={onScroll} />
-      ) : (
-        <Animated.FlatList
-          data={items}
-          {...visibility}
-          keyExtractor={(item) =>
-            "publicKey" in item ? item.publicKey : item.title
-          }
-          renderItem={({ item }) =>
-            "publicKey" in item ? (
-              <PersonRow {...item} />
-            ) : (
-              <Ink
-                kind="caption"
-                muted
-                accessibilityRole="header"
-                style={styles.section}
+      <View style={styles.body}>
+        {showCalls ? (
+          <CallHistory onScroll={onScroll} />
+        ) : (
+          <Animated.FlatList
+            data={items}
+            viewabilityConfig={viewabilityConfig}
+            onViewableItemsChanged={toggleDirectoryVisibility}
+            keyExtractor={(item) =>
+              "publicKey" in item
+                ? item.publicKey
+                : "carousel" in item
+                  ? "favorites-carousel"
+                  : item.title
+            }
+            renderItem={({ item }) =>
+              "publicKey" in item ? (
+                <PersonRow
+                  {...item}
+                  contact={contactsByKey.get(item.publicKey)}
+                  onContactActions={openContactMenu}
+                />
+              ) : "carousel" in item ? (
+                <FavoriteCarousel
+                  favorites={favorites}
+                  visible={carouselVisible}
+                  rtl={rtl}
+                  onContactActions={openContactMenu}
+                />
+              ) : (
+                <Ink
+                  kind="caption"
+                  muted
+                  accessibilityRole="header"
+                  style={[
+                    styles.section,
+                    item.separated && styles.sectionSeparated,
+                  ]}
+                >
+                  {item.title}
+                </Ink>
+              )
+            }
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            contentContainerStyle={styles.list}
+            ListFooterComponent={
+              term && current?.state === "loading" ? (
+                <LoadingSkeleton layout="person" label={t("common:opening")} />
+              ) : term && current?.state === "unavailable" ? (
+                <Ink muted>{t("messenger:searchUnavailable")}</Ink>
+              ) : noMatches ? (
+                <Ink muted>{t("messenger:noResults")}</Ink>
+              ) : !term && !local.length && !recent.length ? (
+                <QuietState
+                  icon="person"
+                  title={t("messenger:find")}
+                  detail={t("messenger:noPeople")}
+                />
+              ) : undefined
+            }
+          />
+        )}
+      </View>
+      <GlassSheet
+        open={menuOpen}
+        onOpenChange={(open) => {
+          if (!open) setContactMenu(undefined);
+        }}
+      >
+        <GlassSheetContent>
+          {contactMenu?.kind === "confirmRemoval" ? (
+            <>
+              <GlassSheetTitle>{t("messenger:removePerson")}</GlassSheetTitle>
+              <Action
+                variant="prominent"
+                onPress={() => applyContactAction("remove")}
               >
-                {item.title}
-              </Ink>
-            )
-          }
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          contentContainerStyle={styles.list}
-          ListFooterComponent={
-            term && current?.state === "loading" ? (
-              <ActivityIndicator accessibilityLabel={t("common:opening")} />
-            ) : term && current?.state === "unavailable" ? (
-              <Ink muted>{t("messenger:searchUnavailable")}</Ink>
-            ) : noMatches ? (
-              <Ink muted>{t("messenger:noResults")}</Ink>
-            ) : !term && !local.length && !recent.length ? (
-              <QuietState
-                icon="person"
-                title={t("messenger:find")}
-                detail={t("messenger:noPeople")}
+                {t("messenger:removePerson")}
+              </Action>
+              <Action
+                variant="soft"
+                onPress={() => {
+                  setContactActionError(false);
+                  setContactMenu({ key: contactMenu.key, kind: "actions" });
+                }}
+              >
+                {t("common:cancel")}
+              </Action>
+            </>
+          ) : menuContact ? (
+            <>
+              <GlassSheetTitle>{menuName}</GlassSheetTitle>
+              {enabled && (
+                <Row
+                  leading={<Icon name="chat" />}
+                  title={t("contacts:message")}
+                  onPress={() => applyContactAction("message")}
+                />
+              )}
+              <Row
+                leading={<Icon name="favorite" />}
+                title={t(
+                  menuContact.favorite
+                    ? "contacts:removeFavorite"
+                    : "contacts:addFavorite",
+                )}
+                onPress={() => applyContactAction("favorite")}
               />
-            ) : undefined
-          }
-        />
-      )}
+              <Row
+                leading={<Icon name="erase" color={colors.danger} />}
+                title={t("messenger:removePerson")}
+                onPress={() => {
+                  setContactActionError(false);
+                  setContactMenu({
+                    key: menuContact.publicKey,
+                    kind: "confirmRemoval",
+                  });
+                }}
+              />
+            </>
+          ) : null}
+          {contactActionError && (
+            <Ink accessibilityRole="alert" accessibilityLiveRegion="polite">
+              {t("security:privacyWriteFailed")}
+            </Ink>
+          )}
+        </GlassSheetContent>
+      </GlassSheet>
     </Screen>
   );
 }
 
-function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
+function FavoriteCarousel({
+  favorites,
+  visible,
+  rtl,
+  onContactActions,
+}: {
+  favorites: SavedContact[];
+  visible: boolean;
+  rtl: boolean;
+  onContactActions: (key: string) => void;
+}) {
+  const { reduceMotion } = useTheme();
+  const { relays, publicMetadata } = useLocal();
+  const canLookUpNames = Boolean(
+    useSyncExternalStore(relays.subscribe, publicMetadata.profileRelayKey),
+  );
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const visibility = useAvatarVisibility<SavedContact>(
+    (person) => person.publicKey,
+    visible,
+  );
+  return (
+    <CircularList
+      key={favorites.length === 1 ? "single" : "multiple"}
+      data={favorites}
+      initialWidth={width - insets.left - insets.right - space.lg * 2}
+      rtl={rtl}
+      reduceMotion={reduceMotion}
+      keyExtractor={(person) => person.publicKey}
+      {...visibility}
+      renderItem={(person) => (
+        <PersonRow
+          publicKey={person.publicKey}
+          contact={person}
+          tile
+          lookUpName={canLookUpNames}
+          onContactActions={onContactActions}
+        />
+      )}
+    />
+  );
+}
+
+function PersonRow({
+  publicKey,
+  reference,
+  showVerification,
+  separated,
+  contact,
+  lookUpName = false,
+  onContactActions,
+  tile = false,
+}: PersonItem & {
+  contact?: SavedContact;
+  lookUpName?: boolean;
+  onContactActions: (key: string) => void;
+  tile?: boolean;
+}) {
   const { t } = useTranslation(namespaces);
-  const { contact, profile, photo, name } = usePerson(publicKey, false);
+  const profile = usePublicProfile(publicKey);
+  const photo = useAvatar(publicKey, false);
+  const knownName = contact?.name.trim() || profile?.name;
+  const name =
+    knownName ||
+    (tile ? t("contacts:unnamed") : nameOrAddress(undefined, publicKey));
   const { about, nip05 } = profileDetails(profile?.fields);
   const verified = useVerifiedIdentifier(
     showVerification ? nip05 : undefined,
@@ -358,9 +621,26 @@ function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
   return (
     <Transition.Boundary
       id={`person:${publicKey}`}
-      style={styles.row}
+      style={[
+        tile ? styles.tile : styles.row,
+        separated && styles.sectionSeparated,
+      ]}
       accessibilityRole="button"
       accessibilityLabel={t("contacts:openProfile", { name })}
+      onLongPress={contact ? () => onContactActions(publicKey) : undefined}
+      accessibilityActions={
+        contact
+          ? [{ name: "longpress", label: t("contacts:contactActions") }]
+          : undefined
+      }
+      onAccessibilityAction={
+        contact
+          ? (event) => {
+              if (event.nativeEvent.actionName === "longpress")
+                onContactActions(publicKey);
+            }
+          : undefined
+      }
       onPress={() => {
         tapFeedback();
         router.push({
@@ -378,36 +658,83 @@ function PersonRow({ publicKey, reference, showVerification }: PersonItem) {
           publicKey={publicKey}
           name={name}
           photo={photo}
-          hasName={Boolean(contact?.name || profile?.name)}
+          hasName={Boolean(knownName)}
+          size={tile ? "lg" : "md"}
         />
       </Transition.Boundary.Target>
-      <View style={styles.info}>
-        <Ink kind="label" numberOfLines={1}>
-          {name}
-        </Ink>
-        <Ink kind="caption" muted numberOfLines={1}>
-          {verified
-            ? nip05
-            : about || `${address.slice(0, 15)}…${address.slice(-5)}`}
-        </Ink>
-      </View>
-      {contact?.favorite ? (
-        <Icon name="favorite" size={18} />
-      ) : contact ? (
-        <Icon name="check" size={18} />
+      {tile ? (
+        !knownName && !profile && lookUpName ? (
+          <PendingFavoriteName fallback={name} />
+        ) : (
+          <Ink kind="caption" numberOfLines={2} style={styles.tileLabel}>
+            {name}
+          </Ink>
+        )
       ) : (
-        <Icon name="next" size={18} />
+        <>
+          <View style={styles.info}>
+            <Ink kind="label" numberOfLines={1}>
+              {name}
+            </Ink>
+            <Ink kind="caption" muted numberOfLines={1}>
+              {verified
+                ? nip05
+                : about || `${address.slice(0, 15)}…${address.slice(-5)}`}
+            </Ink>
+          </View>
+          {contact?.favorite ? (
+            <Icon name="favorite" size={18} />
+          ) : contact ? (
+            <Icon name="check" size={18} />
+          ) : (
+            <Icon name="next" size={18} />
+          )}
+        </>
       )}
     </Transition.Boundary>
   );
 }
+function PendingFavoriteName({ fallback }: { fallback: string }) {
+  const { colors, reduceMotion } = useTheme();
+  const [waiting, setWaiting] = useState(true);
+  const progress = useShimmerProgress(waiting && !reduceMotion);
+  useEffect(() => {
+    const timer = setTimeout(() => setWaiting(false), 2000);
+    return () => clearTimeout(timer);
+  }, []);
+  return waiting ? (
+    <View
+      style={styles.pendingLabel}
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+    >
+      <Shimmer
+        background={colors.line}
+        highlight={colors.accentSoft}
+        progress={reduceMotion ? undefined : progress}
+        rtl={false}
+        style={styles.pendingLine}
+      />
+    </View>
+  ) : (
+    <Ink kind="caption" numberOfLines={2} style={styles.tileLabel}>
+      {fallback}
+    </Ink>
+  );
+}
+
 const styles = StyleSheet.create({
   header: {
     paddingHorizontal: space.lg,
     paddingBottom: space.sm,
     gap: space.sm,
   },
-  list: { paddingHorizontal: space.lg, paddingBottom: space.lg },
+  body: { flex: 1 },
+  list: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+    paddingBottom: 72,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -416,5 +743,10 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
   },
   info: { gap: 2, flex: 1 },
+  tile: { alignItems: "center", gap: space.xs, paddingHorizontal: space.xs },
+  tileLabel: { textAlign: "center" },
+  pendingLabel: { minHeight: 18, justifyContent: "center" },
+  pendingLine: { width: 56, height: 10, borderRadius: 8 },
+  sectionSeparated: { marginTop: space.sm },
   section: { paddingTop: space.md, paddingBottom: space.xs, fontWeight: "600" },
 });

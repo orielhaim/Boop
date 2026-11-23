@@ -1,5 +1,6 @@
 import {
   addBatteryStateListener,
+  addLowPowerModeListener,
   BatteryState,
   getBatteryStateAsync,
 } from "expo-battery";
@@ -49,6 +50,7 @@ import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
 import { loadTranslationEngine } from "@/core/translation/native";
 import { initializeTranslationPreferences } from "@/core/translation/preferences";
 import { createTranslationService } from "@/core/translation/service";
+import { createVoiceTranscription } from "@/core/speech/service";
 import { openDatabase } from "@/db";
 import {
   callById,
@@ -150,6 +152,7 @@ async function start() {
         ),
       publicMetadata,
     );
+    let beforeAccountClose: (() => Promise<void>) | undefined;
     const marmotSession = createMarmotSession(
       async (configuration, mediaOrigin) => {
         const state = await initializeMarmotIdentity(
@@ -167,6 +170,7 @@ async function start() {
         }
         return state;
       },
+      () => beforeAccountClose?.() ?? Promise.resolve(),
     );
     let previousBlocks = new Set(privacy.blockedKeys());
     privacy.subscribe(() => {
@@ -318,6 +322,21 @@ async function start() {
       privateMode: () => lock.getState().enabled,
       subscribe: lock.subscribe,
     });
+    const speech = createVoiceTranscription({
+      db,
+      account: identity.publicKey,
+      appLocale: () => i18n.language,
+      active,
+      available: () =>
+        chatPreferences.enabled() && marmotSession.status() === "ready",
+      audioBusy: () => {
+        const call = calling.store.getState().call;
+        return Boolean(call && call.phase !== "ended");
+      },
+      blocked: privacy.isBlocked,
+      hidden: (group, id) => chatPreferences.hidden(group).includes(id),
+    });
+    beforeAccountClose = speech.beforeAccountClose;
     appLock = lock;
     messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
@@ -328,6 +347,7 @@ async function start() {
         loadTranslationEngine,
       ),
       identity,
+      speech,
       avatars,
       previews,
       mediaSdk,
@@ -386,8 +406,20 @@ export function LocalSessionLifecycle() {
     mediaSdk,
     profileEditor,
     publicMetadata,
+    speech,
+    privacy,
   } = useLocal();
   useEffect(() => {
+    const stopSpeech = speech.start();
+    const unsubscribeSpeechCall = calling.store.subscribe(speech.sync);
+    const unsubscribeSpeechPrivacy = privacy.subscribe(
+      () => void speech.reconcile(),
+    );
+    const lowPower = addLowPowerModeListener(speech.power);
+    const memory = AppState.addEventListener(
+      "memoryWarning",
+      speech.memoryWarning,
+    );
     const stopGroupCalls = attachGroupCallLifecycle({
       calling,
       localKey: identity.publicKey,
@@ -485,23 +517,31 @@ export function LocalSessionLifecycle() {
       callSignaling.stop();
       relays.stop();
     }
+    function catchUpMessaging() {
+      if (chatPreferences.enabled())
+        void marmotSession
+          .ready()
+          .then(() => {
+            if (mounted && AppState.currentState === "active")
+              return marmot.catchUp();
+          })
+          .catch(() => undefined);
+    }
     const update = (state: typeof AppState.currentState) => {
+      speech.sync();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       avatars.setActive(state === "active" && !lock.getState().locked);
       if (state === "active") {
         calling.setForeground(true);
         connect();
-        if (chatPreferences.enabled())
-          void marmotSession
-            .ready()
-            .then(marmot.catchUp)
-            .catch(() => undefined);
+        catchUpMessaging();
       } else if (state === "background" && !lock.getState().authenticating) {
         background();
       }
       updateBackupConditions();
     };
     const unsubscribeLock = lock.subscribe(() => {
+      speech.sync();
       updateUnlocks();
       if (
         lock.getState().authenticating ||
@@ -524,6 +564,7 @@ export function LocalSessionLifecycle() {
       const next = chatPreferences.enabled();
       if (next === chatsEnabled) return;
       chatsEnabled = next;
+      speech.sync();
       connectMessaging();
     });
     const unsubscribeMedia = mediaSdk.subscribe(() => {
@@ -532,36 +573,95 @@ export function LocalSessionLifecycle() {
       mediaOrigin = next;
       connectMessaging();
     });
-    let attemptedInitialProfile = false;
-    function publishInitialProfile() {
-      if (
-        attemptedInitialProfile ||
-        AppState.currentState !== "active" ||
-        lock.getState().locked ||
-        !publicMetadata.profileRelayKey() ||
-        marmotSession.status() !== "ready" ||
-        preference(db, "profile.initialBackup") !== identity.publicKey ||
-        !profileEditor.draft() ||
-        profileEditor.stage() !== "idle"
-      )
-        return;
-      attemptedInitialProfile = true;
-      void profileEditor.publish().catch(() => undefined);
+    let profileTimer: ReturnType<typeof setTimeout> | undefined;
+    let profileRetryDelay = 0;
+    let profileRevision = profileEditor.getSnapshot().editRevision;
+    let publishingProfile = false;
+
+    function profileEligible() {
+      return (
+        mounted &&
+        AppState.currentState === "active" &&
+        !lock.getState().locked &&
+        Boolean(publicMetadata.profileRelayKey()) &&
+        (preference(db, "profile.initialBackup") !== identity.publicKey ||
+          marmotSession.status() === "ready") &&
+        Boolean(profileEditor.draft())
+      );
     }
-    const unsubscribeAccount = marmotSession.subscribe(() => {
-      updateBackupConditions();
-      publishInitialProfile();
+
+    function scheduleProfilePublish() {
+      if (!profileEligible()) {
+        clearTimeout(profileTimer);
+        profileTimer = undefined;
+        return;
+      }
+      if (profileTimer || publishingProfile) return;
+      profileTimer = setTimeout(() => {
+        profileTimer = undefined;
+        if (!profileEligible()) return;
+        publishingProfile = true;
+        const revision = profileRevision;
+        void profileEditor
+          .publish()
+          .catch(() => undefined)
+          .finally(() => {
+            publishingProfile = false;
+            if (!mounted) return;
+            if (revision === profileRevision && profileEditor.draft()) {
+              profileRetryDelay = Math.min(
+                Math.max(15_000, profileRetryDelay * 2),
+                300_000,
+              );
+            } else {
+              profileRetryDelay = 0;
+            }
+            scheduleProfilePublish();
+          });
+      }, profileRetryDelay);
+    }
+
+    const unsubscribeEditor = profileEditor.subscribe(() => {
+      const revision = profileEditor.getSnapshot().editRevision;
+      if (revision !== profileRevision) {
+        profileRevision = revision;
+        profileRetryDelay = 0;
+        clearTimeout(profileTimer);
+        profileTimer = undefined;
+      }
+      scheduleProfilePublish();
     });
-    const unsubscribeProfileRelays = relays.subscribe(publishInitialProfile);
+    const unsubscribeAccount = marmotSession.subscribe(() => {
+      speech.accountReady();
+      void speech.reconcile();
+      updateBackupConditions();
+      scheduleProfilePublish();
+    });
+    const unsubscribeProfileRelays = relays.subscribe(scheduleProfilePublish);
     const unsubscribeProfileLock = lock.subscribe(() => {
       if (lock.getState().locked) profileEditor.cancel();
-      else publishInitialProfile();
+      scheduleProfilePublish();
     });
-    publishInitialProfile();
-    const battery = addBatteryStateListener(updateBackupConditions);
-    const network = addNetworkStateListener(updateBackupConditions);
+    const profileAppState = AppState.addEventListener("change", (state) => {
+      if (state !== "active") profileEditor.cancel();
+      scheduleProfilePublish();
+    });
+    scheduleProfilePublish();
+    const battery = addBatteryStateListener(() => {
+      updateBackupConditions();
+      void speech.power();
+    });
+    const network = addNetworkStateListener(({ isConnected }) => {
+      updateBackupConditions();
+      if (isConnected && AppState.currentState === "active") catchUpMessaging();
+    });
     return () => {
       mounted = false;
+      stopSpeech();
+      unsubscribeSpeechCall();
+      unsubscribeSpeechPrivacy();
+      lowPower.remove();
+      memory.remove();
       stopGroupCalls();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
@@ -570,6 +670,9 @@ export function LocalSessionLifecycle() {
       unsubscribeAccount();
       unsubscribeProfileRelays();
       unsubscribeProfileLock();
+      unsubscribeEditor();
+      profileAppState.remove();
+      clearTimeout(profileTimer);
       profileEditor.cancel();
       battery.remove();
       network.remove();
@@ -593,6 +696,8 @@ export function LocalSessionLifecycle() {
     mediaSdk,
     profileEditor,
     publicMetadata,
+    speech,
+    privacy,
   ]);
   return null;
 }

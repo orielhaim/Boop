@@ -209,6 +209,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
             tag.values[1] == it.attachmentIndex.toString() }?.values
           mapOf("index" to it.attachmentIndex.toInt(), "name" to it.reference.fileName, "type" to it.reference.mediaType,
             "thumbhash" to it.reference.thumbhash, "dimensions" to it.reference.dim,
+            "plaintextHash" to it.reference.plaintextSha256,
             "size" to tag?.get(2)?.toULongOrNull()?.takeIf { it in 1uL..9007199254740991uL }?.toDouble(),
             "duration" to tag?.get(3)?.let(::mediaDuration),
             "waveform" to tag?.get(4)?.take(192)?.split(",")?.mapNotNull { value -> value.toIntOrNull()?.takeIf { level -> level in 0..31 } }?.take(64),

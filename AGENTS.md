@@ -14,6 +14,7 @@
 - Gate microphone access on the authenticated call connection and bind identity proof to its DTLS fingerprints. Reuse one audio lease and capture per call. Send conference video only to viewers who explicitly opted in.
 - Use MarmotKit for encrypted attachment drafts, transfer, verification, and retention. Keep attachment metadata in the original encrypted event. Feed Chat Kit verified local leases and authenticated preview metadata. Use `src/core/media` for Blossom settings, preflight, optional ciphertext mirroring, profile media, and link previews.
 - A received attachment may fetch only when the user taps Download on a live accepted message. Apply the avatar policy separately. On Demand link previews need a tap. Automatic previews and translation are limited to eligible visible messages in a focused, foreground, unlocked chat.
+- Process voice transcription through the protected account's speech queue. Open only retained, verified Marmot audio leases. Require on-device recognition and keep transcript text and timings in the encrypted Boop cache.
 - Check Open Later against the loaded conversation window on open and paging. Store verified plaintext in the active account's SQLite cache. Keep decryption off the background schedule.
 - Use typed i18next resources in English and Hebrew for app-owned copy. Check LTR and RTL. Keep original message bytes and local-only derived text separate.
 - Use the current SQLite baseline on a fresh database. See [Development](DEVELOPMENT.md) for explicit reset and verification commands.

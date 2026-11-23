@@ -1,0 +1,22 @@
+diff --git a/build/hooks.js b/build/hooks.js
+index 0d8c53d59001b4f9a088e3a82fbb0103f8414d7e..ea30327fda1bb79f174b02b3c62592eaf0b340a8 100644
+--- a/build/hooks.js
++++ b/build/hooks.js
+@@ -1,4 +1,4 @@
+-import { useReleasingSharedObject } from 'expo-modules-core';
++import { useReleasingSharedObject } from 'expo';
+ import { useEffect, useRef, useState } from 'react';
+ import { ExpoSpeech } from './ExpoSpeechModule';
+ import { followPlayer, PlaybackFollower } from './playback';
+diff --git a/package.json b/package.json
+index 4ff9433facd10f7b9bab497edcaf19485bd45186..ae774a6c6f199179926d2e0de5733aa178c77309 100644
+--- a/package.json
++++ b/package.json
+@@ -70,7 +70,6 @@
+   },
+   "peerDependencies": {
+     "expo": ">=57",
+-    "expo-modules-core": "*",
+     "react": "*",
+     "react-native": "*"
+   },

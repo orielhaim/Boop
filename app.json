@@ -81,7 +81,7 @@
         {
           "recordAudioAndroid": false,
           "cameraPermission": "Capture and send photos or videos, scan Boop addresses, and share your camera during calls.",
-          "microphonePermission": false
+          "microphonePermission": "Record voice and video messages and talk during peer-to-peer calls."
         }
       ],
       [
@@ -117,7 +117,7 @@
         {
           "ios": { "deploymentTarget": "18.0" },
           "android": {
-            "minSdkVersion": 31,
+            "minSdkVersion": 33,
             "targetSdkVersion": 36,
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
@@ -128,7 +128,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": false,
+          "microphonePermission": "Record voice and video messages and talk during peer-to-peer calls.",
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": false
         }
@@ -150,6 +150,13 @@
           "savePhotosPermission": "Save photos and videos you choose to keep.",
           "granularPermissions": [],
           "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "@hzblj/expo-speech",
+        {
+          "microphonePermission": false,
+          "speechRecognitionPermission": "Allow Boop to transcribe saved voice messages using on-device speech recognition."
         }
       ]
     ],

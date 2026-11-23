@@ -17,6 +17,7 @@ export const namespaces = [
   "errors",
   "chatKit",
   "translation",
+  "speech",
 ] as const satisfies readonly (keyof (typeof resources)["en"])[];
 
 export const languages = ["en", "he"] as const;

@@ -24,9 +24,13 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   const migrationsFolder = join(import.meta.dir, "../src/db/migrations");
   expect(baseline.journal.entries.map(({ tag }) => tag)).toEqual([
     "0000_initial",
+    "0001_speech_jobs",
   ]);
   expect(baseline.migrations.m0000).toBe(
     readFileSync(join(migrationsFolder, "0000_initial.sql"), "utf8"),
+  );
+  expect(baseline.migrations.m0001).toBe(
+    readFileSync(join(migrationsFolder, "0001_speech_jobs.sql"), "utf8"),
   );
   const orm = drizzle(db, { schema });
   migrate(orm, { migrationsFolder });
@@ -34,7 +38,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   expect(db.query("PRAGMA user_version").values()).toEqual([[2]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
-  ).toEqual([[1]]);
+  ).toEqual([[2]]);
   expect(
     db
       .query(
@@ -51,6 +55,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
     "peer_permissions",
     "relay_settings",
     "settings",
+    "speech_jobs",
   ]);
   db.run("INSERT INTO contacts (public_key, name) VALUES (?, 'Alice')", [
     peerKey,
@@ -142,6 +147,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
   );
   expect(messenger?.children.map((route) => route.route).sort()).toEqual([
     "(tabs)",
+    "add-contact",
     "chat/[key]",
     "connect",
     "person/[key]",
@@ -156,8 +162,8 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
       .sort(),
   ).toEqual([
     "about",
+    "appearance",
     "calls",
-    "chats",
     "connections",
     "connections/media-storage",
     "edit-profile",
@@ -171,6 +177,8 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "language/translation/index",
     "language/translation/models",
     "language/translation/target",
+    "language/voice-transcription/index",
+    "language/voice-transcription/models",
     "privacy",
     "privacy/app-lock",
     "privacy/blocked",

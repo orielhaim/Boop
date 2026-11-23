@@ -1,8 +1,9 @@
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Alert } from "react-native";
+import { Alert } from "react-native";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
 import {
   SettingsDescription,
@@ -68,7 +69,7 @@ export default function TranslationTarget() {
           </Action>
         </>
       )}
-      {!catalog && !error && <ActivityIndicator />}
+      {!catalog && !error && <LoadingSkeleton label={t("common:opening")} />}
       {catalog && !choices?.length && (
         <SettingsDescription>
           {t("translation:noLanguages")}

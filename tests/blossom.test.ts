@@ -322,19 +322,31 @@ test("confirmed photos survive relay refusal and retry without a second upload",
     t - 1,
   );
   let accepts = false;
+  let lookupAvailable = false;
+  let publishAttempts = 0;
+  let beforePublish: (() => Promise<void>) | undefined;
   const relays = {
     watchProfiles(
       _keys: string[],
       event: (input: unknown, author: string) => void,
       eose: () => void,
     ) {
+      return this.watchOwnProfile(event, eose);
+    },
+    watchOwnProfile(
+      event: (input: unknown, author: string) => void,
+      eose: (allReplied: boolean) => void,
+    ) {
+      if (!lookupAvailable) return null;
       queueMicrotask(() => {
         event(published, owner);
-        eose();
+        eose(true);
       });
       return () => {};
     },
     async publishProfile(content: string, createdAt: number) {
+      publishAttempts++;
+      await beforePublish?.();
       if (!accepts) return null;
       published = sign(content, createdAt);
       return published;
@@ -412,6 +424,7 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   const draft = editor.preview();
   expect(draft).toStartWith("file:///draft/");
   expect(await editor.publish()).toBe("relays");
+  expect(publishAttempts).toBe(1);
   expect(attempts).toEqual([origin, backup]);
   expect(avatars.profile(owner)?.picture).toBe(
     "https://example.com/original.jpg",
@@ -436,6 +449,23 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   expect(avatars.resolve(owner)).toBeUndefined();
   expect(local.size).toBe(0);
   expect(observed.at(-1)).toMatchObject({ draft: null, stage: "idle" });
+  lookupAvailable = true;
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  beforePublish = () => {
+    started.resolve();
+    return release.promise;
+  };
+  editor.editFields({ name: "First edit" });
+  const first = editor.publish();
+  await started.promise;
+  editor.editFields({ name: "Latest edit" });
+  release.resolve();
+  expect(await first).toBe("cancelled");
+  expect(editor.getSnapshot().draft?.name).toBe("Latest edit");
+  beforePublish = undefined;
+  expect(await editor.publish()).toBe("published");
+  expect(avatars.profile(owner)?.name).toBe("Latest edit");
   editor.editFields({ name: "Private draft" });
   expect(observed.at(-1)?.draft?.name).toBe("Private draft");
   editor.discard();

@@ -107,6 +107,13 @@ export default function LanguageSettings() {
             title={t("translation:title")}
             onPress={() => router.push("/settings/language/translation")}
           />
+          <SettingsRow
+            icon="language"
+            title={t("speech:title")}
+            onPress={() =>
+              router.push("/settings/language/voice-transcription")
+            }
+          />
         </SettingsGroup>
       )}
       {saveFailed ? (

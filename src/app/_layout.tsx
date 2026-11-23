@@ -10,15 +10,9 @@ import * as SplashScreen from "expo-splash-screen";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { LoadingStatus } from "@/components/ui/loading-status";
 import { useTranslation } from "react-i18next";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  Modal,
-  StyleSheet,
-  View,
-} from "react-native";
+import { Alert, AppState, Modal, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
@@ -45,6 +39,7 @@ import { IdentityMismatchError } from "@/core/identity/storage";
 import { LocalContext, type LocalServices } from "@/services/local-context";
 import {
   callNavigationKeys,
+  favoritesDisplayKey,
   themes,
   useAppPreferences,
 } from "@/stores/preferences";
@@ -83,6 +78,10 @@ function Boot({ onRetry }: { onRetry: () => void }) {
         useAppPreferences.setState({
           theme: choice,
           haptics: result.haptics,
+          favoritesDisplay:
+            preference(result.db, favoritesDisplayKey) === "cool"
+              ? "cool"
+              : "normal",
           separateCallsTab:
             preference(result.db, callNavigationKeys.separateTab) === "on",
           defaultScreen:
@@ -150,10 +149,7 @@ function Boot({ onRetry }: { onRetry: () => void }) {
               <Action onPress={onRetry}>{t("common:retry")}</Action>
             </>
           ) : (
-            <ActivityIndicator
-              accessibilityLabel={t("common:opening")}
-              color={colors.accent}
-            />
+            <LoadingStatus label={t("common:opening")} />
           )}
         </View>
       )}
@@ -261,7 +257,7 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
                 <Stack.Screen
                   name="scan"
                   options={{
-                    title: t("navigation:scan"),
+                    headerShown: false,
                     presentation: "modal",
                   }}
                 />

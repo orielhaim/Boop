@@ -57,7 +57,7 @@ export function createAttachmentPresentation(
     set(entry, checking);
   }
 
-  function start(entry: Entry, explicit: boolean) {
+  function start(entry: Entry, explicit: boolean, onVerified?: () => void) {
     if (
       entry.operation ||
       !allowed(entry.target) ||
@@ -87,7 +87,12 @@ export function createAttachmentPresentation(
           },
           operation.signal,
         );
+        onVerified?.();
         if (eligible()) {
+          if (onVerified) {
+            set(entry, { kind: "cached" });
+            return;
+          }
           set(entry, { kind: "preparing" });
           lease = await native.openAttachment(...entry.target);
         }
@@ -152,9 +157,9 @@ export function createAttachmentPresentation(
       const entry = entries.get(key);
       if (entry?.state.kind === "cached") start(entry, false);
     },
-    download(key: string) {
+    download(key: string, onVerified?: () => void) {
       const entry = entries.get(key);
-      if (entry) start(entry, true);
+      if (entry) start(entry, true, onVerified);
     },
     cancel(key: string) {
       entries.get(key)?.operation?.abort();

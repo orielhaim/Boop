@@ -44,11 +44,11 @@ An authorized HTTPS Blossom endpoint also exercises the encrypted group-image ro
 
 Startup opens the SQLite baseline and checks the pinned SecureStore slot. A missing key and pin opens Welcome. A missing or mismatched pinned key stops startup. Existing valid keys bypass Welcome, including legacy keys stored before pinning.
 
-**Create Account** writes the initial profile draft and securely stores the generated key before pinning the address. The profile draft survives interrupted setup and offline startup. MarmotKit opens the same address before the first automatic profile publication. Relay acknowledgment, or a matching signed event read back from a relay, clears the pending draft. **Sign In** validates and confirms the imported address before saving it. It never publishes an initial profile. The Identity keys settings screen still handles staged replacements.
+**Create Account** writes the initial profile draft and securely stores the generated key before pinning the address. MarmotKit opens Chats for that address from durable local state while relay setup runs in the background. Boop publishes the profile separately. Relay acknowledgment, or a matching signed event read back from a relay, clears the pending draft. **Sign In** validates and confirms the imported address before saving it. It never publishes an initial profile. The Identity keys settings screen still handles staged replacements.
 
 Chats is the root route. People and Profile complete the dock. The shared person route accepts saved and unsaved identities. The `contacts.name` column holds a local nickname. An empty value means the user has no nickname. Existing saved rows, overrides, favorites, call preferences, and call history stay in the existing baseline. Public metadata stays in `nostr_profiles`.
 
-The profile cache accepts signed kind 0 events and keeps the most recent replaceable event. Edits merge with the latest observed fields, including fields Boop does not present. People resolves exact keys locally. NIP-05 checks HTTPS mappings through the native public-network transport, and text searches use enabled discovery relays that support NIP-50. Results reflect those relays. MarmotKit's directory and KeyPackage lookup remain responsible for starting an MLS conversation.
+The profile cache accepts signed kind 0 events and keeps the most recent replaceable event. Save writes profile text locally. Confirming a photo or banner crop saves it locally too. Boop displays saved changes while its protected session retries publication. Edits merge with the latest observed fields, including fields Boop does not present. People resolves exact keys locally. NIP-05 checks HTTPS mappings through the native public-network transport, and text searches use enabled discovery relays that support NIP-50. Results reflect those relays. MarmotKit's directory and KeyPackage lookup remain responsible for starting an MLS conversation.
 
 Profile photo and banner URLs go through the same native destination, download, decode, and cache limits. The **My Contacts** default applies before downloading. **Load profile images** grants temporary access while the profile is open and unlocked. Blocking revokes access. Only checked local files reach the image component.
 
@@ -59,6 +59,14 @@ Profile photo and banner URLs go through the same native destination, download, 
 Android reports per-app transmitted and received bytes across all interfaces since the last boot through [TrafficStats](https://developer.android.com/reference/android/net/TrafficStats). Both platforms report the current connection type. iOS does not expose a public per-app traffic total.
 
 The interactive donut uses [Gifted Charts 1.4.83](https://www.npmjs.com/package/react-native-gifted-charts/v/1.4.83) with Boop’s existing SVG and Expo gradient dependencies. [Victory Native](https://github.com/FormidableLabs/victory-native-xl) also supports pie charts and requires adding Skia.
+
+### Voice transcription
+
+Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.
+
+The protected session owns one transcription worker. It admits verified retained voice notes and leases each file only for local processing. SQLite migration `0001_speech_jobs` adds durable jobs to existing baseline v2 databases. Final text, segments and word timings are sealed with AES-GCM using a device-only SecureStore key for the current identity. Clearing all transcriptions deletes that key. The app omits the native transcript cache key for message audio.
+
+Queued work continues across screens while the app is active and unlocked. It pauses for calls, recording, App Lock or app suspension, then resumes from SQLite when eligible. The OS does not schedule recognition while the app is suspended. Check a fresh received voice note by enabling Automatic mode, verifying it stays remote until Download, then waiting for the transcript after leaving the chat. Reopen it and check playback, seeking, speed changes, empty audio and the Storage clear actions. Exercise Hebrew and English transcripts separately.
 
 ## Navigation and motion
 

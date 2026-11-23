@@ -15,10 +15,9 @@ import type { AvatarDisk, createAvatars } from "./service";
 
 type Avatars = ReturnType<typeof createAvatars>;
 type Relays = {
-  watchProfiles(
-    keys: string[],
+  watchOwnProfile(
     onEvent: (event: unknown, author: string) => void,
-    onEose: () => void,
+    onEose: (allReplied: boolean) => void,
   ): (() => void) | null;
   publishProfile(content: string, createdAt: number): Promise<unknown>;
 };
@@ -60,6 +59,7 @@ export function createProfileEditor<Result>(
   const listeners = new Set<() => void>();
   let stage: ProfileStage = "idle";
   let abort: AbortController | undefined;
+  let editRevision = 0;
 
   const pinned = () => preference(db, "identity.publicKey") === owner;
   const readDraft = () => {
@@ -76,6 +76,7 @@ export function createProfileEditor<Result>(
     return {
       draft,
       stage,
+      editRevision,
       bannerPreview:
         draft?.banner?.kind === "upload"
           ? disk.local(draft.banner.file)
@@ -112,28 +113,34 @@ export function createProfileEditor<Result>(
     });
     notify();
   }
+  function writeEdit(draft: Draft) {
+    if (!pinned()) throw new Error("Profile editor unavailable");
+    editRevision++;
+    write(draft);
+    abort?.abort();
+  }
   function refresh(signal: AbortSignal) {
     return new Promise<boolean>((resolve) => {
       let stop: (() => void) | null = null;
       let invalid: { eventId: string; createdAt: number } | undefined;
-      const timer = setTimeout(() => finish(false), 7_000);
-      const cancel = () => finish(false);
-      function finish(complete: boolean) {
+      let finished = false;
+      let answered = false;
+      const timer = setTimeout(finish, 2_000);
+      function finish() {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
-        signal.removeEventListener("abort", cancel);
+        signal.removeEventListener("abort", finish);
         stop?.();
+        const cached = avatars.profile(owner);
         resolve(
-          complete &&
-            (!invalid ||
-              replaces(
-                avatars.profile(owner) ?? { eventId: "", createdAt: 0 },
-                invalid,
-              )),
+          !signal.aborted &&
+            (answered || Boolean(cached)) &&
+            (!invalid || (cached !== undefined && replaces(cached, invalid))),
         );
       }
-      signal.addEventListener("abort", cancel, { once: true });
-      stop = relays.watchProfiles(
-        [owner],
+      signal.addEventListener("abort", finish, { once: true });
+      stop = relays.watchOwnProfile(
         (event, author) => {
           if (author !== owner || !pinned() || signal.aborted) return;
           if (parseProfile(event, owner)) {
@@ -153,9 +160,13 @@ export function createProfileEditor<Result>(
           };
           if (replaces(candidate, invalid)) invalid = candidate;
         },
-        () => finish(true),
+        (allReplied) => {
+          answered = true;
+          if (allReplied) finish();
+        },
       );
-      if (!stop || signal.aborted) finish(false);
+      if (finished) stop?.();
+      else if (!stop || signal.aborted) finish();
     });
   }
   return {
@@ -166,19 +177,18 @@ export function createProfileEditor<Result>(
         listeners.delete(listener);
       };
     },
-    stage: () => stage,
     draft: readDraft,
     preview(field: "photo" | "banner" = "photo") {
       const image = readDraft()?.[field];
       if (image?.kind === "upload") return disk.local(image.file);
     },
     prepare(source: string, field: "photo" | "banner" = "photo") {
-      if (!pinned() || abort) throw new Error("Profile editor unavailable");
+      if (!pinned()) throw new Error("Profile editor unavailable");
       const file = `${disk.newId()}.jpg`;
       disk.copyLocal(source, file);
       try {
         const previous = readDraft();
-        write({
+        writeEdit({
           photo: { kind: "unchanged" },
           ...previous,
           [field]: { kind: "upload", file },
@@ -191,9 +201,8 @@ export function createProfileEditor<Result>(
       }
     },
     removeImage(field: "photo" | "banner") {
-      if (!pinned() || abort) throw new Error("Profile editor unavailable");
       const previous = readDraft();
-      write({
+      writeEdit({
         photo: { kind: "unchanged" },
         ...previous,
         [field]: { kind: "remove" },
@@ -202,8 +211,7 @@ export function createProfileEditor<Result>(
       if (old?.kind === "upload") remove(old.file);
     },
     editFields(fields: Pick<Draft, "name" | "about" | "website" | "nip05">) {
-      if (!pinned() || abort) throw new Error("Profile editor unavailable");
-      write(
+      writeEdit(
         draftSchema.parse({
           photo: { kind: "unchanged" },
           ...readDraft(),
@@ -244,13 +252,16 @@ export function createProfileEditor<Result>(
           if (!publicImageUrl(url)) return "metadata";
           draft = { ...draft, [field]: { ...image, url } };
           write(draft);
-          if (mirror && !(await mirror)) {
+          if (mirror) {
+            const mirrored = await mirror.catch(() => false);
             if (!valid()) return "cancelled";
-            draft = {
-              ...draft,
-              [field]: { ...image, url, mirrorFailed: true },
-            };
-            write(draft);
+            if (!mirrored) {
+              draft = {
+                ...draft,
+                [field]: { ...image, url, mirrorFailed: true },
+              };
+              write(draft);
+            }
           }
         }
         stage = "publishing";
@@ -296,8 +307,12 @@ export function createProfileEditor<Result>(
             setPreference(tx, "profile.publishContent", content);
           });
           const result = await relays.publishProfile(content, timestamp);
-          if (!result || !pinned()) return "relays";
+          if (!valid()) return "cancelled";
+          const published = parseProfile(result, owner);
+          if (!published) return "relays";
           avatars.ingest(result, owner);
+          if (avatars.profile(owner)?.eventId !== published.eventId)
+            return "relays";
         }
         const retired: string[] = [];
         db.transaction((tx) => {

@@ -14,12 +14,20 @@ import { radius, space, useTheme } from "@/theme";
 export default function Settings() {
   const { t } = useTranslation(namespaces);
   const { identity, profileEditor } = useLocal();
-  const { photo, name, profile } = usePerson(identity.publicKey);
-  const { draft } = useSyncExternalStore(
+  const {
+    photo: publishedPhoto,
+    name,
+    profile,
+  } = usePerson(identity.publicKey);
+  const { draft, photoPreview } = useSyncExternalStore(
     profileEditor.subscribe,
     profileEditor.getSnapshot,
   );
-  const displayName = profile?.name ? name : draft?.name || name;
+  const displayName = draft?.name || name;
+  const photo =
+    draft?.photo.kind === "remove"
+      ? undefined
+      : (photoPreview ?? publishedPhoto);
   const { colors } = useTheme();
   const edit = () => router.push("/settings/edit-profile");
   return (
@@ -80,10 +88,10 @@ export default function Settings() {
       </View>
       <SettingsGroup>
         <SettingsRow
-          title={t("common:chats")}
-          icon="chat"
+          title={t("settings:appearance")}
+          icon="palette"
           accent="#347E76"
-          onPress={() => router.push("/settings/chats")}
+          onPress={() => router.push("/settings/appearance")}
         />
         <SettingsRow
           title={t("settings:calls")}

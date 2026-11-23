@@ -10,6 +10,7 @@ import {
 import { initializeTestDatabase } from "./db-fixture";
 import { preference, setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
+import { speechKeySlot } from "../src/core/speech/types";
 
 const previousSecret = "01".repeat(32);
 const nextSecret = "02".repeat(32);
@@ -45,6 +46,16 @@ function setup(sqlite: Database) {
 test("same-identity import keeps records and a staged replacement only activates on startup", async () => {
   using sqlite = new Database(":memory:");
   const { db, keys, storage } = setup(sqlite);
+  keys.set(speechKeySlot(previousKey), "test-cache-key");
+  db.insert(schema.speechJobs)
+    .values({
+      id: "old-job",
+      account: previousKey,
+      attachment: "slot",
+      job: "{}",
+      sealed: "ciphertext",
+    })
+    .run();
   expect(await stageSwitch(db, storage, previousSecret)).toBe("same");
   expect(db.select().from(schema.contacts).all()).toHaveLength(1);
   expect(await stageSwitch(db, storage, nextSecret)).toBe("staged");
@@ -53,6 +64,8 @@ test("same-identity import keeps records and a staged replacement only activates
   const active = await findPinnedIdentity(db, storage);
   expect(active?.identity.publicKey).toBe(nextKey);
   expect(keys.has(originalSlot)).toBe(false);
+  expect(keys.has(speechKeySlot(previousKey))).toBe(false);
+  expect(db.select().from(schema.speechJobs).all()).toEqual([]);
   expect(db.select().from(schema.contacts).all()).toEqual([]);
   expect(db.select().from(schema.peerPermissions).all()).toEqual([]);
   expect(preference(db, "marmot.pins.old")).toBeNull();

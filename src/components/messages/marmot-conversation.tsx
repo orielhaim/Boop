@@ -65,6 +65,7 @@ import {
   timeLockKind,
 } from "@/core/messaging/special-messages/timelock";
 import { createAttachmentPresentation } from "@/core/marmot/attachment-presentation";
+import { speechSource } from "@/core/speech/service";
 import {
   marmot,
   type MarmotConversation,
@@ -221,6 +222,7 @@ export function MarmotConversationScreen({
     chatPreferences,
     db,
     marmotSession,
+    speech,
   } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
@@ -377,6 +379,38 @@ export function MarmotConversationScreen({
   useLayoutEffect(() => {
     presentation.reconcile();
   }, [blockedKeys, hidden, presentation, snapshot]);
+  useEffect(() => {
+    if (
+      !focused ||
+      !foreground ||
+      locked ||
+      blocked ||
+      snapshot?.invited ||
+      !snapshot?.canSend
+    )
+      return;
+    void speech.reconcile();
+    const recent = [...snapshot.messages]
+      .sort((left, right) => right.sentAt - left.sentAt)
+      .slice(0, 16);
+    for (const row of recent) {
+      if (row.sender !== self || hidden.includes(row.id)) continue;
+      for (const item of row.attachments) {
+        const source = speechSource(id, row, item, self);
+        if (source) speech.outgoing(source, row.sentAt);
+      }
+    }
+  }, [
+    blocked,
+    focused,
+    foreground,
+    hidden,
+    id,
+    locked,
+    self,
+    snapshot,
+    speech,
+  ]);
   const openLater = useOpenLater(
     window,
     snapshot,
@@ -1358,7 +1392,11 @@ export function MarmotConversationScreen({
               }
               onDeleteMessage={
                 canSend
-                  ? (row) => run(() => marmot.deleteMessage(id, row._id))
+                  ? (row) =>
+                      run(async () => {
+                        await marmot.deleteMessage(id, row._id);
+                        speech.invalidateMessage(id, String(row._id));
+                      })
                   : undefined
               }
               onPinMessage={(message) => {
@@ -1431,6 +1469,7 @@ export function MarmotConversationScreen({
                   destructive: true,
                   onPress: () => {
                     chatPreferences.hide(id, row.id);
+                    speech.invalidateMessage(id, row.id);
                     if (row.eventKind === timeLockKind)
                       removeOpenedMessage(db, row.id);
                   },
@@ -1483,6 +1522,7 @@ export function MarmotConversationScreen({
                       message={currentMessage}
                       presentation={presentation}
                       gallery={gallery}
+                      visible={visible.has(row.id)}
                     />
                   ) : null
                 ) : row.eventKind === 9 || row.eventKind === 1111 ? (
@@ -1514,8 +1554,15 @@ export function MarmotConversationScreen({
                   </>
                 ) : null;
               }}
-              audioRecording={canCompose}
-              videoRecording={canCompose}
+              audioRecording={{
+                isEnabled: canCompose,
+                isViewOnceEnabled: false,
+                onActiveChange: speech.setRecording,
+              }}
+              videoRecording={{
+                isEnabled: canCompose,
+                isViewOnceEnabled: false,
+              }}
             />
           </View>
           {panel === "poll" && canSend && (

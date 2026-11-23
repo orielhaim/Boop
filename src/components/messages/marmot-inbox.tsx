@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import {
@@ -19,7 +20,7 @@ import { useTranslation } from "react-i18next";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
-import { useIdentitySheet } from "@/components/people/identity-sheet";
+import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
 import { usePerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
@@ -93,7 +94,7 @@ export function MarmotInbox({
 }) {
   const { t } = useTranslation(namespaces);
   const { identity, privacy, chatPreferences, db } = useLocal();
-  const showSheet = useIdentitySheet();
+  const fabVisibility = useTabFabVisibility();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const kit = useChatAppearance();
   const onScroll = useMinimizeOnScroll();
@@ -217,6 +218,7 @@ export function MarmotInbox({
   return (
     <Screen
       tab={!invitations}
+      topInset={false}
       scroll={false}
       navigationHeader={
         invitations ? (
@@ -228,7 +230,7 @@ export function MarmotInbox({
         {...kit}
         chats={chats}
         user={{ _id: identity.publicKey }}
-        isTopInsetApplied={false}
+        isTopInsetApplied={!invitations}
         isSortEnabled={false}
         isSearchEnabled={!invitations}
         filterChat={() => true}
@@ -277,8 +279,8 @@ export function MarmotInbox({
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")
         }
-        onPressNewChat={
-          invitations ? undefined : () => showSheet("newConversation")
+        onNewChatVisibilityChange={
+          invitations ? undefined : fabVisibility?.setChatsVisible
         }
         onPinChats={
           invitations
@@ -299,6 +301,7 @@ export function MarmotInbox({
                 update(selection, (id) => marmot.setArchived(id, value))
         }
         listProps={{
+          contentContainerStyle: invitations ? undefined : styles.listWithFab,
           onScroll: invitations ? undefined : onScroll,
           onEndReached: page,
           ListHeaderComponent:
@@ -376,11 +379,7 @@ function ChatSyncNotice() {
     return () => clearTimeout(timer);
   }, []);
   return visible ? (
-    <View style={styles.syncStatus}>
-      <Ink kind="caption" muted accessibilityLiveRegion="polite">
-        {t("syncingChats")}
-      </Ink>
-    </View>
+    <LoadingSkeleton layout="chats" label={t("syncingChats")} />
   ) : null;
 }
 
@@ -416,6 +415,7 @@ function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
 }
 
 const styles = StyleSheet.create({
+  listWithFab: { paddingBottom: 88 },
   empty: { padding: space.xl },
   syncStatus: {
     alignItems: "center",

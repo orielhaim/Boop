@@ -1,4 +1,7 @@
+import { speechEn } from "./speech-en";
+
 export const en = {
+  speech: speechEn,
   translation: {
     onDevice: "On-device translation",
     currentTarget: "Current language",
@@ -93,8 +96,6 @@ export const en = {
     publishedName: "Public name",
     banner: "Banner",
     bot: "Automated account",
-    pending:
-      "Profile changes are saved here and waiting for relay confirmation.",
     syncingChats: "Syncing chats…",
     viewProfilePhoto: "View profile photo",
     loadImages: "Load profile images",
@@ -150,6 +151,10 @@ export const en = {
       "Some files could not be measured. The total covers the files Boop could read.",
   },
   common: {
+    save: "Save",
+    saved: "Saved",
+    saving: "Saving…",
+    saveFailed: "Failed",
     chats: "Chats",
     ready: "Ready",
     cancel: "Cancel",
@@ -183,6 +188,9 @@ export const en = {
     addContact: "Add contact",
   },
   contacts: {
+    unnamed: "Unnamed contact",
+    nickname: "Nickname",
+    contactActions: "Contact actions",
     nameRequired: "Enter a contact name.",
     invalidAddress: "Enter a valid Boop address.",
     ownAddress: "Enter someone else’s address.",
@@ -714,17 +722,9 @@ export const en = {
     photoDisplayName: "Display name",
     photoPublic:
       "Publishing shares your photo and display name publicly on Nostr. Your media server and other services may keep copies.",
-    photoPublish: "Publish Profile",
     photoDraft: "Unpublished changes",
-    photoDiscard: "Discard Draft",
     photoUploading: "Uploading photo…",
     photoPublishing: "Waiting for a relay acknowledgment…",
-    photoPublished: "A relay accepted your profile.",
-    photoMirrorFailed:
-      "Your profile was published. The second server did not accept the copy.",
-    photoRelayFailed:
-      "Profile publication could not be confirmed. Your draft is saved.",
-    photoUpload_cancelled: "Upload cancelled. Your draft is saved.",
     mediaStorage: "Media Servers",
     mediaMirror: "Mirror approved uploads",
     mediaHelp:
@@ -784,6 +784,7 @@ export const en = {
     about: "About",
     identity: "Identity keys",
     preferences: "Preferences",
+    appearance: "Appearance",
     theme: "Theme",
     system: "System",
     light: "Light",
@@ -793,6 +794,10 @@ export const en = {
     deviceDefault: "Device default",
     haptics: "Haptic feedback",
     saveHapticsError: "Could not save haptic feedback.",
+    favoritesDisplay: "Favorites display",
+    favoritesNormal: "Normal",
+    favoritesCool: "Cool",
+    favoritesDisplaySaveError: "Could not save the Favorites display setting.",
     separateCallsTab: "Show Calls in the bottom bar",
     defaultScreen: "Default screen on launch",
     saveCallNavigationError: "Could not save call navigation settings.",

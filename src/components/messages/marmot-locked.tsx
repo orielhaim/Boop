@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { LoadingStatus } from "@/components/ui/loading-status";
 import { Action, Ink } from "@/components/ui/kit";
 import type { OpenLaterState } from "@/core/messaging/special-messages/open-conversation";
 import { namespaces } from "@/i18n";
@@ -29,7 +30,7 @@ export function MarmotLocked({
         rtl={rtl}
       />
       {state.kind === "opening" && (
-        <Ink kind="caption">{t("messages:lockedOpening")}</Ink>
+        <LoadingStatus label={t("messages:lockedOpening")} />
       )}
       {(canRetryUnlock(error) || state.kind === "locked") && (
         <Action size="sm" onPress={retry}>
