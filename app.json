@@ -103,6 +103,7 @@
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
       "./plugins/with-system-calling.js",
+      "./plugins/with-android-back-navigation.js",
       "./plugins/with-optional-android-features.js",
       [
         "@hzblj/expo-translation",
