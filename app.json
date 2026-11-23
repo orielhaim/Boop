@@ -119,7 +119,7 @@
             "deploymentTarget": "18.0"
           },
           "android": {
-            "minSdkVersion": 31,
+            "minSdkVersion": 33,
             "targetSdkVersion": 36,
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
