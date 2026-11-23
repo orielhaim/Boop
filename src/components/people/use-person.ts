@@ -17,10 +17,18 @@ export function usePersonIdentity(key: string) {
   const row = useContact(key);
   const contact = row?.publicKey === key ? row : undefined;
   const profile = usePublicProfile(key);
+  const { identity, initialProfile } = useLocal();
+  const initialName =
+    key === identity.publicKey ? initialProfile.name : undefined;
   return {
     contact,
     profile,
-    name: key ? nameOrAddress(contact?.name || profile?.name, key) : "",
+    name: key
+      ? nameOrAddress(
+          contact?.name || (profile ? profile.name : initialName),
+          key,
+        )
+      : "",
   };
 }
 

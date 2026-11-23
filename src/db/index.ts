@@ -1,6 +1,11 @@
 import { drizzle } from "drizzle-orm/expo-sqlite";
 import { migrate } from "drizzle-orm/expo-sqlite/migrator";
-import { openDatabaseSync } from "expo-sqlite";
+import { File } from "expo-file-system";
+import {
+  defaultDatabaseDirectory,
+  deleteDatabaseAsync,
+  openDatabaseSync,
+} from "expo-sqlite";
 import migrations from "./migrations/bundle";
 import * as schema from "./schema";
 
@@ -12,8 +17,19 @@ export class IncompatibleDatabaseError extends Error {
   }
 }
 
-export async function openDatabase() {
-  const sqlite = openDatabaseSync("boop.db", { enableChangeListener: true });
+const databaseName = (account?: string) =>
+  account ? `boop-account-${account}.db` : "boop-installation.db";
+
+export async function removeAccountDatabase(account: string) {
+  const name = databaseName(account);
+  if (new File(defaultDatabaseDirectory, name).exists)
+    await deleteDatabaseAsync(name);
+}
+
+export async function openDatabase(account?: string) {
+  const sqlite = openDatabaseSync(databaseName(account), {
+    enableChangeListener: true,
+  });
   try {
     sqlite.execSync("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     const version = sqlite.getFirstSync<{ user_version: number }>(

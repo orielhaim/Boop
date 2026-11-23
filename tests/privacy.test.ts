@@ -1,14 +1,14 @@
+import { getPublicKey } from "nostr-tools/pure";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { deriveIdentity } from "../src/core/identity/keys";
 import { createPrivacy } from "../src/core/privacy";
 import * as schema from "../src/db/schema";
 import { initializeTestDatabase } from "./db-fixture";
 
-const own = deriveIdentity("01".repeat(32)).publicKey;
-const alice = deriveIdentity("02".repeat(32)).publicKey;
-const bob = deriveIdentity("03".repeat(32)).publicKey;
+const own = getPublicKey(Buffer.from("01".repeat(32), "hex"));
+const alice = getPublicKey(Buffer.from("02".repeat(32), "hex"));
+const bob = getPublicKey(Buffer.from("03".repeat(32), "hex"));
 
 test("contacts, direct Welcome approvals and successful initiation are distinct permissions", () => {
   using sqlite = new Database(":memory:");

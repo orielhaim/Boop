@@ -93,7 +93,6 @@ function fixture(
   const sqlite = new Database(":memory:");
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
-  setPreference(db, "identity.publicKey", owner);
   if (contact) saveContact(db, key, "My Name");
   const context = { policy, blocked };
   const cache = new Set<string>();
@@ -122,6 +121,7 @@ function fixture(
     finish: (size: number) => void;
   }[] = [];
   const cancelled: string[] = [];
+  let current = true;
   const avatars = createAvatars(
     db,
     owner,
@@ -156,6 +156,8 @@ function fixture(
         cancelled.push(id);
       },
     },
+    undefined,
+    () => current,
   );
   avatars.setActive(true);
   avatars.ingest(signed(), key);
@@ -163,7 +165,17 @@ function fixture(
     avatars.setActive(false);
     sqlite.close();
   }
-  return { context, db, avatars, requests, cancelled, close };
+  return {
+    context,
+    db,
+    avatars,
+    requests,
+    cancelled,
+    close,
+    retire: () => {
+      current = false;
+    },
+  };
 }
 
 const matrix = [
@@ -228,7 +240,7 @@ for (const change of ["policy", "block", "delete", "identity"] as const) {
       if (change === "policy") f.context.policy = "nobody";
       if (change === "block") f.context.blocked = true;
       if (change === "delete") f.db.delete(schema.contacts).run();
-      if (change === "identity") setPreference(f.db, "identity.publicKey", key);
+      if (change === "identity") f.retire();
       f.avatars.invalidate();
       expect(f.cancelled).toEqual([first.id]);
       first.finish(1024);

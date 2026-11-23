@@ -4,13 +4,11 @@ Start with `bun install --frozen-lockfile`. Run `bun run android` or, on macOS w
 
 ## Reset a development database
 
-SQLite baseline v2 contains Boop application data and call history. The app refuses earlier baselines before it reads the SecureStore identity.
+Boop’s MDK-first account store starts fresh. Export a NIP-49 identity backup in the previous build to keep the same public address. Back up conversation history separately if you use Marmot Messaging Backup.
 
-1. To keep an existing address, open the **previous build** and export an encrypted **identity key backup**. Record the public address and keep the backup and its passphrase.
-2. Clear Boop's app data on Android, or delete the app on iOS, then install the development build. This removes local history, settings, and caches. Android app-data clearing also removes SecureStore entries. iOS Keychain entries can survive app deletion.
-3. At Welcome, choose **Sign In** and import the encrypted identity key backup. If iOS retained a different identity, use **Settings → Identity keys** to stage a replacement. After startup, check the address against the original.
-
-Keep the SQLite files and SecureStore state together when preserving an installation. Removing only the SQLite files can discard the pointer to a replacement identity's SecureStore slot.
+1. Clear the development app’s data on Android or delete the app on iOS. The app container holds the MDK account registry and Boop’s SQLite databases. iOS Keychain items can survive app deletion. Use Boop’s account removal before deleting the app when you need to remove a registered credential.
+2. Install the new development build. At Welcome, choose **Create Account** or **Sign In**.
+3. To restore your address, import the identity backup and finish the MDK checks. Verify the address in **Settings → Identity**.
 
 ## Check changes
 
@@ -42,11 +40,11 @@ An authorized HTTPS Blossom endpoint also exercises the encrypted group-image ro
 
 ## Onboarding and profiles
 
-Startup opens the SQLite baseline and checks the pinned SecureStore slot. A missing key and pin opens Welcome. A missing or mismatched pinned key stops startup. Existing valid keys bypass Welcome, including legacy keys stored before pinning.
+MarmotKit owns the identity key and account registry. Android uses the MDK Android Keystore-backed keyring. iOS uses MDK’s device-only Keychain entries with access after first unlock. Boop stores a public account selection and opens that account’s SQLite database after MDK reports local readiness. App Lock gates Boop’s signing and presentation.
 
-**Create Account** writes the initial profile draft and securely stores the generated key before pinning the address. MarmotKit opens Chats for that address from durable local state while relay setup runs in the background. Boop publishes the profile separately. Relay acknowledgment, or a matching signed event read back from a relay, clears the pending draft. **Sign In** validates and confirms the imported address before saving it. It never publishes an initial profile. The Identity keys settings screen still handles staged replacements.
+**Create Account** passes the form’s initial profile to MDK. Chats can open from durable local state before relays accept the initial profile and KeyPackage. **Sign In** reviews the public address before persisting the imported key. The native bridge holds the credential during review. MDK persists import progress and requires confirmation before applying a proposed relay repair or continuing past the device check. The setup screen resumes unfinished imports after launch.
 
-Chats is the root route. People and Profile complete the dock. The shared person route accepts saved and unsaved identities. The `contacts.name` column holds a local nickname. An empty value means the user has no nickname. Existing saved rows, overrides, favorites, call preferences, and call history stay in the existing baseline. Public metadata stays in `nostr_profiles`.
+**Settings → Identity** can export a password-encrypted identity backup or reveal the raw key after device authentication. Replacing the account closes the previous session and opens the replacement’s setup. Once the replacement is ready, Boop removes the previous app database and encryption keys and asks MDK to remove the account from this device.
 
 The profile cache accepts signed kind 0 events and keeps the most recent replaceable event. Save writes profile text locally. Confirming a photo or banner crop saves it locally too. Boop displays saved changes while its protected session retries publication. Edits merge with the latest observed fields, including fields Boop does not present. People resolves exact keys locally. NIP-05 checks HTTPS mappings through the native public-network transport, and text searches use enabled discovery relays that support NIP-50. Results reflect those relays. MarmotKit's directory and KeyPackage lookup remain responsible for starting an MLS conversation.
 
@@ -90,13 +88,13 @@ Keep transition presets in `src/components/navigation/motion.ts`. People rows an
 
 ## Messaging and identity
 
-The local Expo module opens the SQLCipher-backed MarmotKit account for the active Nostr address. The SecureStore identity remains the only persistent copy of the Nostr signing key. The native credential adapter supplies that key in memory and checks the account binding before opening the device database. MDK owns MLS keys, invitations, group state, timeline projections, delivery, and retained attachments. Chat Kit reads prepared windows through `src/core/marmot/native.ts`.
+The local Expo module hosts one MarmotKit runtime and binds Boop’s Nostr signer to the selected MDK account. MDK owns MLS keys, invitations, group state, delivery, timeline projections, and retained attachments. Chat Kit reads windows through `src/core/marmot/native.ts`. Boop uses separate SecureStore keys for encrypted app data.
 
 The enabled discovery relays are configured as MarmotKit directory indexers as well as account bootstrap relays. The 0.19.0 UniFFI directory lookup also reads the constructor's relay pool, which includes enabled general and discovery relays. The account's published relay lists still use the configured general and inbox selections. Inbox records can be available on the indexers while KeyPackages are served from the account's general relays.
 
 The protected session gives MarmotKit the relay selections and preferred attachment origin. The Nostr relay service owns inbox publication intent. Media server health and local chat presentation preferences do not reconfigure the Marmot account.
 
-Check first-account startup in a minified Android release. JNA resolves the generated UniFFI API and checksum interfaces by method name, so `marmot.pro` preserves both interfaces in the release. MarmotKit owns KeyPackage generation and publication. If local account open fails transiently, Chats keeps its syncing state while the protected session retries with backoff and wakes on reconnect. Automatic retries pause when the app is inactive or locked. Persistent failures use the existing retry action.
+Check first-account startup in a minified Android release. JNA resolves the generated UniFFI API and checksum interfaces by method name, so `marmot.pro` preserves both interfaces in the release. MarmotKit owns KeyPackage generation and publication. If attaching Boop’s chat services fails, the foreground session retries on reconnect. The chat screen also offers an explicit retry. MDK handles retries for initial account publication.
 
 Received message attachments use MarmotKit's host-managed acquisition policy. Chat Kit renders local ThumbHash previews and leases verified files for playback or export. Download and Cancel drive the native attachment job. A gallery may open retained files from its loaded window.
 
@@ -120,7 +118,7 @@ Open Later uses the vendored `tlock-js` 1.0.0 build from [upstream PR #52](https
 
 ## MarmotKit release inputs
 
-Boop builds MarmotKit from the pinned MDK 0.19.0 commit. The patch extends MDK's tagged durable submissions to direct and draft-backed media and keeps Boop call control events out of timeline projections. Account databases use MDK schema 218. Use a fresh app install or the reset procedure above if you need a clean prototype store. The build generates matching UniFFI bindings and caches the outputs by patch digest under `modules/boop-marmot/sdk`. Gradle builds the selected ABIs. CocoaPods prepares the XCFramework and bundles the SDK privacy manifest.
+Boop builds MarmotKit from the pinned MDK 0.19.0 commit. The patch extends tagged durable media submissions and keeps Boop call control events out of timeline projections. Its account changes expose native Nostr signing, bounded import review for raw and encrypted backups, and generated-setup recovery on reconnect. Account databases use MDK schema 218. Use a fresh app install or the reset procedure above if you need a clean prototype store. The build generates matching UniFFI bindings and caches the outputs by patch digest under `modules/boop-marmot/sdk`. Gradle builds the selected ABIs. CocoaPods prepares the XCFramework and bundles the SDK privacy manifest.
 
 Install Rust through rustup and the platform's native toolchain. The source checkout selects Rust 1.97.1 and requires Odin dev-2026-10 at `84bc3fc`. On Windows, use Visual Studio C++ build tools and put native Windows Perl on PATH before MSYS2. Install MSYS2 `make` and `perl` for the Android SQLCipher cross-build. Set `ODIN` to the Odin executable and `ANDROID_NDK_HOME` to the installed NDK if needed. On macOS and Linux, the build script can install Odin using MDK's checksum-verified installer.
 

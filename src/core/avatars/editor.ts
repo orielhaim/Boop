@@ -55,13 +55,14 @@ export function createProfileEditor<Result>(
     wide: boolean,
   ) => Promise<MediaUploadResult>,
   relays: Relays,
+  isCurrent: () => boolean,
+  canPublish: () => Promise<boolean>,
 ) {
   const listeners = new Set<() => void>();
   let stage: ProfileStage = "idle";
   let abort: AbortController | undefined;
   let editRevision = 0;
 
-  const pinned = () => preference(db, "identity.publicKey") === owner;
   const readDraft = () => {
     try {
       return draftSchema.parse(
@@ -114,7 +115,7 @@ export function createProfileEditor<Result>(
     notify();
   }
   function writeEdit(draft: Draft) {
-    if (!pinned()) throw new Error("Profile editor unavailable");
+    if (!isCurrent()) throw new Error("Profile editor unavailable");
     editRevision++;
     write(draft);
     abort?.abort();
@@ -142,7 +143,7 @@ export function createProfileEditor<Result>(
       signal.addEventListener("abort", finish, { once: true });
       stop = relays.watchOwnProfile(
         (event, author) => {
-          if (author !== owner || !pinned() || signal.aborted) return;
+          if (author !== owner || !isCurrent() || signal.aborted) return;
           if (parseProfile(event, owner)) {
             avatars.ingest(event, owner);
             return;
@@ -183,7 +184,7 @@ export function createProfileEditor<Result>(
       if (image?.kind === "upload") return disk.local(image.file);
     },
     prepare(source: string, field: "photo" | "banner" = "photo") {
-      if (!pinned()) throw new Error("Profile editor unavailable");
+      if (!isCurrent()) throw new Error("Profile editor unavailable");
       const file = `${disk.newId()}.jpg`;
       disk.copyLocal(source, file);
       try {
@@ -231,13 +232,15 @@ export function createProfileEditor<Result>(
     },
     async publish() {
       const saved = readDraft();
-      if (!saved || abort || !pinned()) return "unavailable";
+      if (!saved || abort || !isCurrent()) return "unavailable";
       let draft: Draft = saved;
       const job = new AbortController();
       abort = job;
       const { signal } = job;
-      const valid = () => pinned() && !signal.aborted;
+      const valid = () => isCurrent() && !signal.aborted;
       try {
+        if (!(await canPublish())) return "relays";
+        if (!valid()) return "cancelled";
         for (const field of ["photo", "banner"] as const) {
           const image = draft[field];
           if (image?.kind !== "upload" || image.url) continue;

@@ -15,7 +15,6 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createProfileEditor } from "../src/core/avatars/editor";
 import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
 import { initializeTestDatabase } from "./db-fixture";
-import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 import {
   type BlossomHttp,
@@ -293,7 +292,6 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   const db = drizzle(sqlite, { schema });
   const secret = generateSecretKey();
   const owner = getPublicKey(secret);
-  setPreference(db, "identity.publicKey", owner);
   const local = new Set<string>();
   const disk: AvatarDisk = {
     newId: randomUUID,
@@ -363,6 +361,8 @@ test("confirmed photos survive relay refusal and retry without a second upload",
     relays,
     disk,
     null,
+    undefined,
+    () => true,
   );
   avatars.ingest(published, owner);
   const attempts: string[] = [];
@@ -410,6 +410,8 @@ test("confirmed photos survive relay refusal and retry without a second upload",
     disk,
     (_file, signal) => uploads.upload("profile", photo, { signal }),
     relays,
+    () => true,
+    async () => true,
   );
   const empty = editor.getSnapshot();
   expect(empty.draft).toBeNull();

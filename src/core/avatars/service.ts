@@ -59,7 +59,8 @@ export function createAvatars<Result>(
   relays: ProfileRelays,
   disk: AvatarDisk,
   native: AvatarTransport | null,
-  mirrorOrigins?: (from: string) => string[],
+  mirrorOrigins: ((from: string) => string[]) | undefined,
+  isCurrent: () => boolean,
 ) {
   const visible = new Map<string, number>();
   const exceptions = new Map<string, number>();
@@ -77,7 +78,6 @@ export function createAvatars<Result>(
   let initialized = false;
   let pausedUntil = 0;
 
-  const pinned = () => preference(db, "identity.publicKey") === owner;
   const author = (key: string) => key.split(":")[0];
   const banner = (key: string) => key.endsWith(":banner");
   const override = (key: string) => {
@@ -88,7 +88,7 @@ export function createAvatars<Result>(
   const permitted = (key: string) => {
     const peer = author(key);
     return (
-      pinned() &&
+      isCurrent() &&
       !privacy.isBlocked(peer) &&
       (exceptions.has(peer) ||
         photoAllowed(privacy.photoPolicy(), false, privacy.isContact(peer)))
@@ -176,7 +176,7 @@ export function createAvatars<Result>(
     disk.sweep(cacheFiles, localFiles);
   }
   function ingest(input: unknown, key: string) {
-    if (!pinned()) return;
+    if (!isCurrent()) return;
     const candidate = parseProfile(input, key);
     if (!candidate || !replaces(candidate, profile(key))) return;
     const values = {
@@ -284,7 +284,7 @@ export function createAvatars<Result>(
   }
   function tick() {
     timer = undefined;
-    if (!active || !pinned()) return;
+    if (!active || !isCurrent()) return;
     if (!initialized) {
       initialized = true;
       try {
@@ -402,7 +402,7 @@ export function createAvatars<Result>(
     },
     watch,
     allowVisit(key: string) {
-      if (!active || !pinned() || privacy.isBlocked(key)) return () => {};
+      if (!active || !isCurrent() || privacy.isBlocked(key)) return () => {};
       exceptions.set(key, (exceptions.get(key) ?? 0) + 1);
       invalidate();
       return () => {
@@ -429,7 +429,7 @@ export function createAvatars<Result>(
       };
     },
     resolve(peer: string, wide = false) {
-      if (!peer || !pinned() || privacy.isBlocked(peer)) return undefined;
+      if (!peer || !isCurrent() || privacy.isBlocked(peer)) return undefined;
       const key = wide ? `${peer}:banner` : peer;
       const setting = wide ? "profile.banner" : "profile.photo";
       const manual = peer === owner ? preference(db, setting) : null;
@@ -448,7 +448,7 @@ export function createAvatars<Result>(
     },
     hasOverride: (key: string) => Boolean(override(key)),
     saveOverride(key: string, source: string | null) {
-      if (!pinned() || privacy.isBlocked(key) || !privacy.isContact(key))
+      if (!isCurrent() || privacy.isBlocked(key) || !privacy.isContact(key))
         throw new Error("Contact unavailable");
       const previous = contactByKey(db, key).get()?.localAvatarFile;
       const filename = source ? `${disk.newId()}.jpg` : null;

@@ -50,14 +50,25 @@ import {
   randomCallId,
   trysteroMedia,
 } from "@/core/calling/trystero";
-import { initializeIdentity, initializeMarmotIdentity } from "@/core/identity";
+import {
+  accountDownloadKey,
+  accountSigner,
+  copyInstallationPreferences,
+  removeLocalAccount,
+  selectedAccount,
+  selectAccount,
+} from "@/core/identity";
 import { createChatPreferences } from "@/core/marmot/chat-preferences";
 import { createMarmotSession } from "@/core/marmot/account-session";
 import { createMarmotViewport } from "@/core/marmot/viewport";
-import { marmot } from "@/core/marmot/native";
+import { marmot, marmotAccounts } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
-import { configuredRelays, inboxIntentKey } from "@/core/nostr/config";
+import {
+  configuredRelays,
+  defaultRelays,
+  inboxIntentKey,
+} from "@/core/nostr/config";
 import { createPrivacy } from "@/core/privacy";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
 import { authenticateApp, protectAppWindow } from "@/core/security/native-auth";
@@ -84,8 +95,46 @@ import { useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
-  const db = await openDatabase();
+  const installation = await openDatabase();
+  let db = installation;
   try {
+    const initialRelays = configuredRelays(defaultRelays, null);
+    const { account, accounts } = await selectedAccount(
+      installation,
+      initialRelays,
+    );
+    const setup =
+      account && !account.unlinked && account.readiness !== "recovery_required"
+        ? await marmotAccounts.onboarding(account.key, { action: "read" })
+        : null;
+    const ready =
+      account &&
+      !account.signedOut &&
+      !account.unlinked &&
+      (account.readiness === "local_ready" ||
+        account.readiness === "publishing" ||
+        account.readiness === "network_ready") &&
+      (!setup || setup.ready);
+    if (account && !ready) {
+      for (const old of accounts) {
+        if (old.key !== account.key && !old.signedOut && !old.unlinked)
+          await marmotAccounts.signOut(old.key);
+      }
+    }
+    const initialProfile = ready
+      ? await marmotAccounts.selectSigner(account.key)
+      : null;
+    if (ready) {
+      selectAccount(installation, account.key);
+      for (const old of accounts) {
+        if (old.key === account.key) continue;
+        await removeLocalAccount(old.key);
+      }
+      db = await openDatabase(account.key);
+      if (preference(db, "relay.settings.initialized") === null)
+        copyInstallationPreferences(installation, db);
+      installation.$client.closeSync();
+    }
     const language = readLanguagePreference(db);
     await i18n.changeLanguage(
       preferredLanguage(
@@ -93,7 +142,6 @@ async function start() {
         language === "auto" ? getLocales()[0]?.languageCode : undefined,
       ),
     );
-    const identityStarted = performance.now();
     const lock = createAppLock({
       read: (key) => preference(db, key),
       write: (key, value) => setPreference(db, key, value),
@@ -102,23 +150,32 @@ async function start() {
       protect: protectAppWindow,
     });
     appLock = lock;
-    const loaded = await initializeIdentity(db);
-    if (!loaded) {
+    if (!ready || !initialProfile) {
       return {
         status: "welcome" as const,
         db,
+        account,
+        setup,
+        previousAccount: accounts.find((item) => item.key !== account?.key)
+          ?.key,
+        relays: initialRelays,
         lock,
         theme: preference(db, "theme"),
         haptics: preference(db, "haptics") !== "off",
       };
     }
-    const { identity, signer, fresh, downloadKey } = loaded;
-    messagingMetric("identity ready", {
-      ms: performance.now() - identityStarted,
-    });
+    const identity = { publicKey: account.key, npub: toNpub(account.key) };
+    let retired = false;
+    const isCurrent = () => !retired;
+    const active = () =>
+      isCurrent() &&
+      AppState.currentState === "active" &&
+      !lock.getState().locked;
+    const signer = accountSigner(account.key, active);
+    const downloadKey = await accountDownloadKey(account.key);
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     purgeExpiredOpenedMessages(db);
-    seedRelays(db, fresh);
+    seedRelays(db);
     const chatPreferences = createChatPreferences(db);
     const privacy = createPrivacy(db, identity.publicKey);
     const mediaSdk = createMediaSdk(db, signer);
@@ -134,8 +191,6 @@ async function start() {
       isBlocked: privacy.isBlocked,
       canReceiveCall: privacy.canReceiveCall,
     });
-    const active = () =>
-      AppState.currentState === "active" && !lock.getState().locked;
     const publicMetadata = createPublicMetadata(
       relays,
       identity.publicKey,
@@ -151,6 +206,7 @@ async function start() {
       disk,
       mediaSdk.profileDownload,
       mediaSdk.profileMirrors,
+      isCurrent,
     );
     const profileEditor = createProfileEditor(
       db,
@@ -165,13 +221,15 @@ async function start() {
           wide,
         ),
       publicMetadata,
+      isCurrent,
+      () => marmotAccounts.networkReady(account.key),
     );
     let beforeAccountClose: (() => Promise<void>) | undefined;
     const marmotSession = createMarmotSession({
       async open(configuration, mediaOrigin) {
-        const state = await initializeMarmotIdentity(
-          db,
-          identity.publicKey,
+        if (!isCurrent()) throw new Error("AccountClosed");
+        const state = await marmotAccounts.open(
+          account.key,
           configuration,
           mediaOrigin,
         );
@@ -477,6 +535,39 @@ async function start() {
     return {
       status: "ready" as const,
       db,
+      isCurrent,
+      initialProfile,
+      async replaceIdentity(importToken: string, live: () => boolean) {
+        const target = await marmotAccounts.install(
+          { importToken },
+          initialRelays,
+        );
+        if (!live()) {
+          if (target !== account.key) await marmotAccounts.remove(target);
+          if (!chatPreferences.enabled()) await marmot.closeAccount(true);
+          return false;
+        }
+        if (target === account.key) return false;
+        const installation = await openDatabase();
+        try {
+          copyInstallationPreferences(db, installation);
+          selectAccount(installation, target);
+          retired = true;
+          calling.end();
+          callSignaling.stop();
+          relays.stop();
+          avatars.setActive(false);
+          profileEditor.cancel();
+          await audio.close();
+          await marmotSession.stop();
+          await marmotAccounts.signOut(account.key);
+          downloadKey.fill(0);
+          await marmotAccounts.shutdown();
+          return true;
+        } finally {
+          installation.$client.closeSync();
+        }
+      },
       translation: createTranslationService(
         createDerivedTranslations(db, marmotViewport.incomingText),
         loadTranslationEngine,
@@ -549,6 +640,7 @@ export function LocalSessionLifecycle() {
     downloads,
     admitDownloadedVoice,
     privacy,
+    isCurrent,
   } = useLocal();
   useEffect(() => {
     const stopSpeech = speech.start();
@@ -619,12 +711,20 @@ export function LocalSessionLifecycle() {
         .catch(() => undefined);
     }
     function connectMessaging() {
+      if (!isCurrent() || lock.getState().locked) return;
       if (!chatPreferences.enabled())
-        void marmotSession.stop().catch(() => undefined);
+        void marmotSession
+          .stop()
+          .then(() => {
+            if (isCurrent() && !chatPreferences.enabled())
+              return marmot.closeAccount(true);
+          })
+          .catch(() => undefined);
       else if (AppState.currentState === "active")
         void marmotSession.start(configuration, mediaOrigin);
     }
     function connect() {
+      if (!isCurrent() || lock.getState().locked) return;
       callSignaling.start();
       relays.start(configuration);
       connectMessaging();
@@ -673,9 +773,6 @@ export function LocalSessionLifecycle() {
     }
     const update = (state: typeof AppState.currentState) => {
       downloads.sync();
-      marmotSession.setRetryEnabled(
-        state === "active" && !lock.getState().locked,
-      );
       speech.sync();
       if (state === "active") admitDownloadedVoice();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
@@ -683,6 +780,7 @@ export function LocalSessionLifecycle() {
       if (state === "active") {
         calling.setForeground(true);
         connect();
+        if (!lock.getState().locked) marmotSession.reconnected();
         catchUpMessaging();
       } else if (state === "background" && !lock.getState().authenticating) {
         background();
@@ -691,12 +789,18 @@ export function LocalSessionLifecycle() {
     };
     const unsubscribeLock = lock.subscribe(() => {
       downloads.sync();
-      marmotSession.setRetryEnabled(
-        AppState.currentState === "active" && !lock.getState().locked,
-      );
       speech.sync();
       admitDownloadedVoice();
       updateUnlocks();
+      if (AppState.currentState === "active") {
+        if (lock.getState().locked) {
+          callSignaling.stop();
+          relays.stop();
+        } else {
+          connect();
+          catchUpMessaging();
+        }
+      }
       if (
         lock.getState().authenticating ||
         AppState.currentState !== "background"
@@ -735,11 +839,10 @@ export function LocalSessionLifecycle() {
     function profileEligible() {
       return (
         mounted &&
+        isCurrent() &&
         AppState.currentState === "active" &&
         !lock.getState().locked &&
         Boolean(publicMetadata.profileRelayKey()) &&
-        (preference(db, "profile.initialBackup") !== identity.publicKey ||
-          marmotSession.status() === "ready") &&
         Boolean(profileEditor.draft())
       );
     }
@@ -825,7 +928,7 @@ export function LocalSessionLifecycle() {
       networkWasConnected = isConnected === true;
       updateBackupConditions();
       if (isConnected && AppState.currentState === "active") {
-        if (reconnected) marmotSession.reconnected();
+        if (reconnected && !lock.getState().locked) marmotSession.reconnected();
         catchUpMessaging();
       }
     });
@@ -859,7 +962,6 @@ export function LocalSessionLifecycle() {
       subscription.remove();
       dbChanges.remove();
       avatars.setActive(false);
-      marmotSession.setRetryEnabled(false);
       void marmotSession.stop().catch(() => undefined);
       callSignaling.stop();
       relays.stop();
@@ -881,6 +983,7 @@ export function LocalSessionLifecycle() {
     downloads,
     admitDownloadedVoice,
     privacy,
+    isCurrent,
   ]);
   return null;
 }

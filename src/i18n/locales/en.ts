@@ -50,6 +50,38 @@ export const en = {
     loadFailed: "Couldn’t translate some visible messages.",
   },
   messenger: {
+    resumeSetup: "Finish signing in",
+    checkingSetup: "Checking your account…",
+    setupRequestFailed:
+      "This step couldn’t finish. Check your connection and try again.",
+    setupProfile: "Checking your public profile",
+    setupFollows: "Checking your follow list",
+    setupRelays: "Checking your public relays",
+    setupInbox: "Checking your inbox relays",
+    setupDevices: "Checking for other devices",
+    setupKeyPackage: "Setting up encrypted chats",
+    setupApproveUncertain:
+      "Some relays didn’t answer. Publishing these relay lists may replace a list Boop couldn’t retrieve.",
+    setupApproveRelays:
+      "Review the relay list before publishing it for your account.",
+    setupReadRelays: "Read relays",
+    setupWriteRelays: "Write relays",
+    setupPublishRelays: "Publish relay list",
+    setupSkip: "Continue without this step",
+    setupRecommendedRelays: "Review recommended relays",
+    setupOtherDevice:
+      "This account may already be in use on another device. Link that device from Settings after signing in.",
+    setupUnknownDevices:
+      "Boop couldn’t finish checking for other devices. You can continue and link devices from Settings later.",
+    setupContinueAnyway: "Continue anyway",
+    setupReenter: "Enter identity key again",
+    discardSetup: "Remove account from this device",
+    discardSetupDetail:
+      "This deletes the identity key and local Marmot data on this device. Keep your identity backup to sign in again.",
+    recoverSetup: "Recover sign-in",
+    recoverSetupDetail:
+      "Boop will keep the most recent recovery record and ask you to enter your identity key again.",
+    setupUnlinked: "This device was unlinked from the account.",
     sharedGroups: "Shared groups",
     noSharedGroups: "No matches in recent groups",
     identityMismatch:
@@ -907,6 +939,8 @@ export const en = {
     selected_other: "{{count}} selected",
   },
   security: {
+    showPrivateKey: "Reveal private key",
+    hidePrivateKey: "Hide private key",
     exportIdentityKey: "Back up identity key",
     importIdentityKey: "Import identity key",
     backupScope:
@@ -920,7 +954,7 @@ export const en = {
     checkIdentity: "Check identity",
     replaceIdentity: "Replace identity and reset local data",
     replacementWarning:
-      "Boop supports one active identity. On restart, replacing it erases this device’s chats, contacts, call history, and privacy data. Export your current identity first if you want to use it again.",
+      "Finish signing in to the replacement identity to remove the current key, chats, contacts, call history, and privacy data from this device. Export your current identity first if you want to use it again.",
     sameIdentity:
       "This matches your active identity. No local data was changed.",
     currentIdentity: "Current identity",
@@ -928,10 +962,11 @@ export const en = {
     backupFailed:
       "Couldn’t open or save the identity key backup. Check the backup and password, then try again.",
     backupCost:
-      "This backup requires more memory than Boop permits. Use a compatible NIP-49 app to re-export it with cost 16 or less.",
+      "This backup uses a scrypt cost above 18. Re-export it with a compatible NIP-49 app.",
     passwordsMismatch: "Use matching passwords of at least 16 characters.",
     shareBackup: "Share encrypted backup",
-    restartForIdentity: "Replacement is staged. Restart Boop to finish.",
+    restartForIdentity:
+      "Restart Boop to finish signing in to the replacement identity.",
     whoCanCall: "Who can call me",
     whoCanMessage: "Who can message me",
     everyone: "Everyone",

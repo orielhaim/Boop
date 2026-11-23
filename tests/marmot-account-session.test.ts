@@ -3,130 +3,98 @@ import { createMarmotSession } from "@/core/marmot/account-session";
 
 const relays = { general: [], inbox: [], discovery: [] };
 
-function waitFor(
-  session: ReturnType<typeof createMarmotSession>,
-  status: ReturnType<typeof session.status>,
-) {
-  return new Promise<void>((resolve) => {
-    const unsubscribe = session.subscribe(check);
-    function check() {
-      if (session.status() !== status) return;
-      unsubscribe();
-      resolve();
-    }
-    check();
-  });
-}
-
-test("duplicates share one local open and a transient error retries automatically", async () => {
+test("coalesces duplicate opens and reconnects after a transient failure", async () => {
   let attempts = 0;
-  let closed = 0;
   const session = createMarmotSession({
     async open() {
       if (++attempts === 1) throw new Error("temporarily unavailable");
       return "local_ready";
     },
-    async close() {
-      closed++;
-    },
+    async close() {},
     beforeClose: () => undefined,
-    retryDelays: [10],
   });
-  session.setRetryEnabled(true);
   await Promise.all([session.start(relays, null), session.start(relays, null)]);
   expect(attempts).toBe(1);
-  expect(session.status()).toBe("recovering");
-  await waitFor(session, "ready");
+  expect(session.status()).toBe("failed");
+  session.reconnected();
   await session.ready();
   expect(attempts).toBe(2);
   await session.stop();
-  expect(closed).toBe(1);
 });
 
-test("a suspended account holds recovery until it is eligible and reconnects", async () => {
-  let attempts = 0;
+test("an open that completes after stop is drained without ever publishing ready", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const phases: string[] = [];
   const session = createMarmotSession({
     async open() {
-      if (++attempts === 1) throw new Error("temporarily unavailable");
+      entered.resolve();
+      await release.promise;
       return "local_ready";
     },
-    async close() {},
-    beforeClose: () => undefined,
-    retryDelays: [50],
-  });
-  session.setRetryEnabled(true);
-  await session.start(relays, null);
-  session.setRetryEnabled(false);
-  session.reconnected();
-  await Bun.sleep(65);
-  expect(attempts).toBe(1);
-  session.setRetryEnabled(true);
-  session.reconnected();
-  await waitFor(session, "ready");
-  expect(attempts).toBe(2);
-  await session.stop();
-});
-
-test("stopping an account cancels scheduled recovery", async () => {
-  let attempts = 0;
-  const session = createMarmotSession({
-    async open() {
-      attempts++;
-      throw new Error("temporarily unavailable");
+    async close() {
+      phases.push("closed");
     },
-    async close() {},
-    beforeClose: () => undefined,
-    retryDelays: [30],
+    async beforeClose() {
+      phases.push("drained");
+    },
   });
-  session.setRetryEnabled(true);
-  await session.start(relays, null);
-  await session.stop();
-  await Bun.sleep(45);
-  expect(session.status()).toBe("pending");
-  expect(attempts).toBe(1);
+  session.subscribe(() => phases.push(session.status()));
+  const opening = session.start(relays, null);
+  await entered.promise;
+  const closing = session.stop();
+  release.resolve();
+  await Promise.all([opening, closing]);
+  expect(phases).toEqual([
+    "pending",
+    "pending",
+    "drained",
+    "closed",
+    "pending",
+  ]);
+  await expect(session.ready()).rejects.toThrow("AccountClosed");
 });
 
-test("identity mismatch fails closed across foreground and network changes", async () => {
+test("configuration changes drain the previous session before opening its replacement", async () => {
+  const phases: (string | null)[] = [];
+  const session = createMarmotSession({
+    async open(_, origin) {
+      phases.push(origin);
+      return "network_ready";
+    },
+    async close() {
+      phases.push("closed");
+    },
+    async beforeClose() {
+      phases.push("drained");
+    },
+  });
+  await session.start(relays, null);
+  await session.start(relays, "https://media.example.com");
+  expect(phases).toEqual([
+    null,
+    "drained",
+    "closed",
+    "https://media.example.com",
+  ]);
+  await session.stop();
+});
+
+test("a signed-out account stays unavailable when connectivity returns", async () => {
   let attempts = 0;
   const session = createMarmotSession({
     async open() {
       attempts++;
-      throw Object.assign(new Error("identity mismatch"), {
-        code: "IdentityMismatch",
+      throw Object.assign(new Error("signed out"), {
+        code: "AccountSignedOut",
       });
     },
     async close() {},
     beforeClose: () => undefined,
-    retryDelays: [10],
   });
-  session.setRetryEnabled(true);
   await session.start(relays, null);
-  expect(session.status()).toBe("failed");
   session.reconnected();
-  await session.start(relays, null);
-  await Bun.sleep(20);
+  await expect(session.ready()).rejects.toThrow("signed out");
   expect(attempts).toBe(1);
-  await expect(session.ready()).rejects.toThrow("identity mismatch");
-  await session.stop();
-});
-
-test("persistent transient errors reach a retry action after bounded attempts", async () => {
-  let attempts = 0;
-  const session = createMarmotSession({
-    async open() {
-      if (++attempts < 4) throw new Error("temporarily unavailable");
-      return "local_ready";
-    },
-    async close() {},
-    beforeClose: () => undefined,
-    retryDelays: [10, 10],
-  });
-  session.setRetryEnabled(true);
-  await session.start(relays, null);
-  await waitFor(session, "failed");
-  expect(attempts).toBe(3);
-  await session.retry();
-  expect(session.status()).toBe("ready");
-  expect(attempts).toBe(4);
   await session.stop();
 });

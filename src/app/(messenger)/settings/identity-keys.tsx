@@ -19,8 +19,9 @@ import {
 } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, layout, Screen } from "@/components/ui/kit";
-import { exportIdentity, stageIdentity } from "@/core/identity";
-import { backupKind, readBackup } from "@/core/identity/backup";
+import { marmotAccounts } from "@/core/marmot/native";
+import { backupKind } from "@/core/identity";
+import { toNpub } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 
@@ -37,17 +38,20 @@ export default function IdentityKeys() {
   const { t } = useTranslation(namespaces);
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
-  const { db, identity, calling, lock, marmotSession, audio } = useLocal();
+  const { identity, lock, replaceIdentity } = useLocal();
   const protection = useId();
   const [protectedWindow, setProtectedWindow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [rawKey, setRawKey] = useState("");
   const [input, setInput] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [candidate, setCandidate] = useState<ReturnType<
-    typeof readBackup
-  > | null>(null);
+  const [candidate, setCandidate] = useState<{
+    token: string;
+    publicKey: string;
+  } | null>(null);
+  const importToken = useRef<string>(undefined);
   const [scan, setScan] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const focus = useRef(0);
@@ -60,8 +64,14 @@ export default function IdentityKeys() {
       const clear = () => {
         setInput("");
         setPassword("");
+        setRawKey("");
         setConfirmation("");
         setCandidate(null);
+        if (importToken.current)
+          void marmotAccounts
+            .discardImport(importToken.current)
+            .catch(() => undefined);
+        importToken.current = undefined;
         setScan(false);
       };
       const release = () => {
@@ -119,7 +129,10 @@ export default function IdentityKeys() {
       if (current())
         setStatus(
           t(
-            error instanceof Error && error.message === "backup-cost"
+            typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "BackupCost"
               ? "security:backupCost"
               : "security:backupFailed",
           ),
@@ -150,7 +163,7 @@ export default function IdentityKeys() {
       }
       await paint();
       if (!live()) return;
-      const backup = await exportIdentity(db, password);
+      const backup = await marmotAccounts.export(identity.publicKey, password);
       setPassword("");
       setConfirmation("");
       if (!live()) return;
@@ -166,6 +179,22 @@ export default function IdentityKeys() {
       } finally {
         if (file.exists) file.delete();
       }
+    });
+  }
+
+  function reveal() {
+    void perform(async (live) => {
+      const confirmed = await lock.confirmSensitive(async () => {
+        const result = await Authentication.authenticateAsync({
+          promptMessage: t("security:showPrivateKey"),
+          biometricsSecurityLevel: "strong",
+          cancelLabel: t("common:cancel"),
+        });
+        return result.success;
+      });
+      if (!confirmed || !live()) return;
+      const key = await marmotAccounts.export(identity.publicKey, null);
+      if (live()) setRawKey(key);
     });
   }
 
@@ -202,13 +231,24 @@ export default function IdentityKeys() {
     void perform(async (live) => {
       await paint();
       if (!live()) return;
-      const imported = readBackup(input, password);
+      const token = randomUUID();
+      importToken.current = token;
       setInput("");
       setPassword("");
-      if (imported.identity.publicKey === identity.publicKey) {
-        await stageIdentity(db, imported.secret);
-        if (live()) setStatus(t("security:sameIdentity"));
-      } else setCandidate(imported);
+      const publicKey = await marmotAccounts.prepareImport(
+        token,
+        input,
+        password,
+      );
+      if (
+        !live() ||
+        importToken.current !== token ||
+        publicKey === identity.publicKey
+      ) {
+        void marmotAccounts.discardImport(token).catch(() => undefined);
+        if (live() && publicKey === identity.publicKey)
+          setStatus(t("security:sameIdentity"));
+      } else setCandidate({ token, publicKey });
     });
   }
 
@@ -225,15 +265,11 @@ export default function IdentityKeys() {
           onPress: () => {
             void perform(async (live) => {
               if (!live()) return;
-              await stageIdentity(db, candidate.secret);
+              const replaced = await replaceIdentity(candidate.token, live);
               setCandidate(null);
+              if (!replaced) return;
               setStatus(t("security:restartForIdentity"));
-              await audio.close();
-              await marmotSession.stop();
-              calling.end();
-              await reloadAppAsync("Activate staged identity key").catch(
-                () => undefined,
-              );
+              await reloadAppAsync("Activate Marmot account");
             });
           },
         },
@@ -285,16 +321,37 @@ export default function IdentityKeys() {
             <Action variant="prominent" disabled={busy} onPress={share}>
               {t("security:shareBackup")}
             </Action>
+            {rawKey ? (
+              <>
+                <Ink selectable>{rawKey}</Ink>
+                <Action variant="soft" onPress={() => setRawKey("")}>
+                  {t("security:hidePrivateKey")}
+                </Action>
+              </>
+            ) : (
+              <Action variant="soft" disabled={busy} onPress={reveal}>
+                {t("security:showPrivateKey")}
+              </Action>
+            )}
           </>
         ) : candidate ? (
           <>
             <Ink kind="label">{t("security:importedIdentity")}</Ink>
             <Ink kind="caption" selectable>
-              {candidate.identity.npub}
+              {toNpub(candidate.publicKey)}
             </Ink>
             <Ink muted>{t("security:replacementWarning")}</Ink>
             <View style={layout.row}>
-              <Action disabled={busy} onPress={() => setCandidate(null)}>
+              <Action
+                disabled={busy}
+                onPress={() => {
+                  void marmotAccounts
+                    .discardImport(candidate.token)
+                    .catch(() => undefined);
+                  importToken.current = undefined;
+                  setCandidate(null);
+                }}
+              >
                 {t("common:cancel")}
               </Action>
               <Action variant="prominent" disabled={busy} onPress={replace}>

@@ -101,13 +101,7 @@ export function createVoiceTranscription({
     for (const group of scoped) for (const listener of group ?? []) listener();
   };
   const access = () =>
-    mounted &&
-    !accountClosing &&
-    !clearing &&
-    active() &&
-    available() &&
-    preference(db, "identity.publicKey") === account &&
-    !preference(db, "identity.pendingSwitch");
+    mounted && !accountClosing && !clearing && active() && available();
   const canRun = (automatic: boolean) =>
     !recording &&
     !audioBusy() &&

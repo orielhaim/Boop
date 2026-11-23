@@ -23,7 +23,7 @@ import { radius, space, useTheme } from "@/theme";
 
 export default function EditProfile() {
   const { t } = useTranslation(namespaces);
-  const { identity, profileEditor } = useLocal();
+  const { identity, initialProfile, profileEditor } = useLocal();
   const { name, photo, profile } = usePerson(identity.publicKey);
   const { colors } = useTheme();
   const banner = useAvatar(identity.publicKey, true, true);
@@ -42,8 +42,9 @@ export default function EditProfile() {
   >({});
   const [notice, setNotice] = useState("");
   const current = {
-    name: draft?.name ?? profile?.name ?? "",
-    about: draft?.about ?? details.about ?? "",
+    name: draft?.name ?? (profile ? profile.name : initialProfile.name) ?? "",
+    about:
+      draft?.about ?? (profile ? details.about : initialProfile.about) ?? "",
     website: draft?.website ?? details.website ?? "",
     nip05: draft?.nip05 ?? details.nip05 ?? "",
   };

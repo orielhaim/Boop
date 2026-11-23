@@ -196,8 +196,7 @@ export function createRelayService({
         ? transport.safeTargets(remote.tags, "inbox")
         : [];
       const confirmed = remote && sameRelays(inbox, remoteUrls);
-      const explicit =
-        intent && intent !== "initial" && intent !== publication?.intent;
+      const explicit = intent && intent !== publication?.intent;
       const externalChange =
         remote &&
         !confirmed &&

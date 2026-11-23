@@ -16,15 +16,11 @@ type RelayDatabase<TResult> = Pick<
 
 const initializedKey = "relay.settings.initialized";
 
-export function seedRelays<TResult>(
-  db: RelayDatabase<TResult>,
-  newIdentity: boolean,
-) {
+export function seedRelays<TResult>(db: RelayDatabase<TResult>) {
   if (preference(db, initializedKey)) return;
   db.transaction((tx) => {
     if (!tx.select().from(relaySettings).limit(1).get()) {
       tx.insert(relaySettings).values(defaultRelays).run();
-      if (newIdentity) setPreference(tx, inboxIntentKey, "initial");
     }
     setPreference(tx, initializedKey, "1");
   });

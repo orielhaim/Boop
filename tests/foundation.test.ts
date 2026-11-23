@@ -1,3 +1,4 @@
+import { getPublicKey } from "nostr-tools/pure";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
@@ -7,7 +8,6 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { getExactRoutes } from "expo-router/build/getRoutes";
-import { deriveIdentity } from "../src/core/identity/keys";
 import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
 import { initializeTestDatabase } from "./db-fixture";
@@ -16,8 +16,8 @@ import { editRelays, seedRelays } from "../src/db/relays";
 import * as schema from "../src/db/schema";
 
 const secret = "01".repeat(32);
-const peerKey = deriveIdentity(secret).publicKey;
-const localKey = deriveIdentity("02".repeat(32)).publicKey;
+const peerKey = getPublicKey(Buffer.from(secret, "hex"));
+const localKey = getPublicKey(Buffer.from("02".repeat(32), "hex"));
 test("fresh baseline keeps application state and enforces contact uniqueness", () => {
   using db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
@@ -100,20 +100,20 @@ test("seeds verified roles on a new identity and does not reseed after removal",
   using sqlite = new Database(":memory:");
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
-  seedRelays(db, true);
+  seedRelays(db);
   const saved = db.select().from(schema.relaySettings).all();
   expect(configuredRelays(saved, preference(db, inboxIntentKey))).toEqual({
     general: ["wss://nos.lol/", "wss://relay.primal.net/"],
     inbox: ["wss://nos.lol/", "wss://relay.primal.net/"],
     discovery: ["wss://purplepag.es/"],
-    intent: "initial",
+    intent: null,
   });
   editRelays(
     db,
     saved.map(({ url }) => ({ url, next: null })),
     "explicit-removal",
   );
-  seedRelays(db, false);
+  seedRelays(db);
   expect(db.select().from(schema.relaySettings).all()).toEqual([]);
   expect(preference(db, inboxIntentKey)).toBe("explicit-removal");
 });

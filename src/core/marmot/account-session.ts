@@ -1,35 +1,18 @@
 import type { MarmotReadiness, MarmotRelays } from "./native";
 
-const sessionRetryDelays = [1000, 4000, 15000];
-const permanentFailures = new Set([
+type Configuration = { relays: MarmotRelays; mediaOrigin: string | null };
+type State =
+  { status: "pending" | "ready" } | { status: "failed"; cause: unknown };
+const terminal = new Set([
   "IdentityMismatch",
   "AccountSignedOut",
-  "InvalidSecretKey",
   "SecretNotFound",
-  "DuplicateIdentity",
-  "MissingDefaultRelays",
 ]);
-
-function errorCode(error: unknown) {
-  return typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-    ? error.code
-    : "NativeFailure";
-}
-
-type Configuration = { relays: MarmotRelays; mediaOrigin: string | null };
-
-function sameConfiguration(a: Configuration | null, b: Configuration | null) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
 
 export function createMarmotSession({
   open,
   close,
   beforeClose,
-  retryDelays = sessionRetryDelays,
 }: {
   open: (
     relays: MarmotRelays,
@@ -37,74 +20,41 @@ export function createMarmotSession({
   ) => Promise<MarmotReadiness>;
   close: () => Promise<void>;
   beforeClose: () => Promise<void> | undefined;
-  retryDelays?: readonly number[];
 }) {
   let desired: Configuration | null = null;
   let active: Configuration | null = null;
+  let state: State = { status: "pending" };
   let transition = Promise.resolve();
-  let failure: { cause: unknown; code: string } | undefined;
   let revision = 0;
-  let retries = 0;
-  let retryEnabled = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Set<() => void>();
 
-  function changed() {
+  function publish(next: State) {
+    state = next;
     revision++;
     for (const listener of listeners) listener();
   }
 
-  function cancelRecovery() {
-    clearTimeout(timer);
-    timer = undefined;
-  }
-
-  function recovering() {
-    return (
-      failure &&
-      desired &&
-      retries < retryDelays.length &&
-      !permanentFailures.has(failure.code)
-    );
-  }
-
-  function scheduleRecovery() {
-    const delay = retryDelays[retries];
-    if (!retryEnabled || timer || !recovering() || delay === undefined) return;
-    timer = setTimeout(() => {
-      timer = undefined;
-      void reconcile(true);
-    }, delay);
-  }
-
-  function reconcile(recovery = false) {
+  function reconcile() {
+    const next = desired;
     transition = transition.then(async () => {
-      if (recovery && (!retryEnabled || !recovering())) return;
-      const next = desired;
-      if (!failure && sameConfiguration(next, active)) return;
-      cancelRecovery();
+      if (next !== desired) return;
       try {
-        if (active) {
+        if (active && active !== next) {
           await beforeClose();
           await close();
           active = null;
         }
-        if (next) {
+        if (next !== desired) return;
+        if (next && active !== next) {
           await open(next.relays, next.mediaOrigin);
           active = next;
         }
-        failure = undefined;
-        retries = 0;
+        if (next === desired) publish({ status: active ? "ready" : "pending" });
       } catch (cause) {
-        if (recovery) retries++;
-        failure = { cause, code: errorCode(cause) };
-        if (typeof __DEV__ !== "undefined" && __DEV__)
-          console.info("[marmot] account startup", { code: failure.code });
-      } finally {
-        scheduleRecovery();
-        changed();
+        if (next === desired) publish({ status: "failed", cause });
       }
     });
+    publish({ status: "pending" });
     return transition;
   }
 
@@ -114,53 +64,35 @@ export function createMarmotSession({
       mediaOrigin: string | null,
     ) {
       const next = { relays: { general, inbox, discovery }, mediaOrigin };
-      if (sameConfiguration(next, desired)) {
-        if (!failure || timer || permanentFailures.has(failure.code))
-          return transition;
-      } else {
-        cancelRecovery();
-        retries = 0;
-      }
+      if (JSON.stringify(next) === JSON.stringify(desired)) return transition;
       desired = next;
       return reconcile();
     },
     async stop() {
-      desired = null;
-      cancelRecovery();
-      await reconcile();
-      if (failure) throw failure.cause;
-    },
-    setRetryEnabled(enabled: boolean) {
-      if (retryEnabled === enabled) return;
-      retryEnabled = enabled;
-      if (enabled) scheduleRecovery();
-      else cancelRecovery();
-    },
-    reconnected() {
-      if (
-        !retryEnabled ||
-        !desired ||
-        !failure ||
-        permanentFailures.has(failure.code)
-      )
-        return;
-      cancelRecovery();
-      retries = 0;
-      void reconcile();
+      if (desired || active) {
+        desired = null;
+        await reconcile();
+      } else await transition;
+      if (state.status === "failed") throw state.cause;
     },
     retry() {
-      cancelRecovery();
-      retries = 0;
-      return reconcile();
+      if (desired && state.status === "failed") return reconcile();
+      return transition;
     },
-    status: () =>
-      failure
-        ? recovering()
-          ? "recovering"
-          : "failed"
-        : active
-          ? "ready"
-          : "pending",
+    reconnected() {
+      if (!desired || state.status !== "failed") return;
+      const { cause } = state;
+      if (
+        typeof cause === "object" &&
+        cause &&
+        "code" in cause &&
+        typeof cause.code === "string" &&
+        terminal.has(cause.code)
+      )
+        return;
+      void reconcile();
+    },
+    status: () => state.status,
     revision: () => revision,
     subscribe(listener: () => void) {
       listeners.add(listener);
@@ -169,11 +101,10 @@ export function createMarmotSession({
       };
     },
     async ready() {
-      // An initial child effect can precede the protected session's connect effect.
       await Promise.resolve();
       await transition;
-      if (failure) throw failure.cause;
-      if (!active) throw new Error("AccountClosed");
+      if (state.status === "failed") throw state.cause;
+      if (state.status !== "ready") throw new Error("AccountClosed");
     },
   };
 }

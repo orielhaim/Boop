@@ -1,7 +1,7 @@
+import { getPublicKey } from "nostr-tools/pure";
 import { expect, test } from "bun:test";
-import { nprofileEncode, nsecEncode } from "nostr-tools/nip19";
-import { deriveIdentity, parsePublicIdentity } from "../src/core/identity/keys";
-import { readBackup, encryptBackup } from "../src/core/identity/backup";
+import { nprofileEncode } from "nostr-tools/nip19";
+import { toNpub, parsePublicIdentity } from "../src/core/identity/keys";
 import { nip05Address, nip05Key } from "../src/core/nostr/nip05";
 import {
   profileDetails,
@@ -9,7 +9,8 @@ import {
 } from "../src/core/avatars/protocol";
 
 const secret = "01".repeat(32);
-const { publicKey, npub } = deriveIdentity(secret);
+const publicKey = getPublicKey(Buffer.from(secret, "hex"));
+const npub = toNpub(publicKey);
 
 test("public address inputs resolve the same key and keep only bounded public relay hints", () => {
   const profile = nprofileEncode({
@@ -36,15 +37,6 @@ test("NIP-05 resolves the exact requested mapping and validates the public key",
   expect(nip05Key({ names: { alice: "00".repeat(32) } }, "alice")).toBeNull();
   expect(nip05Address("alice@127.0.0.1")).toBeNull();
   expect(nip05Address("alice@example.com/info")).toBeNull();
-});
-
-test("key import handles hexadecimal, nsec and encrypted Digital SIM without accepting npub", () => {
-  const password = "test passphrase for boop";
-  const nsec = nsecEncode(new Uint8Array(32).fill(1));
-  for (const value of [secret, nsec, encryptBackup(secret, password)])
-    expect(readBackup(value, password).identity.publicKey).toBe(publicKey);
-  expect(() => readBackup(npub, "")).toThrow();
-  expect(() => readBackup(encryptBackup(secret, password), "wrong")).toThrow();
 });
 
 test("profile fields project safely while unrelated fields survive republishing", () => {

@@ -85,6 +85,7 @@ function ProfileContent({
     avatars,
     db,
     identity,
+    initialProfile,
     lock,
     privacy,
     profileEditor,
@@ -245,7 +246,9 @@ function ProfileContent({
       </Screen>
     );
 
-  const about = pendingProfile?.about ?? details.about;
+  const about =
+    pendingProfile?.about ??
+    (profile ? details.about : own ? initialProfile.about : undefined);
   const displayName = localName || name;
   const shortAddress = `${address.slice(0, 15)}…${address.slice(-6)}`;
   const editProfile = () => router.push("/settings/edit-profile");

@@ -20,34 +20,89 @@ import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
-  private val hostSecret = "1".padStart(64, '0')
 
-  @Test fun freshHostIdentityOpensChatsWithoutAReachableRelay() = runBlocking {
+  @Test fun generatedIdentityKeepsItsProfileAndNativeSignerAcrossRestart() = runBlocking {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
-    MarmotAndroid.initialize(context)
+    BoopMarmotModule.initializeBindings(context)
     val directory = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
     val relays = listOf("ws://127.0.0.1:1")
-    val store = MemorySecretStore()
-    val key = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    var key: String? = null
     try {
       repeat(2) { attempt ->
         val kit = Marmot.newWithConfiguration(directory.canonicalPath, relays, MarmotOptions(
           relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
-          secretStore = store,
-          deployment = marmotDeploymentNeutral(),
+          deployment = marmotDeploymentNeutral().copy(keychainService = "app.boop.test.${directory.name}"),
         ))
         try {
           kit.start()
           if (attempt == 0) {
-            val account = withTimeout(10_000) { kit.createHostIdentity(hostSecret, relays, relays, relays) }
-            assertEquals(key, account.accountIdHex)
+            val profile = UserProfileMetadataFfi("Offline fixture", "Offline fixture", null, null, null, null, null)
+            val result = withTimeout(10_000) { kit.createIdentityWithInitialProfile(profile, relays, relays, relays) }
+            key = result.account.accountIdHex
+            assertEquals("Offline fixture", result.profile.name)
           }
+          val account = checkNotNull(key)
+          assertEquals(account, kit.listAccounts().single().accountIdHex)
+          assertEquals("Offline fixture", kit.userProfile(account)?.name)
+          val event = JSONObject().put("pubkey", account).put("created_at", 1).put("kind", 1)
+            .put("tags", org.json.JSONArray()).put("content", "native signer")
+          assertEquals(128, kit.signNostrEvent(account, event.toString()).length)
+          val encrypted = kit.nostrCipher(account, account, "account payload", true, true)
+          assertEquals("account payload", kit.nostrCipher(account, account, encrypted, true, false))
+          val other = kit.prepareIdentityImport("1".padStart(64, '0'), "")
+          other.use {
+            event.put("pubkey", it.publicKey())
+            assertTrue(runCatching { kit.signNostrEvent(account, event.toString()) }.isFailure)
+          }
+          if (attempt == 1) {
+            kit.removeAccount(account)
+            assertTrue(kit.listAccounts().isEmpty())
+            assertTrue(runCatching { kit.revealNsec(account) }.isFailure)
+          }
+        } finally {
+          try { kit.shutdownAndClose() } finally { kit.close() }
+        }
+      }
+    } finally { directory.deleteRecursively() }
+  }
+
+  @Test fun rawAndEncryptedImportsKeepOneOfflineCheckpoint() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    BoopMarmotModule.initializeBindings(context)
+    val directory = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val relays = listOf("ws://127.0.0.1:1")
+    val raw = "3501454135014541350145413501453fefb02227e449e57cf4d3a3ce05378683"
+    val vector = "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p"
+    val configuration = MarmotOptions(
+      relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
+      deployment = marmotDeploymentNeutral().copy(keychainService = "app.boop.test.${directory.name}"),
+    )
+    var imported: String? = null
+    try {
+      repeat(2) { attempt ->
+        val kit = Marmot.newWithConfiguration(directory.canonicalPath, relays, configuration)
+        try {
+          kit.start()
+          if (attempt == 0) {
+            val publicKey = kit.prepareIdentityImport(raw, "").use { it.publicKey() }
+            assertTrue(runCatching { kit.prepareIdentityImport(vector, "incorrect").close() }.isFailure)
+            kit.prepareIdentityImport(vector, "nostr").use { prepared ->
+              assertEquals(publicKey, prepared.publicKey())
+              assertTrue(kit.listAccounts().isEmpty())
+              val snapshot = kit.beginPreparedOnboarding(prepared, OnboardingOptionsFfi(relays, relays, relays))
+              assertFalse(snapshot.ready)
+              imported = snapshot.accountIdHex
+            }
+          }
+          val key = checkNotNull(imported)
           assertEquals(key, kit.listAccounts().single().accountIdHex)
-          val filter = listOf(ChatListFilterNodeFfi.Not(1u), ChatListFilterNodeFfi.Condition(ChatListConditionFfi.PENDING_INVITE))
-          val handle = kit.openChatListQueryWindow(key, ChatListViewQueryFfi(ChatListViewFfi.CHATS, filter), 40u)
-          try {
-            assertEquals(emptyList<Any>(), checkNotNull(handle.snapshot()).rows)
-          } finally { handle.close() }
+          assertFalse(checkNotNull(kit.onboardingSnapshot(key)).ready)
+          if (attempt == 1) {
+            kit.cancelOnboarding(key)
+            assertTrue(kit.listAccounts().single().signedOut)
+            kit.removeAccount(key)
+            assertTrue(kit.listAccounts().isEmpty())
+          }
         } finally {
           try { kit.shutdownAndClose() } finally { kit.close() }
         }
@@ -63,14 +118,14 @@ class MarmotRelayTest {
     val blossom = InstrumentationRegistry.getArguments().getString("blossom")
     val fixture = URI(relay)
     Socket().use { it.connect(InetSocketAddress(fixture.host, fixture.port), 4_000) }
-    MarmotAndroid.initialize(context)
+    BoopMarmotModule.initializeBindings(context)
     val root = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
     try {
       val alice = Client(File(root, "alice"), relay, blossom)
       val bob = Client(File(root, "bob"), relay, blossom)
       val carol = Client(File(root, "carol"), relay, blossom)
       try {
-        alice.start(hostSecret, generated = true)
+        alice.start()
         bob.start()
         carol.start()
         for (client in listOf(alice, bob, carol)) {
@@ -399,7 +454,7 @@ class MarmotRelayTest {
     val payload = "Synthetic Boop fixture ${UUID.randomUUID()}".toByteArray()
     val path = File(sender.directory, "fixture.txt").apply { writeBytes(payload) }
     val caption = "Encrypted document fixture"
-    val directReply = recipient.kit.timelineMessages(recipient.key, latestTimeline(group, "hello group")).messages.single().messageIdHex
+    val directReply = recipient.kit.timelineMessages(recipient.key, latestTimeline(group, "hello from Alice")).messages.single().messageIdHex
     val request = MediaFileUploadRequestFfi(
       listOf(MediaFileUploadAttachmentRequestFfi(path.canonicalPath, path.length().toULong(), path.name, "text/plain", null, null)),
       caption, true, blossom, listOf(
@@ -613,7 +668,7 @@ class MarmotRelayTest {
     lateinit var key: String
       private set
 
-    suspend fun start(identity: String? = null, generated: Boolean = false) {
+    suspend fun start(identity: String? = null) {
       val opened = Marmot.newWithConfiguration(
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
@@ -634,7 +689,6 @@ class MarmotRelayTest {
         val relays = listOf(relay)
         key = when {
           identity == null -> opened.createIdentityWithProfile(relays, relays, relays).account.accountIdHex
-          generated -> opened.createHostIdentity(identity, relays, relays, relays).accountIdHex
           else -> opened.login(identity, relays, relays, relays).accountIdHex
         }
       } else {

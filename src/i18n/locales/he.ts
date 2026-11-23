@@ -49,6 +49,37 @@ export const he = {
     loadFailed: "לא ניתן לתרגם חלק מההודעות המוצגות.",
   },
   messenger: {
+    resumeSetup: "סיום הכניסה",
+    checkingSetup: "החשבון בבדיקה…",
+    setupRequestFailed:
+      "לא ניתן היה להשלים את השלב. יש לבדוק את החיבור ולנסות שוב.",
+    setupProfile: "בדיקת הפרופיל הציבורי",
+    setupFollows: "בדיקת רשימת המעקב",
+    setupRelays: "בדיקת הממסרים הציבוריים",
+    setupInbox: "בדיקת ממסרי תיבת הדואר",
+    setupDevices: "בדיקה של מכשירים נוספים",
+    setupKeyPackage: "הגדרת צ׳אטים מוצפנים",
+    setupApproveUncertain:
+      "חלק מהממסרים לא השיבו. פרסום הרשימה עלול להחליף רשימה קיימת ש-Boop לא הצליחה לאחזר.",
+    setupApproveRelays: "יש לבדוק את רשימת הממסרים לפני פרסומה עבור החשבון.",
+    setupReadRelays: "ממסרים לקריאה",
+    setupWriteRelays: "ממסרים לכתיבה",
+    setupPublishRelays: "פרסום רשימת הממסרים",
+    setupSkip: "המשך ללא שלב זה",
+    setupRecommendedRelays: "בדיקת הממסרים המומלצים",
+    setupOtherDevice:
+      "ייתכן שהחשבון כבר בשימוש במכשיר אחר. אפשר לקשר אותו מההגדרות לאחר הכניסה.",
+    setupUnknownDevices:
+      "Boop לא הצליחה להשלים את בדיקת המכשירים הנוספים. אפשר להמשיך ולקשר מכשירים בהמשך מההגדרות.",
+    setupContinueAnyway: "המשך בכל זאת",
+    setupReenter: "הזנה מחדש של מפתח הזהות",
+    discardSetup: "הסרת החשבון מהמכשיר",
+    discardSetupDetail:
+      "מפתח הזהות והנתונים המקומיים של Marmot יימחקו מהמכשיר. כדי להיכנס שוב, יש לשמור את גיבוי הזהות.",
+    recoverSetup: "שחזור הכניסה",
+    recoverSetupDetail:
+      "Boop תשמור את רשומת השחזור האחרונה ותבקש להזין מחדש את מפתח הזהות.",
+    setupUnlinked: "המכשיר הזה נותק מהחשבון.",
     sharedGroups: "קבוצות משותפות",
     noSharedGroups: "לא נמצאו התאמות בקבוצות האחרונות",
     identityMismatch:
@@ -880,6 +911,8 @@ export const he = {
     selected_other: "{{count}} ממסרים נבחרו",
   },
   security: {
+    showPrivateKey: "הצגת המפתח הפרטי",
+    hidePrivateKey: "הסתרת המפתח הפרטי",
     exportIdentityKey: "גיבוי מפתח הזהות",
     importIdentityKey: "ייבוא מפתח זהות",
     backupScope:
@@ -893,17 +926,18 @@ export const he = {
     checkIdentity: "בדיקת זהות",
     replaceIdentity: "החלפת הזהות ואיפוס הנתונים המקומיים",
     replacementWarning:
-      "אפשר להשתמש רק בזהות פעילה אחת ב־Boop. החלפת הזהות תמחק בהפעלה הבאה את הצ׳אטים, אנשי הקשר, היסטוריית השיחות ונתוני הפרטיות במכשיר. כדי להשתמש שוב בזהות הנוכחית, כדאי לייצא אותה קודם.",
+      "בסיום הכניסה לזהות החלופית יימחקו מהמכשיר המפתח הנוכחי, הצ׳אטים, אנשי הקשר, היסטוריית השיחות ונתוני הפרטיות. כדי להשתמש שוב בזהות הנוכחית, יש לייצא אותה תחילה.",
     sameIdentity: "זו הזהות הפעילה שלך. הנתונים המקומיים לא השתנו.",
     currentIdentity: "הזהות הנוכחית",
     importedIdentity: "הזהות המיובאת",
     backupFailed:
       "לא ניתן לפתוח או לשמור את גיבוי מפתח הזהות. כדאי לבדוק את הגיבוי ואת הסיסמה ולנסות שוב.",
     backupCost:
-      "הגיבוי דורש יותר זיכרון ממה ש־Boop מאפשרת. יש לייצא אותו מחדש באפליקציית NIP-49 תואמת עם ערך עלות של 16 או פחות.",
+      "עלות ה-scrypt של הגיבוי גבוהה מ-18. יש לייצא אותו מחדש ביישום תואם NIP-49.",
     passwordsMismatch: "יש להזין סיסמאות זהות של 16 תווים לפחות.",
     shareBackup: "שיתוף גיבוי מוצפן",
-    restartForIdentity: "ההחלפה מוכנה. יש להפעיל מחדש את Boop כדי לסיים.",
+    restartForIdentity:
+      "יש להפעיל את Boop מחדש כדי לסיים את הכניסה לזהות החלופית.",
     whoCanCall: "מי יכול להתקשר אליי",
     whoCanMessage: "מי יכול לשלוח לי הודעות",
     everyone: "כולם",

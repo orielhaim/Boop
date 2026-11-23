@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { isPinnedIdentity } from "@/core/identity/storage";
 import type { MarmotConversation, MarmotWindow } from "@/core/marmot/native";
 import {
   createOpenLaterResolver,
@@ -23,7 +22,7 @@ export function useOpenLater(
   hidden: readonly string[],
   blockedKeys: string,
 ) {
-  const { db, identity, lock, privacy } = useLocal();
+  const { db, isCurrent, lock, privacy } = useLocal();
   const resolver = useRef<ReturnType<typeof createOpenLaterResolver>>(null);
   const [result, setResult] = useState<{
     window: Window;
@@ -44,7 +43,7 @@ export function useOpenLater(
           status.status !== "ready" ||
           !app.active ||
           app.locked ||
-          !isPinnedIdentity(db, identity.publicKey)
+          !isCurrent()
         )
           return false;
         const current = status.snapshot;
@@ -69,7 +68,7 @@ export function useOpenLater(
       omitted.clear();
       resolver.current = null;
     };
-  }, [active, db, hidden, identity.publicKey, lock, privacy, window]);
+  }, [active, db, hidden, isCurrent, lock, privacy, window]);
 
   useLayoutEffect(() => {
     const rows = snapshot?.messages.filter(

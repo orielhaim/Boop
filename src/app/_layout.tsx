@@ -43,7 +43,7 @@ import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
 import { initializeLocal, LocalSessionLifecycle } from "@/services/local";
 import { Onboarding } from "@/components/onboarding";
-import { IdentityMismatchError } from "@/core/identity/storage";
+import { IdentityMismatchError } from "@/core/identity";
 import { LocalContext, type LocalServices } from "@/services/local-context";
 import {
   callNavigationKeys,

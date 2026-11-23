@@ -1,38 +1,3 @@
-diff --git a/crates/marmot-account/src/home.rs b/crates/marmot-account/src/home.rs
-index f3866d8f..c6cd12e4 100644
---- a/crates/marmot-account/src/home.rs
-+++ b/crates/marmot-account/src/home.rs
-@@ -350,6 +350,14 @@ impl AccountHome {
-     /// identity instead of minting another one.
-     pub fn create_nostr_account_for_setup(&self) -> AccountHomeResult<AccountSummary> {
-         let keys = nostr::prelude::Keys::generate();
-+        self.create_nostr_account_for_setup_with_keys(&keys, None)
-+    }
-+
-+    pub fn create_nostr_account_for_setup_with_keys(
-+        &self,
-+        keys: &nostr::prelude::Keys,
-+        context: Option<&[u8]>,
-+    ) -> AccountHomeResult<AccountSummary> {
-         let account = AccountSummary {
-             label: keys.public_key().to_hex(),
-             account_id_hex: keys.public_key().to_hex(),
-@@ -372,7 +380,14 @@ impl AccountHome {
-             AccountSetupKind::GeneratedIdentity,
-             AccountSetupPhase::LocalStateCreated,
-         )?;
--        if let Err(err) = self.secret_store.write_secret(&account, &keys) {
-+        if let Some(context) = context
-+            && let Err(err) =
-+                write_private_bytes(self.account_setup_context_path(&account.label), context)
-+        {
-+            let _ = fs::remove_dir_all(self.account_dir(&account.label));
-+            return Err(err);
-+        }
-+        if let Err(err) = self.secret_store.write_secret(&account, keys) {
-             let _ = self.secret_store.remove_secret(&account);
-             let _ = fs::remove_dir_all(self.account_dir(&account.label));
-             return Err(err);
 diff --git a/crates/marmot-app/src/local_submissions.rs b/crates/marmot-app/src/local_submissions.rs
 index f8ee05e5..76b9ce20 100644
 --- a/crates/marmot-app/src/local_submissions.rs
@@ -276,321 +241,6 @@ index c518bd3c..053ecc36 100644
                  ..Default::default()
              },
              Some(LocalDraftAdmission::Source(revision)),
-diff --git a/crates/marmot-app/src/runtime/mod.rs b/crates/marmot-app/src/runtime/mod.rs
-index dda3ab83..835e10e5 100644
---- a/crates/marmot-app/src/runtime/mod.rs
-+++ b/crates/marmot-app/src/runtime/mod.rs
-@@ -58,7 +58,7 @@ use marmot_observability::{
-     AppPerformanceOperation, AppPerformanceTelemetry, SyncErrorClass, SyncFailureClassification,
-     SyncFailureStage, bounded_advisory_step,
- };
--use nostr::prelude::PublicKey;
-+use nostr::prelude::{Keys, PublicKey};
- use nostr_directory::DirectorySyncHandle;
- 
- const MEDIA_COMMAND_QUEUE_LIMIT: usize = 8;
-@@ -1366,12 +1366,14 @@ pub enum AccountSetupReadiness {
- 
- /// Which generated identity a setup request without an identity or nsec
- /// may use.
--#[derive(Clone, Copy, Debug)]
-+#[derive(Clone, Copy)]
- pub(crate) enum GeneratedIdentity<'a> {
-     /// Select a resumable setup, or create a new identity.
-     ResumeOrCreate,
-     /// Admission selected fresh creation; never scan for resumable setup again.
-     Fresh,
-+    /// A new identity already generated and pinned by the host.
-+    HostGenerated(&'a Keys),
-     /// Continue this account's pending setup only; never another identity.
-     Continue(&'a str),
- }
-@@ -1386,6 +1388,8 @@ pub(crate) struct GeneratedAccountSetupContext {
-     discovery_relays: Vec<String>,
-     publish_missing_relay_lists: bool,
-     publish_initial_key_package: bool,
-+    #[serde(default)]
-+    host_manages_profile: bool,
- }
- 
- impl GeneratedAccountSetupContext {
-@@ -1413,6 +1417,7 @@ impl GeneratedAccountSetupContext {
-                 .collect(),
-             publish_missing_relay_lists: request.publish_missing_relay_lists,
-             publish_initial_key_package: request.publish_initial_key_package,
-+            host_manages_profile: false,
-         }
-     }
- 
-@@ -1902,6 +1907,14 @@ impl MarmotAppRuntime {
-     }
- 
-     pub async fn catch_up_accounts(&self) -> Result<(), AppError> {
-+        if let Some(account) = self
-+            .accounts
-+            .app
-+            .account_home()
-+            .resumable_generated_account_setup()?
-+        {
-+            self.continue_pending_generated_setup(&account.account_id_hex);
-+        }
-         let result = self.accounts.catch_up_accounts().await.map(|_| ());
-         self.spawn_moderation_report_retries();
-         result
-@@ -6577,6 +6590,22 @@ impl MarmotAppRuntime {
-         .await
-     }
- 
-+    /// Prepare a new host-generated identity locally. The host publishes its own profile.
-+    pub async fn create_host_identity_local_ready(
-+        &self,
-+        nsec: &str,
-+        request: AccountSetupRequest,
-+    ) -> Result<AccountSetupResult, AppError> {
-+        let keys = Keys::parse(nsec).map_err(|_| AccountHomeError::InvalidSecretKey)?;
-+        self.create_generated_account_local_ready(
-+            request,
-+            true,
-+            None,
-+            GeneratedIdentity::HostGenerated(&keys),
-+        )
-+        .await
-+    }
-+
-     /// Create a generated identity whose first public kind-0 is `profile`.
-     ///
-     /// The profile replaces the key-derived default before any bootstrap
-@@ -9494,21 +9523,30 @@ impl AccountManager {
-         account: &AccountSummary,
-         request: &AccountSetupRequest,
-     ) -> Result<(AccountRelayListStatus, Option<UserProfileMetadata>), AppError> {
--        let mut profile = if let Some(cached) = self
-+        let host_manages_profile = self
-+            .app
-+            .account_home()
-+            .account_setup_context(&account.label)?
-+            .map(|bytes| serde_json::from_slice::<GeneratedAccountSetupContext>(&bytes))
-+            .transpose()?
-+            .is_some_and(|context| context.host_manages_profile);
-+        let mut profile = if host_manages_profile {
-+            None
-+        } else if let Some(cached) = self
-             .app
-             .directory()
-             .directory_entry_for_account_id(&account.account_id_hex)?
-             .and_then(|entry| entry.profile)
-         {
--            cached
-+            Some(cached)
-         } else {
-             let pseudonym = default_profile_pseudonym(&account.account_id_hex);
--            UserProfileMetadata {
-+            Some(UserProfileMetadata {
-                 name: Some(pseudonym.clone()),
-                 display_name: Some(pseudonym),
-                 created_at: unix_now_seconds(),
-                 ..UserProfileMetadata::default()
--            }
-+            })
-         };
-         let bootstrap = AccountRelayListBootstrap::new(
-             request.default_relays.clone(),
-@@ -9535,7 +9573,8 @@ impl AccountManager {
-             AccountSetupPhase::BootstrapPublicationConfirmed
-                 | AccountSetupPhase::KeyPackagePublicationStarted
-                 | AccountSetupPhase::KeyPackagePublicationConfirmed
--        ) {
-+        ) && let Some(profile) = profile.as_mut()
-+        {
-             let status = self.app.account_relay_list_status(&account.label)?;
-             if let Some(cached) = self
-                 .app
-@@ -9543,7 +9582,7 @@ impl AccountManager {
-                 .directory_entry_for_account_id(&account.account_id_hex)?
-                 .and_then(|entry| entry.profile)
-             {
--                profile = cached;
-+                *profile = cached;
-             }
-             if status.complete {
-                 // A prior attempt may have failed after confirming bootstrap
-@@ -9553,7 +9592,7 @@ impl AccountManager {
-                     .prepare_generated_account_indexer_copy(
-                         &account.label,
-                         &status,
--                        &profile,
-+                        profile,
-                         &request.discovery_relays,
-                     )
-                     .await
-@@ -9567,7 +9606,7 @@ impl AccountManager {
-                         "could not prepare resumed public indexer copy"
-                     ),
-                 }
--                return Ok((status, Some(profile)));
-+                return Ok((status, Some(profile.clone())));
-             }
-             // The durable publication phase is authoritative, but the local
-             // directory projection can still be lost independently. These are
-@@ -9584,6 +9623,18 @@ impl AccountManager {
-             )?;
-         }
-         self.shared.lifecycle().ensure_running()?;
-+        let Some(profile) = profile else {
-+            let cached = self.app.account_relay_list_status(&account.label)?;
-+            let status = if cached.complete {
-+                cached
-+            } else {
-+                self.app
-+                    .publish_account_relay_lists(&account.label, bootstrap)
-+                    .await?
-+            };
-+            self.mark_bootstrap_publication_confirmed(&account.label)?;
-+            return Ok((status, None));
-+        };
-         let publish_started_at = Instant::now();
-         let publication = match self
-             .app
-@@ -9962,6 +10013,14 @@ impl AccountManager {
-                         }
-                     }
-                     GeneratedIdentity::Fresh => account_home.create_nostr_account_for_setup()?,
-+                    GeneratedIdentity::HostGenerated(keys) => {
-+                        let mut context = GeneratedAccountSetupContext::from_request(request);
-+                        context.host_manages_profile = true;
-+                        account_home.create_nostr_account_for_setup_with_keys(
-+                            keys,
-+                            Some(&serde_json::to_vec(&context)?),
-+                        )?
-+                    }
-                     GeneratedIdentity::Continue(account_id_hex) => self
-                         .pending_generated_account(account_id_hex)?
-                         .ok_or_else(|| {
-diff --git a/crates/marmot-app/src/runtime/onboarding/generated_setup.rs b/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
-index 90b38f2d..932e71fc 100644
---- a/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
-+++ b/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
-@@ -166,7 +166,7 @@ impl MarmotAppRuntime {
-                     .app
-                     .account_home()
-                     .resumable_generated_account_setup()?,
--                GeneratedIdentity::Fresh => None,
-+                GeneratedIdentity::Fresh | GeneratedIdentity::HostGenerated(_) => None,
-                 GeneratedIdentity::Continue(id) => {
-                     let account = self.accounts.app.account_home().account(id)?;
-                     if account.account_id_hex != id
-@@ -208,7 +208,10 @@ impl MarmotAppRuntime {
-             Ok::<_, AppError>((resumable, context, effective_request))
-         })();
-         let work = async move {
--            let (resumable, context, effective_request) = selection?;
-+            let (resumable, mut context, effective_request) = selection?;
-+            if matches!(generated, GeneratedIdentity::HostGenerated(_)) {
-+                context.host_manages_profile = true;
-+            }
-             let publication = if effective_request.publish_initial_key_package {
-                 InitialPublication::Requested
-             } else {
-@@ -217,11 +220,13 @@ impl MarmotAppRuntime {
- 
-             // A fresh selection stays fresh even if sign-in makes a journal
-             // eligible before creation. Existing selections stay on their ID.
--            let generated = resumable
--                .as_ref()
--                .map_or(GeneratedIdentity::Fresh, |account| {
--                    GeneratedIdentity::Continue(&account.account_id_hex)
--                });
-+            let generated = resumable.as_ref().map_or(
-+                match generated {
-+                    GeneratedIdentity::HostGenerated(_) => generated,
-+                    _ => GeneratedIdentity::Fresh,
-+                },
-+                |account| GeneratedIdentity::Continue(&account.account_id_hex),
-+            );
-             let result = async {
-                 let identity_started = Instant::now();
-                 let identity_result = self
-@@ -263,6 +268,9 @@ impl MarmotAppRuntime {
- 
-                 let profile_started = Instant::now();
-                 let profile_result = (|| {
-+                    if context.host_manages_profile {
-+                        return Ok(None);
-+                    }
-                     let cached = self
-                         .accounts
-                         .app
-@@ -282,7 +290,7 @@ impl MarmotAppRuntime {
-                             .directory()
-                             .remember_directory_profile(&account.account_id_hex, &profile)?;
-                     }
--                    Ok::<_, AppError>(profile)
-+                    Ok::<_, AppError>(Some(profile))
-                 })();
-                 self.shared.observer.performance().record(
-                     AppPerformanceOperation::AccountSetupProfileLocal,
-@@ -378,7 +386,7 @@ impl MarmotAppRuntime {
-                     key_package_bytes: effective_request
-                         .publish_initial_key_package
-                         .then_some(key_package_bytes),
--                    profile: Some(profile),
-+                    profile,
-                     readiness,
-                 })
-             }
-@@ -659,6 +667,52 @@ impl MarmotAppRuntime {
- mod selection_tests {
-     use super::*;
- 
-+    #[tokio::test]
-+    async fn host_identity_preparation_and_resume_leave_profile_to_host() {
-+        let dir = tempfile::tempdir().unwrap();
-+        let home = AccountHome::open_with_secret_store(
-+            dir.path(),
-+            Arc::new(marmot_account::LocalFileSecretStore::new(dir.path())),
-+        );
-+        let app = MarmotApp::with_relays_and_account_home(dir.path(), vec![], home);
-+        let runtime = MarmotAppRuntime::new(app);
-+        let keys = Keys::generate();
-+        let id = keys.public_key().to_hex();
-+        let created = runtime
-+            .create_generated_account_local_ready(
-+                AccountSetupRequest {
-+                    default_relays: vec![TransportEndpoint("wss://relay.example".into())],
-+                    publish_missing_relay_lists: true,
-+                    publish_initial_key_package: true,
-+                    ..Default::default()
-+                },
-+                false,
-+                None,
-+                GeneratedIdentity::HostGenerated(&keys),
-+            )
-+            .await
-+            .unwrap();
-+        assert_eq!(created.account.account_id_hex, id);
-+        assert!(created.profile.is_none());
-+        let home = runtime.accounts.app.account_home();
-+        let context: GeneratedAccountSetupContext =
-+            serde_json::from_slice(&home.account_setup_context(&id).unwrap().unwrap()).unwrap();
-+        assert!(context.host_manages_profile);
-+        let resumed = runtime
-+            .create_generated_account_local_ready(
-+                context.request(),
-+                false,
-+                None,
-+                GeneratedIdentity::Continue(&id),
-+            )
-+            .await
-+            .unwrap();
-+        assert_eq!(resumed.account, created.account);
-+        assert!(resumed.profile.is_none());
-+        assert_eq!(home.accounts().unwrap().len(), 1);
-+        runtime.shutdown_and_close().await.unwrap();
-+    }
-+
-     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-     async fn sign_in_keeps_fresh_selection() {
-         let dir = tempfile::tempdir().unwrap();
 diff --git a/crates/marmot-c/src/subscriptions/conversation_window.rs b/crates/marmot-c/src/subscriptions/conversation_window.rs
 index 3797badd..8f280e76 100644
 --- a/crates/marmot-c/src/subscriptions/conversation_window.rs
@@ -603,53 +253,6 @@ index 3797badd..8f280e76 100644
                      token,
                  )),
                  out,
-diff --git a/crates/marmot-uniffi/src/commands/account.rs b/crates/marmot-uniffi/src/commands/account.rs
-index 2a2d2d40..33d04074 100644
---- a/crates/marmot-uniffi/src/commands/account.rs
-+++ b/crates/marmot-uniffi/src/commands/account.rs
-@@ -247,6 +247,42 @@ impl Marmot {
-         })
-     }
- 
-+    /// Prepare a new identity generated by the host without waiting for relays.
-+    pub async fn create_host_identity(
-+        &self,
-+        nsec: String,
-+        default_relays: Vec<String>,
-+        bootstrap_relays: Vec<String>,
-+        inbox_relays: Vec<String>,
-+    ) -> Result<AccountSummaryFfi, MarmotKitError> {
-+        let nsec = Zeroizing::new(nsec);
-+        let result = self
-+            .runtime
-+            .create_host_identity_local_ready(
-+                &nsec,
-+                AccountSetupRequest {
-+                    identity: None,
-+                    import_nsec: None,
-+                    default_relays: endpoints(&default_relays),
-+                    bootstrap_relays: endpoints(&bootstrap_relays),
-+                    inbox_relays: endpoints(&inbox_relays),
-+                    discovery_relays: self.app.discovery_indexer_relays(),
-+                    publish_missing_relay_lists: true,
-+                    publish_initial_key_package: true,
-+                },
-+            )
-+            .await?;
-+        Ok(AccountSummaryFfi {
-+            label: result.account.label,
-+            account_id_hex: result.account.account_id_hex,
-+            local_signing: result.account.local_signing,
-+            external_signing: result.account.external_signing,
-+            signed_out: result.account.signed_out,
-+            running: true,
-+            unlinked: result.account.unlinked,
-+        })
-+    }
-+
-     /// Remove only the legacy ambiguous partial-account shape so a subsequent
-     /// `login` with the same nsec can recreate it. The acknowledgement is
-     /// required because old local state cannot prove that no KeyPackage was
 diff --git a/crates/marmot-uniffi/src/commands/local_submissions.rs b/crates/marmot-uniffi/src/commands/local_submissions.rs
 index 023e8a0b..2f7701ee 100644
 --- a/crates/marmot-uniffi/src/commands/local_submissions.rs
@@ -848,3 +451,190 @@ index 1eb2080b..ab417088 100644
 +        assert_eq!(sources, 4);
      }
  }
+diff --git a/crates/marmot-app/src/runtime/mod.rs b/crates/marmot-app/src/runtime/mod.rs
+--- a/crates/marmot-app/src/runtime/mod.rs
++++ b/crates/marmot-app/src/runtime/mod.rs
+@@ -1903,6 +1903,7 @@
+     }
+ 
+     pub async fn catch_up_accounts(&self) -> Result<(), AppError> {
++        self.resume_generated_account_setup().await?;
+         let result = self.accounts.catch_up_accounts().await.map(|_| ());
+         self.spawn_moderation_report_retries();
+         result
+@@ -2472,6 +2472,20 @@
+         self.accounts
+             .safe_export_secret(account_ref, group_id, component_id)
+             .await
++    }
++
++    /// Access the account's signer without exporting its credential.
++    pub fn account_nostr_signer(
++        &self,
++        account_ref: &str,
++    ) -> Result<Arc<dyn transport_nostr_peeler::MarmotNostrSigner>, AppError> {
++        self.shared.lifecycle().ensure_running()?;
++        let account = self.accounts.resolve(account_ref)?;
++        refuse_unlinked(&account)?;
++        if account.signed_out {
++            return Err(AccountHomeError::SecretNotFound(account.account_id_hex).into());
++        }
++        Ok(self.accounts.app.account_signer_for_summary(&account)?.as_nostr_signer())
+     }
+ 
+     /// See [`MarmotApp::reveal_nsec`]. mdk#543. `caller_context` is the
+diff --git a/crates/marmot-uniffi/src/commands/account.rs b/crates/marmot-uniffi/src/commands/account.rs
+--- a/crates/marmot-uniffi/src/commands/account.rs
++++ b/crates/marmot-uniffi/src/commands/account.rs
+@@ -632,6 +632,53 @@
+             .runtime
+             .unfollow_user(&account_ref, &user.account_id_hex)
+             .await?)
++    }
++
++    /// Sign an unsigned Nostr event with the active account's signer.
++    pub async fn sign_nostr_event(
++        &self,
++        account_ref: String,
++        unsigned_json: String,
++    ) -> Result<String, MarmotKitError> {
++        use nostr::prelude::UnsignedEvent;
++        let invalid = || MarmotKitError::InvalidIdentity {
++            details: "invalid unsigned Nostr event".into(),
++        };
++        let event = serde_json::from_str::<UnsignedEvent>(&unsigned_json).map_err(|_| invalid())?;
++        event.verify_id().map_err(|_| invalid())?;
++        let signer = self.runtime.account_nostr_signer(&account_ref)?;
++        if event.pubkey.to_hex() != account_ref {
++            return Err(invalid());
++        }
++        signer
++            .sign_event(event)
++            .await
++            .map(|event| event.sig.to_string())
++            .map_err(|_| invalid())
++    }
++
++    /// Encrypt or decrypt a Nostr payload without exposing the credential.
++    pub async fn nostr_cipher(
++        &self,
++        account_ref: String,
++        peer: String,
++        content: String,
++        nip44: bool,
++        encrypt: bool,
++    ) -> Result<String, MarmotKitError> {
++        use nostr::prelude::PublicKey;
++        let invalid = || MarmotKitError::InvalidIdentity {
++            details: "invalid Nostr cipher input".into(),
++        };
++        let peer = PublicKey::from_hex(&peer).map_err(|_| invalid())?;
++        let signer = self.runtime.account_nostr_signer(&account_ref)?;
++        match (nip44, encrypt) {
++            (true, true) => signer.nip44_encrypt(&peer, &content).await,
++            (true, false) => signer.nip44_decrypt(&peer, &content).await,
++            (false, true) => signer.nip04_encrypt(&peer, &content).await,
++            (false, false) => signer.nip04_decrypt(&peer, &content).await,
++        }
++        .map_err(|_| invalid())
+     }
+ 
+     /// Export the active account's raw private key in canonical `nsec1...`
+diff --git a/crates/marmot-uniffi/src/commands/onboarding.rs b/crates/marmot-uniffi/src/commands/onboarding.rs
+--- a/crates/marmot-uniffi/src/commands/onboarding.rs
++++ b/crates/marmot-uniffi/src/commands/onboarding.rs
+@@ -4,9 +4,58 @@
+ };
+ use crate::external_signer::{ExternalAccountSignerAdapter, ExternalAccountSignerFfi};
+ use crate::{Marmot, MarmotKitError};
++use nostr::nips::nip19::{FromBech32, ToBech32};
++use nostr::nips::nip49::EncryptedSecretKey;
++use nostr::prelude::Keys;
+ use std::sync::Arc;
+ use tokio::sync::Mutex;
+ use zeroize::Zeroizing;
++
++/// A decoded identity awaiting the host's explicit import confirmation.
++#[derive(uniffi::Object)]
++pub struct PreparedIdentityImport {
++    public_key: String,
++    nsec: Zeroizing<String>,
++}
++
++#[uniffi::export]
++impl PreparedIdentityImport {
++    pub fn public_key(&self) -> String {
++        self.public_key.clone()
++    }
++}
++
++fn decode_identity_backup(
++    input: &str,
++    password: &str,
++) -> Result<PreparedIdentityImport, MarmotKitError> {
++    let invalid = || MarmotKitError::InvalidIdentity {
++        details: "invalid identity backup".into(),
++    };
++    let input = input.trim();
++    let input = input
++        .get(..6)
++        .filter(|prefix| prefix.eq_ignore_ascii_case("nostr:"))
++        .map_or(input, |_| &input[6..]);
++    if input.len() > 162 || password.len() > 2048 {
++        return Err(invalid());
++    }
++    let keys = if input.starts_with("ncryptsec1") {
++        let encrypted = EncryptedSecretKey::from_bech32(input).map_err(|_| invalid())?;
++        if !(1..=EncryptedSecretKey::MAX_LOG_N).contains(&encrypted.log_n()) {
++            return Err(MarmotKitError::InvalidIdentity {
++                details: "identity backup exceeds the supported scrypt cost".into(),
++            });
++        }
++        Keys::new(encrypted.decrypt(password).map_err(|_| invalid())?)
++    } else {
++        Keys::parse(input).map_err(|_| invalid())?
++    };
++    Ok(PreparedIdentityImport {
++        public_key: keys.public_key().to_hex(),
++        nsec: Zeroizing::new(keys.secret_key().to_bech32().map_err(|_| invalid())?),
++    })
++}
+ 
+ #[derive(uniffi::Object)]
+ pub struct OnboardingSubscription {
+@@ -110,6 +159,35 @@
+             .await?
+             .into())
+     }
++    /// Decode a raw or NIP-49 identity without returning its secret to the host.
++    pub async fn prepare_identity_import(
++        &self,
++        input: String,
++        password: String,
++    ) -> Result<Arc<PreparedIdentityImport>, MarmotKitError> {
++        let input = Zeroizing::new(input);
++        let password = Zeroizing::new(password);
++        tokio::task::spawn_blocking(move || decode_identity_backup(&input, &password).map(Arc::new))
++            .await
++            .map_err(|_| MarmotKitError::Runtime {
++                details: "identity backup decoding interrupted".into(),
++            })?
++    }
++
++    /// Persist a confirmed identity using the ordinary onboarding checkpoint.
++    pub async fn begin_prepared_onboarding(
++        &self,
++        identity: Arc<PreparedIdentityImport>,
++        options: OnboardingOptionsFfi,
++    ) -> Result<OnboardingSnapshotFfi, MarmotKitError> {
++        Ok(self
++            .runtime
++            .account_setup()
++            .begin_onboarding(identity.nsec.clone(), options.into())
++            .await?
++            .into())
++    }
++
+     /// Persist the identity and return before any network preflight or publication.
+     pub async fn begin_onboarding(
+         &self,

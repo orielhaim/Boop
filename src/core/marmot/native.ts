@@ -1,8 +1,5 @@
 import { randomUUID } from "expo-crypto";
 import { requireNativeModule } from "expo-modules-core";
-import { nip19 } from "nostr-tools";
-import { getPublicKey } from "nostr-tools/pure";
-import { hexToBytes } from "nostr-tools/utils";
 import { z } from "zod";
 import type { RelayConfiguration } from "../nostr/config";
 import { mediaUploadArguments } from "./media-send";
@@ -171,6 +168,63 @@ const readiness = z.enum([
   "network_ready",
   "recovery_required",
 ]);
+const accountKey = z.string().regex(/^[0-9a-f]{64}$/);
+const account = z.object({
+  key: accountKey,
+  readiness,
+  signedOut: z.boolean(),
+  unlinked: z.boolean(),
+});
+const onboardingStep = z.enum([
+  "profile",
+  "follows",
+  "relays",
+  "inbox_relays",
+  "single_device",
+  "key_package",
+]);
+const onboardingSnapshot = z.object({
+  ready: z.boolean(),
+  revision: z.string().regex(/^\d+$/),
+  epoch: z.string().nullish(),
+  proposal: z
+    .object({
+      read: z.array(z.string()),
+      write: z.array(z.string()),
+      inconclusive: z.boolean(),
+    })
+    .nullish(),
+  deviceNotice: z
+    .object({ discovery: z.string(), complete: z.boolean() })
+    .nullish(),
+  steps: z.array(
+    z.object({
+      step: onboardingStep,
+      actions: z.array(z.string()),
+      status: z.enum([
+        "pending",
+        "checking",
+        "passed",
+        "needs_input",
+        "retryable_failure",
+        "waiting_for_signer",
+        "skipped",
+      ]),
+    }),
+  ),
+});
+export type MarmotAccount = z.infer<typeof account>;
+export type MarmotOnboarding = z.infer<typeof onboardingSnapshot>;
+export type OnboardingAction =
+  | { action: "read" | "run" | "recover" | "cancel" | "cancelRepair" }
+  | {
+      action: "retry" | "skip" | "propose";
+      step: z.infer<typeof onboardingStep>;
+    }
+  | { action: "approve" | "acknowledge"; displayed: MarmotOnboarding };
+export type IdentityInput =
+  { name: string; about: string } | { importToken: string };
+
 const diagnostics = z.object({
   account: z.string(),
   readiness,
@@ -362,17 +416,55 @@ type Bridge = {
     name: Event,
     listener: Events[Event],
   ): { remove(): void };
-  openAccount(
-    key: string,
-    secret: string,
-    nsec: string,
+  listAccounts(
+    general: readonly string[],
+    discovery: readonly string[],
+    mediaOrigin: string | null,
+  ): Promise<unknown>;
+  prepareIdentityImport(
+    token: string,
+    input: string,
+    password: string,
+  ): Promise<string>;
+  discardIdentityImport(token: string): Promise<void>;
+  installAccount(
+    token: string | null,
+    name: string | null,
+    about: string | null,
     general: readonly string[],
     inbox: readonly string[],
     discovery: readonly string[],
-    mediaOrigin: string | null,
-    generated: boolean,
   ): Promise<unknown>;
-  closeAccount(): Promise<void>;
+  accountOnboarding(
+    key: string,
+    action: string,
+    step: string | null,
+    revision: string | null,
+    epoch: string | null,
+  ): Promise<unknown>;
+  selectSigner(key: string): Promise<unknown>;
+  accountNetworkReady(key: string): Promise<boolean>;
+  removeAccount(key: string): Promise<void>;
+  signInAccount(key: string): Promise<void>;
+  signOutAccount(key: string): Promise<void>;
+  resumeAccountSetup(): Promise<void>;
+  openAccount(
+    key: string,
+    general: readonly string[],
+    discovery: readonly string[],
+    mediaOrigin: string | null,
+  ): Promise<unknown>;
+  signNostrEvent(key: string, event: string): Promise<string>;
+  nostrCipher(
+    key: string,
+    peer: string,
+    value: string,
+    nip44: boolean,
+    encrypt: boolean,
+  ): Promise<string>;
+  exportIdentity(key: string, password: string | null): Promise<string>;
+  shutdownRuntime(): Promise<void>;
+  closeAccount(pauseMessaging: boolean): Promise<void>;
   catchUp(): Promise<void>;
   diagnostics(): Promise<unknown>;
   rotateKeys(): Promise<void>;
@@ -595,32 +687,89 @@ export type MarmotWindow<S, Direction> = {
 
 const native = () => requireNativeModule<Bridge>("BoopMarmot");
 
-export async function openMarmotAccount(
-  key: string,
-  secret: string,
-  relays: MarmotRelays,
-  mediaOrigin: string | null,
-  generated: boolean,
-) {
-  const bytes = hexToBytes(secret);
-  try {
-    if (getPublicKey(bytes) !== key) throw new Error("IdentityMismatch");
-    return readiness.parse(
-      await native().openAccount(
-        key,
-        secret,
-        nip19.nsecEncode(bytes),
-        relays.general,
-        relays.inbox,
-        relays.discovery,
-        mediaOrigin,
-        generated,
-      ),
+export const marmotAccounts = {
+  async prepareImport(token: string, input: string, password: string) {
+    return accountKey.parse(
+      await native().prepareIdentityImport(token, input, password),
     );
-  } finally {
-    bytes.fill(0);
-  }
-}
+  },
+  discardImport: (token: string) => native().discardIdentityImport(token),
+  async list({ general, discovery }: MarmotRelays, mediaOrigin: string | null) {
+    return account
+      .array()
+      .parse(await native().listAccounts(general, discovery, mediaOrigin));
+  },
+  async install(
+    input: IdentityInput,
+    { general, inbox, discovery }: MarmotRelays,
+  ) {
+    const key =
+      "importToken" in input
+        ? await native().installAccount(
+            input.importToken,
+            null,
+            null,
+            general,
+            inbox,
+            discovery,
+          )
+        : await native().installAccount(
+            null,
+            input.name,
+            input.about,
+            general,
+            inbox,
+            discovery,
+          );
+    return accountKey.parse(key);
+  },
+  async open(
+    key: string,
+    { general, discovery }: MarmotRelays,
+    mediaOrigin: string | null,
+  ) {
+    return readiness.parse(
+      await native().openAccount(key, general, discovery, mediaOrigin),
+    );
+  },
+  async onboarding(key: string, command: OnboardingAction) {
+    const displayed = "displayed" in command ? command.displayed : undefined;
+    return (
+      onboardingSnapshot
+        .nullish()
+        .parse(
+          await native().accountOnboarding(
+            key,
+            command.action,
+            "step" in command ? command.step : null,
+            displayed?.revision ?? null,
+            displayed?.epoch ?? null,
+          ),
+        ) ?? null
+    );
+  },
+  async selectSigner(key: string) {
+    return z
+      .object({ name: z.string().nullish(), about: z.string().nullish() })
+      .parse(await native().selectSigner(key));
+  },
+  networkReady: (key: string) => native().accountNetworkReady(key),
+  remove: (key: string) => native().removeAccount(key),
+  signIn: (key: string) => native().signInAccount(key),
+  signOut: (key: string) => native().signOutAccount(key),
+  resumeSetup: () => native().resumeAccountSetup(),
+  shutdown: () => native().shutdownRuntime(),
+  export: (key: string, password: string | null) =>
+    native().exportIdentity(key, password),
+  sign: (key: string, event: string) => native().signNostrEvent(key, event),
+  cipher: (
+    key: string,
+    peer: string,
+    value: string,
+    nip44: boolean,
+    encrypt: boolean,
+  ) => native().nostrCipher(key, peer, value, nip44, encrypt),
+};
 
 async function openWindow<S extends Revision, Direction extends string>(
   open: (bridge: Bridge, id: string) => Promise<unknown>,
@@ -771,7 +920,8 @@ export const marmot = {
   backupConditions: (wifi: boolean, charging: boolean) =>
     native().backupConditions(wifi, charging),
   backupNow: () => native().backupNow(),
-  closeAccount: () => native().closeAccount(),
+  closeAccount: (pauseMessaging = false) =>
+    native().closeAccount(pauseMessaging),
   catchUp: () => native().catchUp(),
   openChatList: (
     view: MarmotChatView,
