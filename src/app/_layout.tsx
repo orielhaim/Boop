@@ -9,7 +9,13 @@ import {
 import * as SplashScreen from "expo-splash-screen";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState, Modal, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -41,7 +47,9 @@ import { IdentityMismatchError } from "@/core/identity/storage";
 import { LocalContext, type LocalServices } from "@/services/local-context";
 import {
   callNavigationKeys,
+  defaultFavoritesDisplay,
   favoritesDisplayKey,
+  favoritesDisplays,
   themes,
   useAppPreferences,
 } from "@/stores/preferences";
@@ -53,13 +61,10 @@ void SplashScreen.preventAutoHideAsync().catch(() => {});
 SplashScreen.setOptions({ duration: 0, fade: false });
 
 export default function RootLayout() {
-  const selected = useAppPreferences((state) => state.theme);
   return (
     <GestureHandlerRootView style={styles.root}>
       <KeyboardProvider>
-        <GlassProvider theme={selected === "system" ? undefined : selected}>
-          <Boot />
-        </GlassProvider>
+        <Boot />
       </KeyboardProvider>
     </GestureHandlerRootView>
   );
@@ -75,14 +80,16 @@ type Startup =
   | { phase: "loaded"; data: LocalResult }
   | { phase: "failed"; failure: "database" | "startup" | "identity" };
 
+const subscribeWithoutLock = () => () => {};
+
 function Boot() {
   const { t } = useTranslation(namespaces);
+  const selected = useAppPreferences((state) => state.theme);
   const [attempt, setAttempt] = useState(0);
   const [startup, setStartup] = useState<Startup>({ phase: "boot" });
   const [handedOff, setHandedOff] = useState(false);
   const [destinationDrawn, setDestinationDrawn] = useState(false);
   const [revealed, setRevealed] = useState(false);
-  const { colors, theme } = useTheme();
 
   useEffect(() => {
     let live = true;
@@ -90,13 +97,13 @@ function Boot() {
       .then(async (result) => {
         if (!live || (await initializeLanguage(result.db)) || !live) return;
         const choice = themes.find((item) => item === result.theme) ?? "system";
+        const favoritesDisplay = preference(result.db, favoritesDisplayKey);
         useAppPreferences.setState({
           theme: choice,
           haptics: result.haptics,
           favoritesDisplay:
-            preference(result.db, favoritesDisplayKey) === "cool"
-              ? "cool"
-              : "normal",
+            favoritesDisplays.find((item) => item === favoritesDisplay) ??
+            defaultFavoritesDisplay,
           separateCallsTab:
             preference(result.db, callNavigationKeys.separateTab) === "on",
           defaultScreen:
@@ -146,7 +153,14 @@ function Boot() {
       : undefined;
   const failed = startup.phase === "failed" ? startup.failure : undefined;
   const covered = !handedOff || (!welcome && !revealed);
-  const base = theme === "dark" ? DarkTheme : DefaultTheme;
+  const lock = ready?.lock;
+  const canCapture = useSyncExternalStore(
+    lock?.subscribe ?? subscribeWithoutLock,
+    useCallback(() => {
+      const state = lock?.getState();
+      return !state || !state.enabled || (!state.locked && state.active);
+    }, [lock]),
+  );
 
   function restart(welcome?: Extract<LocalResult, { status: "welcome" }>) {
     setDestinationDrawn(false);
@@ -156,23 +170,11 @@ function Boot() {
   }
 
   return (
-    <ThemeProvider
-      value={{
-        ...base,
-        colors: {
-          ...base.colors,
-          primary: colors.accent,
-          background: colors.background,
-          card: colors.surface,
-          text: colors.text,
-          border: colors.line,
-        },
-      }}
+    <GlassProvider
+      choice={selected}
+      animateThemeChanges={!covered && canCapture}
     >
-      <StatusBar style={theme === "dark" ? "light" : "dark"} />
-      <View
-        style={[styles.root, { backgroundColor: openingPalette[theme].base }]}
-      >
+      <BootSurface>
         {handedOff && welcome ? (
           <Onboarding
             key={startup.phase === "installing" ? attempt - 1 : attempt}
@@ -225,6 +227,33 @@ function Boot() {
             onRevealed={reveal}
           />
         )}
+      </BootSurface>
+    </GlassProvider>
+  );
+}
+
+function BootSurface({ children }: { children: ReactNode }) {
+  const { colors, theme } = useTheme();
+  const base = theme === "dark" ? DarkTheme : DefaultTheme;
+  return (
+    <ThemeProvider
+      value={{
+        ...base,
+        colors: {
+          ...base.colors,
+          primary: colors.accent,
+          background: colors.background,
+          card: colors.surface,
+          text: colors.text,
+          border: colors.line,
+        },
+      }}
+    >
+      <StatusBar style={theme === "dark" ? "light" : "dark"} />
+      <View
+        style={[styles.root, { backgroundColor: openingPalette[theme].base }]}
+      >
+        {children}
       </View>
     </ThemeProvider>
   );

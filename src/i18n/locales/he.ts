@@ -773,7 +773,7 @@ export const he = {
     haptics: "משוב במגע",
     saveHapticsError: "לא ניתן לשמור את הגדרת המשוב במגע.",
     favoritesDisplay: "תצוגת מועדפים",
-    favoritesNormal: "רגיל",
+    favoritesBoring: "משעמם",
     favoritesCool: "מגניב",
     favoritesDisplaySaveError: "לא ניתן לשמור את הגדרת תצוגת המועדפים.",
     separateCallsTab: "הצגת שיחות בסרגל התחתון",

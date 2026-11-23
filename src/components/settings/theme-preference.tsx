@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useFocusEffect } from "expo-router";
+import { type ComponentRef, useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import {
@@ -7,6 +8,7 @@ import {
 } from "@/components/glassyui/glass-segmented-control";
 import { SettingsDescription } from "@/components/settings/group";
 import { Section } from "@/components/ui/kit";
+import { useThemeRevealControl } from "@/components/ui/theme-switch";
 import { setPreference } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
@@ -18,12 +20,21 @@ export function ThemePreference() {
   const { db } = useLocal();
   const selected = useAppPreferences((state) => state.theme);
   const [error, setError] = useState("");
+  const control = useRef<ComponentRef<typeof View>>(null);
+  const { keepControlLive, displayedChoice } = useThemeRevealControl();
+  useFocusEffect(
+    useCallback(() => {
+      if (control.current) return keepControlLive(control.current);
+    }, [keepControlLive]),
+  );
   return (
     <View style={styles.group}>
       <Section>{t("settings:theme")}</Section>
       <GlassSegmentedControl
+        ref={control}
         accessibilityLabel={t("settings:theme")}
         value={selected}
+        displayedValue={displayedChoice}
         style={styles.theme}
         onValueChange={(value) => {
           const theme = themes.find((item) => item === value);

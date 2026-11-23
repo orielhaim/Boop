@@ -27,7 +27,12 @@
         {
           "action": "VIEW",
           "category": ["DEFAULT"],
-          "data": [{ "scheme": "content", "mimeType": "audio/*" }]
+          "data": [
+            {
+              "scheme": "content",
+              "mimeType": "audio/*"
+            }
+          ]
         }
       ],
       "blockedPermissions": [
@@ -168,7 +173,8 @@
           "microphonePermission": false,
           "speechRecognitionPermission": "Allow Boop to transcribe saved voice messages using on-device speech recognition."
         }
-      ]
+      ],
+      "react-native-webgpu"
     ],
     "experiments": {
       "typedRoutes": true,

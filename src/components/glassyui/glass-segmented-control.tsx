@@ -34,6 +34,7 @@ type SegmentedContextValue = {
   disabled: boolean;
   forgetItem: (value: string) => void;
   onItemLayout: (value: string, layout: LayoutRectangle) => void;
+  requested: string;
   select: (value: string) => void;
   selected: string;
 };
@@ -76,6 +77,8 @@ export type GlassSegmentedControlProps = ViewProps & {
   defaultValue?: string;
   /** Turns every option off. */
   disabled?: boolean;
+  /** Present a controlled selection at a different time from the requested value. */
+  displayedValue?: string;
   onValueChange?: (value: string) => void;
   value?: string;
 };
@@ -93,6 +96,7 @@ export const GlassSegmentedControl = forwardRef<
       children,
       defaultValue,
       disabled = false,
+      displayedValue,
       onLayout,
       onValueChange,
       style,
@@ -102,11 +106,12 @@ export const GlassSegmentedControl = forwardRef<
     ref,
   ) => {
     const { preferences } = useGlassTheme();
-    const [selected, select] = useControllableState(
+    const [requested, select] = useControllableState(
       value,
       defaultValue ?? "",
       onValueChange,
     );
+    const selected = displayedValue ?? requested;
 
     const { forgetItem, onItemLayout, onTrackLayout, placement } =
       useSelectionIndicator(selected, preferences.reduceMotion);
@@ -120,8 +125,8 @@ export const GlassSegmentedControl = forwardRef<
     );
 
     const context = useMemo(
-      () => ({ disabled, forgetItem, onItemLayout, select, selected }),
-      [disabled, forgetItem, onItemLayout, select, selected],
+      () => ({ disabled, forgetItem, onItemLayout, select, selected, requested }),
+      [disabled, forgetItem, onItemLayout, requested, select, selected],
     );
 
     return (
@@ -208,8 +213,8 @@ export const GlassSegmentedControlItem = forwardRef<
   );
 
   const choose = useCallback(() => {
-    if (!checked) select(value);
-  }, [checked, select, value]);
+    if (control.requested !== value) select(value);
+  }, [control.requested, select, value]);
 
   return (
     <Pressable

@@ -6,6 +6,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useColorScheme } from "react-native";
+import { ThemeSwitcher } from "@/components/ui/theme-switch";
+import type { ThemeChoice } from "@/stores/preferences";
 import {
   type GlassyUiPreferences,
   type GlassyUiTheme,
@@ -19,10 +21,12 @@ const PreferencesContext = createContext<Preferences | null>(null);
 
 export function GlassProvider({
   children,
-  theme,
+  choice,
+  animateThemeChanges,
 }: {
   children: ReactNode;
-  theme?: GlassyUiTheme;
+  choice: ThemeChoice;
+  animateThemeChanges: boolean;
 }) {
   const scheme = useColorScheme();
   const accessibility = useSyncExternalStore(
@@ -30,19 +34,25 @@ export function GlassProvider({
     readSystemAccessibility,
     readSystemAccessibility,
   );
-  const preferences = useMemo<Preferences>(
+  const preferences = useMemo<Record<GlassyUiTheme, Preferences>>(
     () => ({
-      theme: theme ?? (scheme === "dark" ? "dark" : "light"),
-      mode: "clear",
-      reduceMotion: accessibility.reduceMotion,
-      reduceTransparency: accessibility.reduceTransparency,
+      light: { theme: "light", mode: "clear", ...accessibility },
+      dark: { theme: "dark", mode: "clear", ...accessibility },
     }),
-    [accessibility, scheme, theme],
+    [accessibility],
   );
   return (
-    <PreferencesContext.Provider value={preferences}>
-      {children}
-    </PreferencesContext.Provider>
+    <ThemeSwitcher
+      theme={choice === "system" ? (scheme === "dark" ? "dark" : "light") : choice}
+      choice={choice}
+      enabled={animateThemeChanges && !accessibility.reduceMotion}
+    >
+      {(displayed) => (
+        <PreferencesContext.Provider value={preferences[displayed]}>
+          {children}
+        </PreferencesContext.Provider>
+      )}
+    </ThemeSwitcher>
   );
 }
 

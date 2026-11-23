@@ -797,7 +797,7 @@ export const en = {
     haptics: "Haptic feedback",
     saveHapticsError: "Could not save haptic feedback.",
     favoritesDisplay: "Favorites display",
-    favoritesNormal: "Normal",
+    favoritesBoring: "Boring",
     favoritesCool: "Cool",
     favoritesDisplaySaveError: "Could not save the Favorites display setting.",
     separateCallsTab: "Show Calls in the bottom bar",

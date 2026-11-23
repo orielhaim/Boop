@@ -79,6 +79,7 @@
     "react-native-sortables": "1.10.1",
     "react-native-svg": "15.16.0",
     "react-native-vision-camera": "^5.2.4",
+    "react-native-webgpu": "^0.23.0",
     "react-native-webrtc": "^155.0.1",
     "react-native-worklets": "0.13.0",
     "tlock-js": "./vendor/tlock-js-1.0.0-pr52-b311ee2.tgz",

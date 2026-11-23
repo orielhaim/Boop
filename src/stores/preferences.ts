@@ -9,8 +9,9 @@ export const callNavigationKeys = {
 export const launchScreens = ["chats", "calls"] as const;
 export type LaunchScreen = (typeof launchScreens)[number];
 export const favoritesDisplayKey = "contacts.favorites-display";
-export const favoritesDisplays = ["normal", "cool"] as const;
+export const favoritesDisplays = ["cool", "boring"] as const;
 export type FavoritesDisplay = (typeof favoritesDisplays)[number];
+export const defaultFavoritesDisplay: FavoritesDisplay = "cool";
 
 export const useAppPreferences = create<{
   theme: ThemeChoice;
@@ -23,5 +24,5 @@ export const useAppPreferences = create<{
   haptics: true,
   separateCallsTab: false,
   defaultScreen: "chats",
-  favoritesDisplay: "normal",
+  favoritesDisplay: defaultFavoritesDisplay,
 }));

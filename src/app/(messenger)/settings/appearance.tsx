@@ -69,8 +69,8 @@ export default function AppearanceSettings() {
           options={favoritesDisplays.map((value) => ({
             value,
             label: t(
-              value === "normal"
-                ? "settings:favoritesNormal"
+              value === "boring"
+                ? "settings:favoritesBoring"
                 : "settings:favoritesCool",
             ),
           }))}

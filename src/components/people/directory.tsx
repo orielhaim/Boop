@@ -276,7 +276,7 @@ export function PeopleDirectory() {
   const savedPeople = filtered.filter(
     (row) => row.publicKey !== exactKey && (term || !row.favorite),
   );
-  const normalFavorites = favorites.length > 0 && favoritesDisplay === "normal";
+  const boringFavorites = favorites.length > 0 && favoritesDisplay === "boring";
   const items: DirectoryItem[] = [
     ...(term && remote.length
       ? [
@@ -295,13 +295,13 @@ export function PeopleDirectory() {
       : []),
     ...savedPeople.map(({ publicKey }, index) => ({
       publicKey,
-      separated: normalFavorites && index === 0,
+      separated: boringFavorites && index === 0,
     })),
     ...(!term && recent.length
       ? [
           {
             title: t("messenger:recent"),
-            separated: normalFavorites && !savedPeople.length,
+            separated: boringFavorites && !savedPeople.length,
           },
           ...recent.map((publicKey) => ({ publicKey })),
         ]
