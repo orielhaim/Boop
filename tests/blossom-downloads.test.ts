@@ -151,7 +151,7 @@ test("returns storage exhaustion immediately and preserves an integrity failure"
     ["https://one.example.com/blob"],
     async () => ["https://two.example.com/blob"],
     async (url) =>
-      url.includes("one.example.com") ? "storage_blocked" : "ready",
+      new URL(url).hostname === "one.example.com" ? "storage_blocked" : "ready",
     new AbortController().signal,
   );
   expect(storage).toBe("storage_blocked");
@@ -160,7 +160,7 @@ test("returns storage exhaustion immediately and preserves an integrity failure"
     ["https://one.example.com/blob", "https://two.example.com/blob"],
     async () => ["https://three.example.com/blob"],
     async (url) =>
-      url.includes("one.example.com") ? "integrity" : "unavailable",
+      new URL(url).hostname === "one.example.com" ? "integrity" : "unavailable",
     new AbortController().signal,
   );
   expect(failed).toBe("integrity");
