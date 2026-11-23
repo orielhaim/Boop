@@ -1,0 +1,850 @@
+diff --git a/crates/marmot-account/src/home.rs b/crates/marmot-account/src/home.rs
+index f3866d8f..c6cd12e4 100644
+--- a/crates/marmot-account/src/home.rs
++++ b/crates/marmot-account/src/home.rs
+@@ -350,6 +350,14 @@ impl AccountHome {
+     /// identity instead of minting another one.
+     pub fn create_nostr_account_for_setup(&self) -> AccountHomeResult<AccountSummary> {
+         let keys = nostr::prelude::Keys::generate();
++        self.create_nostr_account_for_setup_with_keys(&keys, None)
++    }
++
++    pub fn create_nostr_account_for_setup_with_keys(
++        &self,
++        keys: &nostr::prelude::Keys,
++        context: Option<&[u8]>,
++    ) -> AccountHomeResult<AccountSummary> {
+         let account = AccountSummary {
+             label: keys.public_key().to_hex(),
+             account_id_hex: keys.public_key().to_hex(),
+@@ -372,7 +380,14 @@ impl AccountHome {
+             AccountSetupKind::GeneratedIdentity,
+             AccountSetupPhase::LocalStateCreated,
+         )?;
+-        if let Err(err) = self.secret_store.write_secret(&account, &keys) {
++        if let Some(context) = context
++            && let Err(err) =
++                write_private_bytes(self.account_setup_context_path(&account.label), context)
++        {
++            let _ = fs::remove_dir_all(self.account_dir(&account.label));
++            return Err(err);
++        }
++        if let Err(err) = self.secret_store.write_secret(&account, keys) {
+             let _ = self.secret_store.remove_secret(&account);
+             let _ = fs::remove_dir_all(self.account_dir(&account.label));
+             return Err(err);
+diff --git a/crates/marmot-app/src/local_submissions.rs b/crates/marmot-app/src/local_submissions.rs
+index f8ee05e5..76b9ce20 100644
+--- a/crates/marmot-app/src/local_submissions.rs
++++ b/crates/marmot-app/src/local_submissions.rs
+@@ -146,7 +146,7 @@ impl LocalMessageRequest {
+             AppMessageIntent::Media {
+                 attachments: self.attachments.clone(),
+                 caption: Some(self.content.clone()),
+-                message_tags: Vec::new(),
++                message_tags: self.tags.clone(),
+             }
+         } else if let Some(target) = &self.reply_to {
+             AppMessageIntent::Reply {
+diff --git a/crates/marmot-app/src/runtime/account_worker/attachments.rs b/crates/marmot-app/src/runtime/account_worker/attachments.rs
+index b9a2237e..db80931c 100644
+--- a/crates/marmot-app/src/runtime/account_worker/attachments.rs
++++ b/crates/marmot-app/src/runtime/account_worker/attachments.rs
+@@ -1297,17 +1297,19 @@ pub(super) fn schedule(
+             );
+             return Ok(started);
+         }
+-        // Downloads run concurrently only while free space covers every one
+-        // the runtime may run writing the most any account's automatic limit
+-        // allows: none of them then needs to know what the others still
+-        // write. An explicit download may be far larger than that limit, so it
+-        // always runs alone, as a tap did with the single slot. Running alone
+-        // holds every global permit, and admission measures free space with
+-        // nothing else in flight. When others are in flight, wait for all of
+-        // them in the semaphore's FIFO queue: candidates stay queued and due,
+-        // and the wait ends the moment the last one finishes, in any account.
++        // A host-managed client can admit concurrent explicit transfers if
++        // free space covers the maximum native body for every slot. Price
++        // every candidate in that runtime against the same maximum.
++        let concurrent_bound = if host_managed {
++            limit_bound.max(crate::MAX_FILE_MEDIA_CIPHERTEXT_BYTES)
++        } else {
++            limit_bound
++        };
++        // With less space, acquire all permits before admitting a transfer so
++        // its per-job disk checks are the only ones consuming the reserve.
+         if background_permit.num_permits() < limit
+-            && (explicit || !concurrent_admission_fits(&policy, free, limit_bound))
++            && ((explicit && !host_managed)
++                || !concurrent_admission_fits(&policy, free, concurrent_bound))
+         {
+             match shared
+                 .attachment_transfer
+diff --git a/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs b/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
+index 4fcf7313..0589b3dc 100644
+--- a/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
++++ b/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
+@@ -47,7 +47,14 @@ async fn token_sends_to_a_group_with_a_refused_subscription_are_never_rejected()
+         .unwrap()
+         .revision;
+     let draft = runtime
+-        .submit_message_draft("alice", &group, revision, vec![], "draft-token".into())
++        .submit_message_draft(
++            "alice",
++            &group,
++            revision,
++            vec![],
++            vec![],
++            "draft-token".into(),
++        )
+         .await
+         .unwrap();
+ 
+diff --git a/crates/marmot-app/src/runtime/local_submissions.rs b/crates/marmot-app/src/runtime/local_submissions.rs
+index c518bd3c..053ecc36 100644
+--- a/crates/marmot-app/src/runtime/local_submissions.rs
++++ b/crates/marmot-app/src/runtime/local_submissions.rs
+@@ -45,6 +45,28 @@ fn capture_media_reply(tags: &[Vec<String>]) -> Result<Option<String>, AppError>
+     }))
+ }
+ 
++/// Capture durable application tags separately from the upload-only operation.
++/// The message builder owns reply tags and the typed attachment descriptors.
++fn capture_media_submission(
++    send: bool,
++    caption: &Option<String>,
++    tags: &mut Vec<Vec<String>>,
++) -> Result<Option<LocalMessageRequest>, AppError> {
++    if !send {
++        return Ok(None);
++    }
++    crate::messages::validate_message_tags(tags)?;
++    let reply_to = capture_media_reply(tags)?;
++    let mut tags = std::mem::take(tags);
++    tags.retain(|tag| !matches!(tag.first().map(String::as_str), Some("e" | "q")));
++    Ok(Some(LocalMessageRequest {
++        content: caption.clone().unwrap_or_default(),
++        reply_to,
++        tags,
++        ..Default::default()
++    }))
++}
++
+ impl MarmotAppRuntime {
+     /// Upload first, then durably admit the resulting message when `send` is set.
+     /// Cancellation does not abandon an upload already handed to this task.
+@@ -56,30 +78,16 @@ impl MarmotAppRuntime {
+         client_token: String,
+     ) -> Result<(MediaUploadResult, Option<crate::LocalSendAcceptance>), AppError> {
+         validate_client_token(&client_token)?;
+-        let reply_to = if request.send {
+-            capture_media_reply(&request.message_tags)?
+-        } else {
+-            None
+-        };
++        let submission =
++            capture_media_submission(request.send, &request.caption, &mut request.message_tags)?;
++        request.send = false;
+         let runtime = self.clone();
+         let account = account.to_owned();
+         let group = group.clone();
+         tokio::spawn(async move {
+-            let send = request.send;
+-            request.send = false;
+-            let caption = request.caption.clone();
+             let upload = runtime.upload_media(&account, &group, request).await?;
+             runtime
+-                .admit_uploaded_media(
+-                    &account,
+-                    &group,
+-                    upload,
+-                    send,
+-                    caption,
+-                    reply_to,
+-                    client_token,
+-                    None,
+-                )
++                .admit_uploaded_media(&account, &group, upload, submission, client_token, None)
+                 .await
+         })
+         .await
+@@ -102,18 +110,13 @@ impl MarmotAppRuntime {
+     ) -> Result<(MediaUploadResult, Option<crate::LocalSendAcceptance>), AppError> {
+         validate_client_token(&client_token)?;
+         control.check()?;
+-        let reply_to = if request.send {
+-            capture_media_reply(&request.message_tags)?
+-        } else {
+-            None
+-        };
++        let submission =
++            capture_media_submission(request.send, &request.caption, &mut request.message_tags)?;
++        request.send = false;
+         let runtime = self.clone();
+         let account = account.to_owned();
+         let group = group.clone();
+         tokio::spawn(async move {
+-            let send = request.send;
+-            request.send = false;
+-            let caption = request.caption.clone();
+             let upload = runtime
+                 .upload_media_files(&account, &group, request, control.clone())
+                 .await?;
+@@ -122,9 +125,7 @@ impl MarmotAppRuntime {
+                     &account,
+                     &group,
+                     upload,
+-                    send,
+-                    caption,
+-                    reply_to,
++                    submission,
+                     client_token,
+                     Some(control),
+                 )
+@@ -137,37 +138,28 @@ impl MarmotAppRuntime {
+     /// Durable token admission after a completed upload. Shared validation in
+     /// admission rejects a reference whose source epoch is no longer current.
+     /// Any failure before acceptance releases the exact bound staging.
+-    #[allow(clippy::too_many_arguments)]
+     async fn admit_uploaded_media(
+         &self,
+         account: &str,
+         group: &GroupId,
+         upload: MediaUploadResult,
+-        send: bool,
+-        caption: Option<String>,
+-        reply_to: Option<String>,
++        submission: Option<LocalMessageRequest>,
+         client_token: String,
+         control: Option<Arc<crate::MediaFileTransferControl>>,
+     ) -> Result<(MediaUploadResult, Option<crate::LocalSendAcceptance>), AppError> {
+-        if !send {
++        let Some(mut request) = submission else {
+             return Ok((upload, None));
+-        }
++        };
++        request.attachments = upload
++            .attachments
++            .iter()
++            .map(|attachment| attachment.reference.clone())
++            .collect();
+         let submission = match control.as_ref().map(|control| control.check()) {
+             Some(Err(cancelled)) => Err(cancelled),
+             _ => {
+-                self.submit_media_attachments(
+-                    account,
+-                    group,
+-                    upload
+-                        .attachments
+-                        .iter()
+-                        .map(|a| a.reference.clone())
+-                        .collect(),
+-                    caption,
+-                    reply_to,
+-                    client_token,
+-                )
+-                .await
++                self.submit_local_message(account, group, client_token, request, None, None)
++                    .await
+             }
+         };
+         match submission {
+@@ -410,8 +402,18 @@ impl MarmotAppRuntime {
+         group: &GroupId,
+         revision: crate::MessageDraftRevision,
+         attachments: Vec<MediaAttachmentReference>,
++        tags: Vec<Vec<String>>,
+         client_token: String,
+     ) -> Result<crate::LocalSendAcceptance, AppError> {
++        // The sealed draft supplies the reply target.
++        if tags
++            .iter()
++            .any(|tag| matches!(tag.first().map(String::as_str), Some("e" | "q")))
++        {
++            return Err(AppError::InvalidAppMessagePayload(
++                "draft submissions own their reply reference".into(),
++            ));
++        }
+         self.submit_local_message(
+             account,
+             group,
+@@ -420,6 +422,7 @@ impl MarmotAppRuntime {
+                 content: String::new(),
+                 reply_to: None,
+                 attachments,
++                tags,
+                 ..Default::default()
+             },
+             Some(LocalDraftAdmission::Source(revision)),
+diff --git a/crates/marmot-app/src/runtime/mod.rs b/crates/marmot-app/src/runtime/mod.rs
+index dda3ab83..835e10e5 100644
+--- a/crates/marmot-app/src/runtime/mod.rs
++++ b/crates/marmot-app/src/runtime/mod.rs
+@@ -58,7 +58,7 @@ use marmot_observability::{
+     AppPerformanceOperation, AppPerformanceTelemetry, SyncErrorClass, SyncFailureClassification,
+     SyncFailureStage, bounded_advisory_step,
+ };
+-use nostr::prelude::PublicKey;
++use nostr::prelude::{Keys, PublicKey};
+ use nostr_directory::DirectorySyncHandle;
+ 
+ const MEDIA_COMMAND_QUEUE_LIMIT: usize = 8;
+@@ -1366,12 +1366,14 @@ pub enum AccountSetupReadiness {
+ 
+ /// Which generated identity a setup request without an identity or nsec
+ /// may use.
+-#[derive(Clone, Copy, Debug)]
++#[derive(Clone, Copy)]
+ pub(crate) enum GeneratedIdentity<'a> {
+     /// Select a resumable setup, or create a new identity.
+     ResumeOrCreate,
+     /// Admission selected fresh creation; never scan for resumable setup again.
+     Fresh,
++    /// A new identity already generated and pinned by the host.
++    HostGenerated(&'a Keys),
+     /// Continue this account's pending setup only; never another identity.
+     Continue(&'a str),
+ }
+@@ -1386,6 +1388,8 @@ pub(crate) struct GeneratedAccountSetupContext {
+     discovery_relays: Vec<String>,
+     publish_missing_relay_lists: bool,
+     publish_initial_key_package: bool,
++    #[serde(default)]
++    host_manages_profile: bool,
+ }
+ 
+ impl GeneratedAccountSetupContext {
+@@ -1413,6 +1417,7 @@ impl GeneratedAccountSetupContext {
+                 .collect(),
+             publish_missing_relay_lists: request.publish_missing_relay_lists,
+             publish_initial_key_package: request.publish_initial_key_package,
++            host_manages_profile: false,
+         }
+     }
+ 
+@@ -1902,6 +1907,14 @@ impl MarmotAppRuntime {
+     }
+ 
+     pub async fn catch_up_accounts(&self) -> Result<(), AppError> {
++        if let Some(account) = self
++            .accounts
++            .app
++            .account_home()
++            .resumable_generated_account_setup()?
++        {
++            self.continue_pending_generated_setup(&account.account_id_hex);
++        }
+         let result = self.accounts.catch_up_accounts().await.map(|_| ());
+         self.spawn_moderation_report_retries();
+         result
+@@ -6577,6 +6590,22 @@ impl MarmotAppRuntime {
+         .await
+     }
+ 
++    /// Prepare a new host-generated identity locally. The host publishes its own profile.
++    pub async fn create_host_identity_local_ready(
++        &self,
++        nsec: &str,
++        request: AccountSetupRequest,
++    ) -> Result<AccountSetupResult, AppError> {
++        let keys = Keys::parse(nsec).map_err(|_| AccountHomeError::InvalidSecretKey)?;
++        self.create_generated_account_local_ready(
++            request,
++            true,
++            None,
++            GeneratedIdentity::HostGenerated(&keys),
++        )
++        .await
++    }
++
+     /// Create a generated identity whose first public kind-0 is `profile`.
+     ///
+     /// The profile replaces the key-derived default before any bootstrap
+@@ -9494,21 +9523,30 @@ impl AccountManager {
+         account: &AccountSummary,
+         request: &AccountSetupRequest,
+     ) -> Result<(AccountRelayListStatus, Option<UserProfileMetadata>), AppError> {
+-        let mut profile = if let Some(cached) = self
++        let host_manages_profile = self
++            .app
++            .account_home()
++            .account_setup_context(&account.label)?
++            .map(|bytes| serde_json::from_slice::<GeneratedAccountSetupContext>(&bytes))
++            .transpose()?
++            .is_some_and(|context| context.host_manages_profile);
++        let mut profile = if host_manages_profile {
++            None
++        } else if let Some(cached) = self
+             .app
+             .directory()
+             .directory_entry_for_account_id(&account.account_id_hex)?
+             .and_then(|entry| entry.profile)
+         {
+-            cached
++            Some(cached)
+         } else {
+             let pseudonym = default_profile_pseudonym(&account.account_id_hex);
+-            UserProfileMetadata {
++            Some(UserProfileMetadata {
+                 name: Some(pseudonym.clone()),
+                 display_name: Some(pseudonym),
+                 created_at: unix_now_seconds(),
+                 ..UserProfileMetadata::default()
+-            }
++            })
+         };
+         let bootstrap = AccountRelayListBootstrap::new(
+             request.default_relays.clone(),
+@@ -9535,7 +9573,8 @@ impl AccountManager {
+             AccountSetupPhase::BootstrapPublicationConfirmed
+                 | AccountSetupPhase::KeyPackagePublicationStarted
+                 | AccountSetupPhase::KeyPackagePublicationConfirmed
+-        ) {
++        ) && let Some(profile) = profile.as_mut()
++        {
+             let status = self.app.account_relay_list_status(&account.label)?;
+             if let Some(cached) = self
+                 .app
+@@ -9543,7 +9582,7 @@ impl AccountManager {
+                 .directory_entry_for_account_id(&account.account_id_hex)?
+                 .and_then(|entry| entry.profile)
+             {
+-                profile = cached;
++                *profile = cached;
+             }
+             if status.complete {
+                 // A prior attempt may have failed after confirming bootstrap
+@@ -9553,7 +9592,7 @@ impl AccountManager {
+                     .prepare_generated_account_indexer_copy(
+                         &account.label,
+                         &status,
+-                        &profile,
++                        profile,
+                         &request.discovery_relays,
+                     )
+                     .await
+@@ -9567,7 +9606,7 @@ impl AccountManager {
+                         "could not prepare resumed public indexer copy"
+                     ),
+                 }
+-                return Ok((status, Some(profile)));
++                return Ok((status, Some(profile.clone())));
+             }
+             // The durable publication phase is authoritative, but the local
+             // directory projection can still be lost independently. These are
+@@ -9584,6 +9623,18 @@ impl AccountManager {
+             )?;
+         }
+         self.shared.lifecycle().ensure_running()?;
++        let Some(profile) = profile else {
++            let cached = self.app.account_relay_list_status(&account.label)?;
++            let status = if cached.complete {
++                cached
++            } else {
++                self.app
++                    .publish_account_relay_lists(&account.label, bootstrap)
++                    .await?
++            };
++            self.mark_bootstrap_publication_confirmed(&account.label)?;
++            return Ok((status, None));
++        };
+         let publish_started_at = Instant::now();
+         let publication = match self
+             .app
+@@ -9962,6 +10013,14 @@ impl AccountManager {
+                         }
+                     }
+                     GeneratedIdentity::Fresh => account_home.create_nostr_account_for_setup()?,
++                    GeneratedIdentity::HostGenerated(keys) => {
++                        let mut context = GeneratedAccountSetupContext::from_request(request);
++                        context.host_manages_profile = true;
++                        account_home.create_nostr_account_for_setup_with_keys(
++                            keys,
++                            Some(&serde_json::to_vec(&context)?),
++                        )?
++                    }
+                     GeneratedIdentity::Continue(account_id_hex) => self
+                         .pending_generated_account(account_id_hex)?
+                         .ok_or_else(|| {
+diff --git a/crates/marmot-app/src/runtime/onboarding/generated_setup.rs b/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
+index 90b38f2d..932e71fc 100644
+--- a/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
++++ b/crates/marmot-app/src/runtime/onboarding/generated_setup.rs
+@@ -166,7 +166,7 @@ impl MarmotAppRuntime {
+                     .app
+                     .account_home()
+                     .resumable_generated_account_setup()?,
+-                GeneratedIdentity::Fresh => None,
++                GeneratedIdentity::Fresh | GeneratedIdentity::HostGenerated(_) => None,
+                 GeneratedIdentity::Continue(id) => {
+                     let account = self.accounts.app.account_home().account(id)?;
+                     if account.account_id_hex != id
+@@ -208,7 +208,10 @@ impl MarmotAppRuntime {
+             Ok::<_, AppError>((resumable, context, effective_request))
+         })();
+         let work = async move {
+-            let (resumable, context, effective_request) = selection?;
++            let (resumable, mut context, effective_request) = selection?;
++            if matches!(generated, GeneratedIdentity::HostGenerated(_)) {
++                context.host_manages_profile = true;
++            }
+             let publication = if effective_request.publish_initial_key_package {
+                 InitialPublication::Requested
+             } else {
+@@ -217,11 +220,13 @@ impl MarmotAppRuntime {
+ 
+             // A fresh selection stays fresh even if sign-in makes a journal
+             // eligible before creation. Existing selections stay on their ID.
+-            let generated = resumable
+-                .as_ref()
+-                .map_or(GeneratedIdentity::Fresh, |account| {
+-                    GeneratedIdentity::Continue(&account.account_id_hex)
+-                });
++            let generated = resumable.as_ref().map_or(
++                match generated {
++                    GeneratedIdentity::HostGenerated(_) => generated,
++                    _ => GeneratedIdentity::Fresh,
++                },
++                |account| GeneratedIdentity::Continue(&account.account_id_hex),
++            );
+             let result = async {
+                 let identity_started = Instant::now();
+                 let identity_result = self
+@@ -263,6 +268,9 @@ impl MarmotAppRuntime {
+ 
+                 let profile_started = Instant::now();
+                 let profile_result = (|| {
++                    if context.host_manages_profile {
++                        return Ok(None);
++                    }
+                     let cached = self
+                         .accounts
+                         .app
+@@ -282,7 +290,7 @@ impl MarmotAppRuntime {
+                             .directory()
+                             .remember_directory_profile(&account.account_id_hex, &profile)?;
+                     }
+-                    Ok::<_, AppError>(profile)
++                    Ok::<_, AppError>(Some(profile))
+                 })();
+                 self.shared.observer.performance().record(
+                     AppPerformanceOperation::AccountSetupProfileLocal,
+@@ -378,7 +386,7 @@ impl MarmotAppRuntime {
+                     key_package_bytes: effective_request
+                         .publish_initial_key_package
+                         .then_some(key_package_bytes),
+-                    profile: Some(profile),
++                    profile,
+                     readiness,
+                 })
+             }
+@@ -659,6 +667,52 @@ impl MarmotAppRuntime {
+ mod selection_tests {
+     use super::*;
+ 
++    #[tokio::test]
++    async fn host_identity_preparation_and_resume_leave_profile_to_host() {
++        let dir = tempfile::tempdir().unwrap();
++        let home = AccountHome::open_with_secret_store(
++            dir.path(),
++            Arc::new(marmot_account::LocalFileSecretStore::new(dir.path())),
++        );
++        let app = MarmotApp::with_relays_and_account_home(dir.path(), vec![], home);
++        let runtime = MarmotAppRuntime::new(app);
++        let keys = Keys::generate();
++        let id = keys.public_key().to_hex();
++        let created = runtime
++            .create_generated_account_local_ready(
++                AccountSetupRequest {
++                    default_relays: vec![TransportEndpoint("wss://relay.example".into())],
++                    publish_missing_relay_lists: true,
++                    publish_initial_key_package: true,
++                    ..Default::default()
++                },
++                false,
++                None,
++                GeneratedIdentity::HostGenerated(&keys),
++            )
++            .await
++            .unwrap();
++        assert_eq!(created.account.account_id_hex, id);
++        assert!(created.profile.is_none());
++        let home = runtime.accounts.app.account_home();
++        let context: GeneratedAccountSetupContext =
++            serde_json::from_slice(&home.account_setup_context(&id).unwrap().unwrap()).unwrap();
++        assert!(context.host_manages_profile);
++        let resumed = runtime
++            .create_generated_account_local_ready(
++                context.request(),
++                false,
++                None,
++                GeneratedIdentity::Continue(&id),
++            )
++            .await
++            .unwrap();
++        assert_eq!(resumed.account, created.account);
++        assert!(resumed.profile.is_none());
++        assert_eq!(home.accounts().unwrap().len(), 1);
++        runtime.shutdown_and_close().await.unwrap();
++    }
++
+     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+     async fn sign_in_keeps_fresh_selection() {
+         let dir = tempfile::tempdir().unwrap();
+diff --git a/crates/marmot-c/src/subscriptions/conversation_window.rs b/crates/marmot-c/src/subscriptions/conversation_window.rs
+index 3797badd..8f280e76 100644
+--- a/crates/marmot-c/src/subscriptions/conversation_window.rs
++++ b/crates/marmot-c/src/subscriptions/conversation_window.rs
+@@ -660,6 +660,7 @@ pub unsafe extern "C" fn marmot_send_message_draft_with_client_token(
+                     account,
+                     revision.inner.clone(),
+                     attachments,
++                    Vec::new(),
+                     token,
+                 )),
+                 out,
+diff --git a/crates/marmot-uniffi/src/commands/account.rs b/crates/marmot-uniffi/src/commands/account.rs
+index 2a2d2d40..33d04074 100644
+--- a/crates/marmot-uniffi/src/commands/account.rs
++++ b/crates/marmot-uniffi/src/commands/account.rs
+@@ -247,6 +247,42 @@ impl Marmot {
+         })
+     }
+ 
++    /// Prepare a new identity generated by the host without waiting for relays.
++    pub async fn create_host_identity(
++        &self,
++        nsec: String,
++        default_relays: Vec<String>,
++        bootstrap_relays: Vec<String>,
++        inbox_relays: Vec<String>,
++    ) -> Result<AccountSummaryFfi, MarmotKitError> {
++        let nsec = Zeroizing::new(nsec);
++        let result = self
++            .runtime
++            .create_host_identity_local_ready(
++                &nsec,
++                AccountSetupRequest {
++                    identity: None,
++                    import_nsec: None,
++                    default_relays: endpoints(&default_relays),
++                    bootstrap_relays: endpoints(&bootstrap_relays),
++                    inbox_relays: endpoints(&inbox_relays),
++                    discovery_relays: self.app.discovery_indexer_relays(),
++                    publish_missing_relay_lists: true,
++                    publish_initial_key_package: true,
++                },
++            )
++            .await?;
++        Ok(AccountSummaryFfi {
++            label: result.account.label,
++            account_id_hex: result.account.account_id_hex,
++            local_signing: result.account.local_signing,
++            external_signing: result.account.external_signing,
++            signed_out: result.account.signed_out,
++            running: true,
++            unlinked: result.account.unlinked,
++        })
++    }
++
+     /// Remove only the legacy ambiguous partial-account shape so a subsequent
+     /// `login` with the same nsec can recreate it. The acknowledgement is
+     /// required because old local state cannot prove that no KeyPackage was
+diff --git a/crates/marmot-uniffi/src/commands/local_submissions.rs b/crates/marmot-uniffi/src/commands/local_submissions.rs
+index 023e8a0b..2f7701ee 100644
+--- a/crates/marmot-uniffi/src/commands/local_submissions.rs
++++ b/crates/marmot-uniffi/src/commands/local_submissions.rs
+@@ -106,6 +106,7 @@ impl Marmot {
+         account_ref: String,
+         revision: Arc<MessageDraftRevisionFfi>,
+         attachments: Vec<MediaAttachmentReferenceFfi>,
++        tags: Vec<Vec<String>>,
+         client_token: String,
+     ) -> Result<LocalSendAcceptanceFfi, MarmotKitError> {
+         Ok(self
+@@ -115,6 +116,7 @@ impl Marmot {
+                 &group_id_from_hex(revision.inner.group_id_hex())?,
+                 revision.inner.clone(),
+                 attachments.into_iter().map(Into::into).collect(),
++                tags,
+                 client_token,
+             )
+             .await?
+diff --git a/crates/marmot-uniffi/src/conversions/conversation_window.rs b/crates/marmot-uniffi/src/conversions/conversation_window.rs
+index 72bed6f9..0db4aa1f 100644
+--- a/crates/marmot-uniffi/src/conversions/conversation_window.rs
++++ b/crates/marmot-uniffi/src/conversions/conversation_window.rs
+@@ -373,7 +373,7 @@ impl From<app::SelectedMessageDraft> for SelectedMessageDraftFfi {
+     }
+ }
+ /// Timeline content plus bounded display references. Use references.reactions for UI;
+-/// custom-event tags and NIP-30 `emoji` tags on chats are preserved; other typed-row tags use
++/// custom-event tags and allowlisted `emoji` and `boop-media` tags on chats are preserved; other typed-row tags use
+ /// structured fields and reactions use references.
+ #[derive(Clone, uniffi::Record)]
+ pub struct ConversationMessageFfi {
+@@ -394,7 +394,7 @@ pub struct ConversationWindowSnapshotFfi {
+     pub has_more_before: bool,
+     pub has_more_after: bool,
+ }
+-// Borrow raw rows and retain only custom-event tags and chat NIP-30 `emoji` tags in the
++// Borrow raw rows and retain only custom-event tags and allowlisted chat tags in the
+ // FFI presentation. MDK-owned tags and full reactor collections use prepared references.
+ fn conversation_sticker_ref(row: &app::TimelineMessageRecord) -> Option<app::AppStickerRef> {
+     if row.deleted {
+@@ -418,7 +418,9 @@ fn presented_custom_tags(row: &app::TimelineMessageRecord) -> Cow<'_, [Vec<Strin
+     Cow::Owned(
+         row.tags
+             .iter()
+-            .filter(|tag| tag.len() >= 3 && tag[0] == "emoji")
++            .filter(|tag| {
++                (tag.len() >= 3 && tag[0] == "emoji") || (tag.len() == 6 && tag[0] == "boop-media")
++            })
+             .cloned()
+             .collect(),
+     )
+diff --git a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
+index 11fbcded..65ae5f3b 100644
+--- a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
++++ b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
+@@ -52,6 +52,26 @@ extension BlockListSubscription {
+   }
+ }
+ 
++extension MessagesSubscription {
++  public func nextCancellable() async throws -> MessageUpdateFfi? {
++    try Task.checkCancellation()
++    return try await cancellableProjectionNext(
++      uniffi_marmot_uniffi_fn_method_messagessubscription_next(uniffiClonePointer()),
++      read: FfiConverterTypeMessageUpdateFfi.read
++    )
++  }
++}
++
++extension GroupStateSubscription {
++  public func nextCancellable() async throws -> AppGroupRecordFfi? {
++    try Task.checkCancellation()
++    return try await cancellableProjectionNext(
++      uniffi_marmot_uniffi_fn_method_groupstatesubscription_next(uniffiClonePointer()),
++      read: FfiConverterTypeAppGroupRecordFfi.read
++    )
++  }
++}
++
+ private func cancellableProjectionNext<Value>(
+   _ handle: UInt64,
+   read: (inout (data: Data, offset: Data.Index)) throws -> Value
+diff --git a/crates/storage-sqlite/src/app/timeline.rs b/crates/storage-sqlite/src/app/timeline.rs
+index 63d562a9..0106a18d 100644
+--- a/crates/storage-sqlite/src/app/timeline.rs
++++ b/crates/storage-sqlite/src/app/timeline.rs
+@@ -2456,7 +2456,9 @@ fn project_single_message_timeline_tx(
+         | MARMOT_APP_EVENT_KIND_EDIT
+         | MARMOT_APP_EVENT_KIND_REPORT
+         | MARMOT_APP_EVENT_KIND_REVIEW
+-        | MARMOT_APP_EVENT_KIND_REMOVE => return Ok(None),
++        | MARMOT_APP_EVENT_KIND_REMOVE
++        | 24884
++        | 24885 => return Ok(None),
+         _ => timeline_row_from_custom_event(&event),
+     };
+ 
+@@ -4264,7 +4266,10 @@ fn project_group_events(
+             | MARMOT_APP_EVENT_KIND_EDIT
+             | MARMOT_APP_EVENT_KIND_REPORT
+             | MARMOT_APP_EVENT_KIND_REVIEW
+-            | MARMOT_APP_EVENT_KIND_REMOVE => {}
++            | MARMOT_APP_EVENT_KIND_REMOVE
++            // Boop control events are delivered via the raw messages API.
++            | 24884
++            | 24885 => {}
+             _ => {
+                 let mut row = timeline_row_from_custom_event(event);
+                 if event.invalidated {
+diff --git a/crates/storage-sqlite/src/app/timeline/tests.rs b/crates/storage-sqlite/src/app/timeline/tests.rs
+index a2df2df1..9a77e389 100644
+--- a/crates/storage-sqlite/src/app/timeline/tests.rs
++++ b/crates/storage-sqlite/src/app/timeline/tests.rs
+@@ -6150,3 +6150,46 @@ fn discarding_a_send_updates_the_replies_that_quote_it() {
+         "the update carries the reply as it now reads"
+     );
+ }
++
++#[test]
++fn boop_control_events_never_occupy_timeline_positions() {
++    let store = SqliteAccountStorage::in_memory().unwrap();
++    let app = store.app_storage();
++    let group = "11".repeat(32);
++    app.record_app_event(&chat("before", "alice", 10, "before"))
++        .unwrap();
++    for (id, kind) in [("call", 24884), ("support", 24885)] {
++        let mut control = chat(id, "alice", 20, "raw control");
++        control.kind = kind;
++        app.record_app_event(&control).unwrap();
++    }
++    app.record_app_event(&chat("after", "alice", 30, "after"))
++        .unwrap();
++
++    let verify = || {
++        for hidden in ["call", "support"] {
++            assert!(app.timeline_message(&group, hidden).unwrap().is_none());
++            assert!(matches!(
++                timeline_order_cursor_tx(&store.lock().unwrap(), &group, hidden),
++                Err(StorageError::TimelineCursorExpired)
++            ));
++        }
++        let page = app
++            .message_timeline(TimelineMessageQuery {
++                group_id_hex: Some(group.clone()),
++                pagination: TimelinePagination {
++                    before: Some(30),
++                    before_message_id: Some("after".into()),
++                    limit: Some(1),
++                    ..Default::default()
++                },
++                ..Default::default()
++            })
++            .unwrap();
++        assert_eq!(ids(&page), ["before"]);
++        assert!(!page.has_more_before);
++    };
++    verify();
++    app.rebuild_message_timeline_for_group(&group).unwrap();
++    verify();
++}
+diff --git a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
+index 1eb2080b..ab417088 100644
+--- a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
++++ b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
+@@ -12,7 +12,8 @@ pub(crate) fn apply(tx: &Transaction<'_>) -> StorageResult<()> {
+         r#"
+ DROP TABLE IF EXISTS agent_stream_starts;
+ DROP TABLE IF EXISTS agent_stream_publisher_sequences;
+-DELETE FROM message_timeline WHERE kind = 1200;
++-- Boop control messages remain available from app_events only.
++DELETE FROM message_timeline WHERE kind IN (1200, 24884, 24885);
+ ALTER TABLE message_timeline DROP COLUMN agent_stream_json;
+ "#,
+     )
+@@ -33,9 +34,13 @@ mod tests {
+             INSERT INTO account_groups(group_id_hex, endpoint, updated_at) VALUES ('11', 'fixture', 0);
+             INSERT INTO app_events(group_id_hex,message_id_hex,direction,sender,plaintext,kind,tags_json,recorded_at,received_at)
+             VALUES ('11','start','received','agent','',1200,'[["stream","aa"]]',1,1),
++                   ('11','call','received','agent','',24884,'[]',1,1),
++                   ('11','support','received','agent','',24885,'[]',1,1),
+                    ('11','final','received','agent','done',9,'[["stream","aa"],["stream-start","start"]]',2,2);
+             INSERT INTO message_timeline(group_id_hex,message_id_hex,direction,sender,plaintext,kind,tags_json,timeline_at,received_at,agent_stream_json,reactions_json)
+             VALUES ('11','start','received','agent','',1200,'[["stream","aa"]]',1,1,'{"status":"started"}','{"by_emoji":{},"user_reactions":[]}'),
++                   ('11','call','received','agent','',24884,'[]',1,1,NULL,'{"by_emoji":{},"user_reactions":[]}'),
++                   ('11','support','received','agent','',24885,'[]',1,1,NULL,'{"by_emoji":{},"user_reactions":[]}'),
+                    ('11','final','received','agent','done',9,'[["stream","aa"],["stream-start","start"]]',2,2,'{"status":"finalized"}','{"by_emoji":{},"user_reactions":[]}');
+             INSERT INTO agent_stream_starts(group_id_hex,message_id_hex,sender,stream_id_hex,tags_json,started_at,received_at)
+             VALUES ('11','start','agent','aa','[]',1,1);
+@@ -85,6 +90,6 @@ mod tests {
+         let sources: i64 = conn
+             .query_row("SELECT count(*) FROM app_events", [], |row| row.get(0))
+             .unwrap();
+-        assert_eq!(sources, 2);
++        assert_eq!(sources, 4);
+     }
+ }

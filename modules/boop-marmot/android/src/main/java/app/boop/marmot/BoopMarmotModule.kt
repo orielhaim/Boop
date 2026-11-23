@@ -28,6 +28,7 @@ private const val ATTACHMENT_CANCEL_TIMEOUT_MS = 10_000L
 
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
+  private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
@@ -353,13 +354,16 @@ class BoopMarmotModule : Module() {
       }
     }
     AsyncFunction("saveDraft") Coroutine { group: String, text: String, reply: String? ->
-      withSession {
-        val draft = it.kit.selectedMessageDraft(it.account, group)
-        try {
-          val retained = draft.draft?.mediaAttachments.orEmpty().map { item -> MessageDraftAttachmentInputFfi.Retained(item.id) }
-          if (text.isBlank() && retained.isEmpty()) it.kit.clearMessageDraftIfRevision(it.account, draft.revision).destroy()
-          else it.kit.saveMessageDraftInputsIfRevision(it.account, draft.revision, text, reply, retained).destroy()
-        } finally { draft.destroy() }
+      withSession { active ->
+        retryDraftEdit {
+          active.kit.selectedMessageDraft(active.account, group).use { selected ->
+            if (text.isBlank() && selected.draft?.mediaAttachments.orEmpty().isEmpty()) {
+              active.kit.clearMessageDraftIfRevision(active.account, selected.revision).destroy()
+            } else {
+              active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, text, reply, emptyList()).destroy()
+            }
+          }
+        }
       }
     }
     AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String? ->
@@ -373,15 +377,15 @@ class BoopMarmotModule : Module() {
     AsyncFunction("stageMediaDraft") Coroutine { group: String, files: List<Map<String, String>>, caption: String, token: String, reply: String? ->
       withSession { active ->
         val inputs = uploadInputs(files)
-        var draft = active.kit.selectedMessageDraft(active.account, group)
-        try {
-          if (draft.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
-          val updated = active.kit.saveMessageDraftInputsIfRevision(active.account, draft.revision, caption, reply, emptyList())
-          draft.destroy()
-          draft = updated
-          MediaFileTransferControlFfi().use { control ->
-            registerUpload(active, token, control)
+        MediaFileTransferControlFfi().use { control ->
+          registerUpload(active, token, control, draftGroup = group)
+          try {
+            var draft = active.kit.selectedMessageDraft(active.account, group)
             try {
+              if (draft.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
+              val updated = active.kit.saveMessageDraftInputsIfRevision(active.account, draft.revision, caption, reply, emptyList())
+              draft.destroy()
+              draft = updated
               sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to 0.0, "state" to "preparing"))
               for ((index, input) in inputs.withIndex()) {
                 val file = files[index]
@@ -396,20 +400,30 @@ class BoopMarmotModule : Module() {
                 draft.destroy()
                 draft = next
               }
-            } finally {
-              synchronized(uploads) { uploads.remove(token) }
+            } finally { draft.destroy() }
+          } finally {
+            synchronized(uploads) {
+              uploads.remove(token)
+              draftStages.remove(group)
             }
           }
-        } finally { draft.destroy() }
+        }
       }
     }
     AsyncFunction("discardMediaDraft") Coroutine { group: String ->
       withSession { active ->
-        val selected = active.kit.selectedMessageDraft(active.account, group)
-        try {
-          val draft = selected.draft ?: return@withSession
-          active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, draft.content, draft.replyToMessageIdHex, emptyList()).destroy()
-        } finally { selected.destroy() }
+        if (synchronized(uploads) { group in draftStages }) throw problem("TransferInProgress")
+        var idsToRemove: Set<String>? = null
+        retryDraftEdit {
+          active.kit.selectedMessageDraft(active.account, group).use { selected ->
+            val draft = selected.draft ?: return@use
+            val ids = idsToRemove ?: draft.mediaAttachments.map { it.id }.toSet().also { idsToRemove = it }
+            val removed = draft.mediaAttachments.filter { it.id in ids }.map { MessageDraftAttachmentInputFfi.Removed(it.id) }
+            if (removed.isNotEmpty()) {
+              active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, draft.content, draft.replyToMessageIdHex, removed).destroy()
+            }
+          }
+        }
       }
     }
     AsyncFunction("sendMedia") Coroutine { group: String, files: List<Map<String, String>>, caption: String?, token: String, server: String?, reply: String? ->
@@ -456,7 +470,7 @@ class BoopMarmotModule : Module() {
                   val metadata = draftFiles.mapIndexed { index, item ->
                     mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples, item.id.substringAfterLast(":"))
                   }
-                  val accepted = active.kit.sendTaggedMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, metadata, token)
+                  val accepted = active.kit.sendMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, metadata, token)
                   accepted.messageIdHex to result
                 }
                 mapOf("id" to id, "blobs" to uploaded.attachments.mapNotNull { item ->
@@ -910,11 +924,24 @@ class BoopMarmotModule : Module() {
       }
     }
   }
-  private suspend fun registerUpload(active: Session, token: String, control: MediaFileTransferControlFfi) {
+  private inline fun retryDraftEdit(edit: () -> Unit) {
+    repeat(3) { attempt ->
+      try {
+        edit()
+        return
+      } catch (error: MarmotKitException.MessageDraftRevisionConflict) {
+        if (attempt == 2) throw error
+      }
+    }
+  }
+
+  private suspend fun registerUpload(
+    active: Session, token: String, control: MediaFileTransferControlFfi, draftGroup: String? = null,
+  ) {
     lifecycle.withLock {
       if (session !== active || active.closing) throw problem("AccountClosed")
       synchronized(uploads) {
-        if (uploads.containsKey(token)) throw problem("TransferInProgress")
+        if (uploads.containsKey(token) || (draftGroup != null && !draftStages.add(draftGroup))) throw problem("TransferInProgress")
         uploads[token] = control
       }
     }

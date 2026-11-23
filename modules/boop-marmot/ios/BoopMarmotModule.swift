@@ -8,6 +8,7 @@ private let attachmentStallTimeout: TimeInterval = 180
 
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
+  private var draftStages: Set<String> = [] // Guarded by uploadLock.
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
@@ -303,12 +304,15 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("saveDraft") { (group: String, text: String, reply: String?) async throws in
       try await self.withAccount { kit, account in
-        let draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        let retained = (draft.draft?.mediaAttachments ?? []).map { MessageDraftAttachmentInputFfi.retained(id: $0.id) }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && retained.isEmpty {
-          _ = try kit.clearMessageDraftIfRevision(accountRef: account, revision: draft.revision)
-        } else {
-          _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision, content: text, replyToMessageIdHex: reply, mediaAttachments: retained)
+        try retryDraftEdit {
+          let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+          if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+             selected.draft?.mediaAttachments.isEmpty != false {
+            _ = try kit.clearMessageDraftIfRevision(accountRef: account, revision: selected.revision)
+          } else {
+            _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+              content: text, replyToMessageIdHex: reply, mediaAttachments: [])
+          }
         }
       }
     }
@@ -322,17 +326,23 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("stageMediaDraft") { (group: String, files: [[String: String]], caption: String, token: String, reply: String?) async throws in
       try await self.withAccount { kit, account in
         let inputs = try self.uploadInputs(files)
-        var draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        guard draft.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
-        draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision, content: caption, replyToMessageIdHex: reply, mediaAttachments: [])
         let control = MediaFileTransferControlFfi()
         let registered = self.uploadLock.withLock {
-          guard self.uploads[token] == nil else { return false }
+          guard self.uploads[token] == nil, self.draftStages.insert(group).inserted else { return false }
           self.uploads[token] = control
           return true
         }
         guard registered else { throw problem("TransferInProgress") }
-        defer { _ = self.uploadLock.withLock { self.uploads.removeValue(forKey: token) } }
+        defer {
+          self.uploadLock.withLock {
+            self.uploads.removeValue(forKey: token)
+            self.draftStages.remove(group)
+          }
+        }
+        var draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+        guard draft.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
+        draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision,
+          content: caption, replyToMessageIdHex: reply, mediaAttachments: [])
         self.sendEvent("attachmentProgress", ["transfer": token, "received": 0.0, "state": "preparing"])
         for (index, input) in inputs.enumerated() {
           let file = files[index]
@@ -347,10 +357,20 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("discardMediaDraft") { (group: String) async throws in
       try await self.withAccount { kit, account in
-        let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        guard let draft = selected.draft else { return }
-        _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
-          content: draft.content, replyToMessageIdHex: draft.replyToMessageIdHex, mediaAttachments: [])
+        if self.uploadLock.withLock({ self.draftStages.contains(group) }) { throw problem("TransferInProgress") }
+        var idsToRemove: Set<String>?
+        try retryDraftEdit {
+          let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+          guard let draft = selected.draft else { return }
+          let ids = idsToRemove ?? Set(draft.mediaAttachments.map(\.id))
+          idsToRemove = ids
+          let removed = draft.mediaAttachments.filter { ids.contains($0.id) }.map {
+            MessageDraftAttachmentInputFfi.removed(id: $0.id)
+          }
+          guard !removed.isEmpty else { return }
+          _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+            content: draft.content, replyToMessageIdHex: draft.replyToMessageIdHex, mediaAttachments: removed)
+        }
       }
     }
     AsyncFunction("sendMedia") { (group: String, files: [[String: String]], caption: String?, token: String, server: String?, reply: String?) async throws -> Document in
@@ -407,8 +427,8 @@ public final class BoopMarmotModule: Module {
               mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples,
                 item.id.split(separator: ":").last.map(String.init) ?? "file")
             }
-            let accepted = try await kit.sendTaggedMessageDraftWithClientToken(accountRef: account, revision: selected.revision,
-              attachments: uploaded.attachments.map(\.reference), messageTags: metadata, clientToken: token)
+            let accepted = try await kit.sendMessageDraftWithClientToken(accountRef: account, revision: selected.revision,
+              attachments: uploaded.attachments.map(\.reference), tags: metadata, clientToken: token)
             id = accepted.messageIdHex
           } else {
             let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: control, clientToken: token)
@@ -852,6 +872,17 @@ private func withAttachmentAttempt<T>(
 
 private struct AttachmentCancelControl: @unchecked Sendable {
   let run: () async -> Void
+}
+
+private func retryDraftEdit(_ edit: () throws -> Void) throws {
+  for attempt in 0..<3 {
+    do {
+      try edit()
+      return
+    } catch MarmotKitError.MessageDraftRevisionConflict where attempt < 2 {
+      continue
+    }
+  }
 }
 
 private actor AttachmentCancellation {

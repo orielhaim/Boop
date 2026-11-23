@@ -6,7 +6,9 @@ plugins {
 group = 'app.boop'
 version = '1.0.0'
 
-def sdk = file('../sdk/marmotkit-android-0.18.0-boop')
+def patch = file('../mdk-0.19.0.patch')
+def revision = java.security.MessageDigest.getInstance('SHA-256').digest(patch.bytes).encodeHex().toString()
+def sdk = file("../sdk/marmotkit-android-0.19.0-boop-${revision.take(12)}")
 def prepareMarmotKit = tasks.register('prepareMarmotKit', Exec) {
   workingDir file('../../..')
   commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android',

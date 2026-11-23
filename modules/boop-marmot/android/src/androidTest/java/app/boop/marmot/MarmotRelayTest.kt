@@ -225,6 +225,14 @@ class MarmotRelayTest {
           bob.kit.chatList(bob.key, false).none { it.groupIdHex == declined && it.pendingConfirmation }
         }
 
+        val threadText = "Thread reply fixture"
+        alice.kit.sendThreadMessage(alice.key, group, target, threadText, emptyList(), emptyList())
+        bob.receives(group, alice.key, threadText)
+        val thread = bob.kit.timelineMessages(bob.key, latestTimeline(group, threadText)).messages.single()
+        assertEquals(target, thread.replyToMessageIdHex)
+        assertEquals(target, thread.thread?.rootMessageIdHex)
+        assertEquals(target, thread.thread?.parentMessageIdHex)
+
         bob.kit.leaveGroup(bob.key, group)
         await("authenticated leave") {
           alice.kit.groupDetails(alice.key, group).members.none { it.memberIdHex == bob.key }
@@ -391,9 +399,13 @@ class MarmotRelayTest {
     val payload = "Synthetic Boop fixture ${UUID.randomUUID()}".toByteArray()
     val path = File(sender.directory, "fixture.txt").apply { writeBytes(payload) }
     val caption = "Encrypted document fixture"
+    val directReply = recipient.kit.timelineMessages(recipient.key, latestTimeline(group, "hello group")).messages.single().messageIdHex
     val request = MediaFileUploadRequestFfi(
       listOf(MediaFileUploadAttachmentRequestFfi(path.canonicalPath, path.length().toULong(), path.name, "text/plain", null, null)),
-      caption, true, blossom, listOf(mediaMetadata(0, path.length().toULong(), null, emptyList(), "file")),
+      caption, true, blossom, listOf(
+        mediaMetadata(0, path.length().toULong(), null, emptyList(), "file"),
+        listOf("e", directReply, "", "reply"),
+      ),
     )
     val sent = MediaFileTransferControlFfi().use {
       sender.kit.uploadMediaFilesWithClientToken(sender.key, group, request, it, "fixture-media")
@@ -402,6 +414,7 @@ class MarmotRelayTest {
     recipient.receives(group, sender.key, caption)
     val row = recipient.kit.timelineMessages(recipient.key, TimelineMessageQueryFfi(group, caption, null, null, null,
       cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 30u)).messages.single()
+    assertEquals(directReply, row.replyToMessageIdHex)
     val attachment = row.media.single() as MediaAttachmentOutcomeFfi.Accepted
     assertEquals(listOf("boop-media", "0", payload.size.toString(), "", "", "file"),
       row.tags.single { it.values.first() == "boop-media" }.values)
@@ -494,7 +507,7 @@ class MarmotRelayTest {
     val waveform = listOf(0.0, 15.0 / 31, 1.0)
     val selected = sender.kit.selectedMessageDraft(sender.key, group)
     val updated = try {
-      sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Resumed upload", row.messageIdHex, emptyList())
+      sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Staging upload", row.messageIdHex, emptyList())
     } finally { selected.destroy() }
     try {
       MediaFileTransferControlFfi().use { control ->
@@ -502,9 +515,28 @@ class MarmotRelayTest {
           MessageDraftAttachmentFileRequestFfi(draftIds[0], voice.canonicalPath, voice.length().toULong(),
             voice.name, "audio/mp4", null, null, duration, waveform), control)
         try {
-          sender.kit.stageMessageDraftAttachmentFile(sender.key, first.revision,
-            MessageDraftAttachmentFileRequestFfi(draftIds[1], video.canonicalPath, video.length().toULong(),
-              video.name, "video/mp4", "720x720", null, 5.0, emptyList()), control).destroy()
+          val staleSave = runCatching {
+            sender.kit.saveMessageDraftInputsIfRevision(sender.key, updated.revision, "Stale", null, emptyList()).destroy()
+          }
+          assertTrue(staleSave.exceptionOrNull() is MarmotKitException.MessageDraftRevisionConflict)
+          val edited = sender.kit.saveMessageDraftInputsIfRevision(sender.key, first.revision, "Resumed upload", row.messageIdHex, emptyList())
+          try {
+            assertEquals(draftIds.take(1), edited.draft?.mediaAttachments?.map { it.id })
+            val staged = sender.kit.stageMessageDraftAttachmentFile(sender.key, edited.revision,
+              MessageDraftAttachmentFileRequestFfi(draftIds[1], video.canonicalPath, video.length().toULong(),
+                video.name, "video/mp4", "720x720", null, 5.0, emptyList()), control)
+            try {
+              val disposable = sender.kit.stageMessageDraftAttachmentFile(sender.key, staged.revision,
+                MessageDraftAttachmentFileRequestFfi("remove-me", path.canonicalPath, path.length().toULong(),
+                  path.name, "text/plain", null, null, null, emptyList()), control)
+              try {
+                val removed = sender.kit.saveMessageDraftInputsIfRevision(sender.key, disposable.revision,
+                  "Resumed upload", row.messageIdHex, listOf(MessageDraftAttachmentInputFfi.Removed("remove-me")))
+                try { assertEquals(draftIds, removed.draft?.mediaAttachments?.map { it.id }) }
+                finally { removed.destroy() }
+              } finally { disposable.destroy() }
+            } finally { staged.destroy() }
+          } finally { edited.destroy() }
         } finally { first.destroy() }
       }
     } finally { updated.destroy() }
@@ -530,7 +562,15 @@ class MarmotRelayTest {
       val tags = files.mapIndexed { index, file ->
         mediaMetadata(index, file.plaintextSize, file.durationSeconds, file.waveformSamples, file.id.substringAfterLast(":"))
       }
-      sender.kit.sendTaggedMessageDraftWithClientToken(sender.key, resumed.revision, prepared.attachments.map { it.reference }, tags, draftToken)
+      val references = prepared.attachments.map { it.reference }
+      val first = sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags, draftToken)
+      val retry = sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags, draftToken)
+      assertEquals(first.messageIdHex, retry.messageIdHex)
+      assertEquals(draftToken, retry.clientToken)
+      assertTrue(runCatching {
+        sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags.reversed(), draftToken)
+      }.isFailure)
+      first
     } finally { resumed.destroy() }
     assertNotNull(sender.kit.localSendStatus(sender.key, group, draftToken))
     val consumed = sender.kit.selectedMessageDraft(sender.key, group)
