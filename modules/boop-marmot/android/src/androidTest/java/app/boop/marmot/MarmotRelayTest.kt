@@ -490,11 +490,24 @@ class MarmotRelayTest {
   }
 
   private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
+    val seed = "unread prefetch fixture"
+    sender.kit.sendTextWithClientToken(sender.key, group, seed, "unread-prefetch-fixture")
+    recipient.receives(group, sender.key, seed)
+    await("projected unread marker before speculative open") {
+      recipient.kit.chatListRow(recipient.key, group)?.firstUnreadMessageIdHex != null
+    }
+    val before = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+    assertNotNull(before.firstUnreadMessageIdHex)
     val handle = recipient.kit.openConversationWindow(recipient.key, group, ConversationOpenModeFfi.LATEST, null, 3u, 15_000u)
     val window = ConversationWindow(handle)
     try {
       val initial = checkNotNull(window.initial())
       assertEquals(sender.key, initial["peer"])
+      assertEquals(true, initial["atTail"])
+      assertEquals(before.firstUnreadMessageIdHex, initial["firstUnread"])
+      val afterOpen = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+      assertEquals(before.lastReadMessageIdHex, afterOpen.lastReadMessageIdHex)
+      assertEquals(before.unreadCount, afterOpen.unreadCount)
       val initialRows = initial["messages"] as List<*>
       assertEquals(3, initialRows.size)
       val body = "new message for the bounded window"
@@ -507,6 +520,10 @@ class MarmotRelayTest {
         projected
       }
       assertEquals(3, (next["messages"] as List<*>).size)
+      assertNotNull(next["firstUnread"])
+      val afterArrival = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+      assertEquals(before.lastReadMessageIdHex, afterArrival.lastReadMessageIdHex)
+      assertEquals(before.unreadCount + 1uL, afterArrival.unreadCount)
       val delta = checkNotNull(windowDelta(initial, next))
       assertEquals(listOf(body), (delta["changed"] as List<*>).filterIsInstance<Map<*, *>>().map { it["text"] })
       assertEquals(3, (delta["order"] as List<*>).size)

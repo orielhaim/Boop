@@ -15,10 +15,17 @@ export const windowDelta = z.object({
 });
 export type WindowDelta = z.output<typeof windowDelta>;
 export function mergeRows<T extends { id: string }>(
-  current: readonly T[],
+  current: T[],
   delta: WindowDelta,
   row: z.ZodType<T>,
 ): T[] {
+  if (
+    delta.changed.length === 0 &&
+    delta.order.length === current.length &&
+    delta.order.every((id, index) => id === current[index]?.id) &&
+    new Set(delta.order).size === current.length
+  )
+    return current;
   const entries = new Map(current.map((item) => [item.id, item]));
   for (const item of delta.changed) {
     const parsed = row.parse(item);

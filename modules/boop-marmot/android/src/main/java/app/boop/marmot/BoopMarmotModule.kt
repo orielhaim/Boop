@@ -1,6 +1,7 @@
 package app.boop.marmot
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
@@ -415,13 +416,39 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    AsyncFunction("openConversation") Coroutine { id: String, group: String, target: String? ->
-      lifecycle.withLock {
-        protocol {
-          val active = requireSession()
-          val mode = if (target == null) ConversationOpenModeFfi.AUTOMATIC else ConversationOpenModeFfi.MESSAGE
-          val handle = active.kit.openConversationWindow(active.account, group, mode, target, 40u, 0u)
-          install(id, ConversationWindow(handle))
+    AsyncFunction("openConversation") Coroutine { id: String, group: String, target: String?, speculative: Boolean ->
+      withSession { active ->
+        val started = SystemClock.elapsedRealtime()
+        val mode = when {
+          target != null -> ConversationOpenModeFfi.MESSAGE
+          speculative -> ConversationOpenModeFfi.LATEST
+          else -> ConversationOpenModeFfi.AUTOMATIC
+        }
+        val rows = if (speculative) 56u else if (target != null) 40u else 100u
+        val timeoutMs = if (speculative) 1_500u else 0u
+        val handle = active.kit.openConversationWindow(
+          active.account, group, mode, target, rows, timeoutMs,
+        )
+        try {
+          val snapshot = lifecycle.withLock {
+            if (session !== active || active.closing) {
+              val window = ConversationWindow(handle)
+              window.stop()
+              throw problem("AccountClosed")
+            }
+            install(id, ConversationWindow(handle))
+          }
+          if (isDebuggable()) Log.i(
+            "BoopMarmot",
+            "conversation_open elapsedMs=${SystemClock.elapsedRealtime() - started} speculative=$speculative rows=$rows ok=true",
+          )
+          snapshot
+        } catch (error: Throwable) {
+          if (isDebuggable()) Log.i(
+            "BoopMarmot",
+            "conversation_open elapsedMs=${SystemClock.elapsedRealtime() - started} speculative=$speculative rows=$rows ok=false",
+          )
+          throw error
         }
       }
     }
@@ -1211,6 +1238,9 @@ class BoopMarmotModule : Module() {
   }
 
   private fun requireSession() = session ?: throw problem("AccountClosed")
+  private fun isDebuggable() =
+    ((appContext.reactContext?.applicationInfo?.flags ?: 0) and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
   private suspend fun <T> withSession(work: suspend (Session) -> T): T = protocol {
     val active = lifecycle.withLock {
       requireSession().also { it.activeCalls += 1 }

@@ -85,30 +85,66 @@ export function mentionLabel(
   return name ? `@${name}` : `nostr:${entity}`;
 }
 
+type QuotePart =
+  | { kind: "text"; text: string }
+  | { kind: "mention"; entity: string }
+  | { kind: "timestamp"; node: Extract<ContentNode, { kind: "timestamp" }> };
+
+const quotePlans = new WeakMap<Content, QuotePart[] | null>();
+
+function compileQuote(content: Content): QuotePart[] | null {
+  const cached = quotePlans.get(content);
+  if (cached !== undefined) return cached;
+  if (content.truncated || !content.blocks.length) {
+    quotePlans.set(content, null);
+    return null;
+  }
+
+  function joined(groups: QuotePart[][], separator: string): QuotePart[] {
+    return groups.flatMap((group, index) =>
+      index ? [{ kind: "text" as const, text: separator }, ...group] : group,
+    );
+  }
+
+  function read(node: ContentNode): QuotePart[] {
+    if (node.kind === "nostr") return [{ kind: "mention", entity: node.text }];
+    if (node.kind === "break") return [{ kind: "text", text: " " }];
+    if (node.kind === "timestamp") return [{ kind: "timestamp", node }];
+    if (node.kind === "listItem")
+      return [
+        { kind: "text", text: `${node.text} ` },
+        ...joined(node.children.map(read), " "),
+      ];
+    if ("children" in node)
+      return joined(
+        node.children.map(read),
+        ["list", "quote", "table", "tableRow", "details"].includes(node.kind)
+          ? " "
+          : "",
+      );
+    return [{ kind: "text", text: node.text }];
+  }
+
+  const plan = joined(content.blocks.map(read), " ");
+  quotePlans.set(content, plan);
+  return plan;
+}
+
 export function quoteText(
   content: Content,
   fallback: string,
   names: ReadonlyMap<string, string>,
 ) {
-  function read(node: ContentNode): string {
-    if (node.kind === "nostr") return mentionLabel(node.text, names);
-    if (node.kind === "break") return " ";
-    if (node.kind === "timestamp") return formatTimestamp(node);
-    if (node.kind === "listItem")
-      return `${node.text} ${node.children.map(read).join(" ")}`;
-    if ("children" in node)
-      return node.children
-        .map(read)
-        .join(
-          ["list", "quote", "table", "tableRow", "details"].includes(node.kind)
-            ? " "
-            : "",
-        );
-    return node.text;
-  }
-  return content.truncated || !content.blocks.length
-    ? fallback
-    : content.blocks.map(read).join(" ").trim();
+  const plan = compileQuote(content);
+  if (!plan) return fallback;
+  return plan
+    .map((part) => {
+      if (part.kind === "mention") return mentionLabel(part.entity, names);
+      if (part.kind === "timestamp") return formatTimestamp(part.node);
+      return part.text;
+    })
+    .join("")
+    .trim();
 }
 
 export function formatTimestamp(

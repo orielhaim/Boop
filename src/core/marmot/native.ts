@@ -57,6 +57,7 @@ const chatRow = z.object({
   muted: z.boolean(),
   archived: z.boolean(),
   unread: z.number().nonnegative(),
+  mentioned: z.boolean(),
   manualUnread: z.boolean(),
   updatedAt: z.number().nonnegative(),
   previewSelection: z.enum(["draft", "message", "invitation", "empty"]),
@@ -197,6 +198,7 @@ const conversationMetadata = windowRevision.extend({
   authorityReady: z.boolean(),
   canSend: z.boolean(),
   firstUnread: z.string().nullish(),
+  atTail: z.boolean(),
   draft: z
     .object({
       text: z.string(),
@@ -581,6 +583,7 @@ type Bridge = {
     id: string,
     group: string,
     target: string | null,
+    speculative: boolean,
   ): Promise<unknown>;
   observeWindow(id: string): Promise<void>;
   closeWindow(id: string): Promise<void>;
@@ -1026,7 +1029,10 @@ async function openWindow<S extends Revision, Direction extends string>(
   open: (bridge: Bridge, id: string) => Promise<unknown>,
   schema: z.ZodType<S>,
   applyRows?: (current: S, delta: WindowDelta) => S,
+  profileConversationOpen = false,
+  signal?: AbortSignal,
 ): Promise<MarmotWindow<S, Direction>> {
+  if (signal?.aborted) throw new Error("WindowClosed");
   const bridge = native();
   const id = randomUUID();
   const listeners = new Set<() => void>();
@@ -1116,10 +1122,32 @@ async function openWindow<S extends Revision, Direction extends string>(
     const { generation, sequence } = state.snapshot;
     install(schema.parse(await run(id, generation, sequence)));
   }
+  const openStarted = profileConversationOpen ? performance.now() : 0;
   try {
-    state = { status: "ready", snapshot: schema.parse(await open(bridge, id)) };
+    const raw = await open(bridge, id);
+    if (signal?.aborted) throw new Error("WindowClosed");
+    const nativeCompleted = profileConversationOpen ? performance.now() : 0;
+    const decodeStarted = profileConversationOpen ? performance.now() : 0;
+    const snapshot = schema.parse(raw);
+    const decoded = profileConversationOpen ? performance.now() : 0;
+    state = { status: "ready", snapshot };
     await bridge.observeWindow(id);
+    if (signal?.aborted) throw new Error("WindowClosed");
+    if (profileConversationOpen && __DEV__)
+      console.info("[marmot window timing]", {
+        phase: "open",
+        nativeMs: Math.round(nativeCompleted - openStarted),
+        decodeMs: Math.round(decoded - decodeStarted),
+        observeMs: Math.round(performance.now() - decoded),
+        ok: true,
+      });
   } catch (error) {
+    if (profileConversationOpen && __DEV__)
+      console.info("[marmot window timing]", {
+        phase: "open",
+        elapsedMs: Math.round(performance.now() - openStarted),
+        ok: false,
+      });
     await close().catch(() => undefined);
     throw error;
   }
@@ -1219,18 +1247,52 @@ export const marmot = {
       (bridge, id) => bridge.openGroupCall(id, group),
       groupCallSnapshot,
     ),
-  openConversation: (group: string, target?: string) =>
-    openWindow<MarmotConversation, "older" | "newer">(
-      (bridge, id) => bridge.openConversation(id, group, target ?? null),
+  openConversation: (
+    group: string,
+    options: {
+      target?: string;
+      speculative?: boolean;
+      signal?: AbortSignal;
+    } = {},
+  ) =>
+    openWindow<MarmotConversation, "older" | "newer" | "latest">(
+      (bridge, id) =>
+        bridge.openConversation(
+          id,
+          group,
+          options.target ?? null,
+          options.speculative ?? false,
+        ),
       conversationSnapshot,
       (current, delta) => {
         if (delta.field !== "messages")
           throw new Error("InvalidWindowProjection");
+        const metadata = conversationMetadata.parse(delta.metadata);
+        const identities = current.identities;
+        if (
+          metadata.identities.length === identities.length &&
+          metadata.identities.every((value, index) => {
+            const prior = identities[index];
+            return (
+              prior &&
+              prior.id === value.id &&
+              prior.name === value.name &&
+              prior.avatarAsset?.target === value.avatarAsset?.target &&
+              prior.avatarAsset?.reference === value.avatarAsset?.reference &&
+              prior.avatarAsset?.revision === value.avatarAsset?.revision &&
+              prior.avatarAsset?.availability ===
+                value.avatarAsset?.availability
+            );
+          })
+        )
+          metadata.identities = identities;
         return {
-          ...conversationMetadata.parse(delta.metadata),
+          ...metadata,
           messages: mergeRows(current.messages, delta, message),
         };
       },
+      true,
+      options.signal,
     ),
   startDirect: (peer: string) => native().startDirect(peer),
   prewarmInvitees: (members: string[]) => native().prewarmInvitees(members),

@@ -342,7 +342,7 @@ export const en = {
       pendingCommit: "A previous group change is awaiting relay confirmation.",
       blocked: "This account is blocked.",
       accountError: "Messaging is unavailable on this device.",
-      syncingChat: "Syncing chat…",
+      openingChat: "Opening chat…",
       operationError: "Could not complete the messaging action.",
       members: "Members",
       admin: "Admin",

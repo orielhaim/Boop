@@ -334,7 +334,7 @@ export const he = {
       pendingCommit: "השינוי הקודם בקבוצה ממתין לאישור מהממסר.",
       blocked: "חשבון זה חסום.",
       accountError: "שירות ההודעות אינו זמין במכשיר זה.",
-      syncingChat: "הצ׳אט מסתנכרן…",
+      openingChat: "השיחה נפתחת…",
       operationError: "לא ניתן להשלים את הפעולה בשיחה.",
       members: "חברי הקבוצה",
       admin: "מנהל",

@@ -8,6 +8,42 @@ const unsubscribe = () => {};
 const subscribeEmpty = () => unsubscribe;
 const empty = () => null;
 
+export function useConversationWindow(
+  group: string,
+  target: string | undefined,
+  active: boolean,
+) {
+  const { conversations, marmotSession } = useLocal();
+  const ready = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.ready,
+  );
+  const revision = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.revision,
+  );
+  const view = useSyncExternalStore(conversations.subscribe, () =>
+    conversations.get(group, target),
+  );
+  const status = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.status,
+  );
+  useEffect(() => {
+    if (active && ready) return conversations.acquire(group, target);
+  }, [active, conversations, group, ready, revision, target]);
+
+  return {
+    snapshot: view?.snapshot,
+    window: view?.window,
+    error: view?.error ?? (status === "failed" ? "AccountClosed" : undefined),
+    retry() {
+      if (status === "failed") void marmotSession.retry();
+      else conversations.retry(group, target);
+    },
+  };
+}
+
 export function useMarmotWindow<Snapshot, Direction>(
   open: () => Promise<MarmotWindow<Snapshot, Direction>>,
   enabled = true,

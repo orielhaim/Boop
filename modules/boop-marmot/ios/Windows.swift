@@ -96,6 +96,9 @@ enum NativeWindow: Sendable {
       guard direction == "forward" || direction == "backward" else { throw problem("InvalidDirection") }
       return project(try await handle.page(sequence: revision.sequence, direction: direction == "forward" ? .forward : .backward, count: 40))
     case .conversation(let handle):
+      if direction == "latest" {
+        return project(try await handle.returnToLatest(revision: revision, timeoutMs: 0))
+      }
       guard direction == "older" || direction == "newer" else { throw problem("InvalidDirection") }
       return project(try await handle.page(revision: revision, direction: direction == "older" ? .older : .newer, count: 40, timeoutMs: 0))
     case .attention, .groupState, .groupCall: throw problem("InvalidWindow")
@@ -300,6 +303,7 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
         "muted": chat.muted,
         "archived": chat.archived,
         "unread": Double(chat.unreadCount),
+        "mentioned": chat.unreadMentionCount > 0,
         "manualUnread": chat.manuallyMarkedUnread,
         "updatedAt": Double(chat.activitySortAt),
         "previewSelection": selection,
@@ -346,6 +350,7 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "authorityReady": snapshot.header.epoch != nil,
     "canSend": snapshot.header.capabilities.canSend,
     "firstUnread": bridgeValue(snapshot.readState.firstUnreadMessageIdHex),
+    "atTail": snapshot.anchor.kind == .latest || snapshot.anchor.kind == .empty,
     "draft": bridgeValue(snapshot.draft.draft.map { draft in
       ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
         "attachments": draft.mediaAttachments.map { item -> Document in
@@ -375,7 +380,8 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         "replyPreview": bridgeValue(row.replyPreview.map { preview -> Document in
           ["id": preview.messageIdHex, "sender": preview.sender, "text": preview.plaintext,
            "deleted": preview.deleted, "deletionSource": wireName(preview.deletionSource),
-           "invalidationStatus": bridgeValue(preview.invalidationStatus), "content": messageContent(preview.contentTokens), "mentions": message.references.replyMentions]
+           "invalidationStatus": bridgeValue(preview.invalidationStatus), "content": messageContent(preview.contentTokens),
+           "expiresAt": bridgeValue(preview.retentionExpiresAt.map(Double.init)), "mentions": message.references.replyMentions]
         }),
         "mentions": message.references.mentions,
         "retentionSeconds": bridgeValue(row.retentionSeconds.map(String.init)),

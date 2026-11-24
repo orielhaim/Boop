@@ -98,7 +98,9 @@ export function createAudioSources({
           const [group, message, event, index] = source.target;
           if (!ready()) throw new Error("AudioUnavailable");
           check();
-          const window = await marmot.openConversation(group, message);
+          const window = await marmot.openConversation(group, {
+            target: message,
+          });
           closeWindow = async () => {
             stopWatchingWindow?.();
             await window.close();

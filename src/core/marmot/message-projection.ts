@@ -87,6 +87,7 @@ export const message = z.object({
       text: z.string(),
       content: messageContent,
       mentions: z.array(z.string()),
+      expiresAt: z.number().nonnegative().nullish(),
       ...availability,
     })
     .nullish(),

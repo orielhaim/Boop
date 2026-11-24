@@ -76,6 +76,7 @@ import {
 } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
+import { createConversationCache } from "@/core/marmot/conversations";
 import {
   callHandoffPreference,
   callInboxDisabledPreference,
@@ -298,6 +299,15 @@ async function start() {
       blocks.ready() &&
       chatPreferences.enabled() &&
       marmotSession.status() === "ready";
+    const canReadConversations = () =>
+      isCurrent() && !lock.getState().locked && messagingAvailable();
+    const conversations = createConversationCache({
+      open: marmot.openConversation,
+      canOpen: canReadConversations,
+    });
+    function updateConversations() {
+      conversations.setAvailable(canReadConversations());
+    }
     privacy.subscribe(avatars.invalidate);
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
@@ -695,6 +705,7 @@ async function start() {
         if (state === "active") calling.setForeground(true);
         else if (state === "background" && !lock.getState().authenticating)
           background();
+        conversations.setForeground(state === "active");
         syncPrivacyAndRouting();
         updateBackupConditions();
       };
@@ -751,6 +762,8 @@ async function start() {
       const stop = () => {
         if (!mounted) return;
         mounted = false;
+        conversations.setAvailable(false);
+        conversations.setForeground(false);
         stopObserving = undefined;
         clearTimeout(checkAfterPrompt);
         for (const dispose of disposers.reverse()) dispose();
@@ -787,6 +800,12 @@ async function start() {
         ownSubscription(addLowPowerModeListener(speech.power));
         ownSubscription(
           AppState.addEventListener("memoryWarning", speech.memoryWarning),
+        );
+        ownSubscription(
+          AppState.addEventListener(
+            "memoryWarning",
+            conversations.reclaimMemory,
+          ),
         );
         own(
           attachGroupCallLifecycle({
@@ -831,6 +850,7 @@ async function start() {
         );
         own(
           lock.subscribe(() => {
+            updateConversations();
             syncPrivacyAndRouting();
             if (
               lock.getState().authenticating ||
@@ -848,12 +868,25 @@ async function start() {
           }),
         );
         ownSubscription(AppState.addEventListener("change", update));
+        function updateConversationPrefetch() {
+          const call = calling.store.getState().call;
+          conversations.setCallActive(Boolean(call && call.phase !== "ended"));
+        }
+        own(calling.store.subscribe(updateConversationPrefetch));
+        updateConversationPrefetch();
+        own(
+          blocks.subscribe(() => {
+            conversations.clearIdle();
+            updateConversations();
+          }),
+        );
         let chatsEnabled = chatPreferences.enabled();
         own(
           chatPreferences.subscribe(() => {
             const next = chatPreferences.enabled();
             if (next === chatsEnabled) return;
             chatsEnabled = next;
+            updateConversations();
             speech.sync();
             if (next) connectMessaging();
             else void marmotSession.stop(true).catch(() => undefined);
@@ -869,6 +902,7 @@ async function start() {
         );
         own(
           marmotSession.subscribe(() => {
+            updateConversations();
             observeBlocks();
             observeRelayLiveness();
             speech.accountReady();
@@ -885,6 +919,7 @@ async function start() {
           }),
         );
         update(AppState.currentState);
+        updateConversations();
         ownSubscription(
           addNetworkStateListener((state) => {
             networkRevision += 1;
@@ -957,6 +992,7 @@ async function start() {
       privacy,
       chatPreferences,
       marmotSession,
+      conversations,
       marmotViewport,
       relays,
       accountRelays,

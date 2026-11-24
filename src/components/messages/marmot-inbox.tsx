@@ -8,7 +8,7 @@ import {
   type ChatListCellProps,
   type ChatListItem,
 } from "@kesha-antonov/react-native-chat";
-import { router } from "expo-router";
+import { router, useIsFocused } from "expo-router";
 import {
   useCallback,
   useDeferredValue,
@@ -106,9 +106,17 @@ export function MarmotInbox({
   invitations?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity, privacy, chatPreferences, db } = useLocal();
+  const { identity, privacy, chatPreferences, conversations, db } = useLocal();
+  const focused = useIsFocused();
   const fabVisibility = useTabFabVisibility();
-  useSyncExternalStore(privacy.subscribe, privacy.revision);
+  const privacyRevision = useSyncExternalStore(
+    privacy.subscribe,
+    privacy.revision,
+  );
+  const cacheRevision = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.revision,
+  );
   const kit = useChatAppearance();
   const onScroll = useMinimizeOnScroll();
   const [archived, setArchived] = useState(false);
@@ -256,16 +264,45 @@ export function MarmotInbox({
     }: {
       viewableItems: { item: ChatRow; isViewable: boolean }[];
     }) => {
-      setVisibleRows(
-        new Set(
-          viewableItems
-            .filter(({ isViewable }) => isViewable)
-            .map(({ item }) => item.id),
-        ),
+      const next = new Set(
+        viewableItems
+          .filter(({ isViewable }) => isViewable)
+          .map(({ item }) => item.id),
+      );
+      setVisibleRows((previous) =>
+        next.size === previous.size && [...next].every((id) => previous.has(id))
+          ? previous
+          : next,
       );
     },
     [],
   );
+  const canPrepare = focused && !invitations;
+  useEffect(() => {
+    if (!canPrepare) return;
+    conversations.setBrowsing(true);
+    return () => conversations.setBrowsing(false);
+  }, [canPrepare, conversations]);
+  useEffect(() => {
+    if (!canPrepare || !snapshot) return;
+    conversations.candidates(
+      snapshot.rows.filter(
+        (row) =>
+          !row.invited &&
+          row.membership === "member" &&
+          (!row.peer || !privacy.isBlocked(row.peer)),
+      ),
+      visibleRows,
+    );
+  }, [
+    cacheRevision,
+    canPrepare,
+    conversations,
+    privacy,
+    privacyRevision,
+    snapshot,
+    visibleRows,
+  ]);
 
   return (
     <Screen
@@ -332,7 +369,10 @@ export function MarmotInbox({
         }
         isArchiveOpen={archived}
         onArchiveOpenChange={setArchived}
-        onPressChat={(row) => router.push(conversationRoute(row.id))}
+        onPressChat={(row) => {
+          conversations.noteNavigation(row.id);
+          router.push(conversationRoute(row.id));
+        }}
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")
         }

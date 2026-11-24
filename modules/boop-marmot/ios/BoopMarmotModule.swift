@@ -277,8 +277,8 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("openGroupCall") { (id: String, group: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openGroupCall(id: id, group: group) }
     }
-    AsyncFunction("openConversation") { (id: String, group: String, target: String?) async throws -> Document in
-      try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target) }
+    AsyncFunction("openConversation") { (id: String, group: String, target: String?, speculative: Bool) async throws -> Document in
+      try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target, speculative: speculative) }
     }
     AsyncFunction("observeWindow") { (id: String) async throws in
       try await self.runtime.observe(id: id) { [weak self] event, value in
@@ -1556,10 +1556,34 @@ private actor Runtime {
     return try await install(.groupCall(window), id: id, account: account)
   }
 
-  func openConversation(id: String, group: String, target: String?) async throws -> Document {
-    let account = try account()
-    let handle = try await account.kit.openConversationWindow(accountRef: account.key, groupIdHex: group, mode: target == nil ? .automatic : .message, messageIdHex: target, initialRows: 40, timeoutMs: 0)
-    return try await install(.conversation(handle), id: id, account: account)
+  func openConversation(id: String, group: String, target: String?, speculative: Bool) async throws -> Document {
+    let account = try beginAccountCall()
+    let started = ProcessInfo.processInfo.systemUptime
+    let rows: UInt32 = speculative ? 56 : target == nil ? 100 : 40
+    do {
+      let handle = try await account.kit.openConversationWindow(
+        accountRef: account.key,
+        groupIdHex: group,
+        mode: target != nil ? .message : speculative ? .latest : .automatic,
+        messageIdHex: target,
+        initialRows: rows,
+        timeoutMs: speculative ? 1_500 : 0
+      )
+      let snapshot = try await install(.conversation(handle), id: id, account: account)
+      #if DEBUG
+      NSLog("[BoopMarmot] conversation_open elapsedMs=%d speculative=%@ rows=%u ok=true",
+            Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), String(speculative), rows)
+      #endif
+      endCall()
+      return snapshot
+    } catch {
+      #if DEBUG
+      NSLog("[BoopMarmot] conversation_open elapsedMs=%d speculative=%@ rows=%u ok=false",
+            Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), String(speculative), rows)
+      #endif
+      endCall()
+      throw error
+    }
   }
 
   private func install(_ window: NativeWindow, id: String, account: Account) async throws -> Document {

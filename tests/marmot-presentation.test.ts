@@ -158,6 +158,7 @@ test("a delta parses only replaced rows and refuses missing or duplicate IDs", (
   const next = mergeRows([row], delta, message);
   expect(next[0]).toBe(row);
   expect(next[1]?.token).toBeNull();
+  expect(mergeRows(next, { ...delta, changed: [] }, message)).toBe(next);
   expect(() =>
     mergeRows([row], { ...delta, order: ["missing"] }, message),
   ).toThrow("InvalidWindowProjection");

@@ -15,6 +15,7 @@
         "@noble/curves": "2.4.0",
         "@noble/hashes": "2.4.0",
         "@nostr-dev-kit/ndk": "^3.0.3",
+        "@tanstack/pacer": "0.23.1",
         "@trystero-p2p/core": "0.27.0",
         "blossom-client-sdk": "5.2.1",
         "dayjs": "^1.11.23",
@@ -61,6 +62,7 @@
         "htmlparser2": "^12.0.0",
         "i18next": "^27.2.7",
         "immer": "^11.2.10",
+        "lru-cache": "11.5.3",
         "nostr-tools": "^2.26.1",
         "react": "19.3.0",
         "react-i18next": "^18.0.3",
@@ -77,11 +79,11 @@
         "react-native-safe-area-context": "^5.11.1",
         "react-native-screen-transitions": "4.2.0",
         "react-native-screens": "~4.30.1",
-        "react-native-skia": "^3.11.1",
+        "react-native-skia": "^3.12.0",
         "react-native-sortables": "1.10.1",
         "react-native-svg": "15.16.0",
         "react-native-vision-camera": "^5.2.4",
-        "react-native-webgpu": "^0.23.0",
+        "react-native-webgpu": "^0.24.0",
         "react-native-webrtc": "^155.0.1",
         "react-native-worklets": "0.13.0",
         "tlock-js": "./vendor/tlock-js-1.0.0-pr52-b311ee2.tgz",
@@ -582,6 +584,12 @@
     "@shikijs/vscode-textmate": ["@shikijs/vscode-textmate@10.1.0", "", {}, "sha512-cVBuhDQjBZaNMTwBquYfPydrUP+E3hE6oYGasx8h6ZrODIM7/r+gxLDXdd66oszbrggZHEntdE6j+5gYIVyMWQ=="],
 
     "@sinclair/typebox": ["@sinclair/typebox@0.27.12", "", {}, "sha512-hhyNJ+nbR6ZR7pToHvllEFun9TL0sbL+tk/ON75lo+Xas054uez98qRbsuNt7MBCyZKK4+8Yli/OAGZhmfBZ/g=="],
+
+    "@tanstack/devtools-event-client": ["@tanstack/devtools-event-client@0.5.1", "", {}, "sha512-MiBx6Ybr65MFatCnk8IJzhGxd4hvsvEap4aT0gXOC274rV4hm0UPNHxznB5KGYtu84aXrIAsJEBElqzdPe+eeg=="],
+
+    "@tanstack/pacer": ["@tanstack/pacer@0.23.1", "", { "dependencies": { "@tanstack/devtools-event-client": "^0.5.0", "@tanstack/store": "^0.11.2" } }, "sha512-ROZj19aPPGYebeRPhFZNRlqNaR2e4vkcLbgiXfbi5uJu8WiW/etsYmkcAcoSQRGOwGZbbioWRX7xssewDRVRhw=="],
+
+    "@tanstack/store": ["@tanstack/store@0.11.3", "", {}, "sha512-/Mt3h2Qe67HmRMc5SJ+8jM2Fp7O4fBbwOlS0ujUvx34KgAvkvdLSHrJatv0PJG5fbvlDsACTawMMY4ptCpVI8w=="],
 
     "@trystero-p2p/core": ["@trystero-p2p/core@0.27.0", "", {}, "sha512-8e85VEYLMOUSwBZDr9D+StbMrRYQRWn1egWvgdqHG1OwO//eZEwG9CvslY60D+Yqnq8XhkDobuIdXdBjNu/gnA=="],
 
@@ -1363,7 +1371,7 @@
 
     "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" }, "bin": { "loose-envify": "cli.js" } }, "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q=="],
 
-    "lru-cache": ["lru-cache@5.1.1", "", { "dependencies": { "yallist": "^3.0.2" } }, "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w=="],
+    "lru-cache": ["lru-cache@11.5.3", "", {}, "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg=="],
 
     "makeerror": ["makeerror@1.0.12", "", { "dependencies": { "tmpl": "1.0.5" } }, "sha512-JmqCvUhmt43madlpFzG4BQzG2Z3m6tvQDNKdClZnO3VbIudJYmxsT0FNJMeiB2+JTSlTQTSbU8QdesVmwJcmLg=="],
 
@@ -1605,13 +1613,7 @@
 
     "react-native-screens": ["react-native-screens@4.30.1", "", { "dependencies": { "react-freeze": "^1.0.0", "warn-once": "^0.1.0" }, "peerDependencies": { "react": "*", "react-native": "*" } }, "sha512-wLzZSQpvMx3FxIlDnb6raDJjsv2x45tFLGFz8RFUvxHzsKU9dWOkZYv9fy2siWtFf3eWGcRh66hL+o+dHhRJLQ=="],
 
-    "react-native-skia": ["react-native-skia@3.11.1", "", { "dependencies": { "canvaskit-wasm": "0.41.1", "react-native-skia-graphite-apple-ios": "158.0.0", "react-native-skia-graphite-apple-macos": "158.0.0", "react-native-skia-graphite-apple-tvos": "158.0.0", "react-native-webgpu-dawn": "158.0.0", "react-reconciler": "0.33.0" }, "peerDependencies": { "react": ">=19.0", "react-native": ">=0.79", "react-native-reanimated": ">=4.0.0", "react-native-worklets": ">=0.7.0" }, "optionalPeers": ["react-native", "react-native-reanimated", "react-native-worklets"], "bin": { "setup-skia-web": "scripts/setup-canvaskit.js" } }, "sha512-O+vKM2lX35BvCYJqsz2iBpbRLnSsHoS48oifzmljCqNKSozP0Mf8M30cjoibr0O4Rx/JQY0HTKhELFxwIQ7Ylg=="],
-
-    "react-native-skia-graphite-apple-ios": ["react-native-skia-graphite-apple-ios@158.0.0", "", {}, "sha512-JvT/yWttlEBu9SomCMHO7olKfWaWlPlpWIdDHqp1h+Z1aMaFvNJSd7SDI4ItgIPYXM7KxcF3cJwBnCgMWYgY6Q=="],
-
-    "react-native-skia-graphite-apple-macos": ["react-native-skia-graphite-apple-macos@158.0.0", "", {}, "sha512-q+9lsV+8TvYZQP41lO1uihpMG938+flJir0HY5a/rw02hsW/dA6mxNcv8Z6fFrpFP3kscJVbI2CTKcH6K/LDAA=="],
-
-    "react-native-skia-graphite-apple-tvos": ["react-native-skia-graphite-apple-tvos@158.0.0", "", {}, "sha512-XPCi7c/xsc10WKog/IITSeIpwvd9cYiqm7qEEFd7uTkZSHOeoD20d+bPZgLI9QYWC7bOyEdfbDTjJcmhJWggBg=="],
+    "react-native-skia": ["react-native-skia@3.12.0", "", { "dependencies": { "canvaskit-wasm": "0.41.1", "react-reconciler": "0.33.0" }, "peerDependencies": { "react": ">=19.0", "react-native": ">=0.79", "react-native-reanimated": ">=4.0.0", "react-native-worklets": ">=0.7.0" }, "optionalPeers": ["react-native", "react-native-reanimated", "react-native-worklets"], "bin": { "setup-skia-web": "scripts/setup-canvaskit.js" } }, "sha512-YiovcpDoXEh2E5G+/7U/1hU6wbDh5o7SCYMU5GfbOd7Uc+LQq+4skRkx9Fx2m4U8JqW82vP/oWemCFg9Oo8fjA=="],
 
     "react-native-sortables": ["react-native-sortables@1.10.1", "", { "optionalDependencies": { "react-native-haptic-feedback": ">=2.0.0" }, "peerDependencies": { "react": "*", "react-native": "*", "react-native-gesture-handler": ">=2.0.0", "react-native-reanimated": ">=3.0.0" } }, "sha512-3M+OnzE2zgN2meECvd5cGQrm5oFQSQ34HPm3DSLAo8Xaif9+Zvtv5V4uX8u/HmBtI+v1gEuw7rjuYWqvUhZB9Q=="],
 
@@ -1619,9 +1621,7 @@
 
     "react-native-vision-camera": ["react-native-vision-camera@5.2.4", "", { "peerDependencies": { "react": "*", "react-native": "*", "react-native-nitro-image": "*", "react-native-nitro-modules": "*" }, "optionalPeers": ["react-native-nitro-modules"] }, "sha512-bYRSYkV61CgdvcB4MdBR2pCTzqWgYaKLbXAtvg0lDQtD7dUumiXhKw76q80cxlJb0Obimdj+HD1Fci9fCVvxbQ=="],
 
-    "react-native-webgpu": ["react-native-webgpu@0.23.0", "", { "dependencies": { "react-native-webgpu-dawn": "158.0.0" }, "peerDependencies": { "react": "*", "react-native": ">=0.81.0", "react-native-reanimated": ">=4.2.1", "react-native-worklets": ">=0.7.2" }, "optionalPeers": ["react-native-reanimated", "react-native-worklets"] }, "sha512-aExd3r7tedZ5Nqldq2Mj6Y83f++1cD80zmkTOafSnW57WrJM+YHImrO7rU189nx8Uh76a3PEGkDBX08T0SMEAg=="],
-
-    "react-native-webgpu-dawn": ["react-native-webgpu-dawn@158.0.0", "", {}, "sha512-YCobosg4b012wt8GTUN/7xh7ldgnpluKg00hbdIHTfb2HU6GBUB0ZkKjex9uklrYOYKH5Z0WTwG7M5A6bI1b+A=="],
+    "react-native-webgpu": ["react-native-webgpu@0.24.0", "", { "peerDependencies": { "react": "*", "react-native": ">=0.81.0", "react-native-reanimated": ">=4.2.1", "react-native-worklets": ">=0.7.2" }, "optionalPeers": ["react-native-reanimated", "react-native-worklets"] }, "sha512-h6FMwPfLnreDSfAgS4XyQytGHgTzcR2M1x9NI/lvvF3BCZCs/WLzdBKxq65Zvi4Hr0kIah/+1V+4d1j4sLo2XA=="],
 
     "react-native-webrtc": ["react-native-webrtc@155.0.1", "", { "dependencies": { "base64-js": "1.5.1", "debug": "4.3.4" }, "peerDependencies": { "react-native": ">=0.60.0" } }, "sha512-xQ71L3l1yE9o7H0VWupktdib08OXt5hnGspQYTSW1S3sYqXQHkYx8ZY9HNjw8o1FfBZuoFJ/ypGTUzky6YHnsQ=="],
 
@@ -1948,6 +1948,8 @@
     "zxing-wasm": ["zxing-wasm@3.1.7", "", { "dependencies": { "@types/emscripten": "^1.41.6", "type-fest": "^5.10.0" } }, "sha512-LI94ndlOY+xoqlkNcc0EwByrMpUXKrCX171EQ38kGWqpiRq/gcnC+ZrbRipvxI3uV4LaDtNlKo1p9Uayg1sesQ=="],
 
     "@babel/core/semver": ["semver@6.3.2", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-GYrCADwpu6yV5OAvchkQ27Z5wwMxWAEMg5NNWjyHh/5DboFFqbdbvYNIvZouQpxXyeMPoTOh0vdPYKlf0ZswdQ=="],
+
+    "@babel/helper-compilation-targets/lru-cache": ["lru-cache@5.1.1", "", { "dependencies": { "yallist": "^3.0.2" } }, "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w=="],
 
     "@babel/helper-compilation-targets/semver": ["semver@6.3.2", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-GYrCADwpu6yV5OAvchkQ27Z5wwMxWAEMg5NNWjyHh/5DboFFqbdbvYNIvZouQpxXyeMPoTOh0vdPYKlf0ZswdQ=="],
 

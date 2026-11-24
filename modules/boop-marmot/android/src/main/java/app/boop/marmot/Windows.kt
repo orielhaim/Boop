@@ -202,8 +202,13 @@ internal class GroupCallWindow(
 internal class ConversationWindow(private val handle: ConversationWindowSubscription) : NativeWindow() {
   override fun initial() = handle.snapshot()?.let(::project)
   override suspend fun next() = handle.next()?.let(::project)
-  override suspend fun page(generation: String, sequence: ULong, direction: String) =
-    project(handle.page(ConversationWindowRevisionFfi(generation, sequence), ConversationPageDirectionFfi.valueOf(direction.uppercase()), 40u, 0u))
+  override suspend fun page(generation: String, sequence: ULong, direction: String): Document {
+    val revision = ConversationWindowRevisionFfi(generation, sequence)
+    return project(
+      if (direction == "latest") handle.returnToLatest(revision, 0u)
+      else handle.page(revision, ConversationPageDirectionFfi.valueOf(direction.uppercase()), 40u, 0u)
+    )
+  }
   override suspend fun anchor(generation: String, sequence: ULong, target: String) =
     project(handle.setVisibleAnchor(ConversationWindowRevisionFfi(generation, sequence), target, 0u))
   suspend fun jump(generation: String, sequence: ULong, target: String) =
@@ -244,6 +249,7 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
       "muted" to chat.muted,
       "archived" to chat.archived,
       "unread" to chat.unreadCount.toDouble(),
+      "mentioned" to (chat.unreadMentionCount > 0uL),
       "manualUnread" to chat.manuallyMarkedUnread,
       "updatedAt" to chat.activitySortAt.toDouble(),
       "previewSelection" to when (row.preview) {
@@ -280,6 +286,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "authorityReady" to (snapshot.header.epoch != null),
   "canSend" to snapshot.header.capabilities.canSend,
   "firstUnread" to snapshot.readState.firstUnreadMessageIdHex,
+  "atTail" to (snapshot.anchor.kind == ConversationAnchorKindFfi.LATEST || snapshot.anchor.kind == ConversationAnchorKindFfi.EMPTY),
   "draft" to snapshot.draft.draft?.let { draft ->
     mapOf("text" to draft.content, "replyTo" to draft.replyToMessageIdHex, "attachments" to draft.mediaAttachments.map { item ->
       mapOf("id" to item.id, "size" to item.plaintextSize.toDouble(),
@@ -308,7 +315,8 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       "replyPreview" to row.replyPreview?.let {
         mapOf("id" to it.messageIdHex, "sender" to it.sender, "text" to it.plaintext,
           "deleted" to it.deleted, "deletionSource" to it.deletionSource.name.lowercase(),
-          "invalidationStatus" to it.invalidationStatus, "content" to it.contentTokens.document(), "mentions" to message.references.replyMentions)
+          "invalidationStatus" to it.invalidationStatus, "content" to it.contentTokens.document(),
+          "expiresAt" to it.retentionExpiresAt?.toDouble(), "mentions" to message.references.replyMentions)
       },
       "mentions" to message.references.mentions,
       "retentionSeconds" to row.retentionSeconds?.toString(),
