@@ -44,12 +44,10 @@ export function createBlossomServerList(
       );
       if (timestamp > now + 60) return false;
       lastMediaList = timestamp;
-      const event = await transport.publishReplaceable(
-        serverListKind,
-        "",
+      const event = await transport.publishServerList(
         selected.map((origin) => ["server", origin]),
         timestamp,
-        relays.configuration().general,
+        relays.configuration().write,
         active,
       );
       return Boolean(event);

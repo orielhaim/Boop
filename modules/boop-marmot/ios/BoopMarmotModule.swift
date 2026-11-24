@@ -12,7 +12,7 @@ public final class BoopMarmotModule: Module {
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
   private let directoryLock = NSLock()
-  private var directorySearches: [String: Task<Void, Error>?] = [:]
+  private var observations: [String: Task<Void, Error>?] = [:]
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
   private var isForeground = true
   private var foregroundGeneration: UInt64 = 0
@@ -20,9 +20,9 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness")
     OnAppEntersBackground {
-      self.directoryLock.withLock { self.directorySearches.values.forEach { $0?.cancel() } }
+      self.directoryLock.withLock { self.observations.values.forEach { $0?.cancel() } }
       let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
         self.isForeground = false
         self.foregroundGeneration &+= 1
@@ -94,36 +94,28 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("cachedDirectorySearch") { (owner: String, query: String) async throws -> [Document] in
       try await self.withSigner(owner) { try $0.searchCachedUsers(accountIdHex: owner, query: query, limit: 48).map(searchResultDocument) }
     }
-    Function("prepareDirectorySearch") { (id: String) -> Bool in
+    Function("prepareObservation") { (id: String) -> Bool in
       self.directoryLock.withLock {
-        guard self.directorySearches.count < 8, self.directorySearches.index(forKey: id) == nil else { return false }
-        self.directorySearches[id] = .some(nil)
+        guard self.observations.count < 8, self.observations.index(forKey: id) == nil else { return false }
+        self.observations[id] = .some(nil)
         return true
       }
     }
     AsyncFunction("searchDirectory") { (owner: String, id: String, query: String) async throws in
-      let task = self.directoryLock.withLock { () -> Task<Void, Error>? in
-        guard case .some(.none) = self.directorySearches[id] else { return nil }
-        let task = Task<Void, Error> {
-          let search = try await self.withSigner(owner) {
-            try await $0.searchUsers(accountIdHex: owner, query: query, radiusStart: 0, radiusEnd: 2)
-          }
-          while let update = try await search.nextCancellable() {
-            try Task.checkCancellation()
-            if case .error = update.trigger { continue }
-            let rows = (update.newResults + update.updatedResults).prefix(48).map(searchResultDocument)
-            if !rows.isEmpty { self.sendEvent("directorySearchResults", ["id": id, "rows": rows]) }
-          }
+      try await self.withObservation(id) {
+        let search = try await self.withSigner(owner) {
+          try await $0.searchUsers(accountIdHex: owner, query: query, radiusStart: 0, radiusEnd: 2)
         }
-        self.directorySearches[id] = .some(task)
-        return task
+        while let update = try await search.nextCancellable() {
+          try Task.checkCancellation()
+          if case .error = update.trigger { continue }
+          let rows = (update.newResults + update.updatedResults).prefix(48).map(searchResultDocument)
+          if !rows.isEmpty { self.sendEvent("directorySearchResults", ["id": id, "rows": rows]) }
+        }
       }
-      guard let task else { throw problem("SearchInProgress") }
-      defer { _ = self.directoryLock.withLock { self.directorySearches.removeValue(forKey: id) } }
-      try await task.value
     }
-    Function("cancelDirectorySearch") { (id: String) in
-      self.directoryLock.withLock { self.directorySearches.removeValue(forKey: id).flatMap { $0 }?.cancel() }
+    Function("cancelObservation") { (id: String) in
+      self.directoryLock.withLock { self.observations.removeValue(forKey: id).flatMap { $0 }?.cancel() }
     }
     AsyncFunction("requestAvatarAssets") { (targets: [String]) async throws -> [Document] in
       try await self.withAccount { try await $0.requestAvatarAssets(accountRef: $1, targets: targets).map(avatarDocument) }
@@ -183,19 +175,54 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("catchUp") { () async throws in
       try await self.withAccount { kit, _ in try await kit.catchUpAccounts() }
     }
-    AsyncFunction("diagnostics") { () async throws -> Document in
-      try await self.withAccount { kit, account in
-        let relays = try await kit.relayHealth()
-        let keys = try await kit.keyPackageMaintenanceStatus(accountRef: account)
-        return ["account": account, "readiness": try wireName(kit.accountSetupReadiness(accountRef: account)),
-          "relays": Int(relays.totalRelays), "connected": Int(relays.connected),
-          "keyPackages": try kit.localAccountKeyPackages(accountRef: account).count,
-          "keyPhase": bridgeValue(keys.map { wireName($0.phase) }), "published": bridgeValue(keys.map { Int($0.acceptedFanoutTargets) }),
-          "refreshOverdue": try await kit.keyPackageRefreshOverdue(accountRef: account)]
+    AsyncFunction("notifyConnectivityRestored") { () async throws in
+      try await self.withAccount { kit, _ in try await kit.notifyConnectivityRestored() }
+    }
+    AsyncFunction("accountRelayLists") { (key: String) async throws -> Document in
+      try await self.withSigner(key) { kit in
+        let lists = try kit.accountRelayLists(accountRef: key)
+        let general = try kit.accountNip65Relays(accountRef: key)
+        let inbox = lists.inbox.relays
+        let allowed = kit.classifyRelayEndpoints(endpoints: general + inbox)
+          .filter { $0.policy == .allowed }.map(\.endpoint)
+        return ["general": general, "write": lists.nip65.relays, "inbox": inbox,
+          "bootstrap": lists.bootstrapRelays, "allowed": allowed, "retiredHosts": kit.retiredRelayHosts()]
       }
     }
-    AsyncFunction("rotateKeys") { () async throws in
-      try await self.withAccount { _ = try await $0.rotateKeyPackage(accountRef: $1) }
+    AsyncFunction("refreshAccountRelayLists") { (key: String, urls: [String]) async throws in
+      try await self.withSigner(key) { kit in _ = try await kit.refreshUserRelayLists(accountIdHex: key, relays: urls) }
+    }
+    AsyncFunction("classifyRelays") { (key: String, urls: [String]) async throws -> [String] in
+      try await self.withSigner(key) { kit in
+        kit.classifyRelayEndpoints(endpoints: urls).map { wireName($0.policy) }
+      }
+    }
+    AsyncFunction("setAccountRelays") { (key: String, inbox: Bool, urls: [String], bootstrap: [String]) async throws in
+      try await self.withSigner(key) { kit in
+        if inbox { _ = try await kit.setAccountInboxRelays(accountRef: key, relays: urls, bootstrapRelays: bootstrap) }
+        else { _ = try await kit.setAccountNip65Relays(accountRef: key, relays: urls, bootstrapRelays: bootstrap) }
+      }
+    }
+    AsyncFunction("reconnectMarmotRelay") { (url: String) async throws in
+      try await self.withAccount { kit, key in _ = try await kit.reconnectRelay(accountRef: key, url: url) }
+    }
+    AsyncFunction("watchRelayLiveness") { (key: String, id: String) async throws in
+      try await self.withObservation(id) {
+        let stream = try await self.withSigner(key) { try await $0.subscribeRelayLiveness(accountRef: key) }
+        defer { stream.cancel() }
+        func emit(_ rows: [RelayLivenessFfi]) {
+          self.sendEvent("relayLiveness", ["id": id, "rows": rows.map { row -> Document in
+            ["url": row.url, "status": wireName(row.status), "lastError": bridgeValue(row.lastError),
+             "lastAttempt": bridgeValue(row.lastAttemptUnix.map { Double($0) })]
+          }])
+        }
+        try Task.checkCancellation()
+        emit(stream.snapshot())
+        while let rows = try await withTaskCancellationHandler(operation: { try await stream.next() }, onCancel: { stream.cancel() }) {
+          try Task.checkCancellation()
+          emit(rows)
+        }
+      }
     }
     AsyncFunction("backupState") { () async throws -> Document in
       try await self.withAccount { kit, account in
@@ -951,7 +978,13 @@ public final class BoopMarmotModule: Module {
   }
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
-    directoryLock.withLock { directorySearches.values.forEach { $0?.cancel() } }
+    let work = directoryLock.withLock { () -> [Task<Void, Error>] in
+      let work = observations.values.compactMap { $0 }
+      observations.removeAll()
+      return work
+    }
+    for task in work { task.cancel() }
+    for task in work { _ = await task.result }
     uploadLock.withLock { uploads.values.forEach { $0.cancel() } }
     try await runtime.close(closeRuntime: closeRuntime, pauseMessaging: pauseMessaging) { [weak self] id in
       self?.sendEvent("windowClosed", ["id": id, "code": "AccountClosed"])
@@ -970,6 +1003,18 @@ public final class BoopMarmotModule: Module {
       return MediaFileUploadAttachmentRequestFfi(sourcePath: path, expectedSize: size.uint64Value, fileName: name,
         mediaType: type, dim: file["dimensions"], thumbhash: file["thumbhash"])
     }
+  }
+
+  private func withObservation(_ id: String, work: @escaping () async throws -> Void) async throws {
+    let task = directoryLock.withLock { () -> Task<Void, Error>? in
+      guard case .some(.none) = observations[id] else { return nil }
+      let task = Task { try await work() }
+      observations[id] = .some(task)
+      return task
+    }
+    guard let task else { throw problem("AccountClosed") }
+    defer { _ = directoryLock.withLock { observations.removeValue(forKey: id) } }
+    try await task.value
   }
 
   private func withSigner<T>(_ key: String, _ call: (Marmot) async throws -> T) async throws -> T {
@@ -1315,7 +1360,7 @@ private actor Runtime {
       return try await current.beginPreparedOnboarding(identity: candidate.prepared, options: OnboardingOptionsFfi(defaultRelays: general, discoveryRelays: discovery, inboxRelays: inbox)).accountIdHex
     }
     let profile = UserProfileMetadataFfi(name: name, displayName: name, about: about, picture: nil, banner: nil, nip05: nil, lud16: nil)
-    return try await current.createIdentityWithInitialProfile(profile: profile, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox).account.accountIdHex
+    return try await current.createIdentityWithInitialProfile(profile: profile, defaultRelays: general, bootstrapRelays: general, inboxRelays: inbox).account.accountIdHex
   }
 
   func onboarding(key: String, action: String, step: String?, revision: String?, epoch: String?) async throws -> Document? {

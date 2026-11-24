@@ -101,6 +101,7 @@
   "patchedDependencies": {
     "@hzblj/expo-translation@0.1.4": "patches/@hzblj%2Fexpo-translation@0.1.4.patch",
     "@hzblj/expo-speech@0.4.0": "patches/@hzblj%2Fexpo-speech@0.4.0.patch",
+    "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch",
     "expo-localization@58.0.5": "patches/expo-localization@58.0.5.patch",
     "react-native-animated-codes@1.0.2": "patches/react-native-animated-codes@1.0.2.patch",
     "@trystero-p2p/core@0.27.0": "patches/@trystero-p2p%2Fcore@0.27.0.patch",

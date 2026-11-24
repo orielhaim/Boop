@@ -114,6 +114,7 @@
     "@hzblj/expo-speech@0.4.0": "patches/@hzblj%2Fexpo-speech@0.4.0.patch",
     "react-native-animated-codes@1.0.2": "patches/react-native-animated-codes@1.0.2.patch",
     "expo-audio@58.0.12": "patches/expo-audio@58.0.12.patch",
-    "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch"
+    "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch",
+    "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch"
   }
 }

@@ -25,11 +25,12 @@ The call-signaling integration test uses OpenSSL on PATH and local TLS relays. I
 
 ### Android Marmot relay test
 
-Start the MDK-compatible test relay with `bun scripts/marmot-test-relay.ts`. This requires Cargo. The relay prints its ephemeral port. With an Android emulator attached, forward that port and run the module's instrumentation suite from `android`. Replace `19310` with the printed port.
+Start two MDK-compatible relay fixtures with `bun scripts/marmot-test-relay.ts`. This requires Cargo. The fixtures print their ports. Forward both ports to the Android emulator and run the instrumentation suite from `android`. Replace `19310` and `19311` with the fixture ports.
 
 ```sh
 adb reverse tcp:19310 tcp:19310
-./gradlew :boop-marmot:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64 -Pandroid.testInstrumentationRunnerArguments.relay=ws://127.0.0.1:19310
+adb reverse tcp:19311 tcp:19311
+./gradlew :boop-marmot:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64 -Pandroid.testInstrumentationRunnerArguments.relay=ws://127.0.0.1:19310 -Pandroid.testInstrumentationRunnerArguments.secondRelay=ws://127.0.0.1:19311
 ```
 
 For the media test, start `bun scripts/marmot-test-blossom.ts` and forward its printed port to the emulator. Pass that origin with `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The loopback fixture counts binary requests and pauses an explicit download so the test can cancel and retry it. The suite also checks multi-attachment metadata after encrypted draft recovery and restart, and verifies that call announcements leave timeline page size, unread counts, and previews unchanged. Only the instrumentation account enables loopback blobs.
@@ -90,9 +91,9 @@ Keep transition presets in `src/components/navigation/motion.ts`. People rows an
 
 The local Expo module hosts one MarmotKit runtime and binds Boop’s Nostr signer to the selected MDK account. MDK owns MLS keys, invitations, group state, delivery, timeline projections, and retained attachments. Chat Kit reads windows through `src/core/marmot/native.ts`. Boop uses separate SecureStore keys for encrypted app data.
 
-The enabled discovery relays are configured as MarmotKit directory indexers as well as account bootstrap relays. The 0.19.0 UniFFI directory lookup also reads the constructor's relay pool, which includes enabled general and discovery relays. The account's published relay lists still use the configured general and inbox selections. Inbox records can be available on the indexers while KeyPackages are served from the account's general relays.
+MDK owns the account’s NIP-65 and NIP-17 declarations, publication, Marmot relay connections, and KeyPackage maintenance. Settings edits publish through the native account setters. Account relay edits leave the running session open. Discovery relays are local preferences and constructor-time directory indexers. Changing them uses the same protected-session replacement as changing the attachment origin.
 
-The protected session gives MarmotKit the relay selections and preferred attachment origin. The Nostr relay service owns inbox publication intent. Media server health and local chat presentation preferences do not reconfigure the Marmot account.
+Boop reads the account’s live declarations from MDK to route NDK calls, Blossom lists, and NIP-50 search. New inbox relays must accept and return an encrypted test envelope before Boop asks MDK to advertise them. Boop stores expiring handoff routes and watches previous inboxes for up to three days so callers with cached declarations can still reach the account. The incoming-calls switch controls listening on this device. The Connections screen reports Marmot and NDK connectivity independently.
 
 Check first-account startup in a minified Android release. JNA resolves the generated UniFFI API and checksum interfaces by method name, so `marmot.pro` preserves both interfaces in the release. MarmotKit owns KeyPackage generation and publication. If attaching Boop’s chat services fails, the foreground session retries on reconnect. The chat screen also offers an explicit retry. MDK handles retries for initial account publication.
 

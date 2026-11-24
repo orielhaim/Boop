@@ -115,17 +115,11 @@ export function createCallSignalingService({
     function refresh() {
       closeWatch?.();
       const expected = ++token;
-      closeWatch = transport.watchInbox(
-        relay,
-        undefined,
-        (id, input) => {
-          void receive(id, input, () => token === expected).catch(
-            () => undefined,
-          );
-        },
-        () => undefined,
-        0,
-      );
+      closeWatch = transport.watchInbox(relay, (id, input) => {
+        void receive(id, input, () => token === expected).catch(
+          () => undefined,
+        );
+      });
     }
     relay.on("authed", refresh);
     refresh();
@@ -190,7 +184,7 @@ export function createCallSignalingService({
     const targets = replyTargets(signal.callId, signal.recipientKey);
     const tags = [["p", signal.recipientKey]];
     if (providesReplyRoute(signal.type)) {
-      for (const relay of relays.inboxRelays().slice(0, 3))
+      for (const relay of relays.replyRelays().slice(0, 3))
         tags.push([callReplyRelayTag, relay.url]);
     }
     const rumor = unsignedRumor({

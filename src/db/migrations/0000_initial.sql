@@ -37,18 +37,10 @@ CREATE TABLE `peer_permissions` (
 	`approved` integer DEFAULT false NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE `relay_settings` (
-	`url` text PRIMARY KEY NOT NULL,
-	`enabled` integer DEFAULT true NOT NULL,
-	`general` integer DEFAULT true NOT NULL,
-	`inbox` integer DEFAULT true NOT NULL,
-	`discovery` integer DEFAULT false NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE `settings` (
 	`key` text PRIMARY KEY NOT NULL,
 	`value` text NOT NULL
 );
 
 --> statement-breakpoint
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

@@ -1,4 +1,4 @@
-import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { mkdtemp, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
   type JoinSignal,
   callSignalKind,
 } from "../src/core/calling/signals";
+import { type CallHandoff, readCallHandoff } from "../src/core/nostr/config";
 import { unsignedRumor, verifiedEvent } from "../src/core/nostr/gift-wrap";
 import { createRelayService } from "../src/core/nostr/relay-service";
 
@@ -38,16 +39,13 @@ type Connection = {
 };
 type Event = NonNullable<ReturnType<typeof verifiedEvent>>;
 
-function client(seed: string) {
+function client(
+  seed: string,
+  previous: CallHandoff = [],
+  save?: (rows: CallHandoff) => void,
+) {
   const signer = new NDKPrivateKeySigner(seed.repeat(32));
-  const state = new Map<string, string>();
-  const relays = createRelayService({
-    signer,
-    readState: (key) => state.get(key) ?? null,
-    writeState: (key, value) => {
-      state.set(key, value);
-    },
-  });
+  const relays = createRelayService(signer, previous, save);
   const blocks = new Set<string>();
   const signaling = createCallSignalingService({
     signer,
@@ -82,14 +80,28 @@ function client(seed: string) {
       if (!(await relays.transport.publish(wrap, [destination], () => true)))
         throw new Error("Could not publish test join request");
     },
+    async declaration(url: string) {
+      const event = new NDKEvent(undefined, {
+        kind: 10050,
+        content: "",
+        tags: [["relay", url]],
+      });
+      await event.sign(signer);
+      const declared = verifiedEvent(event.rawEvent());
+      if (!declared) throw new Error("Invalid relay declaration fixture");
+      return declared;
+    },
+    configure(url: string, discovery: string[] = []) {
+      relays.configure(
+        { general: [url], write: [url], inbox: [url], discovery },
+        true,
+        [],
+      );
+    },
     start(url: string, discovery: string[] = []) {
       signaling.start();
-      relays.start({
-        general: [url],
-        inbox: [url],
-        discovery,
-        intent: "initial",
-      });
+      this.configure(url, discovery);
+      relays.start();
     },
     stop() {
       signaling.stop();
@@ -245,10 +257,12 @@ async function runScenario(tls: string) {
     const { url, events } = relay;
     alice.start(url);
     bob.start(url);
-    await waitFor("inbox advertisements", () =>
-      [alice, bob].every(
-        ({ relays }) => relays.getInboxStatus() === "published",
-      ),
+    for (const client of [alice, bob]) {
+      const event = await client.declaration(url);
+      events.set(event.id, event);
+    }
+    await waitFor("inbox listeners", () =>
+      [alice, bob].every(({ relays }) => relays.inboxRelays().length > 0),
     );
     const createdAt = Math.floor(Date.now() / 1_000) * 1_000;
     const opaque = "relayed opaque offer";
@@ -336,10 +350,16 @@ async function runJoinScenario(tls: string) {
     // private-address policy accepts them. Each client watches only its inbox.
     alice.start(aliceInbox.url, [bobInbox.url]);
     bob.start(bobInbox.url, [aliceInbox.url]);
-    await waitFor("separate inbox advertisements", () =>
-      [alice, bob].every(
-        ({ relays }) => relays.getInboxStatus() === "published",
-      ),
+    for (const [client, inbox] of [
+      [alice, aliceInbox],
+      [bob, bobInbox],
+    ] as const) {
+      const event = await client.declaration(inbox.url);
+      for (const relay of [aliceInbox, bobInbox])
+        relay.events.set(event.id, event);
+    }
+    await waitFor("separate inbox listeners", () =>
+      [alice, bob].every(({ relays }) => relays.inboxRelays().length > 0),
     );
     const createdAt = Math.floor(Date.now() / 1_000) * 1_000;
     const request: JoinSignal = {
@@ -463,10 +483,84 @@ async function runJoinScenario(tls: string) {
   }
 }
 
+async function runHandoffScenario(tls: string) {
+  const old = startRelay(tls);
+  const next = startRelay(tls);
+  const sender = client("03");
+  let saved = "";
+  const original = client("04", [], (rows) => {
+    saved = JSON.stringify(rows);
+  });
+  const receiver = () => client("04", readCallHandoff(saved));
+  let reopened: ReturnType<typeof receiver> | undefined;
+  try {
+    original.start(old.url);
+    const event = await original.declaration(old.url);
+    old.events.set(event.id, event);
+    await waitFor(
+      "old inbox",
+      () => original.relays.inboxRelays().length === 1,
+    );
+    const release = await original.relays.prepareInbox(
+      [next.url],
+      [old.url],
+      () => true,
+    );
+    if (!release)
+      throw new Error("New authenticated inbox did not pass envelope readback");
+    original.configure(next.url);
+    release();
+    original.stop();
+
+    reopened = receiver();
+    reopened.start(next.url);
+    await waitFor(
+      "old route restored after restart",
+      () => reopened?.relays.inboxRelays().length === 2,
+    );
+    const replies = reopened.relays.replyRelays();
+    if (replies.length !== 1 || replies[0]?.url !== next.url)
+      throw new Error("Old inbox was offered as a new reply route");
+
+    const createdAt = Math.floor(Date.now() / 1_000) * 1_000;
+    const join: JoinSignal = {
+      version: 1,
+      type: "call.join",
+      callId: "bb".repeat(32),
+      nonce: "10".repeat(32),
+      groupId: "11".repeat(32),
+      senderKey: sender.key,
+      recipientKey: original.key,
+      createdAt,
+      expiresAt: createdAt + 30_000,
+    };
+    await sender.publishJoin(join, old.url, []);
+    await waitFor(
+      "call arriving over a previously advertised inbox",
+      () => reopened?.received[0]?.nonce === join.nonce,
+    );
+    if (
+      [...old.events.values(), ...next.events.values()].filter(
+        ({ kind }) => kind === 10050 || kind === 10002,
+      ).length !== 1
+    )
+      throw new Error("Call transport published a relay declaration");
+    console.info(
+      "Verified authenticated inbox preparation, restart-safe handoff, and no NDK relay-list publication.",
+    );
+  } finally {
+    sender.stop();
+    original.stop();
+    reopened?.stop();
+    await Promise.all([old.stop(), next.stop()]);
+  }
+}
+
 const directory = process.argv[2];
 if (directory) {
   await runScenario(directory);
   await runJoinScenario(directory);
+  await runHandoffScenario(directory);
   process.exit(0);
 } else {
   const temp = await mkdtemp(join(tmpdir(), "boop-call-relay-"));

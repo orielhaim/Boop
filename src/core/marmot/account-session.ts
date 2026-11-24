@@ -1,6 +1,10 @@
-import type { MarmotReadiness, MarmotRelays } from "./native";
+import { sameRelays } from "../nostr/config";
+import type { MarmotReadiness } from "./native";
 
-type Configuration = { relays: MarmotRelays; mediaOrigin: string | null };
+type Configuration = {
+  discovery: readonly string[];
+  mediaOrigin: string | null;
+};
 type State =
   { status: "pending" | "ready" } | { status: "failed"; cause: unknown };
 const terminal = new Set([
@@ -15,7 +19,7 @@ export function createMarmotSession({
   beforeClose,
 }: {
   open: (
-    relays: MarmotRelays,
+    discovery: readonly string[],
     mediaOrigin: string | null,
   ) => Promise<MarmotReadiness>;
   close: () => Promise<void>;
@@ -46,7 +50,7 @@ export function createMarmotSession({
         }
         if (next !== desired) return;
         if (next && active !== next) {
-          await open(next.relays, next.mediaOrigin);
+          await open(next.discovery, next.mediaOrigin);
           active = next;
         }
         if (next === desired) publish({ status: active ? "ready" : "pending" });
@@ -59,12 +63,13 @@ export function createMarmotSession({
   }
 
   return {
-    start(
-      { general, inbox, discovery }: MarmotRelays,
-      mediaOrigin: string | null,
-    ) {
-      const next = { relays: { general, inbox, discovery }, mediaOrigin };
-      if (JSON.stringify(next) === JSON.stringify(desired)) return transition;
+    start(discovery: readonly string[], mediaOrigin: string | null) {
+      if (
+        desired?.mediaOrigin === mediaOrigin &&
+        sameRelays(discovery, desired.discovery)
+      )
+        return transition;
+      const next = { discovery, mediaOrigin };
       desired = next;
       return reconcile();
     },

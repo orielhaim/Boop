@@ -62,14 +62,6 @@ export const callHistory = sqliteTable(
   (table) => [index("call_history_recent").on(table.startedAt)],
 );
 
-export const relaySettings = sqliteTable("relay_settings", {
-  url: text().primaryKey().notNull(),
-  enabled: integer({ mode: "boolean" }).notNull().default(true),
-  general: integer({ mode: "boolean" }).notNull().default(true),
-  inbox: integer({ mode: "boolean" }).notNull().default(true),
-  discovery: integer({ mode: "boolean" }).notNull().default(false),
-});
-
 export const settings = sqliteTable("settings", {
   key: text().primaryKey().notNull(),
   value: text().notNull(),

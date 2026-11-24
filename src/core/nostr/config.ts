@@ -1,78 +1,50 @@
 import { z } from "zod";
 import { relayUrl, secureRelays } from "./relays";
 
-export const defaultRelays = [
-  {
-    url: "wss://nos.lol/",
-    general: true,
-    inbox: true,
-    discovery: false,
-    enabled: true,
-  },
-  {
-    url: "wss://relay.primal.net/",
-    general: true,
-    inbox: true,
-    discovery: false,
-    enabled: true,
-  },
-  {
-    url: "wss://purplepag.es/",
-    general: false,
-    inbox: false,
-    discovery: true,
-    enabled: true,
-  },
-];
-
-export const inboxIntentKey = "relay.inbox.intent";
-export const inboxPublicationKey = "relay.inbox.publication";
-export const inboxHandoffMs = 3 * 24 * 60 * 60 * 1000;
-
-export type RelayChoice = (typeof defaultRelays)[number];
-export type RelayConfiguration = {
-  general: readonly string[];
-  inbox: readonly string[];
-  discovery: readonly string[];
-  intent: string | null;
+export const initialAccountRelays = {
+  general: ["wss://nos.lol/", "wss://relay.primal.net/"],
+  inbox: ["wss://nos.lol/", "wss://relay.primal.net/"],
+  discovery: ["wss://purplepag.es/"],
 };
 
-const publicationSchema = z.object({
-  urls: z.array(relayUrl).max(3),
-  eventTime: z.number().int().nonnegative(),
-  intent: z.string().nullable(),
-  previous: z.array(z.object({ url: relayUrl, until: z.number() })).max(12),
-});
-export type InboxPublication = z.infer<typeof publicationSchema>;
+export const discoveryPreference = "relay.discovery";
+export const callInboxDisabledPreference = "relay.calls.disabled";
+export const callHandoffPreference = "relay.calls.handoff";
 
-export function readPublication(value: string | null) {
-  if (value === null) return null;
+export type RelayConfiguration = {
+  general: readonly string[];
+  write: readonly string[];
+  inbox: readonly string[];
+  discovery: readonly string[];
+};
+
+export function readDiscovery(value: string | null): string[] {
+  if (value === null) return initialAccountRelays.discovery;
   try {
-    return publicationSchema.parse(JSON.parse(value));
+    return relayUrl.array().parse(JSON.parse(value));
   } catch {
-    return null;
+    return initialAccountRelays.discovery;
   }
 }
 
-export function configuredRelays(
-  rows: readonly RelayChoice[],
-  intent: string | null,
-): RelayConfiguration {
-  const enabled = rows.filter((row) => row.enabled);
-  return {
-    general: secureRelays(
-      enabled.filter((row) => row.general).map((row) => row.url),
-    ).sort(),
-    inbox: secureRelays(
-      enabled.filter((row) => row.inbox).map((row) => row.url),
-    ).sort(),
-    discovery: secureRelays(
-      enabled.filter((row) => row.discovery).map((row) => row.url),
-    ).sort(),
-    intent,
-  };
+const callHandoff = z
+  .array(z.tuple([relayUrl, z.number().int().positive()]))
+  .max(12);
+export type CallHandoff = z.infer<typeof callHandoff>;
+
+export function readCallHandoff(value: string | null): CallHandoff {
+  if (value === null) return [];
+  try {
+    return callHandoff.parse(JSON.parse(value));
+  } catch {
+    return [];
+  }
 }
 
 export function sameRelays(a: readonly string[], b: readonly string[]) {
   return a.length === b.length && a.every((url) => b.includes(url));
+}
+
+export function relayRoutes(configuration: RelayConfiguration) {
+  return secureRelays([...configuration.discovery, ...configuration.general]);
 }

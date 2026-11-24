@@ -161,6 +161,56 @@ class MarmotRelayTest {
     }
   }
 
+  @Test fun relayListEditsKeepAnOpenConversationAndLivenessSubscription() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    val second = checkNotNull(InstrumentationRegistry.getArguments().getString("secondRelay"))
+    val root = File(instrumentation.targetContext.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    BoopMarmotModule.initializeBindings(instrumentation.targetContext)
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    try {
+      alice.start()
+      bob.start()
+      for (client in listOf(alice, bob)) {
+        await("initial relay lists and KeyPackage") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY &&
+            client.kit.accountRelayLists(client.key).complete
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      bob.kit.subscribeRelayLiveness(bob.key).use { connection ->
+        assertTrue(connection.snapshot().any { it.url.trimEnd('/') == relay.trimEnd('/') })
+        bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.LATEST, null, 5u, 15_000u).use { window ->
+          assertNotNull(window.snapshot())
+          val inbox = bob.kit.setAccountInboxRelays(bob.key, listOf(second), listOf(relay))
+          assertEquals(listOf(second.trimEnd('/')), inbox.inbox.relays.map { it.trimEnd('/') })
+          val nip65 = bob.kit.setAccountNip65Relays(bob.key, listOf(relay, second), listOf(relay, second))
+          assertEquals(setOf(relay.trimEnd('/'), second.trimEnd('/')), nip65.nip65.relays.map { it.trimEnd('/') }.toSet())
+          withTimeout(20_000) {
+            while (checkNotNull(connection.next()).none { it.url.trimEnd('/') == second.trimEnd('/') }) { }
+          }
+          bob.kit.reconnectRelay(bob.key, second)
+          bob.kit.notifyConnectivityRestored()
+          val message = "received through an existing conversation after relay edits"
+          alice.kit.sendTextWithClientToken(alice.key, direct, message, "while-editing-relays")
+          withTimeout(25_000) {
+            while (checkNotNull(window.next()).messages.none { it.timeline.plaintext == message }) { }
+          }
+          window.cancel()
+        }
+        connection.cancel()
+        assertNull(connection.next())
+      }
+    } finally {
+      try { alice.close() } finally {
+        bob.close()
+        root.deleteRecursively()
+      }
+    }
+  }
+
   @Test fun directAndGroupUseIndependentDurableAccounts() = runBlocking {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val context = instrumentation.targetContext
@@ -214,7 +264,7 @@ class MarmotRelayTest {
         }
         assertEquals(EncryptedMediaVersionFfi.V2, alice.kit.groupDetails(alice.key, direct).group.encryptedMedia.version)
         verifyWindowDelta(alice, bob, direct)
-        if (blossom != null) mediaRoundTrip(alice, bob, direct, blossom)
+        if (blossom != null) mediaRoundTrip(alice, bob, direct, blossom, first.messageIdHex)
 
         alice.close()
         bob.close()
@@ -486,7 +536,7 @@ class MarmotRelayTest {
     }
   }
 
-  private suspend fun mediaRoundTrip(sender: Client, recipient: Client, group: String, blossom: String) {
+  private suspend fun mediaRoundTrip(sender: Client, recipient: Client, group: String, blossom: String, directReply: String) {
     val fixture = URI(blossom).let { it.scheme == "http" && it.host == "127.0.0.1" }
     fun fixtureCall(path: String, method: String = "GET"): Int {
       val connection = URI("$blossom/_fixture/$path").toURL().openConnection() as HttpURLConnection
@@ -505,7 +555,6 @@ class MarmotRelayTest {
     val payload = "Synthetic Boop fixture ${UUID.randomUUID()}".toByteArray()
     val path = File(sender.directory, "fixture.txt").apply { writeBytes(payload) }
     val caption = "Encrypted document fixture"
-    val directReply = recipient.kit.timelineMessages(recipient.key, latestTimeline(group, "hello from Alice")).messages.single().messageIdHex
     val request = MediaFileUploadRequestFfi(
       listOf(MediaFileUploadAttachmentRequestFfi(path.canonicalPath, path.length().toULong(), path.name, "text/plain", null, null)),
       caption, true, blossom, listOf(

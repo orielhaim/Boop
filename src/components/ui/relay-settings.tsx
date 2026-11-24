@@ -1,7 +1,4 @@
-import { asc } from "drizzle-orm";
-import { useLiveQuery } from "drizzle-orm/expo-sqlite";
-import { randomUUID } from "expo-crypto";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, StyleSheet, View } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
@@ -12,95 +9,129 @@ import {
   SettingsToggle,
 } from "@/components/settings/group";
 import { Action, Icon, Ink } from "@/components/ui/kit";
-import type { RelayState } from "@/core/nostr/relay-service";
-import {
-  configuredRelays,
-  defaultRelays,
-  type RelayChoice,
-  sameRelays,
-} from "@/core/nostr/config";
+import { marmotRelays } from "@/core/marmot/native";
+import type { RelayEdit } from "@/core/nostr/account-relays";
 import { relayUrl } from "@/core/nostr/relays";
-import { editRelays } from "@/db/relays";
-import { relaySettings } from "@/db/schema";
 import { namespaces, resolveLanguage } from "@/i18n";
-import { formatDateTime, isolateText } from "@/i18n/format";
+import { formatDateTime } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 const statusLabels = {
   connected: "connections:connected",
   connecting: "connections:connecting",
-  disconnected: "connections:disconnected",
-  "auth-required": "connections:authRequested",
-  rejected: "connections:authRejected",
-  unavailable: "common:unavailable",
-} satisfies Record<
-  RelayState["status"],
-  `connections:${string}` | "common:unavailable"
->;
-const inboxLabels = {
-  idle: "connections:inboxSelected",
-  validating: "connections:checkingInbox",
-  published: "connections:inboxPublished",
-  conflict: "connections:inboxConflict",
-  unverified: "connections:inboxUnverified",
-  pending: "connections:pendingInbox",
+  offline: "connections:disconnected",
+  unknown: "common:unknown",
 } as const;
+
+const editErrors = {
+  InboxLimit: "connections:maxInbox",
+  InboxVerification: "connections:inboxUnverified",
+  RelayPolicy: "connections:relayPolicy",
+  RelayRequired: "connections:generalRequired",
+} as const;
+
+function editError(error: unknown) {
+  if (!(error instanceof Error)) return "connections:saveError";
+  return (
+    Object.entries(editErrors).find(([code]) => code === error.message)?.[1] ??
+    "connections:saveError"
+  );
+}
+
+const normalize = (url: string) => relayUrl.safeParse(url).data ?? url;
 
 export function RelaySettings() {
   const { t, i18n } = useTranslation(namespaces);
-  const { db, relays } = useLocal();
+  const { accountRelays, relays, marmotSession } = useLocal();
   const { colors } = useTheme();
-  const states = useSyncExternalStore(relays.subscribe, relays.getRelayStates);
-  const inboxState = useSyncExternalStore(
+  const {
+    lists,
+    discovery,
+    incomingCalls,
+    liveness: nativeStates,
+  } = useSyncExternalStore(accountRelays.subscribe, accountRelays.snapshot);
+  const signalStates = useSyncExternalStore(
     relays.subscribe,
-    relays.getInboxStatus,
+    relays.getRelayStates,
   );
-  const query = useMemo(
-    () => db.select().from(relaySettings).orderBy(asc(relaySettings.url)),
-    [db],
+  const runtime = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.status,
   );
-  const { data: items } = useLiveQuery(query, [query]);
   const [input, setInput] = useState("");
-  const [error, setError] = useState("");
   const [inputError, setInputError] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const existing = configuredRelays(items, null);
-  const enabled = items.filter((item) => item.enabled);
-  const connected = enabled.filter(
-    (item) => states[item.url]?.status === "connected",
-  ).length;
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState<string>();
+  const roles = {
+    general: [...new Set(lists?.general.map(normalize))],
+    inbox: [...new Set(lists?.inbox.map(normalize))],
+    discovery,
+  };
+  const bootstrap = lists?.bootstrap.map(normalize) ?? [];
+  const addresses = [
+    ...new Set([
+      ...roles.general,
+      ...roles.inbox,
+      ...discovery,
+      ...bootstrap,
+      ...nativeStates.map(({ url }) => normalize(url)),
+      ...Object.keys(signalStates),
+    ]),
+  ].sort();
+  const statusByUrl = new Map(
+    nativeStates.map((state) => [normalize(state.url), state]),
+  );
 
-  function update(
-    changes: readonly { url: string; next: RelayChoice | null }[],
-    forcePublish = false,
-  ) {
-    const modified = new Map(items.map((item) => [item.url, item]));
-    for (const { url, next } of changes) {
-      if (next) modified.set(url, next);
-      else modified.delete(url);
+  async function change(edit: RelayEdit) {
+    setBusy(true);
+    setError("");
+    try {
+      await accountRelays.edit(edit);
+      return true;
+    } catch (failure) {
+      setError(t(editError(failure)));
+      return false;
+    } finally {
+      setBusy(false);
     }
-    const next = configuredRelays([...modified.values()], null);
-    const inboxChanged = !sameRelays(existing.inbox, next.inbox);
-    if (inboxChanged && next.inbox.length > 3) {
-      setError(t("connections:maxInbox"));
+  }
+
+  function add() {
+    if (busy || !lists) return;
+    const result = relayUrl.safeParse(input.trim());
+    if (!result.success) {
+      setInputError(t("connections:invalidUrl"));
       return;
     }
-    function save() {
-      try {
-        editRelays(
-          db,
-          changes,
-          forcePublish || inboxChanged ? randomUUID() : null,
-        );
-        setError("");
-        return true;
-      } catch {
-        setError(t("connections:saveError"));
-        return false;
-      }
-    }
-    if (existing.inbox.length && !next.inbox.length) {
+    const url = result.data;
+    Alert.alert(
+      t("connections:add"),
+      url,
+      (["general", "inbox", "discovery"] as const).map((list) => ({
+        text: t(`connections:${list}`),
+        async onPress() {
+          if (roles[list].includes(url)) {
+            setInputError(t("connections:duplicate"));
+            return;
+          }
+          if (await change({ list, url, enabled: true })) {
+            setExpanded(url);
+            setInput("");
+          }
+        },
+      })),
+      { cancelable: true },
+    );
+  }
+
+  function toggle(
+    list: "general" | "inbox" | "discovery",
+    url: string,
+    enabled: boolean,
+  ) {
+    if (list === "inbox" && !enabled && roles.inbox.length === 1) {
       Alert.alert(
         t("connections:disableLast"),
         t("connections:disableLastHint"),
@@ -108,115 +139,107 @@ export function RelaySettings() {
           { text: t("common:cancel"), style: "cancel" },
           {
             text: t("connections:disableInbox"),
-            style: "destructive",
-            onPress: save,
+            onPress: () =>
+              void change({ list: "incomingCalls", enabled: false }),
           },
         ],
       );
-      return false;
-    }
-    return save();
+    } else void change({ list, url, enabled });
   }
 
-  function add() {
-    const parsed = relayUrl.safeParse(input.trim());
-    if (!parsed.success) {
-      setInputError(t("connections:invalidUrl"));
-      return;
-    }
-    const url = parsed.data;
-    if (items.some((item) => relayUrl.safeParse(item.url).data === url)) {
-      setInputError(t("connections:duplicate"));
-      return;
-    }
-    if (
-      !update([
-        {
-          url,
-          next: {
-            url,
-            general: true,
-            inbox: false,
-            discovery: false,
-            enabled: true,
-          },
-        },
-      ])
-    )
-      return;
-    setExpanded(url);
-    setInput("");
-    setInputError("");
+  async function reconnect(url?: string) {
+    relays.reconnect(url);
+    void accountRelays.refresh(true).catch(() => undefined);
+    if (runtime === "failed") await marmotSession.retry();
+    if (runtime !== "ready") return;
+    const targets = url
+      ? nativeStates.filter((row) => normalize(row.url) === url)
+      : nativeStates;
+    const outcomes = await Promise.allSettled(
+      targets.map(({ url: target }) => marmotRelays.reconnect(target)),
+    );
+    if (outcomes.some((result) => result.status === "rejected"))
+      setError(t("connections:reconnectError"));
   }
 
   return (
     <>
       <SettingsGroup title={t("connections:relays")}>
         <SettingsRow
-          title={t("connections:status")}
-          value={t("connections:connectionCount", {
-            connected,
-            total: enabled.length,
-          })}
-          icon="connection"
+          title={t("connections:marmot")}
+          value={
+            runtime === "ready" && nativeStates.length
+              ? t("connections:connectionCount", {
+                  connected: nativeStates.filter(
+                    ({ status }) => status === "connected",
+                  ).length,
+                  total: nativeStates.length,
+                })
+              : t("common:unknown")
+          }
+        />
+        <SettingsRow
+          title={t("connections:independent")}
+          value={
+            Object.keys(signalStates).length
+              ? t("connections:connectionCount", {
+                  connected: Object.values(signalStates).filter(
+                    (status) => status === "connected",
+                  ).length,
+                  total: Object.keys(signalStates).length,
+                })
+              : t("common:unknown")
+          }
         />
         <SettingsRow
           title={t("connections:reconnect")}
-          onPress={relays.reconnect}
+          onPress={() => void reconnect()}
         />
       </SettingsGroup>
       <SettingsGroup title={t("connections:privateInbox")}>
         <SettingsRow
-          title={
-            existing.inbox.length
-              ? t(inboxLabels[inboxState])
-              : t("connections:inboxDisabled")
-          }
-          detail={
-            existing.inbox.length
-              ? t("connections:selected", { count: existing.inbox.length })
-              : t("connections:selectInbox")
-          }
-          icon="chat"
-        />
-        {existing.inbox.length > 0 &&
-          existing.inbox.length <= 3 &&
-          inboxState !== "published" && (
-            <SettingsRow
-              title={t("connections:publishInbox")}
-              onPress={() =>
-                Alert.alert(
-                  t("connections:publishConfirm"),
-                  t("connections:publishHint"),
-                  [
-                    { text: t("common:cancel"), style: "cancel" },
-                    {
-                      text: t("connections:publish"),
-                      onPress: () => update([], true),
-                    },
-                  ],
-                )
-              }
-            />
+          title={t(
+            roles.inbox.length
+              ? "connections:inboxPublished"
+              : "connections:noPublishedInbox",
           )}
+          value={lists ? String(roles.inbox.length) : t("common:unknown")}
+        />
+        <SettingsToggle
+          title={t("connections:incomingCalls")}
+          value={incomingCalls}
+          onChange={(enabled) => {
+            if (!busy) void change({ list: "incomingCalls", enabled });
+          }}
+        />
       </SettingsGroup>
-      {error && <SettingsDescription>{error}</SettingsDescription>}
+      <SettingsDescription>{t("connections:rolesHelp")}</SettingsDescription>
+      {error ? <SettingsDescription>{error}</SettingsDescription> : null}
+      {busy ? (
+        <SettingsDescription>{t("connections:saving")}</SettingsDescription>
+      ) : null}
       <SettingsGroup title={t("connections:savedRelays")}>
-        {items.map((item) => {
-          const state = states[item.url];
-          const roles = [
-            item.general && t("connections:general"),
-            item.inbox && t("connections:inbox"),
-            item.discovery && t("connections:discovery"),
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          const show = expanded === item.url;
+        {addresses.map((url) => {
+          const state = runtime === "ready" ? statusByUrl.get(url) : undefined;
+          const independent = signalStates[url];
+          const show = expanded === url;
+          const enabled = (["general", "inbox", "discovery"] as const).filter(
+            (role) => roles[role].includes(url),
+          );
+          const unavailable =
+            lists &&
+            enabled.some((role) => role !== "discovery") &&
+            !lists.allowed.some((entry) => normalize(entry) === url);
           return (
-            <View key={item.url}>
+            <View key={url}>
               <SettingsRow
-                title={new URL(item.url).host}
-                detail={`${item.enabled ? t(statusLabels[state?.status ?? "disconnected"]) : t("connections:disabled")} · ${roles || t("connections:noPurpose")}`}
+                title={url}
+                detail={[
+                  ...enabled.map((role) => t(`connections:${role}`)),
+                  ...(bootstrap.includes(url)
+                    ? [t("connections:bootstrap")]
+                    : []),
+                ].join(" � ")}
                 trailing={
                   <Icon
                     name={show ? "collapse" : "expand"}
@@ -225,88 +248,60 @@ export function RelaySettings() {
                   />
                 }
                 expanded={show}
-                onPress={() => setExpanded(show ? null : item.url)}
+                onPress={() => setExpanded(show ? undefined : url)}
               />
-              {show && (
+              {show ? (
                 <View style={[styles.detail, { borderTopColor: colors.line }]}>
                   <Ink kind="caption" muted selectable style={styles.address}>
-                    {item.url}
+                    {url}
                   </Ink>
-                  {state?.lastConnected && (
+                  <SettingsRow
+                    title={t("connections:marmot")}
+                    value={t(statusLabels[state?.status ?? "unknown"])}
+                  />
+                  <SettingsRow
+                    title={t("connections:independent")}
+                    value={t(statusLabels[independent ?? "unknown"])}
+                  />
+                  {state?.lastAttempt ? (
                     <SettingsDescription>
-                      {t("connections:lastConnected")}{" "}
+                      {t("connections:lastAttempt")}{" "}
                       {formatDateTime(
-                        state.lastConnected,
+                        state.lastAttempt * 1_000,
                         resolveLanguage(i18n.resolvedLanguage),
                       )}
                     </SettingsDescription>
-                  )}
-                  {state?.lastWrite && (
+                  ) : null}
+                  {state?.lastError ? (
+                    <SettingsDescription>{state.lastError}</SettingsDescription>
+                  ) : null}
+                  {unavailable ? (
                     <SettingsDescription>
-                      {state.lastWrite === "accepted"
-                        ? t("connections:accepted")
-                        : t("connections:rejected")}
+                      {t("connections:relayPolicy")}
                     </SettingsDescription>
-                  )}
-                  {state?.inboxVerified !== undefined && (
-                    <SettingsDescription>
-                      {state.inboxVerified
-                        ? t("connections:verified")
-                        : t("connections:verificationFailed")}
-                    </SettingsDescription>
-                  )}
-                  {(["enabled", "general", "inbox", "discovery"] as const).map(
-                    (field) => (
-                      <SettingsToggle
-                        key={field}
-                        title={
-                          {
-                            enabled: t("connections:enabled"),
-                            general: t("connections:general"),
-                            inbox: t("connections:privateInbox"),
-                            discovery: t("connections:discovery"),
-                          }[field]
-                        }
-                        value={item[field]}
-                        onChange={(value) =>
-                          update([
-                            {
-                              url: item.url,
-                              next: { ...item, [field]: value },
-                            },
-                          ])
-                        }
-                      />
-                    ),
-                  )}
-                  <Action
-                    size="sm"
-                    variant="ghost"
-                    style={styles.remove}
-                    onPress={() =>
-                      Alert.alert(
-                        t("connections:removeRelay"),
-                        isolateText(item.url),
-                        [
-                          { text: t("common:cancel"), style: "cancel" },
-                          {
-                            text: t("common:remove"),
-                            style: "destructive",
-                            onPress: () =>
-                              update([{ url: item.url, next: null }]),
-                          },
-                        ],
-                      )
-                    }
-                  >
-                    {t("connections:removeAction")}
-                  </Action>
+                  ) : null}
+                  {(["general", "inbox", "discovery"] as const).map((role) => (
+                    <SettingsToggle
+                      key={role}
+                      title={t(`connections:${role}`)}
+                      value={roles[role].includes(url)}
+                      onChange={(value) => {
+                        if (!busy && lists) toggle(role, url, value);
+                      }}
+                    />
+                  ))}
+                  <SettingsRow
+                    title={t("connections:reconnect")}
+                    onPress={() => void reconnect(url)}
+                  />
                 </View>
-              )}
+              ) : null}
             </View>
           );
         })}
-        {items.length === 0 && <SettingsRow title={t("connections:empty")} />}
+        {addresses.length === 0 ? (
+          <SettingsRow title={t("connections:empty")} />
+        ) : null}
       </SettingsGroup>
       <SettingsGroup title={t("connections:add")}>
         <View style={styles.input}>
@@ -314,8 +309,8 @@ export function RelaySettings() {
             label={t("connections:address")}
             placeholder="wss://relay.example"
             value={input}
-            onChangeText={(text) => {
-              setInput(text);
+            onChangeText={(value) => {
+              setInput(value);
               setInputError("");
             }}
             autoCapitalize="none"
@@ -328,21 +323,21 @@ export function RelaySettings() {
           <Action
             variant="prominent"
             style={styles.add}
-            disabled={!input.trim()}
+            disabled={busy || !lists || !input.trim()}
             onPress={add}
           >
             {t("connections:addAction")}
           </Action>
-          {inputError && (
+          {inputError ? (
             <SettingsDescription>{inputError}</SettingsDescription>
-          )}
+          ) : null}
         </View>
       </SettingsGroup>
-
       <SettingsGroup>
         <SettingsRow
           title={t("connections:restoreDefaults")}
-          onPress={() =>
+          onPress={() => {
+            if (busy || !lists) return;
             Alert.alert(
               t("connections:restoreConfirm"),
               t("connections:restoreHint"),
@@ -350,29 +345,14 @@ export function RelaySettings() {
                 { text: t("common:cancel"), style: "cancel" },
                 {
                   text: t("connections:restore"),
-                  style: "destructive",
                   onPress: () =>
-                    update(
-                      [
-                        ...items
-                          .filter(
-                            (item) =>
-                              !defaultRelays.some(
-                                (relay) => relay.url === item.url,
-                              ),
-                          )
-                          .map(({ url }) => ({ url, next: null })),
-                        ...defaultRelays.map((next) => ({
-                          url: next.url,
-                          next,
-                        })),
-                      ],
-                      true,
-                    ),
+                    void change({
+                      list: "restore",
+                    }),
                 },
               ],
-            )
-          }
+            );
+          }}
         />
       </SettingsGroup>
     </>
@@ -387,5 +367,4 @@ const styles = StyleSheet.create({
   input: { padding: space.lg, gap: space.sm, alignItems: "stretch" },
   address: { paddingHorizontal: space.lg, writingDirection: "ltr" },
   add: { alignSelf: "flex-end" },
-  remove: { marginHorizontal: space.lg },
 });

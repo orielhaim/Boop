@@ -8,7 +8,7 @@ import {
 import { finalizeEvent } from "nostr-tools/pure";
 import { createNostrRelays } from "../src/core/nostr/relays-transport";
 
-test("late relay connections remain registered across configuration changes", () => {
+test("removed relay callbacks cannot affect a replacement connection", () => {
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {
     const transport = createNostrRelays(
@@ -19,10 +19,44 @@ test("late relay connections remain registered across configuration changes", ()
     transport.unconfigure(relay);
     relay.emit("connect");
     expect(error).not.toHaveBeenCalled();
-    expect(transport.addConfigured(address, true)).toBe(relay);
-    transport.unconfigure(relay);
+    const replacement = transport.addConfigured(address, true);
+    expect(replacement).not.toBe(relay);
+    transport.unconfigure(replacement);
   } finally {
     error.mockRestore();
+  }
+});
+
+test("removing a relay during a handshake prevents an NDK redial", async () => {
+  const firstRequest = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let requests = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      requests++;
+      firstRequest.resolve();
+      await release.promise;
+      return new Response(null, { status: 503 });
+    },
+  });
+  const transport = createNostrRelays(new NDKPrivateKeySigner("01".repeat(32)));
+  const relay = transport.addConfigured(
+    `ws://127.0.0.1:${server.port}/`,
+    false,
+  );
+  try {
+    await relay.connect(40);
+    await firstRequest.promise;
+    transport.unconfigure(relay);
+    await Bun.sleep(150);
+    expect(requests).toBe(1);
+  } finally {
+    release.resolve();
+    relay.connectivity.resetReconnectionState();
+    relay.disconnect();
+    await server.stop(true);
   }
 });
 
@@ -194,9 +228,7 @@ test("Blossom list publication uses acknowledged relay events", async () => {
   try {
     expect(await transport.connect(relay)).toBe(true);
     const origins = ["https://second.example.com", "https://first.example.com"];
-    const published = await transport.publishReplaceable(
-      serverListKind,
-      "",
+    const published = await transport.publishServerList(
       origins.map((origin) => ["server", origin]),
       timestamp,
       [url],

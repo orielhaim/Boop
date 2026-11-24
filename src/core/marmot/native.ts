@@ -1,13 +1,31 @@
 import { randomUUID } from "expo-crypto";
 import { requireNativeModule } from "expo-modules-core";
 import { z } from "zod";
-import type { RelayConfiguration } from "../nostr/config";
 import { mediaUploadArguments } from "./media-send";
 
-export type MarmotRelays = Pick<
-  RelayConfiguration,
-  "general" | "inbox" | "discovery"
->;
+export type MarmotRelays = {
+  general: readonly string[];
+  inbox: readonly string[];
+  discovery: readonly string[];
+};
+
+const accountRelayLists = z.object({
+  general: z.array(z.string()),
+  write: z.array(z.string()),
+  inbox: z.array(z.string()),
+  bootstrap: z.array(z.string()),
+  allowed: z.array(z.string()),
+  retiredHosts: z.array(z.string()),
+});
+export type MarmotRelayLists = z.infer<typeof accountRelayLists>;
+
+const relayLiveness = z.object({
+  url: z.string(),
+  status: z.enum(["unknown", "connecting", "connected", "offline"]),
+  lastError: z.string().nullish(),
+  lastAttempt: z.number().nullish(),
+});
+export type MarmotRelayLiveness = z.infer<typeof relayLiveness>;
 
 const windowRevision = z.object({
   generation: z.string(),
@@ -241,16 +259,6 @@ export type OnboardingAction =
 export type IdentityInput =
   { name: string; about: string } | { importToken: string };
 
-const diagnostics = z.object({
-  account: z.string(),
-  readiness,
-  relays: z.number(),
-  connected: z.number(),
-  keyPackages: z.number(),
-  keyPhase: z.string().nullish(),
-  published: z.number().nullish(),
-  refreshOverdue: z.boolean(),
-});
 const backupState = z.object({
   enabled: z.boolean(),
   thisDeviceWrites: z.boolean(),
@@ -274,7 +282,6 @@ const recoveryWords = z.object({
     z.number().positive().int(),
   ]),
 });
-export type MarmotDiagnostics = z.infer<typeof diagnostics>;
 export type MarmotBackupState = z.infer<typeof backupState>;
 export type MarmotRecoveryWords = z.infer<typeof recoveryWords>;
 type BackupAction =
@@ -449,6 +456,7 @@ const directoryResult = z.object({
   profile: publicProfile.nullish(),
 });
 type Events = {
+  relayLiveness: (event: { id: string; rows: unknown }) => void;
   directorySearchResults: (event: { id: string; rows: unknown }) => void;
   attachmentProgress: (event: {
     transfer: string;
@@ -512,9 +520,9 @@ type Bridge = {
     owner: string,
     reference: string,
   ): Promise<unknown>;
-  prepareDirectorySearch(id: string): boolean;
+  prepareObservation(id: string): boolean;
   searchDirectory(owner: string, id: string, query: string): Promise<void>;
-  cancelDirectorySearch(id: string): void;
+  cancelObservation(id: string): void;
   removeAccount(key: string): Promise<void>;
   signInAccount(key: string): Promise<void>;
   signOutAccount(key: string): Promise<void>;
@@ -537,8 +545,18 @@ type Bridge = {
   shutdownRuntime(): Promise<void>;
   closeAccount(pauseMessaging: boolean): Promise<void>;
   catchUp(): Promise<void>;
-  diagnostics(): Promise<unknown>;
-  rotateKeys(): Promise<void>;
+  notifyConnectivityRestored(): Promise<void>;
+  accountRelayLists(key: string): Promise<unknown>;
+  refreshAccountRelayLists(key: string, urls: readonly string[]): Promise<void>;
+  classifyRelays(key: string, urls: readonly string[]): Promise<unknown>;
+  setAccountRelays(
+    key: string,
+    inbox: boolean,
+    urls: readonly string[],
+    bootstrap: readonly string[],
+  ): Promise<void>;
+  reconnectMarmotRelay(url: string): Promise<void>;
+  watchRelayLiveness(key: string, id: string): Promise<void>;
   backupState(): Promise<unknown>;
   beginBackup(): Promise<unknown>;
   backupAction(action: BackupAction, words: string[]): Promise<void>;
@@ -785,14 +803,14 @@ export const marmotDirectory = {
   ) {
     if (signal.aborted) return;
     const bridge = native();
-    if (!bridge.prepareDirectorySearch(id))
+    if (!bridge.prepareObservation(id))
       throw new Error("Directory search unavailable");
     const listener = bridge.addListener("directorySearchResults", (event) => {
       if (event.id !== id || signal.aborted) return;
       const rows = directoryResult.array().safeParse(event.rows);
       if (rows.success) receive(rows.data);
     });
-    const cancel = () => bridge.cancelDirectorySearch(id);
+    const cancel = () => bridge.cancelObservation(id);
     signal.addEventListener("abort", cancel, { once: true });
     try {
       await bridge.searchDirectory(owner, id, query);
@@ -800,6 +818,59 @@ export const marmotDirectory = {
       listener.remove();
       signal.removeEventListener("abort", cancel);
       cancel();
+    }
+  },
+};
+
+export const marmotRelays = {
+  refresh: (key: string, urls: readonly string[]) =>
+    native().refreshAccountRelayLists(key, urls),
+  async read(key: string) {
+    return accountRelayLists.parse(await native().accountRelayLists(key));
+  },
+  async classify(key: string, urls: readonly string[]) {
+    return z
+      .array(z.enum(["allowed", "retired", "unsafe", "invalid"]))
+      .parse(await native().classifyRelays(key, urls));
+  },
+  set(
+    key: string,
+    list: "general" | "inbox",
+    urls: readonly string[],
+    bootstrap: readonly string[],
+  ) {
+    return native().setAccountRelays(key, list === "inbox", urls, bootstrap);
+  },
+  reconnect: (url: string) => native().reconnectMarmotRelay(url),
+  observe(
+    key: string,
+    receive: (rows: MarmotRelayLiveness[]) => void,
+    ended: () => void,
+  ) {
+    const bridge = native();
+    const id = randomUUID();
+    const listener = bridge.addListener("relayLiveness", (event) => {
+      if (event.id === id) receive(relayLiveness.array().parse(event.rows));
+    });
+    let closed = false;
+    const close = () => {
+      closed = true;
+      listener.remove();
+      bridge.cancelObservation(id);
+    };
+    try {
+      if (!bridge.prepareObservation(id)) throw new Error("AccountBusy");
+      void bridge
+        .watchRelayLiveness(key, id)
+        .catch(() => undefined)
+        .finally(() => {
+          listener.remove();
+          if (!closed) ended();
+        });
+      return close;
+    } catch (error) {
+      close();
+      throw error;
     }
   },
 };
@@ -842,7 +913,7 @@ export const marmotAccounts = {
   },
   async open(
     key: string,
-    { general, discovery }: MarmotRelays,
+    { general, discovery }: Omit<MarmotRelays, "inbox">,
     mediaOrigin: string | null,
   ) {
     return readiness.parse(
@@ -1040,10 +1111,6 @@ export const marmot = {
       .parse(await native().readAvatarAssets(references));
   },
   clearAvatarCache: (owner: string) => native().clearMarmotAvatarCache(owner),
-  async diagnostics() {
-    return diagnostics.parse(await native().diagnostics());
-  },
-  rotateKeys: () => native().rotateKeys(),
   async backupState() {
     return backupState.parse(await native().backupState());
   },
@@ -1058,6 +1125,7 @@ export const marmot = {
   closeAccount: (pauseMessaging = false) =>
     native().closeAccount(pauseMessaging),
   catchUp: () => native().catchUp(),
+  notifyConnectivityRestored: () => native().notifyConnectivityRestored(),
   openChatList: (
     view: MarmotChatView,
     options?: { invitations?: boolean; search?: string },

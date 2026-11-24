@@ -1,6 +1,7 @@
 # Working on Boop
 
 - Run `bun install --frozen-lockfile`, `bun fmt .`, `bun run lint`, `bun run typecheck`, and `bun test`.
+- Skip iOS build and runtime validation. No iOS host or device is connected. Skip host discovery and connection attempts for iOS.
 - Read the installed Expo major version in `package.json`. Check the [matching SDK reference](https://docs.expo.dev/versions/v58.0.0/) and [Expo documentation index](https://docs.expo.dev/llms.txt) before changing Expo or React Native APIs. Use `bunx expo install` for Expo packages.
 - Use Expo Router for routes in `src/app`. Put shared UI in `src/components`. Configure generated native projects in `app.json` and `plugins`. Use a development build for native modules.
 - Use `src/services/local.ts` as the composition root for the protected session. It owns the Marmot account lifecycle separately from the relay and call-signaling lifecycle. Keep Boop-specific durable state in `src/db`.

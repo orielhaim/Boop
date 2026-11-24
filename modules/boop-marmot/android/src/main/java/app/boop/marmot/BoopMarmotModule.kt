@@ -30,7 +30,7 @@ class BoopMarmotModule : Module() {
   private val shutdownTurn = Mutex()
   private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-  private val directorySearches = ConcurrentHashMap<String, CompletableJob>()
+  private val observations = ConcurrentHashMap<String, CompletableJob>()
   private val directoryWork = ConcurrentHashMap.newKeySet<Job>()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
@@ -48,14 +48,14 @@ class BoopMarmotModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness")
     OnActivityEntersForeground {
       foregroundGeneration.incrementAndGet()
       downloadsForeground = true
     }
     OnActivityEntersBackground {
       downloadsForeground = false
-      directorySearches.values.forEach { it.cancel() }
+      observations.values.toList().also { observations.clear() }.forEach { it.cancel() }
       directoryWork.forEach { it.cancel() }
       foregroundGeneration.incrementAndGet()
       attachmentAdmissions.values.forEach { it.set(true) }
@@ -105,7 +105,7 @@ class BoopMarmotModule : Module() {
           } finally { prepared.close() }
         } else {
           val profile = UserProfileMetadataFfi(name, name, about, null, null, null, null)
-          kit.createIdentityWithInitialProfile(profile, general, discovery, inbox).account.accountIdHex
+          kit.createIdentityWithInitialProfile(profile, general, general, inbox).account.accountIdHex
         }
       }
     }
@@ -189,33 +189,24 @@ class BoopMarmotModule : Module() {
     AsyncFunction("cachedDirectorySearch") Coroutine { owner: String, query: String ->
       withSigner(owner) { kit -> kit.searchCachedUsers(owner, query, 48u).map { searchResultDocument(it) } }
     }
-    Function("prepareDirectorySearch") { id: String ->
-      if (directorySearches.size >= 8) throw problem("SearchInProgress")
-      directorySearches.putIfAbsent(id, Job()) == null
+    Function("prepareObservation") { id: String ->
+      if (observations.size >= 8) throw problem("SearchInProgress")
+      observations.putIfAbsent(id, Job()) == null
     }
     AsyncFunction("searchDirectory") Coroutine { owner: String, id: String, query: String ->
-      val ticket = directorySearches[id] ?: throw problem("DirectoryUnavailable")
-      val job = currentCoroutineContext().job
-      val cancellation = ticket.invokeOnCompletion { if (ticket.isCancelled) job.cancel() }
-      try {
-        withDirectory(owner) { kit ->
-          kit.searchUsers(owner, query, 0u, 2u).use { search ->
-            while (true) {
-              val update = search.nextUpdate() ?: break
-              currentCoroutineContext().ensureActive()
-              if (update.trigger is SearchUpdateTriggerFfi.Error) continue
-              val rows = (update.newResults + update.updatedResults).take(48).map { searchResultDocument(it) }
-              if (rows.isNotEmpty()) sendEvent("directorySearchResults", mapOf("id" to id, "rows" to rows))
-            }
+      withObservation(owner, id) { kit ->
+        kit.searchUsers(owner, query, 0u, 2u).use { search ->
+          while (true) {
+            val update = search.nextUpdate() ?: break
+            currentCoroutineContext().ensureActive()
+            if (update.trigger is SearchUpdateTriggerFfi.Error) continue
+            val rows = (update.newResults + update.updatedResults).take(48).map { searchResultDocument(it) }
+            if (rows.isNotEmpty()) sendEvent("directorySearchResults", mapOf("id" to id, "rows" to rows))
           }
         }
-      } finally {
-        cancellation.dispose()
-        directorySearches.remove(id, ticket)
-        ticket.complete()
       }
     }
-    Function("cancelDirectorySearch") { id: String -> directorySearches.remove(id)?.cancel(); Unit }
+    Function("cancelObservation") { id: String -> observations.remove(id)?.cancel(); Unit }
     AsyncFunction("requestAvatarAssets") Coroutine { targets: List<String> ->
       withSession { active ->
         active.kit.requestAvatarAssets(active.account, targets).map { it.document() }
@@ -291,19 +282,58 @@ class BoopMarmotModule : Module() {
     AsyncFunction("closeAccount") Coroutine { pauseMessaging: Boolean -> shutdown(pauseMessaging = pauseMessaging) }
     AsyncFunction("shutdownRuntime").Coroutine<Unit> { shutdown(closeRuntime = true) }
     AsyncFunction("catchUp").Coroutine<Unit> { withSession { it.kit.catchUpAccounts() } }
-    AsyncFunction("diagnostics").Coroutine<Document> {
-      withSession {
-        val relays = it.kit.relayHealth()
-        val keys = it.kit.keyPackageMaintenanceStatus(it.account)
-        mapOf("account" to it.account, "readiness" to it.readiness(),
-          "relays" to relays.totalRelays.toInt(), "connected" to relays.connected.toInt(),
-          "keyPackages" to it.kit.localAccountKeyPackages(it.account).size,
-          "keyPhase" to keys?.phase?.name?.lowercase(), "published" to keys?.acceptedFanoutTargets?.toInt(),
-          "refreshOverdue" to it.kit.keyPackageRefreshOverdue(it.account))
+    AsyncFunction("notifyConnectivityRestored").Coroutine<Unit> {
+      withSession { it.kit.notifyConnectivityRestored() }
+    }
+    AsyncFunction("accountRelayLists") Coroutine { key: String ->
+      withSigner(key) { kit ->
+        val lists = kit.accountRelayLists(key)
+        val general = kit.accountNip65Relays(key)
+        val inbox = lists.inbox.relays
+        val allowed = kit.classifyRelayEndpoints((general + inbox).distinct())
+          .filter { it.policy == RelayEndpointPolicyFfi.ALLOWED }.map { it.endpoint }
+        mapOf("general" to general, "write" to lists.nip65.relays, "inbox" to inbox,
+          "bootstrap" to lists.bootstrapRelays, "allowed" to allowed,
+          "retiredHosts" to kit.retiredRelayHosts())
       }
     }
-    AsyncFunction("rotateKeys").Coroutine<Unit> {
-      withSession { it.kit.rotateKeyPackage(it.account); Unit }
+    AsyncFunction("refreshAccountRelayLists") Coroutine { key: String, urls: List<String> ->
+      withDirectory(key) { kit -> kit.refreshUserRelayLists(key, urls); Unit }
+    }
+    AsyncFunction("classifyRelays") Coroutine { key: String, urls: List<String> ->
+      withSigner(key) { kit ->
+        kit.classifyRelayEndpoints(urls).map { it.policy.name.lowercase() }
+      }
+    }
+    AsyncFunction("setAccountRelays") Coroutine { key: String, inbox: Boolean, urls: List<String>, bootstrap: List<String> ->
+      withDirectory(key) { kit ->
+        if (inbox) kit.setAccountInboxRelays(key, urls, bootstrap)
+        else kit.setAccountNip65Relays(key, urls, bootstrap)
+        Unit
+      }
+    }
+    AsyncFunction("reconnectMarmotRelay") Coroutine { url: String ->
+      withSession { it.kit.reconnectRelay(it.account, url); Unit }
+    }
+    AsyncFunction("watchRelayLiveness") Coroutine { key: String, id: String ->
+      withObservation(key, id) { kit ->
+        kit.subscribeRelayLiveness(key).use { stream ->
+          fun emit(rows: List<RelayLivenessFfi>) {
+            sendEvent("relayLiveness", mapOf("id" to id, "rows" to rows.map {
+              mapOf("url" to it.url, "status" to it.status.name.lowercase(),
+                "lastError" to it.lastError, "lastAttempt" to it.lastAttemptUnix?.toDouble())
+            }))
+          }
+          try {
+            emit(stream.snapshot())
+            while (true) {
+              val rows = stream.next() ?: break
+              currentCoroutineContext().ensureActive()
+              emit(rows)
+            }
+          } finally { stream.cancel() }
+        }
+      }
     }
     AsyncFunction("backupState").Coroutine<Document> {
       withSession {
@@ -1108,7 +1138,7 @@ class BoopMarmotModule : Module() {
         closingAccount = true
         directoryWork.toList()
       }
-      directorySearches.values.forEach { it.cancel() }
+      observations.values.toList().also { observations.clear() }.forEach { it.cancel() }
       work.forEach { it.cancel() }
       try {
         work.joinAll()
@@ -1278,6 +1308,19 @@ class BoopMarmotModule : Module() {
     } catch (error: Throwable) {
       withContext(NonCancellable) { runCatching { stopRuntime() } }
       throw error
+    }
+  }
+
+  private suspend fun withObservation(owner: String, id: String, work: suspend (Marmot) -> Unit) {
+    val ticket = observations[id] ?: throw problem("AccountClosed")
+    val job = currentCoroutineContext().job
+    val cancellation = ticket.invokeOnCompletion { if (ticket.isCancelled) job.cancel() }
+    try {
+      withDirectory(owner, work)
+    } finally {
+      cancellation.dispose()
+      observations.remove(id, ticket)
+      ticket.complete()
     }
   }
 

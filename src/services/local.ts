@@ -30,7 +30,6 @@ import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
 import { createProfileDirectory } from "@/core/profiles/directory";
-import { asc } from "drizzle-orm";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
 import { useEffect } from "react";
@@ -38,6 +37,11 @@ import { AppState } from "react-native";
 import { createCallSignalingService } from "@/core/calling/signaling-service";
 import { createNip05Lookup } from "@/core/nostr/nip05-lookup";
 import { createBlossomServerList } from "@/core/media/server-list";
+import {
+  connectivityRestored,
+  type NetworkRoute,
+} from "@/core/nostr/connectivity";
+import { createAccountRelays } from "@/core/nostr/account-relays";
 import { createRelayService } from "@/core/nostr/relay-service";
 import { createCallController } from "@/core/calling/controller";
 import { attachGroupCallLifecycle } from "@/core/calling/group-call-lifecycle";
@@ -62,13 +66,23 @@ import {
 import { createChatPreferences } from "@/core/marmot/chat-preferences";
 import { createMarmotSession } from "@/core/marmot/account-session";
 import { createMarmotViewport } from "@/core/marmot/viewport";
-import { marmot, marmotAccounts, marmotDirectory } from "@/core/marmot/native";
+import {
+  marmot,
+  marmotAccounts,
+  marmotDirectory,
+  marmotRelays,
+} from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import {
-  configuredRelays,
-  defaultRelays,
-  inboxIntentKey,
+  callHandoffPreference,
+  callInboxDisabledPreference,
+  discoveryPreference,
+  initialAccountRelays,
+  readDiscovery,
+  readCallHandoff,
+  relayRoutes,
+  sameRelays,
 } from "@/core/nostr/config";
 import { createPrivacy } from "@/core/privacy";
 import { type AppLock, createAppLock } from "@/core/security/app-lock";
@@ -86,8 +100,6 @@ import {
   setPreference,
   updateContactPreferences,
 } from "@/db/queries";
-import { seedRelays } from "@/db/relays";
-import { relaySettings } from "@/db/schema";
 import { createDerivedTranslations } from "@/db/translations";
 import { purgeExpiredOpenedMessages } from "@/db/open-later";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
@@ -99,7 +111,7 @@ async function start() {
   const installation = await openDatabase();
   let db = installation;
   try {
-    const initialRelays = configuredRelays(defaultRelays, null);
+    const initialRelays = initialAccountRelays;
     const { account, accounts } = await selectedAccount(
       installation,
       initialRelays,
@@ -132,8 +144,10 @@ async function start() {
         await removeLocalAccount(old.key);
       }
       db = await openDatabase(account.key);
-      if (preference(db, "relay.settings.initialized") === null)
+      if (preference(db, "account.preferences.initialized") === null) {
         copyInstallationPreferences(installation, db);
+        setPreference(db, "account.preferences.initialized", "1");
+      }
       installation.$client.closeSync();
     }
     const language = readLanguagePreference(db);
@@ -176,15 +190,35 @@ async function start() {
     const downloadKey = await accountDownloadKey(account.key);
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     purgeExpiredOpenedMessages(db);
-    seedRelays(db);
     const chatPreferences = createChatPreferences(db);
     const privacy = createPrivacy(db, identity.publicKey);
     const mediaSdk = createMediaSdk(db, signer);
     const messagingStarted = performance.now();
-    const relays = createRelayService({
-      readState: (key) => preference(db, key),
-      writeState: (key, value) => setPreference(db, key, value),
+    const relays = createRelayService(
       signer,
+      readCallHandoff(preference(db, callHandoffPreference)),
+      (rows) => setPreference(db, callHandoffPreference, JSON.stringify(rows)),
+    );
+    const accountRelays = createAccountRelays({
+      owner: account.key,
+      source: marmotRelays,
+      initial: {
+        discovery: readDiscovery(preference(db, discoveryPreference)),
+        incomingCalls: preference(db, callInboxDisabledPreference) !== "1",
+      },
+      save({ discovery, incomingCalls }) {
+        if (discovery)
+          setPreference(db, discoveryPreference, JSON.stringify(discovery));
+        if (incomingCalls !== undefined)
+          setPreference(
+            db,
+            callInboxDisabledPreference,
+            incomingCalls ? "0" : "1",
+          );
+      },
+      eligibility: () => (active() ? relays.generation() : null),
+      prepareInbox: relays.prepareInbox,
+      configure: relays.configure,
     });
     const callSignaling = createCallSignalingService({
       signer,
@@ -207,10 +241,7 @@ async function start() {
       },
       active,
       privacy.isBlocked,
-      () => {
-        const { general, discovery } = relays.configuration();
-        return [...new Set([...discovery, ...general])].slice(0, 8);
-      },
+      () => relayRoutes(relays.configuration()).slice(0, 8),
     );
     const avatars = createAvatars(
       db,
@@ -244,11 +275,11 @@ async function start() {
     );
     let beforeAccountClose: (() => Promise<void>) | undefined;
     const marmotSession = createMarmotSession({
-      async open(configuration, mediaOrigin) {
+      async open(discovery, mediaOrigin) {
         if (!isCurrent()) throw new Error("AccountClosed");
         const state = await marmotAccounts.open(
           account.key,
-          configuration,
+          { general: initialRelays.general, discovery },
           mediaOrigin,
         );
         try {
@@ -602,6 +633,7 @@ async function start() {
       marmotSession,
       marmotViewport,
       relays,
+      accountRelays,
       callSignaling,
       calling,
       nativeOpen,
@@ -640,6 +672,7 @@ export function LocalSessionLifecycle() {
     db,
     identity,
     relays,
+    accountRelays,
     callSignaling,
     calling,
     lock,
@@ -680,17 +713,45 @@ export function LocalSessionLifecycle() {
         "SELECT file FROM pragma_database_list WHERE name = 'main'",
       )?.file ?? db.$client.databasePath;
     let checkAfterPrompt: ReturnType<typeof setTimeout> | undefined;
-    const readRelays = () =>
-      db.select().from(relaySettings).orderBy(asc(relaySettings.url)).all();
-    let rows = readRelays();
-    let intent = preference(db, inboxIntentKey);
-    let configuration = configuredRelays(rows, intent);
     const attachmentOrigin = () =>
       mediaSdk.configured("attachment")[0]?.origin ?? null;
     let mediaOrigin = attachmentOrigin();
-    let queued = false;
+    let discovery = accountRelays.snapshot().discovery;
     let mounted = true;
-    let relaysChanged = false;
+    let eligible = false;
+    let catchUp: Promise<void> | undefined;
+    let closeRelayLiveness: (() => void) | undefined;
+    function observeRelayLiveness() {
+      if (isCurrent() && eligible && marmotSession.status() === "ready") {
+        if (closeRelayLiveness) return;
+        try {
+          closeRelayLiveness = marmotRelays.observe(
+            identity.publicKey,
+            (rows) => {
+              const previous = accountRelays.snapshot().liveness;
+              if (
+                !sameRelays(
+                  previous.map(({ url }) => url),
+                  rows.map(({ url }) => url),
+                )
+              )
+                void accountRelays.refresh().catch(() => undefined);
+              accountRelays.setLiveness(rows);
+            },
+            () => {
+              closeRelayLiveness = undefined;
+              accountRelays.setLiveness([]);
+            },
+          );
+        } catch {
+          accountRelays.setLiveness([]);
+        }
+      } else {
+        closeRelayLiveness?.();
+        closeRelayLiveness = undefined;
+        accountRelays.setLiveness([]);
+      }
+    }
     let conditionsRevision = 0;
     function updateBackupConditions() {
       const revision = ++conditionsRevision;
@@ -725,43 +786,26 @@ export function LocalSessionLifecycle() {
     }
     function connectMessaging() {
       if (!isCurrent() || lock.getState().locked) return;
-      if (!chatPreferences.enabled())
-        void marmotSession
-          .stop()
-          .then(() => {
-            if (isCurrent() && !chatPreferences.enabled())
-              return marmot.closeAccount(true);
-          })
-          .catch(() => undefined);
-      else if (AppState.currentState === "active")
-        void marmotSession.start(configuration, mediaOrigin);
+      if (chatPreferences.enabled() && AppState.currentState === "active")
+        void marmotSession.start(discovery, mediaOrigin);
     }
-    function connect() {
-      if (!isCurrent() || lock.getState().locked) return;
-      callSignaling.start();
-      relays.start(configuration);
-      connectMessaging();
-    }
+    let profileRoutes = relayRoutes(relays.configuration());
+    const unsubscribeRelaySettings = accountRelays.subscribe(() => {
+      const next = accountRelays.snapshot().discovery;
+      if (!sameRelays(discovery, next)) {
+        discovery = next;
+        connectMessaging();
+      }
+      const routes = relayRoutes(relays.configuration());
+      if (!sameRelays(profileRoutes, routes)) {
+        profileRoutes = routes;
+        profiles.routesChanged();
+      }
+    });
     const dbChanges = addDatabaseChangeListener(
       ({ databaseFilePath, tableName }) => {
-        if (databaseFilePath !== databasePath) return;
-        if (tableName === "contacts") queueMicrotask(avatars.invalidate);
-        if (tableName !== "relay_settings" && tableName !== "settings") return;
-        relaysChanged ||= tableName === "relay_settings";
-        if (queued) return;
-        queued = true;
-        queueMicrotask(() => {
-          queued = false;
-          if (!mounted) return;
-          const nextIntent = preference(db, inboxIntentKey);
-          if (!relaysChanged && intent === nextIntent) return;
-          if (relaysChanged) rows = readRelays();
-          relaysChanged = false;
-          intent = nextIntent;
-          configuration = configuredRelays(rows, intent);
-          if (AppState.currentState === "active") connect();
-          profiles.routesChanged();
-        });
+        if (databaseFilePath === databasePath && tableName === "contacts")
+          queueMicrotask(avatars.invalidate);
       },
     );
     function updateUnlocks() {
@@ -780,14 +824,37 @@ export function LocalSessionLifecycle() {
       relays.stop();
     }
     function catchUpMessaging() {
-      if (chatPreferences.enabled())
-        void marmotSession
-          .ready()
-          .then(() => {
-            if (mounted && AppState.currentState === "active")
-              return marmot.catchUp();
-          })
-          .catch(() => undefined);
+      if (catchUp || !chatPreferences.enabled()) return;
+      catchUp = marmotSession
+        .ready()
+        .then(async () => {
+          if (mounted && isCurrent() && activeEligibility())
+            await marmot.catchUp();
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          catchUp = undefined;
+        });
+    }
+    function updateRelayEligibility() {
+      const next = activeEligibility();
+      if (!mounted || !isCurrent() || next === eligible) return;
+      eligible = next;
+      if (!next) {
+        observeRelayLiveness();
+        if (lock.getState().locked) {
+          callSignaling.stop();
+          relays.stop();
+        }
+        return;
+      }
+      callSignaling.start();
+      relays.start();
+      connectMessaging();
+      marmotSession.reconnected();
+      observeRelayLiveness();
+      void accountRelays.refresh(true).catch(() => undefined);
+      catchUpMessaging();
     }
     const update = (state: typeof AppState.currentState) => {
       downloads.sync();
@@ -795,14 +862,11 @@ export function LocalSessionLifecycle() {
       if (state === "active") admitDownloadedVoice();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       updateUnlocks();
-      if (state === "active") {
-        calling.setForeground(true);
-        connect();
-        if (!lock.getState().locked) marmotSession.reconnected();
-        catchUpMessaging();
-      } else if (state === "background" && !lock.getState().authenticating) {
+      if (state === "active") calling.setForeground(true);
+      else if (state === "background" && !lock.getState().authenticating)
         background();
-      }
+      updateRelayEligibility();
+      if (state === "active") recoverNetwork();
       updateBackupConditions();
     };
     const unsubscribeLock = lock.subscribe(() => {
@@ -810,15 +874,8 @@ export function LocalSessionLifecycle() {
       speech.sync();
       admitDownloadedVoice();
       updateUnlocks();
-      if (AppState.currentState === "active") {
-        if (lock.getState().locked) {
-          callSignaling.stop();
-          relays.stop();
-        } else {
-          connect();
-          catchUpMessaging();
-        }
-      }
+      updateRelayEligibility();
+      recoverNetwork();
       if (
         lock.getState().authenticating ||
         AppState.currentState !== "background"
@@ -833,7 +890,6 @@ export function LocalSessionLifecycle() {
           background();
       }, 800);
     });
-    update(AppState.currentState);
     const subscription = AppState.addEventListener("change", update);
     let chatsEnabled = chatPreferences.enabled();
     const unsubscribeChats = chatPreferences.subscribe(() => {
@@ -841,7 +897,15 @@ export function LocalSessionLifecycle() {
       if (next === chatsEnabled) return;
       chatsEnabled = next;
       speech.sync();
-      connectMessaging();
+      if (next) connectMessaging();
+      else
+        void marmotSession
+          .stop()
+          .then(() => {
+            if (mounted && isCurrent() && !chatPreferences.enabled())
+              return marmot.closeAccount(true);
+          })
+          .catch(() => undefined);
     });
     const unsubscribeMedia = mediaSdk.subscribe(() => {
       const next = attachmentOrigin();
@@ -850,6 +914,7 @@ export function LocalSessionLifecycle() {
       connectMessaging();
     });
     const unsubscribeAccount = marmotSession.subscribe(() => {
+      observeRelayLiveness();
       speech.accountReady();
       if (marmotSession.status() === "ready") downloads.accountReady();
       admitDownloadedVoice();
@@ -860,39 +925,72 @@ export function LocalSessionLifecycle() {
       updateBackupConditions();
       void speech.power();
     });
-    let networkWasConnected = false;
     let networkRevision = 0;
-    const updateDownloadNetwork = ({
-      isConnected,
-      type,
-    }: Awaited<ReturnType<typeof getNetworkStateAsync>>) =>
+    let lastNetwork: NetworkRoute | undefined;
+    let outboundWake = false;
+    function updateNetwork(
+      state: Awaited<ReturnType<typeof getNetworkStateAsync>>,
+    ) {
+      const { isConnected, isInternetReachable, type } = state;
       downloads.network(
         isConnected !== false,
         type === NetworkStateType.CELLULAR,
       );
-    const network = addNetworkStateListener((state) => {
-      const { isConnected } = state;
-      networkRevision += 1;
-      updateDownloadNetwork(state);
-      const reconnected = isConnected && !networkWasConnected;
-      networkWasConnected = isConnected === true;
+      if (isConnected === undefined) return;
+      const connected = isConnected && isInternetReachable !== false;
+      const previous = lastNetwork;
+      if (previous?.connected === connected && previous.type === type) return;
+      lastNetwork = { connected, type };
       updateBackupConditions();
-      if (isConnected && AppState.currentState === "active") {
-        if (reconnected && !lock.getState().locked) {
-          profileEditor.retry();
-          profiles.routesChanged();
-          marmotSession.reconnected();
-        }
+      if (!connectivityRestored(previous, lastNetwork)) return;
+      outboundWake = true;
+      recoverNetwork();
+    }
+    function recoverNetwork() {
+      if (
+        !outboundWake ||
+        !lastNetwork?.connected ||
+        !activeEligibility() ||
+        !isCurrent()
+      )
+        return;
+      outboundWake = false;
+      relays.reconnect();
+      profileEditor.retry();
+      profiles.routesChanged();
+      void accountRelays.refresh(true).catch(() => undefined);
+      if (chatPreferences.enabled()) {
+        marmotSession.reconnected();
+        observeRelayLiveness();
+        void marmotSession
+          .ready()
+          .then(async () => {
+            if (
+              mounted &&
+              isCurrent() &&
+              activeEligibility() &&
+              lastNetwork?.connected
+            )
+              await marmot.notifyConnectivityRestored();
+          })
+          .catch(() => undefined);
         catchUpMessaging();
       }
+    }
+    update(AppState.currentState);
+    const network = addNetworkStateListener((state) => {
+      networkRevision += 1;
+      updateNetwork(state);
     });
     void getNetworkStateAsync()
       .then((state) => {
-        if (mounted && networkRevision === 0) updateDownloadNetwork(state);
+        if (mounted && networkRevision === 0) updateNetwork(state);
       })
       .catch(() => undefined);
     return () => {
       mounted = false;
+      eligible = false;
+      observeRelayLiveness();
       stopSpeech();
       stopDownloads();
       unsubscribeSpeechCall();
@@ -903,6 +1001,7 @@ export function LocalSessionLifecycle() {
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
       unsubscribeLock();
       unsubscribeChats();
+      unsubscribeRelaySettings();
       unsubscribeMedia();
       unsubscribeAccount();
       profileEditor.setActive(false);
@@ -920,6 +1019,7 @@ export function LocalSessionLifecycle() {
     db,
     identity,
     relays,
+    accountRelays,
     callSignaling,
     calling,
     lock,

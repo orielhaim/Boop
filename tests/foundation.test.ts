@@ -8,11 +8,9 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { getExactRoutes } from "expo-router/build/getRoutes";
-import { configuredRelays, inboxIntentKey } from "../src/core/nostr/config";
 import { relayUrl } from "../src/core/nostr/relays";
 import { initializeTestDatabase } from "./db-fixture";
 import { callList, preference, setPreference } from "../src/db/queries";
-import { editRelays, seedRelays } from "../src/db/relays";
 import * as schema from "../src/db/schema";
 
 const secret = "01".repeat(32);
@@ -39,7 +37,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   const orm = drizzle(db, { schema });
   migrate(orm, { migrationsFolder });
   migrate(orm, { migrationsFolder });
-  expect(db.query("PRAGMA user_version").values()).toEqual([[3]]);
+  expect(db.query("PRAGMA user_version").values()).toEqual([[4]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
   ).toEqual([[3]]);
@@ -56,7 +54,6 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
     "downloads",
     "link_preview_cache",
     "peer_permissions",
-    "relay_settings",
     "settings",
     "speech_jobs",
   ]);
@@ -92,28 +89,6 @@ test("queries local call history and preferences", () => {
   });
   setPreference(db, "theme", "dark");
   expect(preference(db, "theme")).toBe("dark");
-});
-
-test("seeds verified roles on a new identity and does not reseed after removal", () => {
-  using sqlite = new Database(":memory:");
-  initializeTestDatabase(sqlite);
-  const db = drizzle(sqlite, { schema });
-  seedRelays(db);
-  const saved = db.select().from(schema.relaySettings).all();
-  expect(configuredRelays(saved, preference(db, inboxIntentKey))).toEqual({
-    general: ["wss://nos.lol/", "wss://relay.primal.net/"],
-    inbox: ["wss://nos.lol/", "wss://relay.primal.net/"],
-    discovery: ["wss://purplepag.es/"],
-    intent: null,
-  });
-  editRelays(
-    db,
-    saved.map(({ url }) => ({ url, next: null })),
-    "explicit-removal",
-  );
-  seedRelays(db);
-  expect(db.select().from(schema.relaySettings).all()).toEqual([]);
-  expect(preference(db, inboxIntentKey)).toBe("explicit-removal");
 });
 
 test("requires a secure relay URL", () => {

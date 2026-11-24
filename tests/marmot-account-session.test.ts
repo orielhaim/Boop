@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMarmotSession } from "@/core/marmot/account-session";
 
-const relays = { general: [], inbox: [], discovery: [] };
+const discovery: string[] = [];
 
 test("coalesces duplicate opens and reconnects after a transient failure", async () => {
   let attempts = 0;
@@ -13,7 +13,10 @@ test("coalesces duplicate opens and reconnects after a transient failure", async
     async close() {},
     beforeClose: () => undefined,
   });
-  await Promise.all([session.start(relays, null), session.start(relays, null)]);
+  await Promise.all([
+    session.start(discovery, null),
+    session.start(discovery, null),
+  ]);
   expect(attempts).toBe(1);
   expect(session.status()).toBe("failed");
   session.reconnected();
@@ -40,7 +43,7 @@ test("an open that completes after stop is drained without ever publishing ready
     },
   });
   session.subscribe(() => phases.push(session.status()));
-  const opening = session.start(relays, null);
+  const opening = session.start(discovery, null);
   await entered.promise;
   const closing = session.stop();
   release.resolve();
@@ -69,8 +72,8 @@ test("configuration changes drain the previous session before opening its replac
       phases.push("drained");
     },
   });
-  await session.start(relays, null);
-  await session.start(relays, "https://media.example.com");
+  await session.start(discovery, null);
+  await session.start(discovery, "https://media.example.com");
   expect(phases).toEqual([
     null,
     "drained",
@@ -92,7 +95,7 @@ test("a signed-out account stays unavailable when connectivity returns", async (
     async close() {},
     beforeClose: () => undefined,
   });
-  await session.start(relays, null);
+  await session.start(discovery, null);
   session.reconnected();
   await expect(session.ready()).rejects.toThrow("signed out");
   expect(attempts).toBe(1);

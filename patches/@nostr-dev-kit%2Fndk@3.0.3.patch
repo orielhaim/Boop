@@ -1,0 +1,207 @@
+diff --git a/dist/index.js b/dist/index.js
+index c827f174063650f613746231ba80ba1c676ae5f5..5eae7f1b38892000ce3befec23bf2ea0bdb4a0af 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -998,6 +998,7 @@ var NDKRelayConnectivity = class {
+    * Handles detection of a stale connection by cleaning up and triggering reconnection.
+    */
+   handleStaleConnection() {
++    if (this._status < 5 /* CONNECTED */) return;
+     this.wasIdle = true;
+     this.keepalive?.stop();
+     if (this.ws) {
+@@ -1122,6 +1123,10 @@ var NDKRelayConnectivity = class {
+    */
+   disconnect() {
+     this._status = 0 /* DISCONNECTING */;
++    if (this.connectTimeout) clearTimeout(this.connectTimeout);
++    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
++    this.connectTimeout = undefined;
++    this.reconnectTimeout = undefined;
+     this.keepalive?.stop();
+     if (this.wsStateMonitor) {
+       clearInterval(this.wsStateMonitor);
+@@ -1159,6 +1164,7 @@ var NDKRelayConnectivity = class {
+    * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+    */
+   onConnect() {
++    if (this._status === 0 /* DISCONNECTING */) return;
+     this.netDebug?.("connected", this.ndkRelay);
+     if (this.reconnectTimeout) {
+       clearTimeout(this.reconnectTimeout);
+@@ -4620,6 +4626,10 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+    * @returns {boolean} True if the relay was removed, false if it was not found.
+    */
+   removeRelay(relayUrl) {
++    clearTimeout(this.flappingTimers.get(relayUrl));
++    this.flappingTimers.delete(relayUrl);
++    this.backoffTimes.delete(relayUrl);
++    this.disconnectionTimes.delete(relayUrl);
+     const relay = this.relays.get(relayUrl);
+     if (relay) {
+       relay.disconnect();
+@@ -4784,18 +4794,21 @@ var NDKPool = class extends import_tseep3.EventEmitter {
+     }
+     this.disconnectionTimes.clear();
+   }
++  flappingTimers = new Map();
+   handleFlapping(relay) {
+     this.debug(`Relay ${relay.url} is flapping`);
+     let currentBackoff = this.backoffTimes.get(relay.url) || 5e3;
+     currentBackoff = currentBackoff * 2;
+     this.backoffTimes.set(relay.url, currentBackoff);
+     this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+-    setTimeout(() => {
++    clearTimeout(this.flappingTimers.get(relay.url));
++    this.flappingTimers.set(relay.url, setTimeout(() => {
++      this.flappingTimers.delete(relay.url);
+       this.debug(`Attempting to reconnect to ${relay.url}`);
+       this.emit("relay:connecting", relay);
+-      relay.connect();
++      void relay.connect().catch(() => undefined);
+       this.checkOnFlappingRelays();
+-    }, currentBackoff);
++    }, currentBackoff));
+     relay.disconnect();
+     this.emit("flapping", relay);
+   }
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 9ca50cecb50a5d00dca421193faac06e3274958d..67f25eb7fae20617e6abfe11d2b8f4cb8b389f7c 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -820,6 +820,7 @@ var NDKRelayConnectivity = class {
+    * Handles detection of a stale connection by cleaning up and triggering reconnection.
+    */
+   handleStaleConnection() {
++    if (this._status < 5 /* CONNECTED */) return;
+     this.wasIdle = true;
+     this.keepalive?.stop();
+     if (this.ws) {
+@@ -944,6 +945,10 @@ var NDKRelayConnectivity = class {
+    */
+   disconnect() {
+     this._status = 0 /* DISCONNECTING */;
++    if (this.connectTimeout) clearTimeout(this.connectTimeout);
++    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
++    this.connectTimeout = undefined;
++    this.reconnectTimeout = undefined;
+     this.keepalive?.stop();
+     if (this.wsStateMonitor) {
+       clearInterval(this.wsStateMonitor);
+@@ -981,6 +986,7 @@ var NDKRelayConnectivity = class {
+    * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+    */
+   onConnect() {
++    if (this._status === 0 /* DISCONNECTING */) return;
+     this.netDebug?.("connected", this.ndkRelay);
+     if (this.reconnectTimeout) {
+       clearTimeout(this.reconnectTimeout);
+@@ -4442,6 +4448,10 @@ var NDKPool = class extends EventEmitter3 {
+    * @returns {boolean} True if the relay was removed, false if it was not found.
+    */
+   removeRelay(relayUrl) {
++    clearTimeout(this.flappingTimers.get(relayUrl));
++    this.flappingTimers.delete(relayUrl);
++    this.backoffTimes.delete(relayUrl);
++    this.disconnectionTimes.delete(relayUrl);
+     const relay = this.relays.get(relayUrl);
+     if (relay) {
+       relay.disconnect();
+@@ -4606,18 +4616,21 @@ var NDKPool = class extends EventEmitter3 {
+     }
+     this.disconnectionTimes.clear();
+   }
++  flappingTimers = new Map();
+   handleFlapping(relay) {
+     this.debug(`Relay ${relay.url} is flapping`);
+     let currentBackoff = this.backoffTimes.get(relay.url) || 5e3;
+     currentBackoff = currentBackoff * 2;
+     this.backoffTimes.set(relay.url, currentBackoff);
+     this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+-    setTimeout(() => {
++    clearTimeout(this.flappingTimers.get(relay.url));
++    this.flappingTimers.set(relay.url, setTimeout(() => {
++      this.flappingTimers.delete(relay.url);
+       this.debug(`Attempting to reconnect to ${relay.url}`);
+       this.emit("relay:connecting", relay);
+-      relay.connect();
++      void relay.connect().catch(() => undefined);
+       this.checkOnFlappingRelays();
+-    }, currentBackoff);
++    }, currentBackoff));
+     relay.disconnect();
+     this.emit("flapping", relay);
+   }
+diff --git a/src/relay/connectivity.ts b/src/relay/connectivity.ts
+index 1b965b5cc7af29c9e70d0cad301eacf4144ca105..d3bd02a65655a8f1c2f84f5d9324a782a06b42c8 100644
+--- a/src/relay/connectivity.ts
++++ b/src/relay/connectivity.ts
+@@ -123,6 +123,7 @@ export class NDKRelayConnectivity {
+      * Handles detection of a stale connection by cleaning up and triggering reconnection.
+      */
+     private handleStaleConnection(): void {
++        if (this._status < NDKRelayStatus.CONNECTED) return;
+         this.wasIdle = true; // Mark as idle to reset backoff
+ 
+         // Stop keepalive
+@@ -273,6 +274,10 @@ export class NDKRelayConnectivity {
+      */
+     public disconnect(): void {
+         this._status = NDKRelayStatus.DISCONNECTING;
++        if (this.connectTimeout) clearTimeout(this.connectTimeout);
++        if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
++        this.connectTimeout = undefined;
++        this.reconnectTimeout = undefined;
+ 
+         // Clean up monitoring
+         this.keepalive?.stop();
+@@ -315,6 +320,7 @@ export class NDKRelayConnectivity {
+      * sets the connection status to `CONNECTED`, and emits `connect` and `ready` events on the `ndkRelay` object.
+      */
+     private onConnect() {
++        if (this._status === NDKRelayStatus.DISCONNECTING) return;
+         this.netDebug?.("connected", this.ndkRelay);
+         if (this.reconnectTimeout) {
+             clearTimeout(this.reconnectTimeout);
+diff --git a/src/relay/pool/index.ts b/src/relay/pool/index.ts
+index 68366bf0780cbd6b7b78775d299cdea8cd7f794b..55f01ead103ca47cef7919e1fa9e007328e7bd52 100644
+--- a/src/relay/pool/index.ts
++++ b/src/relay/pool/index.ts
+@@ -242,6 +242,10 @@ export class NDKPool extends EventEmitter<{
+      * @returns {boolean} True if the relay was removed, false if it was not found.
+      */
+     public removeRelay(relayUrl: string): boolean {
++        clearTimeout(this.flappingTimers.get(relayUrl));
++        this.flappingTimers.delete(relayUrl);
++        this.backoffTimes.delete(relayUrl);
++        this.disconnectionTimes.delete(relayUrl);
+         const relay = this.relays.get(relayUrl);
+         if (relay) {
+             relay.disconnect();
+@@ -466,6 +470,8 @@ export class NDKPool extends EventEmitter<{
+         this.disconnectionTimes.clear();
+     }
+ 
++    private flappingTimers = new Map<string, ReturnType<typeof setTimeout>>();
++
+     private handleFlapping(relay: NDKRelay) {
+         this.debug(`Relay ${relay.url} is flapping`);
+ 
+@@ -476,12 +482,14 @@ export class NDKPool extends EventEmitter<{
+ 
+         this.debug(`Backoff time for ${relay.url} is ${currentBackoff}ms`);
+ 
+-        setTimeout(() => {
++        clearTimeout(this.flappingTimers.get(relay.url));
++        this.flappingTimers.set(relay.url, setTimeout(() => {
++            this.flappingTimers.delete(relay.url);
+             this.debug(`Attempting to reconnect to ${relay.url}`);
+             this.emit("relay:connecting", relay);
+-            relay.connect();
++            void relay.connect().catch(() => undefined);
+             this.checkOnFlappingRelays();
+-        }, currentBackoff);
++        }, currentBackoff));
+ 
+         relay.disconnect();
+ 
