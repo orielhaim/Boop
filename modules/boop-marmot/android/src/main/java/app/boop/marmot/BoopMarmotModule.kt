@@ -395,17 +395,20 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    AsyncFunction("openGroupState") Coroutine { id: String, group: String ->
+    AsyncFunction("openGroupState") Coroutine { id: String, group: String, roster: Boolean ->
       withSession { active ->
         val handle = active.kit.subscribeGroupState(active.account, group)
-        val read: suspend () -> Document = { groupDocument(active.kit, active.account, group) }
+        val read: suspend () -> Document = {
+          if (roster) rosterDocument(active.kit, active.account, group)
+          else groupDocument(active.kit, active.account, group)
+        }
         val details = try { read() } catch (error: Throwable) { handle.close(); throw error }
         lifecycle.withLock {
           if (session !== active || active.closing) {
             handle.close()
             throw problem("AccountClosed")
           }
-          install(id, GroupStateWindow(id, handle, details, read))
+          install(id, GroupStateWindow(id, handle, details, if (roster) "groupRoster" else "groupState", read))
         }
       }
     }
@@ -471,14 +474,15 @@ class BoopMarmotModule : Module() {
     AsyncFunction("startDirect") Coroutine { peer: String ->
       withSession { it.kit.startDirectConversation(it.account, peer) }
     }
-    AsyncFunction("checkInvitee") Coroutine { peer: String ->
-      withSession { it.kit.prewarmGroupMemberKeyPackages(it.account, listOf(peer)); Unit }
+    AsyncFunction("prewarmInvitees") Coroutine { members: List<String> ->
+      withSession { it.kit.prewarmGroupMemberKeyPackages(it.account, members); Unit }
     }
     AsyncFunction("createGroup") Coroutine { name: String, description: String?, members: List<String>, image: String? ->
       withSession {
         val initial = image?.let { path -> InitialGroupImageFfi(groupImageInput(path), "image/jpeg", null, null, null) }
         val result = it.kit.createGroupWithInitialImageDetailed(it.account, name, members, description, initial)
-        mapOf("groupId" to result.created?.groupIdHex, "members" to result.memberOutcomes.map { member ->
+        mapOf("groupId" to result.created?.groupIdHex,
+          "createdAt" to result.created?.chatListRow?.conversationCreatedAt?.toDouble(), "members" to result.memberOutcomes.map { member ->
           mapOf("account" to member.accountIdHex, "status" to member.status.name.lowercase(), "devices" to member.selectedDeviceCount.toInt())
         })
       }
@@ -490,23 +494,55 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    AsyncFunction("groupDetails") Coroutine { group: String ->
-      withSession { groupDocument(it.kit, it.account, group) }
+    AsyncFunction("groupDiagnostics") Coroutine { group: String ->
+      withSession { groupDiagnostics(it.kit, it.account, group) }
+    }
+    AsyncFunction("groupAccess") Coroutine { group: String, includeMembers: Boolean ->
+      withSession<Document> {
+        val details = it.kit.groupDetails(it.account, group)
+        val row = if (includeMembers) it.kit.chatListRow(it.account, group) else null
+        mapOf(
+          "membership" to details.group.selfMembership.name.lowercase(),
+          "pendingInvitation" to details.group.pendingConfirmation,
+          "pendingLeave" to details.group.leaveRequestPending,
+          "unrecoverable" to details.mlsState.unrecoverable,
+          "disbanding" to details.mlsState.disbanding,
+          "lifecycle" to details.mlsState.lifecycleState.name.lowercase(),
+          "kind" to row?.conversationKind?.name?.lowercase(),
+          "members" to if (includeMembers) details.members.map { member -> member.memberIdHex } else emptyList(),
+        )
+      }
+    }
+    AsyncFunction("groupInvitation") Coroutine { group: String, preview: Boolean ->
+      withSession<Document> {
+        val details = it.kit.groupDetails(it.account, group)
+        mapOf(
+          "inviter" to details.group.welcomerAccountIdHex.takeIf { _ -> details.group.pendingConfirmation },
+          "name" to details.group.name,
+          "memberCount" to details.members.size,
+          "members" to if (preview) details.members.asSequence().filterNot { member -> member.isSelf }.take(16).map { member ->
+            mapOf("id" to member.memberIdHex, "npub" to member.npub, "name" to member.displayName)
+          }.toList() else emptyList(),
+        )
+      }
+    }
+    AsyncFunction("groupMemberIds") Coroutine { groups: List<String> ->
+      withSession { it.kit.groupMemberIdsPage(it.account, groups).associate { row -> row.groupIdHex to row.memberIdsHex } }
     }
     AsyncFunction("updateGroup") Coroutine { group: String, name: String?, description: String? ->
-      withSession { it.kit.updateGroupProfile(it.account, group, name, description); Unit }
+      withSession { it.kit.updateGroupProfile(it.account, group, name, description).acceptDisposition.name.lowercase() }
     }
     AsyncFunction("updateGroupImage") Coroutine { group: String, path: String? ->
       withSession {
-        if (path == null) it.kit.clearGroupImage(it.account, group)
+        val result = if (path == null) it.kit.clearGroupImage(it.account, group)
         else it.kit.updateGroupImage(it.account, group, groupImageInput(path), "image/jpeg")
-        Unit
+        result.acceptDisposition.name.lowercase()
       }
     }
     AsyncFunction("updateGroupMedia") Coroutine { group: String, origins: List<String> ->
       withSession {
         it.kit.replaceEncryptedMediaBlobEndpoints(it.account, group, origins.map { origin -> AppBlobEndpointFfi("blossom", origin) })
-        Unit
+          .acceptDisposition.name.lowercase()
       }
     }
     AsyncFunction("viewGroupImage") Coroutine { group: String, hash: String ->
@@ -531,32 +567,42 @@ class BoopMarmotModule : Module() {
     AsyncFunction("inviteMembers") Coroutine { group: String, members: List<String> ->
       withSession { session ->
         val result = session.kit.inviteMembersDetailed(session.account, group, members)
-        result.invite.memberOutcomes.map {
-          mapOf("account" to it.accountIdHex, "status" to it.status.name.lowercase(), "devices" to it.selectedDeviceCount.toInt())
-        }
+        mapOf(
+          "disposition" to result.invite.summary?.acceptDisposition?.name?.lowercase(),
+          "members" to result.invite.memberOutcomes.map {
+            mapOf("account" to it.accountIdHex, "status" to it.status.name.lowercase(), "devices" to it.selectedDeviceCount.toLong())
+          },
+        )
       }
     }
     AsyncFunction("changeMember") Coroutine { group: String, member: String, action: String ->
       withSession {
-        when (action) {
+        val result = when (action) {
           "remove" -> it.kit.removeMembers(it.account, group, listOf(member))
           "promote" -> it.kit.promoteAdmin(it.account, group, member)
           "demote" -> it.kit.demoteAdmin(it.account, group, member)
+          "stepDown" -> it.kit.selfDemoteAdmin(it.account, group)
           else -> throw problem("InvalidGroupAction")
         }
-        Unit
+        result.acceptDisposition.name.lowercase()
       }
     }
     AsyncFunction("changeMembership") Coroutine { group: String, action: String ->
       withSession {
         when (action) {
-          "leave" -> it.kit.leaveGroup(it.account, group)
-          "cancelLeave" -> it.kit.cancelLeave(it.account, group)
-          "forget" -> it.kit.deleteGroupLocal(it.account, group)
-          "disband" -> it.kit.disbandGroup(it.account, group)
-          "enableDisbanding" -> it.kit.enableGroupDisbanding(it.account, group)
+          "leave" -> it.kit.leaveGroup(it.account, group).acceptDisposition.name.lowercase()
+          "cancelLeave" -> { it.kit.cancelLeave(it.account, group); null }
+          "deleteLocal" -> { it.kit.deleteGroupLocal(it.account, group); null }
+          "disband" -> { it.kit.disbandGroup(it.account, group); null }
+          "enableDisbanding" -> it.kit.enableGroupDisbanding(it.account, group).summary.acceptDisposition.name.lowercase()
           else -> throw problem("InvalidGroupAction")
         }
+      }
+    }
+    AsyncFunction("respondToRejoin") Coroutine { welcome: String, token: String? ->
+      withSession {
+        if (token == null) it.kit.declineGroupRejoin(it.account, welcome)
+        else it.kit.confirmGroupRejoin(it.account, welcome, token)
         Unit
       }
     }

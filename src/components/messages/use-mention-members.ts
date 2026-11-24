@@ -5,9 +5,12 @@ import { useMarmotWindow } from "./marmot-window";
 
 export function useMentionMembers(group: string, enabled: boolean) {
   const contacts = useContacts();
-  const watch = useCallback(() => marmot.openGroupState(group), [group]);
+  const watch = useCallback(() => marmot.openGroupRoster(group), [group]);
   const { snapshot, error, retry } = useMarmotWindow(watch, enabled);
-  const roster = snapshot?.details.members;
+  const roster =
+    snapshot?.details.membership === "member"
+      ? snapshot.details.members
+      : undefined;
   const members = useMemo(() => {
     const names = new Map(
       contacts.map(({ publicKey, name }) => [publicKey, name]),

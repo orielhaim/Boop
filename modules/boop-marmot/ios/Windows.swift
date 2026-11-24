@@ -157,12 +157,14 @@ final class GroupStateWindow: @unchecked Sendable {
   private let read: @Sendable () async throws -> Document
   private var sequence: UInt64 = 0
   private var details: Document?
+  private let kind: String
 
-  init(generation: String, handle: GroupStateSubscription, details: Document,
+  init(generation: String, handle: GroupStateSubscription, details: Document, kind: String,
        read: @escaping @Sendable () async throws -> Document) {
     self.generation = generation
     self.handle = handle
     self.details = details
+    self.kind = kind
     self.read = read
   }
 
@@ -179,7 +181,7 @@ final class GroupStateWindow: @unchecked Sendable {
   }
 
   private func project(_ details: Document) -> Document {
-    ["kind": "groupState", "generation": generation, "sequence": String(sequence),
+    ["kind": kind, "generation": generation, "sequence": String(sequence),
      "hasMoreBefore": false, "hasMoreAfter": false, "details": details]
   }
 }
@@ -188,9 +190,6 @@ func groupDocument(_ kit: Marmot, _ account: String, _ group: String) async thro
   let snapshot = try await kit.groupConversationSnapshot(accountRef: account, groupIdHex: group)
   let details = snapshot.details
   let policy = snapshot.managementState
-  let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
-  let delivery = try await kit.groupCommitDelivery(accountRef: account, groupIdHex: group)
-  let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
   let presented = try await kit.presentedChatListRow(accountRef: account, groupIdHex: group)
   let chat = presented?.row
   let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
@@ -202,32 +201,50 @@ func groupDocument(_ kit: Marmot, _ account: String, _ group: String) async thro
     "mediaV2": details.group.encryptedMedia.version == .v2,
     "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
     "unrecoverable": details.mlsState.unrecoverable,
-    "convergenceParked": details.mlsState.convergenceParked || recovery.automaticRecoveryFailed,
-    "historyIncomplete": recovery.historyMayBeIncomplete,
-    "relayChangesOutstanding": (delivery?.owedRelayUrls.count ?? 0) + (delivery?.refusedRelays.count ?? 0),
+    "convergenceParked": details.mlsState.convergenceParked,
+    "disbanding": details.mlsState.disbanding, "epoch": String(details.mlsState.epoch),
     "membership": wireName(details.group.selfMembership),
     "pendingInvitation": details.group.pendingConfirmation,
     "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
     "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
     "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
     "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
-    "lifecycle": wireName(policy.lifecycleState), "commit": bridgeValue(pending.map { wireName($0.state) }),
+    "lifecycle": wireName(policy.lifecycleState),
+    "canStepDown": policy.isSelfAdmin && !policy.isLastAdmin,
     "canInvite": policy.canInvite, "canLeave": policy.canLeave,
     "canCancelLeave": policy.canCancelLeave, "canDisband": policy.canDisband,
     "canEnableDisbanding": policy.canEnableDisbanding,
     "members": details.members.map { member -> Document in
       let perms = actions[member.memberIdHex]
-      let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
-        ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
-      return [
-        "id": member.memberIdHex, "npub": member.npub,
-        "name": name,
-        "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount),
+      return memberDocument(member, kit).merging([
         "canPromote": perms?.canPromote ?? false, "canRemove": perms?.canRemove ?? false,
         "canDemote": perms?.canDemote ?? false,
-      ]
+      ], uniquingKeysWith: { _, action in action })
     },
   ]
+}
+
+private func memberDocument(_ member: GroupMemberDetailsFfi, _ kit: Marmot) -> Document {
+  let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
+    ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
+  return ["id": member.memberIdHex, "npub": member.npub, "name": name,
+          "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount)]
+}
+
+func rosterDocument(_ kit: Marmot, _ account: String, _ group: String) async throws -> Document {
+  let roster = try await kit.groupRoster(accountRef: account, groupIdHex: group)
+  return ["revision": String(roster.rosterRevision), "membership": wireName(roster.selfMembership),
+          "lifecycle": wireName(roster.lifecycleState), "members": roster.members.map { memberDocument($0, kit) }]
+}
+
+func groupDiagnostics(_ kit: Marmot, _ account: String, _ group: String) async throws -> Document {
+  let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
+  let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
+  return ["commit": bridgeValue(pending.map { wireName($0.state) }),
+          "automaticRecoveryFailed": recovery.automaticRecoveryFailed, "historyIncomplete": recovery.historyMayBeIncomplete,
+          "rejoinOffers": recovery.rejoinInvitations.map {
+            ["welcome": $0.welcomeIdHex, "inviter": $0.welcomerAccountIdHex, "token": $0.localStateToken]
+          }]
 }
 
 private func project(_ snapshot: AccountAttentionSnapshotFfi, _ account: String) -> Document {

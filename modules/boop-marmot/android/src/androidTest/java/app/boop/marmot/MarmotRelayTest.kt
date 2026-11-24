@@ -241,8 +241,13 @@ class MarmotRelayTest {
 
         val available = alice.kit.prewarmGroupMemberKeyPackages(alice.key, listOf(bob.key))
         assertEquals(1uL, available.uniqueMembers)
-        val direct = alice.kit.startDirectConversation(alice.key, bob.key)
-        assertEquals(direct, alice.kit.startDirectConversation(alice.key, bob.key))
+        val direct = coroutineScope {
+          assertNull(alice.kit.existingDirectConversation(alice.key, bob.key))
+          val first = async { alice.kit.startDirectConversation(alice.key, bob.key) }
+          val second = async { alice.kit.startDirectConversation(alice.key, bob.key) }
+          first.await().also { assertEquals(it, second.await()) }
+        }
+        assertEquals(direct, alice.kit.existingDirectConversation(alice.key, bob.key)?.groupIdHex)
         bob.accept(direct)
         val first = alice.kit.sendTextWithClientToken(alice.key, direct, "hello from Alice", "first-direct-message")
         bob.receives(direct, alice.key, "hello from Alice")
@@ -286,10 +291,18 @@ class MarmotRelayTest {
           throw AssertionError("Restart sender ${sender.lifecycleState} epoch ${sender.epoch}; recipient ${recipient.lifecycleState} epoch ${recipient.epoch}; send status $status", error)
         }
 
-        val group = alice.kit.createGroupDetailed(alice.key, "Fixture group", listOf(bob.key, carol.key), "Integration fixture")
-          .created?.groupIdHex ?: error("Group creation failed")
+        val created = checkNotNull(alice.kit.createGroupWithInitialImageDetailed(
+          alice.key, "Fixture group", listOf(bob.key, carol.key), "Integration fixture", null,
+        ).created)
+        val group = created.groupIdHex
+        assertTrue(created.chatListRow.conversationCreatedAt > 0uL)
         bob.accept(group)
         carol.accept(group)
+        for (client in listOf(alice, bob, carol)) {
+          assertFalse(client.kit.timelineMessages(client.key, latestTimeline(group)).messages.any {
+            it.groupSystem?.systemType == "group_renamed"
+          })
+        }
         assertEquals("encrypted-media-v2", alice.kit.groupDetails(alice.key, group).group.encryptedMedia.mediaFormat)
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
@@ -334,6 +347,11 @@ class MarmotRelayTest {
 
         alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
         await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
+        await("authenticated rename after creation") {
+          bob.kit.timelineMessages(bob.key, latestTimeline(group)).messages.any {
+            it.groupSystem?.systemType == "group_renamed"
+          }
+        }
         alice.kit.promoteAdmin(alice.key, group, bob.key)
         await("canonical admin promotion") { bob.kit.groupManagementState(bob.key, group).isSelfAdmin }
         concurrentProfileUpdates(alice, bob, group)
@@ -476,8 +494,26 @@ class MarmotRelayTest {
       await("late invitee KeyPackage publication") {
         invitee.kit.accountSetupReadiness(invitee.key) == AccountSetupReadinessFfi.NETWORK_READY
       }
-      val read = suspend { groupDocument(admin.kit, admin.key, group) }
-      val state = GroupStateWindow("group-test", admin.kit.subscribeGroupState(admin.key, group), read(), read)
+      val kit = admin.kit
+      val account = admin.key
+      // Warm both read paths before sampling the local worker and projection cost.
+      groupDocument(kit, account, group)
+      rosterDocument(kit, account, group)
+      val rosterTimes = mutableListOf<Long>()
+      val priorTimes = mutableListOf<Long>()
+      repeat(15) {
+        val before = System.nanoTime()
+        groupDocument(kit, account, group)
+        groupDiagnostics(kit, account, group)
+        kit.groupCommitDelivery(account, group)
+        priorTimes += System.nanoTime() - before
+        val after = System.nanoTime()
+        rosterDocument(kit, account, group)
+        rosterTimes += System.nanoTime() - after
+      }
+      android.util.Log.i("BoopGroupProjection", "previous five reads: ${priorTimes.sorted()[7] / 1000} us; roster read: ${rosterTimes.sorted()[7] / 1000} us (median, n=15)")
+      val read = suspend { rosterDocument(admin.kit, admin.key, group) }
+      val state = GroupStateWindow("group-test", admin.kit.subscribeGroupState(admin.key, group), read(), "groupRoster", read)
       fun roster(snapshot: Document): Set<Any?> {
         val details = snapshot["details"] as Map<*, *>
         return (details["members"] as List<*>).filterIsInstance<Map<*, *>>().map { it["id"] }.toSet()
@@ -485,6 +521,7 @@ class MarmotRelayTest {
       val initial = checkNotNull(state.initial())
       assertEquals("0", initial["sequence"])
       assertFalse(roster(initial).contains(invitee.key))
+      val initialRevision = ((initial["details"] as Map<*, *>)["revision"] as String).toULong()
       try {
         val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
         val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
@@ -497,7 +534,14 @@ class MarmotRelayTest {
           while (true) {
             val next = checkNotNull(state.next())
             assertEquals("group-test", next["generation"])
-            if (roster(next).contains(invitee.key)) break
+            if (roster(next).contains(invitee.key)) {
+              assertTrue(((next["details"] as Map<*, *>)["revision"] as String).toULong() > initialRevision)
+              val settings = groupDocument(admin.kit, admin.key, group)
+              val member = (settings["members"] as List<*>).filterIsInstance<Map<*, *>>().single { it["id"] == invitee.key }
+              assertEquals(true, member["canRemove"])
+              assertEquals(false, member["admin"])
+              break
+            }
           }
         }
       } finally { state.stop() }

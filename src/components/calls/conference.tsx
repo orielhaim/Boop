@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, {
@@ -22,6 +22,7 @@ import {
 } from "@/core/calling/conference";
 import type { VideoState } from "@/core/calling/video";
 import { toNpub } from "@/core/identity/keys";
+import { useMarmotWindow } from "@/components/messages/marmot-window";
 import { marmot } from "@/core/marmot/native";
 import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import {
@@ -107,34 +108,15 @@ export function ConferenceSheet({
   );
   const group = useStore(calling.store, (state) => state.call?.groupId);
   const [query, setQuery] = useState("");
-  const [groupPeers, setGroupPeers] = useState<{
-    group: string;
-    members: { publicKey: string; name: string }[];
-  }>();
-  useEffect(() => {
-    if (!open || !group || mode !== "add") return;
-    let active = true;
-    void marmot
-      .groupDetails(group)
-      .then((details) => {
-        if (!active || details.membership !== "member") return;
-        setGroupPeers({
-          group,
-          members: details.members
-            .filter((member) => !member.self)
-            .map((member) => ({
-              publicKey: member.id,
-              name: member.name || member.npub,
-            })),
-        });
-      })
-      .catch(() => {
-        if (active) setGroupPeers({ group, members: [] });
-      });
-    return () => {
-      active = false;
-    };
-  }, [group, mode, open]);
+  const watchRoster = useCallback(
+    () => marmot.openGroupRoster(group ?? ""),
+    [group],
+  );
+  const { snapshot } = useMarmotWindow(
+    watchRoster,
+    open && Boolean(group) && mode === "add",
+  );
+  const roster = snapshot?.details;
   const pending = invitations.some(
     ({ phase }) =>
       phase === "inviting" || phase === "ringing" || phase === "connecting",
@@ -148,8 +130,13 @@ export function ConferenceSheet({
   const found =
     current?.keys.filter((key) => !peers.byKey.has(key)).slice(0, 12) ?? [];
   const candidates = group
-    ? groupPeers?.group === group
-      ? groupPeers.members
+    ? roster?.membership === "member"
+      ? roster.members
+          .filter((member) => !member.self)
+          .map((member) => ({
+            publicKey: member.id,
+            name: member.name || member.npub,
+          }))
       : []
     : peers.contacts;
   const contacts = candidates.filter(

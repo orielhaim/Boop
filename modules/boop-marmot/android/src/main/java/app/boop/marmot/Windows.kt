@@ -88,6 +88,7 @@ internal class GroupStateWindow(
   private val generation: String,
   private val handle: GroupStateSubscription,
   details: Document,
+  private val kind: String,
   private val read: suspend () -> Document,
 ) : NativeWindow() {
   private var sequence = 0uL
@@ -103,7 +104,7 @@ internal class GroupStateWindow(
   override suspend fun anchor(generation: String, sequence: ULong, target: String): Document = throw problem("InvalidWindow")
   override suspend fun release() = handle.close()
   private fun project(details: Document): Document = mapOf(
-    "kind" to "groupState", "generation" to generation, "sequence" to sequence.toString(),
+    "kind" to kind, "generation" to generation, "sequence" to sequence.toString(),
     "hasMoreBefore" to false, "hasMoreAfter" to false, "details" to details,
   )
 }
@@ -112,9 +113,6 @@ internal suspend fun groupDocument(kit: Marmot, account: String, group: String):
   val snapshot = kit.groupConversationSnapshot(account, group)
   val details = snapshot.details
   val policy = snapshot.managementState
-  val pending = kit.groupPendingCommit(account, group)
-  val delivery = kit.groupCommitDelivery(account, group)
-  val recovery = kit.groupRecoveryStatus(account, group)
   val presented = kit.presentedChatListRow(account, group)
   val chat = presented?.row
   val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
@@ -126,29 +124,55 @@ internal suspend fun groupDocument(kit: Marmot, account: String, group: String):
     "mediaV2" to (details.group.encryptedMedia.version == EncryptedMediaVersionFfi.V2),
     "mediaEndpoints" to details.group.encryptedMedia.defaultBlobEndpoints.map { endpoint -> endpoint.baseUrl },
     "unrecoverable" to details.mlsState.unrecoverable,
-    "convergenceParked" to (details.mlsState.convergenceParked || recovery.automaticRecoveryFailed),
-    "historyIncomplete" to recovery.historyMayBeIncomplete,
-    "relayChangesOutstanding" to ((delivery?.owedRelayUrls?.size ?: 0) + (delivery?.refusedRelays?.size ?: 0)),
+    "convergenceParked" to details.mlsState.convergenceParked,
+    "disbanding" to details.mlsState.disbanding,
+    "epoch" to details.mlsState.epoch.toString(),
     "membership" to details.group.selfMembership.name.lowercase(),
     "pendingInvitation" to details.group.pendingConfirmation,
     "kind" to chat?.conversationKind?.name?.lowercase(),
     "pendingLeave" to details.group.leaveRequestPending, "leaveBlocked" to details.group.leaveBlocked,
     "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
     "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
-    "lifecycle" to policy.lifecycleState.name.lowercase(), "commit" to pending?.state?.name?.lowercase(),
+    "lifecycle" to policy.lifecycleState.name.lowercase(),
+    "canStepDown" to (policy.isSelfAdmin && !policy.isLastAdmin),
     "canInvite" to policy.canInvite, "canLeave" to policy.canLeave,
     "canCancelLeave" to policy.canCancelLeave, "canDisband" to policy.canDisband,
     "canEnableDisbanding" to policy.canEnableDisbanding,
     "members" to details.members.map { member ->
       val perms = actions[member.memberIdHex]
-      mapOf(
-        "id" to member.memberIdHex, "npub" to member.npub,
-        "name" to (member.displayName?.takeUnless { it == member.memberIdHex }
-          ?: kit.defaultProfilePseudonym(member.memberIdHex)),
-        "self" to member.isSelf, "admin" to member.isAdmin, "devices" to member.deviceCount.toInt(),
+      member.document(kit) + mapOf(
         "canPromote" to (perms?.canPromote ?: false), "canRemove" to (perms?.canRemove ?: false),
         "canDemote" to (perms?.canDemote ?: false),
       )
+    },
+  )
+}
+
+private fun GroupMemberDetailsFfi.document(kit: Marmot): Document = mapOf(
+  "id" to memberIdHex, "npub" to npub,
+  "name" to (displayName?.takeUnless { it == memberIdHex } ?: kit.defaultProfilePseudonym(memberIdHex)),
+  "self" to isSelf, "admin" to isAdmin, "devices" to deviceCount.toLong(),
+)
+
+internal suspend fun rosterDocument(kit: Marmot, account: String, group: String): Document {
+  val roster = kit.groupRoster(account, group)
+  return mapOf(
+    "revision" to roster.rosterRevision.toString(),
+    "membership" to roster.selfMembership.name.lowercase(),
+    "lifecycle" to roster.lifecycleState.name.lowercase(),
+    "members" to roster.members.map { it.document(kit) },
+  )
+}
+
+internal suspend fun groupDiagnostics(kit: Marmot, account: String, group: String): Document {
+  val pending = kit.groupPendingCommit(account, group)
+  val recovery = kit.groupRecoveryStatus(account, group)
+  return mapOf(
+    "commit" to pending?.state?.name?.lowercase(),
+    "automaticRecoveryFailed" to recovery.automaticRecoveryFailed,
+    "historyIncomplete" to recovery.historyMayBeIncomplete,
+    "rejoinOffers" to recovery.rejoinInvitations.map { offer ->
+      mapOf("welcome" to offer.welcomeIdHex, "inviter" to offer.welcomerAccountIdHex, "token" to offer.localStateToken)
     },
   )
 }

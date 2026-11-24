@@ -248,7 +248,7 @@ export function ForwardMessage({
     setBusy(true);
     const leases: string[] = [];
     try {
-      const details = await marmot.groupDetails(destination);
+      const details = await marmot.groupAccess(destination);
       if (
         details.membership !== "member" ||
         details.pendingInvitation ||

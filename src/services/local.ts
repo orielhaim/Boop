@@ -381,16 +381,18 @@ async function start() {
         if (!chatPreferences.enabled() || peers.some(privacy.isBlocked))
           return false;
         await marmotSession.ready();
-        const details = await marmot.groupDetails(group);
+        const details = await marmot.groupAccess(group, true);
         if (
           details.membership !== "member" ||
           details.kind !== "group" ||
           details.pendingInvitation ||
+          details.pendingLeave ||
+          details.disbanding ||
           details.unrecoverable ||
           details.lifecycle !== "stable"
         )
           return false;
-        const current = new Set(details.members.map((member) => member.id));
+        const current = new Set(details.members);
         return (
           current.has(identity.publicKey) &&
           peers.every((peer) => current.has(peer) && !privacy.isBlocked(peer))

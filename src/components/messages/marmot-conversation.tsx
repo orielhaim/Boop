@@ -7,10 +7,8 @@ import { PreparedMessageText } from "./prepared-message-text";
 import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
-import {
-  useActiveWithAudioOverlay,
-  usePlayerPresentation,
-} from "@/components/audio/presentation";
+import { usePlayerPresentation } from "@/components/audio/presentation";
+import { conversationWindowActive } from "@/core/marmot/conversation-route";
 import { audioFile, showMiniPlayer } from "@/core/audio/types";
 import { playerPlayback } from "@/core/audio/controller";
 import { ScreenHeader } from "@/components/navigation/screen-header";
@@ -28,7 +26,7 @@ import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, useIsFocused, useNavigation } from "expo-router";
+import { router, useIsFocused, useNavigation, useRoute } from "expo-router";
 import {
   type ComponentRef,
   useCallback,
@@ -88,8 +86,7 @@ import { createAttachmentPresentation } from "@/core/marmot/attachment-presentat
 import { speechSource } from "@/core/speech/service";
 import {
   marmot,
-  type MarmotConversation,
-  type MarmotGroupDetails,
+  type MarmotGroupInvitation,
   type MarmotMessage,
   type MarmotUpload,
 } from "@/core/marmot/native";
@@ -284,7 +281,15 @@ export function MarmotConversationScreen({
   );
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
-  const keepChatWindow = useActiveWithAudioOverlay();
+  const route = useRoute();
+  const subscribeNavigation = useCallback(
+    (notify: () => void) => navigation.addListener("state", notify),
+    [navigation],
+  );
+  const keepChatWindow = useSyncExternalStore(subscribeNavigation, () => {
+    const state = navigation.getState();
+    return state ? conversationWindowActive(state, route.key, id) : focused;
+  });
   const { miniHeight } = usePlayerPresentation();
   const { top: safeTop } = useSafeAreaInsets();
   const playerClearance = miniHeight - safeTop + space.sm;
@@ -307,24 +312,10 @@ export function MarmotConversationScreen({
       .openConversation(id, audioMessage)
       .catch(() => marmot.openConversation(id));
   }, [audioMessage, chatPreferences, id]);
-  const {
-    snapshot: liveSnapshot,
-    window,
-    error,
-    retry,
-  } = useAccountMarmotWindow(open, keepChatWindow);
-  const [profileTransition, setProfileTransition] = useState<{
-    revision: number;
-    snapshot: MarmotConversation;
-  }>();
-  const snapshot =
-    liveSnapshot ??
-    (!focused &&
-    foreground &&
-    !locked &&
-    profileTransition?.revision === accountRevision
-      ? profileTransition.snapshot
-      : undefined);
+  const { snapshot, window, error, retry } = useAccountMarmotWindow(
+    open,
+    keepChatWindow,
+  );
   const [readyGeneration, setReadyGeneration] = useState<string>();
   const messageStyle = useChatPresentation();
   const kit = useChatAppearance(messageStyle);
@@ -738,6 +729,31 @@ export function MarmotConversationScreen({
     );
   if (voiceSend && voiceSend.phase !== "uploading" && !showVoice)
     setVoiceSend(undefined);
+  const groupCreatedAt = useMemo(
+    () => chatPreferences.groupCreatedAt(id),
+    [chatPreferences, id],
+  );
+  const showGroupCreation = Boolean(
+    snapshot &&
+    !snapshot.invited &&
+    !peer &&
+    !snapshot.hasMoreBefore &&
+    groupCreatedAt,
+  );
+  const timeline = useMemo<ChatMessage[]>(() => {
+    if (!showGroupCreation || !groupCreatedAt) return translated.displayed;
+    return [
+      ...translated.displayed,
+      {
+        _id: `group-created:${id}`,
+        direction: "incoming",
+        createdAt: groupCreatedAt * 1000,
+        user: { _id: self },
+        text: t("messages:marmot.eventGroupCreated"),
+        system: true,
+      },
+    ];
+  }, [groupCreatedAt, id, self, showGroupCreation, t, translated.displayed]);
   const displayed: ChatMessage[] =
     showVoice && voice
       ? [
@@ -750,9 +766,9 @@ export function MarmotConversationScreen({
             pending: voice.phase !== "failed",
             isFailed: voice.phase === "failed",
           },
-          ...translated.displayed,
+          ...timeline,
         ]
-      : translated.displayed;
+      : timeline;
   const audioMessageIndex = audioMessage
     ? displayed.findIndex((row) => row._id === audioMessage)
     : -1;
@@ -893,32 +909,39 @@ export function MarmotConversationScreen({
     }: {
       viewableItems: { item: ChatMessage; isViewable: boolean }[];
     }) => {
-      const items = viewableItems
-        .filter(({ isViewable }) => isViewable)
-        .map(({ item }) => item);
-      setVisible(new Set(items.map(({ _id }) => _id)));
-      const latest = items.reduce<ChatMessage | undefined>(
-        (selected, item) =>
-          !selected || Number(item.createdAt) > Number(selected.createdAt)
-            ? item
-            : selected,
-        undefined,
+      setVisible(
+        new Set(
+          viewableItems
+            .filter(({ isViewable }) => isViewable)
+            .map(({ item }) => item._id),
+        ),
       );
-      if (
-        !latest?.row ||
-        latest._id === lastRead.current ||
-        !focused ||
-        AppState.currentState !== "active" ||
-        lock.getState().locked
-      )
-        return;
-      lastRead.current = latest._id;
-      void marmot.markRead(id, latest._id).catch(() => {
-        lastRead.current = undefined;
-      });
     },
-    [focused, id, lock],
+    [],
   );
+  useEffect(() => {
+    if (
+      !focused ||
+      !foreground ||
+      locked ||
+      !navigation.isFocused() ||
+      lock.getState().locked
+    )
+      return;
+    const latest = messages.reduce<ChatMessage | undefined>(
+      (selected, item) =>
+        visible.has(item._id) &&
+        (!selected || Number(item.createdAt) > Number(selected.createdAt))
+          ? item
+          : selected,
+      undefined,
+    );
+    if (!latest?.row || latest._id === lastRead.current) return;
+    lastRead.current = latest._id;
+    void marmot.markRead(id, latest._id).catch(() => {
+      if (lastRead.current === latest._id) lastRead.current = undefined;
+    });
+  }, [focused, foreground, id, lock, locked, messages, navigation, visible]);
   async function page(direction: "older" | "newer") {
     if (!window || paging) return;
     setPaging(true);
@@ -1145,8 +1168,8 @@ export function MarmotConversationScreen({
   }
 
   function openGroupDetails() {
-    if (!liveSnapshot || liveSnapshot.invited || !focused || locked) return;
-    setProfileTransition({ revision: accountRevision, snapshot: liveSnapshot });
+    if (!snapshot || snapshot.invited || !navigation.isFocused() || locked)
+      return;
     const route = conversationRoute(id, "details");
     router.push({
       ...route,
@@ -1373,7 +1396,6 @@ export function MarmotConversationScreen({
   return (
     <ScreenInsets
       edges={["top", "left", "right"]}
-      pointerEvents={liveSnapshot ? "auto" : "none"}
       style={[styles.screen, { backgroundColor: kit.colors.background }]}
     >
       <LinearGradient
@@ -2154,7 +2176,7 @@ export function MarmotConversationScreen({
                       message={currentMessage}
                       presentation={presentation}
                       gallery={gallery}
-                      foreground={foreground}
+                      foreground={focused && foreground}
                       visible={focused && foreground && visible.has(row.id)}
                     />
                   ) : null
@@ -2256,25 +2278,31 @@ function MarmotInvitation({
   setBusy: (value: boolean) => void;
 }) {
   const { t } = useTranslation(namespaces);
-  const { privacy, db } = useLocal();
+  const { privacy, db, identity, isCurrent, lock } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const translateError = useMarmotError();
-  const [invitation, setInvitation] =
-    useState<Pick<MarmotGroupDetails, "inviter" | "name" | "members">>();
+  const [loaded, setLoaded] = useState<{
+    group: string;
+    account: string;
+    preview: MarmotGroupInvitation;
+  }>();
+  const invitation =
+    loaded?.group === id && loaded.account === identity.publicKey
+      ? loaded.preview
+      : undefined;
   useEffect(() => {
     let active = true;
     void marmot
-      .groupDetails(id)
-      .then((group) => {
-        if (active) setInvitation(group);
+      .groupInvitation(id, true)
+      .then((preview) => {
+        if (active && isCurrent())
+          setLoaded({ group: id, account: identity.publicKey, preview });
       })
-      .catch(() => {
-        if (active) setInvitation({ name: "", members: [] });
-      });
+      .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, identity.publicKey, isCurrent]);
   const inviter = invitation?.inviter;
   const permission = inviter ? privacy.messagePermission(inviter) : undefined;
   const allowed = permission === "allow" || permission === "request";
@@ -2283,7 +2311,7 @@ function MarmotInvitation({
       ? (contactByKey(db, inviter).get()?.name ?? toNpub(inviter))
       : null;
   const participantNames = invitation?.members
-    .filter((member) => !member.self && !privacy.isBlocked(member.id))
+    .filter((member) => !privacy.isBlocked(member.id))
     .slice(0, 4)
     .map((member) => member.name || member.npub.slice(0, 15) + "…")
     .join(", ");
@@ -2292,12 +2320,24 @@ function MarmotInvitation({
     const current = inviter ? privacy.messagePermission(inviter) : undefined;
     if (accept && current !== "allow" && current !== "request") return;
     setBusy(true);
-    void marmot
-      .respondToInvitation(id, accept)
-      .then(() => {
-        if (accept && direct && inviter) privacy.approveInvitation(inviter);
-        else if (!accept) router.back();
-      })
+    void (async () => {
+      if (!isCurrent() || lock.getState().locked) return;
+      if (accept) {
+        const latest = await marmot.groupInvitation(id);
+        if (!isCurrent() || lock.getState().locked || !inviter) return;
+        if (latest.inviter !== inviter) {
+          setLoaded(undefined);
+          Alert.alert(t("messages:marmot.inviteGone"));
+          return;
+        }
+        const permission = privacy.messagePermission(inviter);
+        if (permission !== "allow" && permission !== "request") return;
+      }
+      await marmot.respondToInvitation(id, accept);
+      if (!isCurrent()) return;
+      if (accept && direct && inviter) privacy.approveInvitation(inviter);
+      else if (!accept) router.back();
+    })()
       .catch((reason) => Alert.alert(translateError(reason)))
       .finally(() => setBusy(false));
   }
@@ -2316,9 +2356,9 @@ function MarmotInvitation({
       {name && (
         <Ink kind="caption">{t("messages:marmot.invitedBy", { name })}</Ink>
       )}
-      {allowed && !direct && invitation && invitation.members.length > 0 && (
+      {allowed && !direct && invitation && invitation.memberCount > 0 && (
         <Ink kind="caption">
-          {t("messages:marmot.members")} ({invitation.members.length})
+          {t("messages:marmot.members")} ({invitation.memberCount})
           {participantNames ? "\n" + participantNames : ""}
         </Ink>
       )}

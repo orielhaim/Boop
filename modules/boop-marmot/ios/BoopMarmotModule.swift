@@ -267,8 +267,8 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("openAttention") { (id: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openAttention(id: id) }
     }
-    AsyncFunction("openGroupState") { (id: String, group: String) async throws -> Document in
-      try await protocolCall { try await self.runtime.openGroupState(id: id, group: group) }
+    AsyncFunction("openGroupState") { (id: String, group: String, roster: Bool) async throws -> Document in
+      try await protocolCall { try await self.runtime.openGroupState(id: id, group: group, roster: roster) }
     }
     AsyncFunction("openGroupCall") { (id: String, group: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openGroupCall(id: id, group: group) }
@@ -311,8 +311,8 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("startDirect") { (peer: String) async throws -> String in
       try await self.withAccount { try await $0.startDirectConversation(accountRef: $1, peerAccountId: peer) }
     }
-    AsyncFunction("checkInvitee") { (peer: String) async throws in
-      try await self.withAccount { _ = try await $0.prewarmGroupMemberKeyPackages(accountRef: $1, memberRefs: [peer]) }
+    AsyncFunction("prewarmInvitees") { (members: [String]) async throws in
+      try await self.withAccount { _ = try await $0.prewarmGroupMemberKeyPackages(accountRef: $1, memberRefs: members) }
     }
     AsyncFunction("createGroup") { (name: String, description: String?, members: [String], image: String?) async throws -> Document in
       try await self.withAccount { kit, account in
@@ -320,7 +320,8 @@ public final class BoopMarmotModule: Module {
           InitialGroupImageFfi(plaintext: try groupImageInput(path), mediaType: "image/jpeg", sourceUrl: nil, dim: nil, thumbhash: nil)
         }
         let result = try await kit.createGroupWithInitialImageDetailed(accountRef: account, name: name, memberRefs: members, description: description, initialImage: initial)
-        return ["groupId": bridgeValue(result.created?.groupIdHex), "members": result.memberOutcomes.map { member -> Document in
+        return ["groupId": bridgeValue(result.created?.groupIdHex),
+                "createdAt": bridgeValue(result.created.map { Double($0.chatListRow.conversationCreatedAt) }), "members": result.memberOutcomes.map { member -> Document in
           ["account": member.accountIdHex, "status": wireName(member.status), "devices": Int(member.selectedDeviceCount)]
         }]
       }
@@ -331,26 +332,56 @@ public final class BoopMarmotModule: Module {
         else { _ = try await kit.declineGroupInvite(accountRef: account, groupIdHex: group) }
       }
     }
-    AsyncFunction("groupDetails") { (group: String) async throws -> Document in
-      try await self.withAccount { try await groupDocument($0, $1, group) }
+    AsyncFunction("groupDiagnostics") { (group: String) async throws -> Document in
+      try await self.withAccount { try await groupDiagnostics($0, $1, group) }
     }
-    AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws in
-      try await self.withAccount { _ = try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description) }
+    AsyncFunction("groupAccess") { (group: String, includeMembers: Bool) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
+        let row = includeMembers ? try kit.chatListRow(accountRef: account, groupIdHex: group) : nil
+        return ["membership": wireName(details.group.selfMembership),
+                "pendingInvitation": details.group.pendingConfirmation,
+                "pendingLeave": details.group.leaveRequestPending,
+                "unrecoverable": details.mlsState.unrecoverable, "disbanding": details.mlsState.disbanding,
+                "lifecycle": wireName(details.mlsState.lifecycleState),
+                "kind": bridgeValue(row.map { wireName($0.conversationKind) }),
+                "members": includeMembers ? details.members.map(\.memberIdHex) : []]
+      }
     }
-    AsyncFunction("updateGroupImage") { (group: String, path: String?) async throws in
+    AsyncFunction("groupInvitation") { (group: String, preview: Bool) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
+        let members: [Document] = preview ? details.members.lazy.filter { !$0.isSelf }.prefix(16).map {
+          ["id": $0.memberIdHex, "npub": $0.npub, "name": bridgeValue($0.displayName)]
+        } : []
+        return ["inviter": bridgeValue(details.group.pendingConfirmation ? details.group.welcomerAccountIdHex : nil),
+                "name": details.group.name, "memberCount": details.members.count, "members": members]
+      }
+    }
+    AsyncFunction("groupMemberIds") { (groups: [String]) async throws -> [String: [String]] in
+      try await self.withAccount { kit, account in
+        let rows = try await kit.groupMemberIdsPage(accountRef: account, groupIdsHex: groups)
+        return Dictionary(rows.map { ($0.groupIdHex, $0.memberIdsHex) }, uniquingKeysWith: { first, _ in first })
+      }
+    }
+    AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws -> String in
+      try await self.withAccount { wireName(try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description).acceptDisposition) }
+    }
+    AsyncFunction("updateGroupImage") { (group: String, path: String?) async throws -> String in
       try await self.withAccount { kit, account in
         if let path {
-          _ = try await kit.updateGroupImage(accountRef: account, groupIdHex: group, plaintext: groupImageInput(path), mediaType: "image/jpeg")
+          return wireName(try await kit.updateGroupImage(accountRef: account, groupIdHex: group, plaintext: groupImageInput(path), mediaType: "image/jpeg").acceptDisposition)
         } else {
-          _ = try await kit.clearGroupImage(accountRef: account, groupIdHex: group)
+          return wireName(try await kit.clearGroupImage(accountRef: account, groupIdHex: group).acceptDisposition)
         }
       }
     }
-    AsyncFunction("updateGroupMedia") { (group: String, origins: [String]) async throws in
+    AsyncFunction("updateGroupMedia") { (group: String, origins: [String]) async throws -> String in
       try await self.withAccount { kit, account in
-        _ = try await kit.replaceEncryptedMediaBlobEndpoints(accountRef: account, groupIdHex: group, endpoints: origins.map {
+        let result = try await kit.replaceEncryptedMediaBlobEndpoints(accountRef: account, groupIdHex: group, endpoints: origins.map {
           AppBlobEndpointFfi(locatorKind: "blossom", baseUrl: $0)
         })
+        return wireName(result.acceptDisposition)
       }
     }
     AsyncFunction("viewGroupImage") { (group: String, hash: String) async throws -> String in
@@ -388,31 +419,43 @@ public final class BoopMarmotModule: Module {
         return ["more": page.hasMoreBefore, "versions": versions]
       }
     }
-    AsyncFunction("inviteMembers") { (group: String, members: [String]) async throws -> [Document] in
+    AsyncFunction("inviteMembers") { (group: String, members: [String]) async throws -> Document in
       try await self.withAccount { kit, account in
         let result = try await kit.inviteMembersDetailed(accountRef: account, groupIdHex: group, memberRefs: members)
-        return result.invite.memberOutcomes.map { ["account": $0.accountIdHex, "status": wireName($0.status), "devices": Int($0.selectedDeviceCount)] }
+        return ["disposition": bridgeValue(result.invite.summary.map { wireName($0.acceptDisposition) }),
+                "members": result.invite.memberOutcomes.map { ["account": $0.accountIdHex, "status": wireName($0.status), "devices": Int($0.selectedDeviceCount)] as Document }]
       }
     }
-    AsyncFunction("changeMember") { (group: String, member: String, action: String) async throws in
+    AsyncFunction("changeMember") { (group: String, member: String, action: String) async throws -> String in
       try await self.withAccount { kit, account in
         switch action {
-        case "remove": _ = try await kit.removeMembers(accountRef: account, groupIdHex: group, memberRefs: [member])
-        case "promote": _ = try await kit.promoteAdmin(accountRef: account, groupIdHex: group, memberRef: member)
-        case "demote": _ = try await kit.demoteAdmin(accountRef: account, groupIdHex: group, memberRef: member)
+        case "remove": return wireName(try await kit.removeMembers(accountRef: account, groupIdHex: group, memberRefs: [member]).acceptDisposition)
+        case "promote": return wireName(try await kit.promoteAdmin(accountRef: account, groupIdHex: group, memberRef: member).acceptDisposition)
+        case "demote": return wireName(try await kit.demoteAdmin(accountRef: account, groupIdHex: group, memberRef: member).acceptDisposition)
+        case "stepDown": return wireName(try await kit.selfDemoteAdmin(accountRef: account, groupIdHex: group).acceptDisposition)
         default: throw problem("InvalidGroupAction")
         }
       }
     }
-    AsyncFunction("changeMembership") { (group: String, action: String) async throws in
+    AsyncFunction("changeMembership") { (group: String, action: String) async throws -> String? in
       try await self.withAccount { kit, account in
         switch action {
-        case "leave": _ = try await kit.leaveGroup(accountRef: account, groupIdHex: group)
+        case "leave": return wireName(try await kit.leaveGroup(accountRef: account, groupIdHex: group).acceptDisposition)
         case "cancelLeave": try await kit.cancelLeave(accountRef: account, groupIdHex: group)
-        case "forget": _ = try await kit.deleteGroupLocal(accountRef: account, groupIdHex: group)
+        case "deleteLocal": _ = try await kit.deleteGroupLocal(accountRef: account, groupIdHex: group)
         case "disband": _ = try await kit.disbandGroup(accountRef: account, groupIdHex: group)
-        case "enableDisbanding": _ = try await kit.enableGroupDisbanding(accountRef: account, groupIdHex: group)
+        case "enableDisbanding": return wireName(try await kit.enableGroupDisbanding(accountRef: account, groupIdHex: group).summary.acceptDisposition)
         default: throw problem("InvalidGroupAction")
+        }
+        return nil
+      }
+    }
+    AsyncFunction("respondToRejoin") { (welcome: String, token: String?) async throws in
+      try await self.withAccount { kit, account in
+        if let token {
+          _ = try await kit.confirmGroupRejoin(accountRef: account, welcomeIdHex: welcome, localStateToken: token)
+        } else {
+          try await kit.declineGroupRejoin(accountRef: account, welcomeIdHex: welcome)
         }
       }
     }
@@ -1472,14 +1515,15 @@ private actor Runtime {
     let handle = try await account.kit.subscribeAccountAttention()
     return try await install(.attention(handle, account.key), id: id, account: account)
   }
-  func openGroupState(id: String, group: String) async throws -> Document {
+  func openGroupState(id: String, group: String, roster: Bool) async throws -> Document {
     let account = try account()
     let handle = try await account.kit.subscribeGroupState(accountRef: account.key, groupIdHex: group)
     let read: @Sendable () async throws -> Document = {
-      try await groupDocument(account.kit, account.key, group)
+      if roster { return try await rosterDocument(account.kit, account.key, group) }
+      return try await groupDocument(account.kit, account.key, group)
     }
     let details = try await read()
-    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle, details: details, read: read)), id: id, account: account)
+    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle, details: details, kind: roster ? "groupRoster" : "groupState", read: read)), id: id, account: account)
   }
 
   func openGroupCall(id: String, group: String) async throws -> Document {

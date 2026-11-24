@@ -159,7 +159,7 @@ export function MarmotInbox({
     async function readInviters() {
       const entries = await Promise.allSettled(
         (pendingIds ?? "").split(",").map(async (group) => {
-          const details = await marmot.groupDetails(group);
+          const details = await marmot.groupInvitation(group);
           return [group, details.inviter ?? ""] as const;
         }),
       );

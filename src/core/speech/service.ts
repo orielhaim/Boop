@@ -129,14 +129,15 @@ export function createVoiceTranscription({
       bytes > 100 * 1024 * 1024
     )
       return false;
-    const details = await marmot.groupDetails(group);
+    const details = await marmot.groupAccess(group, true);
     return (
       details.membership === "member" &&
       !details.pendingInvitation &&
       !details.pendingLeave &&
       !details.unrecoverable &&
-      (details.kind !== "direct" ||
-        details.members.every((member) => !blocked(member.id)))
+      (details.kind === "group" ||
+        (details.kind === "direct" &&
+          details.members.every((member) => !blocked(member))))
     );
   };
   const encryption = createTranscriptEncryption(account);

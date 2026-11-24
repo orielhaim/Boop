@@ -49,6 +49,8 @@ import { blossomServer } from "@/core/media/blossom";
 import {
   marmot,
   type MarmotGroupDetails,
+  type MarmotGroupDiagnostics,
+  type MarmotGroupDisposition,
   type MarmotMemberOutcome,
 } from "@/core/marmot/native";
 import { contactByKey } from "@/db/queries";
@@ -110,104 +112,6 @@ function resolveAddresses(addresses: string, own: string) {
   return [...keys];
 }
 
-function InviteeAvailability({ keys }: { keys: string[] }) {
-  const { t } = useTranslation(namespaces);
-  const { db, marmotSession, privacy, lock } = useLocal();
-  const focused = useIsFocused();
-  const locked = useSyncExternalStore(
-    lock.subscribe,
-    () => lock.getState().locked,
-  );
-  const [foreground, setForeground] = useState(
-    AppState.currentState === "active",
-  );
-  useEffect(() => {
-    const listener = AppState.addEventListener("change", (state) =>
-      setForeground(state === "active"),
-    );
-    return () => listener.remove();
-  }, []);
-  const privacyRevision = useSyncExternalStore(
-    privacy.subscribe,
-    privacy.revision,
-  );
-  const translateError = useMarmotError();
-  const roster = keys.slice().sort().join(" ");
-  const [results, setResults] = useState(
-    new Map<string, { error?: unknown }>(),
-  );
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (!focused || !foreground || locked || !roster) return;
-    let active = true;
-    const timer = setTimeout(() => {
-      setResults(new Map());
-      void (async () => {
-        for (const key of roster.split(" ")) {
-          if (!active || AppState.currentState !== "active") break;
-          if (privacy.isBlocked(key)) continue;
-          let result: { error?: unknown } = {};
-          try {
-            await marmotSession.ready();
-            if (
-              !active ||
-              AppState.currentState !== "active" ||
-              lock.getState().locked
-            )
-              break;
-            if (privacy.isBlocked(key)) continue;
-            await marmot.checkInvitee(key);
-          } catch (error) {
-            result = { error };
-          }
-          if (active)
-            setResults((current) => new Map(current).set(key, result));
-        }
-      })();
-    }, 350);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [
-    attempt,
-    focused,
-    foreground,
-    locked,
-    lock,
-    marmotSession,
-    privacy,
-    privacyRevision,
-    roster,
-  ]);
-  if (!keys.length) return null;
-  return (
-    <View style={styles.member}>
-      {keys.map((key) => {
-        const result = results.get(key);
-        const name = contactByKey(db, key).get()?.name ?? toNpub(key);
-        const status = privacy.isBlocked(key)
-          ? t("messages:marmot.blocked")
-          : !result
-            ? t("common:checking")
-            : result.error
-              ? translateError(result.error)
-              : t("messages:marmot.inviteeAvailable");
-        return (
-          <Ink key={key}>
-            {name} · {status}
-          </Ink>
-        );
-      })}
-      {keys.some((key) => results.get(key)?.error) && (
-        <Action size="sm" onPress={() => setAttempt((value) => value + 1)}>
-          {t("messages:marmot.checkAgain")}
-        </Action>
-      )}
-    </View>
-  );
-}
-
 type Translate = ReturnType<typeof useTranslation<typeof namespaces>>["t"];
 
 function failureList(outcomes: MarmotMemberOutcome[], t: Translate) {
@@ -244,7 +148,16 @@ function cleanImage(file: File | null) {
 
 export function NewMarmotGroup() {
   const { t } = useTranslation(namespaces);
-  const { db, identity, marmotSession, privacy, mediaSdk } = useLocal();
+  const {
+    db,
+    identity,
+    marmotSession,
+    privacy,
+    mediaSdk,
+    lock,
+    isCurrent,
+    chatPreferences,
+  } = useLocal();
   const { colors } = useTheme();
   const translateError = useMarmotError();
   const [saved] = useState(() =>
@@ -316,6 +229,26 @@ export function NewMarmotGroup() {
     else router.replace("/");
   }
 
+  function openDetails() {
+    tapFeedback();
+    setError("");
+    setStep("details");
+    if (!selected.length) return;
+    void marmotSession
+      .ready()
+      .then(() => {
+        if (
+          !isCurrent() ||
+          lock.getState().locked ||
+          AppState.currentState !== "active"
+        )
+          return;
+        const members = selected.filter((key) => !privacy.isBlocked(key));
+        if (members.length) return marmot.prewarmInvitees(members);
+      })
+      .catch(() => undefined);
+  }
+
   async function create() {
     const groupName = name.trim();
     if (!groupName || creating.current) return;
@@ -329,6 +262,12 @@ export function NewMarmotGroup() {
     let created = false;
     try {
       await marmotSession.ready();
+      if (
+        !isCurrent() ||
+        lock.getState().locked ||
+        AppState.currentState !== "active"
+      )
+        return;
       if (selected.some(privacy.isBlocked)) {
         setError(t("messages:marmot.blocked"));
         return;
@@ -346,7 +285,11 @@ export function NewMarmotGroup() {
         return;
       }
       created = true;
+      if (!isCurrent()) return;
+      if (result.createdAt)
+        chatPreferences.recordGroupCreation(group, result.createdAt);
       const openGroup = () => {
+        if (!isCurrent()) return;
         setStatus("created");
         disablePrevention();
         router.replace(conversationRoute(group));
@@ -433,11 +376,7 @@ export function NewMarmotGroup() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t("messages:marmot.continueToGroupDetails")}
-              onPress={() => {
-                tapFeedback();
-                setError("");
-                setStep("details");
-              }}
+              onPress={openDetails}
               style={({ pressed }) => [
                 groupSetupStyles.continue,
                 {
@@ -511,7 +450,6 @@ export function NewMarmotGroup() {
               {t("messages:marmot.selectGroupPeople")}
             </Action>
           )}
-          <InviteeAvailability keys={selected} />
           {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
           <Action
             disabled={busy || picker.busy || !name.trim()}
@@ -644,7 +582,8 @@ export function MarmotGroupDetailsScreen({
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { db, identity, privacy } = useLocal();
+  const { db, identity, privacy, lock, isCurrent, chatPreferences } =
+    useLocal();
   const translateError = useMarmotError();
   const [busy, setBusy] = useState(false);
   const [loadedPhoto, setLoadedPhoto] = useState<{
@@ -662,13 +601,32 @@ export function MarmotGroupDetailsScreen({
   const picker = useAvatarPicker();
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
-  const { generation, details } = state.snapshot ?? {};
+  const { details } = state.snapshot ?? {};
+  const [observation, setObservation] = useState<{
+    snapshot: typeof state.snapshot;
+    value: MarmotGroupDiagnostics;
+  }>();
+  useEffect(() => {
+    if (editing || !state.snapshot || state.snapshot.details.pendingInvitation)
+      return;
+    const snapshot = state.snapshot;
+    let active = true;
+    void marmot
+      .groupDiagnostics(id)
+      .then((value) => {
+        if (active) setObservation({ snapshot, value });
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [editing, id, state.snapshot]);
+  const diagnostics =
+    observation?.snapshot === state.snapshot ? observation?.value : undefined;
   useSyncExternalStore(privacy.subscribe, privacy.revision);
 
   const member = details?.membership === "member" && !details.pendingInvitation;
-  const canEdit = Boolean(
-    member && details?.canEdit && generation !== undefined,
-  );
+  const canEdit = Boolean(member && details?.canEdit);
   const isGroup = details?.kind !== "direct";
   const photo =
     member && privacy.photoPolicy() !== "nobody" ? details?.image : undefined;
@@ -684,15 +642,24 @@ export function MarmotGroupDetailsScreen({
     router.canGoBack() ? router.back() : router.replace(conversationRoute(id));
 
   async function update(
-    task: () => Promise<void>,
+    task: () => Promise<void | MarmotGroupDisposition | null>,
     leave = false,
     refresh = false,
   ) {
-    if (busy) return false;
+    if (
+      busy ||
+      !isCurrent() ||
+      lock.getState().locked ||
+      AppState.currentState !== "active"
+    )
+      return false;
     setBusy(true);
     try {
-      await task();
-      if (leave) router.back();
+      const result = await task();
+      if (!isCurrent() || lock.getState().locked) return false;
+      if (result === "accepted_pending" || result === "completion_unknown") {
+        Alert.alert(t("messages:marmot.pendingCommit"));
+      } else if (leave) router.back();
       else if (refresh) state.retry();
       return true;
     } catch (reason) {
@@ -703,8 +670,13 @@ export function MarmotGroupDetailsScreen({
     }
   }
 
-  function confirm(title: string, task: () => Promise<void>, leave = false) {
-    Alert.alert(title, undefined, [
+  function confirm(
+    title: string,
+    task: () => Promise<void | MarmotGroupDisposition | null>,
+    leave = false,
+    description?: string,
+  ) {
+    Alert.alert(title, description, [
       { text: t("common:cancel"), style: "cancel" },
       {
         text: title,
@@ -712,6 +684,15 @@ export function MarmotGroupDetailsScreen({
         onPress: () => void update(task, leave),
       },
     ]);
+  }
+
+  function deleteSharedGroup() {
+    confirm(
+      t("messages:marmot.disband"),
+      () => marmot.changeMembership(id, "disband"),
+      false,
+      t("messages:marmot.deleteGroupConfirmation"),
+    );
   }
 
   async function loadImage() {
@@ -743,7 +724,7 @@ export function MarmotGroupDetailsScreen({
           picker.clear();
           void update(async () => {
             try {
-              await marmot.updateGroupImage(id, imagePath(file));
+              return await marmot.updateGroupImage(id, imagePath(file));
             } finally {
               cleanImage(file);
             }
@@ -788,8 +769,7 @@ export function MarmotGroupDetailsScreen({
           >
             <Action onPress={state.retry}>{t("common:retry")}</Action>
           </Empty>
-        ) : !details ||
-          generation === undefined ? null : details.pendingInvitation ? (
+        ) : !details ? null : details.pendingInvitation ? (
           <Empty
             detail=""
             icon="invitations"
@@ -844,15 +824,23 @@ export function MarmotGroupDetailsScreen({
                 return;
               }
               void update(async () => {
-                const unavailable = failureList(
-                  await marmot.inviteMembers(id, keys),
-                  t,
+                const { members, disposition } = await marmot.inviteMembers(
+                  id,
+                  keys,
                 );
-                if (unavailable)
+                const unavailable = failureList(members, t);
+                if (unavailable) {
+                  const pending =
+                    disposition === "accepted_pending" ||
+                    disposition === "completion_unknown";
                   Alert.alert(
                     t("messages:marmot.unavailableMembers"),
-                    unavailable,
+                    pending
+                      ? unavailable + "\n" + t("messages:marmot.pendingCommit")
+                      : unavailable,
                   );
+                }
+                return unavailable ? undefined : disposition;
               });
             }}
           />
@@ -867,6 +855,16 @@ export function MarmotGroupDetailsScreen({
             actions.push({
               id: "promote",
               title: t("messages:marmot.promote"),
+            });
+          if (
+            person.self &&
+            details.canStepDown &&
+            details.lifecycle === "stable" &&
+            !details.disbanding
+          )
+            actions.push({
+              id: "stepDown",
+              title: t("messages:marmot.stepDown"),
             });
           if (person.canDemote)
             actions.push({ id: "demote", title: t("messages:marmot.demote") });
@@ -907,6 +905,14 @@ export function MarmotGroupDetailsScreen({
                     confirm(t("messages:marmot.demote"), () =>
                       marmot.changeMember(id, person.id, action),
                     );
+                  if (
+                    action === "stepDown" &&
+                    person.self &&
+                    details.canStepDown
+                  )
+                    confirm(t("messages:marmot.stepDown"), () =>
+                      marmot.changeMember(id, person.id, action),
+                    );
                   if (action === "remove" && person.canRemove)
                     confirm(t("messages:marmot.remove"), () =>
                       marmot.changeMember(id, person.id, action),
@@ -924,8 +930,83 @@ export function MarmotGroupDetailsScreen({
     </SettingsGroup>
   );
 
+  const editMedia =
+    editing &&
+    details.mediaV2 &&
+    details.lifecycle === "stable" &&
+    !details.disbanding;
+  const mediaExpandable =
+    details.mediaV2 && (editing || details.mediaEndpoints.length > 0);
+  const connections = (
+    <>
+      {details.relays.length > 0 && (
+        <SettingsRow
+          title={t("messages:marmot.relayList")}
+          icon="connection"
+          value={String(details.relays.length)}
+          expanded={showRelays}
+          onPress={() => setShowRelays(!showRelays)}
+          trailing={
+            <Icon
+              name={showRelays ? "collapse" : "expand"}
+              size={18}
+              color={colors.muted}
+            />
+          }
+        />
+      )}
+      {showRelays && details.relays.length > 0 && (
+        <EndpointList urls={details.relays} />
+      )}
+      {(!editing || details.mediaV2) && (
+        <SettingsRow
+          title={t("messages:marmot.groupMediaServers")}
+          icon="storage"
+          detail={
+            details.mediaV2
+              ? undefined
+              : t("messages:marmot.mediaUnavailableForChat")
+          }
+          value={
+            details.mediaV2 ? String(details.mediaEndpoints.length) : undefined
+          }
+          expanded={mediaExpandable ? showMediaServers : undefined}
+          onPress={
+            mediaExpandable
+              ? () => setShowMediaServers(!showMediaServers)
+              : undefined
+          }
+          trailing={
+            mediaExpandable ? (
+              <Icon
+                name={showMediaServers ? "collapse" : "expand"}
+                size={18}
+                color={colors.muted}
+              />
+            ) : undefined
+          }
+        />
+      )}
+      {mediaExpandable &&
+        showMediaServers &&
+        (editMedia ? (
+          <GroupMediaSettings
+            key={details.mediaEndpoints.join(",")}
+            details={details}
+            busy={busy}
+            update={update}
+          />
+        ) : (
+          <EndpointList urls={details.mediaEndpoints} />
+        ))}
+    </>
+  );
   const warnings = [
-    details.commit ? t("messages:marmot.pendingCommit") : null,
+    diagnostics?.commit === "stuck"
+      ? t("messages:marmot.groupCommitUnconfirmed")
+      : diagnostics?.commit || details.lifecycle === "pending_publish"
+        ? t("messages:marmot.pendingCommit")
+        : null,
     details.pendingLeave
       ? t(
           details.leaveBlocked
@@ -936,28 +1017,69 @@ export function MarmotGroupDetailsScreen({
     details.lifecycle === "recovering" || details.lifecycle === "merging"
       ? t("messages:marmot.synchronizingGroup")
       : null,
+    details.disbanding ? t("messages:marmot.disbanding") : null,
     details.lifecycle === "disbanded"
       ? t("messages:marmot.eventDisbanded")
       : null,
     details.membership === "removed" || details.membership === "device_removed"
       ? t("messages:marmot.noLongerMember")
       : null,
-    details.relayChangesOutstanding > 0
-      ? t("messages:marmot.groupRelayPending")
-      : null,
-    details.historyIncomplete
+    diagnostics?.historyIncomplete
       ? t("messages:marmot.groupHistoryIncomplete")
       : null,
     details.unrecoverable ? t("messages:marmot.groupRecoveryRequired") : null,
   ].filter((value) => value !== null);
-  const canRetry = details.convergenceParked && !details.unrecoverable;
+  const canRetry =
+    (details.convergenceParked || diagnostics?.automaticRecoveryFailed) &&
+    !details.unrecoverable;
 
-  const notice = (warnings.length > 0 || canRetry) && (
+  const rejoinOffers =
+    diagnostics?.rejoinOffers.filter(
+      ({ inviter }) => !privacy.isBlocked(inviter),
+    ) ?? [];
+  const notice = (warnings.length > 0 ||
+    canRetry ||
+    rejoinOffers.length > 0) && (
     <Card style={styles.notice}>
       {warnings.map((warning) => (
         <Ink key={warning} kind="caption">
           {warning}
         </Ink>
+      ))}
+      {rejoinOffers.map(({ welcome, inviter, token }) => (
+        <View key={welcome}>
+          <Ink kind="caption">
+            {t("messages:marmot.rejoinOffer", {
+              name: contactByKey(db, inviter).get()?.name || toNpub(inviter),
+            })}
+          </Ink>
+          <Action
+            size="sm"
+            disabled={busy}
+            onPress={() =>
+              confirm(t("messages:marmot.confirmRejoin"), async () => {
+                if (privacy.isBlocked(inviter)) return;
+                await marmot.respondToRejoin(welcome, token);
+                state.retry();
+              })
+            }
+          >
+            {t("messages:marmot.rejoin")}
+          </Action>
+          <Action
+            size="sm"
+            disabled={busy}
+            onPress={() =>
+              void update(
+                () => marmot.respondToRejoin(welcome, null),
+                false,
+                true,
+              )
+            }
+          >
+            {t("messages:marmot.decline")}
+          </Action>
+        </View>
       ))}
       {canRetry && (
         <Action
@@ -993,6 +1115,12 @@ export function MarmotGroupDetailsScreen({
       />
     </>
   );
+  const showMembershipActions = !isGroup || details.members.length > 1;
+  const canDeleteLocal = !member || (isGroup && !details.canDisband);
+  const showActions =
+    (showMembershipActions && (member || details.canLeave)) ||
+    details.canCancelLeave ||
+    canDeleteLocal;
   const editedName = profileDraft.name ?? details.name;
   const editedDescription = profileDraft.description ?? details.description;
   const changedName =
@@ -1125,82 +1253,37 @@ export function MarmotGroupDetailsScreen({
           {isGroup && showMembers && roster}
           {(details.relays.length > 0 || details.mediaV2) && (
             <SettingsGroup title={t("messages:marmot.groupConnections")}>
-              {details.relays.length > 0 && (
-                <SettingsRow
-                  title={t("messages:marmot.relayList")}
-                  icon="connection"
-                  value={String(details.relays.length)}
-                  expanded={showRelays}
-                  onPress={() => setShowRelays((value) => !value)}
-                  trailing={
-                    <Icon
-                      name={showRelays ? "collapse" : "expand"}
-                      size={18}
-                      color={colors.muted}
-                    />
-                  }
-                />
-              )}
-              {showRelays && details.relays.length > 0 && (
-                <EndpointList urls={details.relays} />
-              )}
-              {details.mediaV2 && (
-                <SettingsRow
-                  title={t("messages:marmot.groupMediaServers")}
-                  icon="storage"
-                  value={String(details.mediaEndpoints.length)}
-                  expanded={showMediaServers}
-                  onPress={() => setShowMediaServers((value) => !value)}
-                  trailing={
-                    <Icon
-                      name={showMediaServers ? "collapse" : "expand"}
-                      size={18}
-                      color={colors.muted}
-                    />
-                  }
-                />
-              )}
-              {details.mediaV2 &&
-                showMediaServers &&
-                (details.lifecycle === "stable" ? (
-                  <GroupMediaSettings
-                    key={details.mediaEndpoints.join(",")}
-                    details={details}
-                    busy={busy}
-                    update={update}
-                  />
-                ) : (
-                  <EndpointList urls={details.mediaEndpoints} />
-                ))}
+              {connections}
             </SettingsGroup>
           )}
-          {(details.canEnableDisbanding || details.canDisband) && (
+          {details.canEnableDisbanding && (
             <SettingsGroup title={t("messages:marmot.groupLifecycle")}>
-              {details.canEnableDisbanding && (
-                <SettingsRow
-                  title={t("messages:marmot.enableDisbanding")}
-                  disabled={busy}
-                  onPress={() =>
-                    confirm(t("messages:marmot.enableDisbanding"), () =>
-                      marmot.changeMembership(id, "enableDisbanding"),
-                    )
-                  }
-                />
-              )}
-              {details.canDisband && (
-                <SettingsRow
-                  title={t("messages:marmot.disband")}
-                  disabled={busy}
-                  onPress={() =>
-                    confirm(
-                      t("messages:marmot.disband"),
-                      () => marmot.changeMembership(id, "disband"),
-                      true,
-                    )
-                  }
-                />
-              )}
+              <SettingsRow
+                title={t("messages:marmot.enableDisbanding")}
+                disabled={busy}
+                onPress={() =>
+                  confirm(t("messages:marmot.enableDisbanding"), () =>
+                    marmot.changeMembership(id, "enableDisbanding"),
+                  )
+                }
+              />
             </SettingsGroup>
+          )}
+          {details.canDisband && (
+            <Action
+              variant="ghost"
+              size="lg"
+              disabled={busy}
+              style={[
+                styles.deleteGroupButton,
+                { backgroundColor: colors.danger },
+              ]}
+              onPress={deleteSharedGroup}
+            >
+              <Ink kind="label" style={{ color: colors.onDanger }}>
+                {t("messages:marmot.disband")}
+              </Ink>
+            </Action>
           )}
         </>
       ) : (
@@ -1261,7 +1344,11 @@ export function MarmotGroupDetailsScreen({
             (isGroup ? (
               <MarmotActiveCall
                 group={id}
-                canStart={details.lifecycle === "stable"}
+                canStart={
+                  details.lifecycle === "stable" &&
+                  !details.pendingLeave &&
+                  !details.disbanding
+                }
                 members={details.members}
                 profileActions={shortcuts}
               />
@@ -1282,63 +1369,11 @@ export function MarmotGroupDetailsScreen({
                 })}
               />
             ) : null}
-            {details.relays.length > 0 && (
-              <SettingsRow
-                icon="connection"
-                title={t("messages:marmot.relayList")}
-                value={String(details.relays.length)}
-                expanded={showRelays}
-                trailing={
-                  <Icon
-                    name={showRelays ? "collapse" : "expand"}
-                    size={18}
-                    color={colors.muted}
-                  />
-                }
-                onPress={() => setShowRelays((value) => !value)}
-              />
-            )}
-            {showRelays && details.relays.length > 0 && (
-              <EndpointList urls={details.relays} />
-            )}
-            <SettingsRow
-              icon="storage"
-              title={t("messages:marmot.groupMediaServers")}
-              detail={
-                details.mediaV2
-                  ? undefined
-                  : t("messages:marmot.mediaUnavailableForChat")
-              }
-              value={
-                details.mediaV2
-                  ? String(details.mediaEndpoints.length)
-                  : undefined
-              }
-              expanded={
-                details.mediaEndpoints.length ? showMediaServers : undefined
-              }
-              trailing={
-                details.mediaEndpoints.length ? (
-                  <Icon
-                    name={showMediaServers ? "collapse" : "expand"}
-                    size={18}
-                    color={colors.muted}
-                  />
-                ) : undefined
-              }
-              onPress={
-                details.mediaEndpoints.length
-                  ? () => setShowMediaServers((value) => !value)
-                  : undefined
-              }
-            />
-            {showMediaServers && details.mediaEndpoints.length > 0 && (
-              <EndpointList urls={details.mediaEndpoints} />
-            )}
+            {connections}
           </SettingsGroup>
-          {(member || details.canLeave || details.canCancelLeave) && (
+          {showActions && (
             <SettingsGroup title={t("messages:marmot.conversationActions")}>
-              {member && (
+              {member && showMembershipActions && (
                 <SettingsRow
                   title={t(
                     details.archived
@@ -1366,7 +1401,7 @@ export function MarmotGroupDetailsScreen({
                   }
                 />
               )}
-              {details.canLeave && (
+              {details.canLeave && showMembershipActions && (
                 <SettingsRow
                   title={t("messages:marmot.leave")}
                   disabled={busy}
@@ -1379,21 +1414,32 @@ export function MarmotGroupDetailsScreen({
                   }
                 />
               )}
-            </SettingsGroup>
-          )}
-          {!member && (
-            <SettingsGroup>
-              <SettingsRow
-                title={t("messages:marmot.forgetGroup")}
-                disabled={busy}
-                onPress={() =>
-                  confirm(
-                    t("messages:marmot.forgetGroup"),
-                    () => marmot.changeMembership(id, "forget"),
-                    true,
-                  )
-                }
-              />
+              {canDeleteLocal && (
+                <SettingsRow
+                  title={t("messages:marmot.forgetGroup")}
+                  disabled={busy || details.disbanding}
+                  onPress={() =>
+                    confirm(
+                      t("messages:marmot.forgetGroup"),
+                      async () => {
+                        await state.window?.close();
+                        try {
+                          await marmot.changeMembership(id, "deleteLocal");
+                        } catch (error) {
+                          state.retry();
+                          throw error;
+                        }
+                        if (isCurrent()) {
+                          chatPreferences.clearGroupCreation(id);
+                          if (!lock.getState().locked) router.dismissTo("/");
+                        }
+                      },
+                      false,
+                      t("messages:marmot.deleteLocalGroupConfirmation"),
+                    )
+                  }
+                />
+              )}
             </SettingsGroup>
           )}
         </>
@@ -1415,7 +1461,7 @@ function GroupMemberIdentity({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={t("contacts:openProfile", { name })}
-      style={[styles.rosterRow, styles.grow]}
+      style={styles.memberIdentity}
       onPress={() =>
         router.push({ pathname: "/person/[key]", params: { key: publicKey } })
       }
@@ -1509,7 +1555,9 @@ function GroupMediaSettings({
 }: {
   details: MarmotGroupDetails;
   busy: boolean;
-  update: (task: () => Promise<void>) => Promise<boolean>;
+  update: (
+    task: () => Promise<void | MarmotGroupDisposition | null>,
+  ) => Promise<boolean>;
 }) {
   const { t } = useTranslation(namespaces);
   const [entry, setEntry] = useState(details.mediaEndpoints.join("\n"));
@@ -1585,7 +1633,6 @@ function InviteMemberField({
           }
         />
       ))}
-      <InviteeAvailability keys={parsed ?? []} />
       <Action
         disabled={busy || !parsed?.length}
         onPress={() => invite(addresses)}
@@ -1597,7 +1644,6 @@ function InviteMemberField({
 }
 
 const styles = StyleSheet.create({
-  member: { gap: space.xs, marginBottom: space.sm },
   grow: { flex: 1, minWidth: 0, gap: 3 },
   profileHeader: { alignItems: "center", gap: space.xs },
   profileAvatar: {
@@ -1636,8 +1682,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.md,
     minHeight: 54,
-    paddingHorizontal: space.lg,
+    paddingHorizontal: space.md,
     paddingVertical: space.xs,
+  },
+  deleteGroupButton: {
+    alignSelf: "stretch",
+    borderRadius: 28,
+    marginTop: space.sm,
+  },
+  memberIdentity: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
   },
   role: {
     fontWeight: "600",

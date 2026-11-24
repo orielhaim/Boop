@@ -39,25 +39,40 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
       )
       .slice(0, 16);
     void (async () => {
-      const found = [];
-      for (const row of groups) {
+      try {
+        const ids = groups.map(({ id }) => id);
+        if (!ids.length) {
+          setMatches([]);
+          return;
+        }
+        await marmotSession.ready();
         if (!live) return;
-        try {
-          await marmotSession.ready();
-          const group = await marmot.groupDetails(row.id);
-          if (
-            group.membership === "member" &&
-            !group.pendingInvitation &&
-            group.members.some((person) => person.id === identity.publicKey) &&
-            group.members.some((person) => person.id === publicKey)
-          )
-            found.push({
-              id: row.id,
-              name: group.name || t("messages:marmot.group"),
-            });
-        } catch {}
+        const members = await marmot
+          .groupMemberIds(ids)
+          .catch(async (): Promise<Record<string, string[]>> => {
+            if (!live) return {};
+            const results = await Promise.allSettled(
+              ids.map((id) => marmot.groupMemberIds([id])),
+            );
+            return Object.assign(
+              {},
+              ...results.flatMap((result) =>
+                result.status === "fulfilled" ? [result.value] : [],
+              ),
+            );
+          });
+        if (!live) return;
+        setMatches(
+          groups.flatMap((row) => {
+            const ids = members[row.id];
+            return ids?.includes(identity.publicKey) && ids.includes(publicKey)
+              ? [{ id: row.id, name: row.title || t("messages:marmot.group") }]
+              : [];
+          }),
+        );
+      } catch {
+        if (live) setMatches([]);
       }
-      if (live) setMatches(found);
     })();
     return () => {
       live = false;

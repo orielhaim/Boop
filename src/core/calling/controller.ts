@@ -908,6 +908,7 @@ export function createCallController({
   return {
     store,
     receive,
+    groupAllowed,
     peerBlocked(key: string) {
       if (!active) return;
       if (

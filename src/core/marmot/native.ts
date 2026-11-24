@@ -81,44 +81,87 @@ const attentionSnapshot = windowRevision.extend({
   kind: z.literal("attention"),
   count: z.number().nullish(),
 });
+const groupMembership = z.enum(["member", "left", "removed", "device_removed"]);
+const groupLifecycle = z.enum([
+  "stable",
+  "pending_publish",
+  "merging",
+  "recovering",
+  "unrecoverable",
+  "disbanded",
+]);
+const groupMember = z.object({
+  id: z.string(),
+  npub: z.string(),
+  name: z.string().nullish(),
+  self: z.boolean(),
+  admin: z.boolean(),
+  devices: z.number().int().nonnegative(),
+});
+const groupAccess = z.object({
+  membership: groupMembership,
+  lifecycle: groupLifecycle,
+  pendingInvitation: z.boolean(),
+  pendingLeave: z.boolean(),
+  unrecoverable: z.boolean(),
+  disbanding: z.boolean(),
+  kind: chatRow.shape.kind.nullish(),
+  members: z.array(z.string()),
+});
+const groupInvitation = z.object({
+  inviter: z.string().nullish(),
+  name: z.string(),
+  memberCount: z.number().int().nonnegative(),
+  members: z.array(groupMember.pick({ id: true, npub: true, name: true })),
+});
+const groupDiagnostics = z.object({
+  commit: z.enum(["sending", "stuck"]).nullish(),
+  automaticRecoveryFailed: z.boolean(),
+  historyIncomplete: z.boolean(),
+  rejoinOffers: z.array(
+    z.object({ welcome: z.string(), inviter: z.string(), token: z.string() }),
+  ),
+});
+const groupRosterSnapshot = windowRevision.extend({
+  kind: z.literal("groupRoster"),
+  details: z.object({
+    revision: windowRevision.shape.sequence,
+    membership: groupMembership,
+    lifecycle: groupLifecycle,
+    members: z.array(groupMember),
+  }),
+});
 const groupDetails = z.object({
   avatarAsset: avatarAsset.nullish(),
   id: z.string(),
   name: z.string(),
   description: z.string(),
-  inviter: z.string().nullish(),
   image: z.string().nullish(),
   mediaV2: z.boolean(),
   mediaEndpoints: z.array(z.string()),
   unrecoverable: z.boolean(),
   convergenceParked: z.boolean(),
-  historyIncomplete: z.boolean(),
-  relayChangesOutstanding: z.number().nonnegative(),
+  disbanding: z.boolean(),
+  epoch: windowRevision.shape.sequence,
   relays: z.array(z.string()),
-  membership: z.string(),
+  membership: groupMembership,
   pendingInvitation: z.boolean(),
-  kind: z.string().nullish(),
+  kind: chatRow.shape.kind.nullish(),
   pendingLeave: z.boolean(),
   leaveBlocked: z.boolean(),
   createdAt: z.number().nullish(),
   muted: z.boolean(),
   archived: z.boolean(),
   canEdit: z.boolean(),
-  lifecycle: z.string(),
-  commit: z.string().nullish(),
+  lifecycle: groupLifecycle,
+  canStepDown: z.boolean(),
   canInvite: z.boolean(),
   canLeave: z.boolean(),
   canCancelLeave: z.boolean(),
   canDisband: z.boolean(),
   canEnableDisbanding: z.boolean(),
   members: z.array(
-    z.object({
-      id: z.string(),
-      npub: z.string(),
-      name: z.string().nullish(),
-      self: z.boolean(),
-      admin: z.boolean(),
-      devices: z.number(),
+    groupMember.extend({
       canPromote: z.boolean(),
       canRemove: z.boolean(),
       canDemote: z.boolean(),
@@ -281,8 +324,18 @@ const memberOutcome = z.object({
   status: z.string(),
   devices: z.number(),
 });
+const groupDisposition = z.enum([
+  "published",
+  "accepted_pending",
+  "completion_unknown",
+]);
+const groupInviteResult = z.object({
+  members: z.array(memberOutcome),
+  disposition: groupDisposition.nullish(),
+});
 const groupCreation = z.object({
   groupId: z.string().nullish(),
+  createdAt: z.number().int().nonnegative().nullish(),
   members: z.array(memberOutcome),
 });
 const searchResult = z.object({
@@ -307,10 +360,13 @@ export type MarmotConversation = z.infer<typeof conversationSnapshot>;
 export type MarmotReadiness = z.infer<typeof readiness>;
 export type MarmotChatView = "chats" | "unread" | "archived" | "left";
 export type MarmotGroupDetails = z.infer<typeof groupDetails>;
+export type MarmotGroupInvitation = z.infer<typeof groupInvitation>;
+export type MarmotGroupDiagnostics = z.infer<typeof groupDiagnostics>;
+export type MarmotGroupDisposition = z.infer<typeof groupDisposition>;
 export type MarmotMemberOutcome = z.infer<typeof memberOutcome>;
-type MemberAction = "promote" | "demote" | "remove";
+type MemberAction = "promote" | "demote" | "remove" | "stepDown";
 type MembershipAction =
-  "leave" | "cancelLeave" | "forget" | "disband" | "enableDisbanding";
+  "leave" | "cancelLeave" | "deleteLocal" | "disband" | "enableDisbanding";
 export type MarmotUpload = {
   path: string;
   name: string;
@@ -513,7 +569,7 @@ type Bridge = {
     search: string | null,
   ): Promise<unknown>;
   openAttention(id: string): Promise<unknown>;
-  openGroupState(id: string, group: string): Promise<unknown>;
+  openGroupState(id: string, group: string, roster: boolean): Promise<unknown>;
   openGroupCall(id: string, group: string): Promise<unknown>;
   openConversation(
     id: string,
@@ -542,7 +598,7 @@ type Bridge = {
     target: string,
   ): Promise<unknown>;
   startDirect(peer: string): Promise<string>;
-  checkInvitee(peer: string): Promise<void>;
+  prewarmInvitees(members: string[]): Promise<void>;
   createGroup(
     name: string,
     description: string | null,
@@ -550,10 +606,13 @@ type Bridge = {
     image: string | null,
   ): Promise<unknown>;
   respondToInvitation(group: string, accept: boolean): Promise<void>;
-  groupDetails(group: string): Promise<unknown>;
+  groupAccess(group: string, includeMembers: boolean): Promise<unknown>;
+  groupInvitation(group: string, preview: boolean): Promise<unknown>;
+  groupDiagnostics(group: string): Promise<unknown>;
+  groupMemberIds(groups: string[]): Promise<unknown>;
   viewGroupImage(group: string, hash: string): Promise<string>;
-  updateGroupImage(group: string, path: string | null): Promise<void>;
-  updateGroupMedia(group: string, origins: string[]): Promise<void>;
+  updateGroupImage(group: string, path: string | null): Promise<unknown>;
+  updateGroupMedia(group: string, origins: string[]): Promise<unknown>;
   searchConversation(
     group: string,
     text: string | null,
@@ -569,14 +628,15 @@ type Bridge = {
     group: string,
     name: string | null,
     description: string | null,
-  ): Promise<void>;
+  ): Promise<unknown>;
+  respondToRejoin(welcome: string, token: string | null): Promise<void>;
   inviteMembers(group: string, members: string[]): Promise<unknown>;
   changeMember(
     group: string,
     member: string,
     action: MemberAction,
-  ): Promise<void>;
-  changeMembership(group: string, action: MembershipAction): Promise<void>;
+  ): Promise<unknown>;
+  changeMembership(group: string, action: MembershipAction): Promise<unknown>;
   sendText(
     group: string,
     text: string,
@@ -1086,9 +1146,14 @@ export const marmot = {
       (bridge, id) => bridge.openAttention(id),
       attentionSnapshot,
     ),
+  openGroupRoster: (group: string) =>
+    openWindow<z.infer<typeof groupRosterSnapshot>, never>(
+      (bridge, id) => bridge.openGroupState(id, group, true),
+      groupRosterSnapshot,
+    ),
   openGroupState: (group: string) =>
     openWindow<z.infer<typeof groupStateSnapshot>, never>(
-      (bridge, id) => bridge.openGroupState(id, group),
+      (bridge, id) => bridge.openGroupState(id, group, false),
       groupStateSnapshot,
     ),
   openGroupCall: (group: string) =>
@@ -1110,7 +1175,7 @@ export const marmot = {
       },
     ),
   startDirect: (peer: string) => native().startDirect(peer),
-  checkInvitee: (peer: string) => native().checkInvitee(peer),
+  prewarmInvitees: (members: string[]) => native().prewarmInvitees(members),
   async createGroup(
     name: string,
     description: string | null,
@@ -1123,8 +1188,21 @@ export const marmot = {
   },
   respondToInvitation: (group: string, accept: boolean) =>
     native().respondToInvitation(group, accept),
-  async groupDetails(group: string) {
-    return groupDetails.parse(await native().groupDetails(group));
+  async groupAccess(group: string, includeMembers = false) {
+    return groupAccess.parse(await native().groupAccess(group, includeMembers));
+  },
+  async groupInvitation(group: string, preview = false) {
+    return groupInvitation.parse(
+      await native().groupInvitation(group, preview),
+    );
+  },
+  async groupDiagnostics(group: string) {
+    return groupDiagnostics.parse(await native().groupDiagnostics(group));
+  },
+  async groupMemberIds(groups: string[]) {
+    return z
+      .record(z.string(), z.array(z.string()))
+      .parse(await native().groupMemberIds(groups));
   },
   viewGroupImage: (group: string, hash: string) =>
     native().viewGroupImage(group, hash),
@@ -1148,24 +1226,40 @@ export const marmot = {
       ),
     );
   },
-  updateGroupImage: (group: string, path: string | null) =>
-    native().updateGroupImage(group, path),
-  updateGroupMedia: (group: string, origins: string[]) =>
-    native().updateGroupMedia(group, origins),
-  updateGroup: (
+  async updateGroupImage(group: string, path: string | null) {
+    return groupDisposition.parse(await native().updateGroupImage(group, path));
+  },
+  async updateGroupMedia(group: string, origins: string[]) {
+    return groupDisposition.parse(
+      await native().updateGroupMedia(group, origins),
+    );
+  },
+  async updateGroup(
     group: string,
     name: string | null,
     description: string | null,
-  ) => native().updateGroup(group, name, description),
-  async inviteMembers(group: string, members: string[]) {
-    return z
-      .array(memberOutcome)
-      .parse(await native().inviteMembers(group, members));
+  ) {
+    return groupDisposition.parse(
+      await native().updateGroup(group, name, description),
+    );
   },
-  changeMember: (group: string, member: string, action: MemberAction) =>
-    native().changeMember(group, member, action),
-  changeMembership: (group: string, action: MembershipAction) =>
-    native().changeMembership(group, action),
+  respondToRejoin: (welcome: string, token: string | null) =>
+    native().respondToRejoin(welcome, token),
+  async inviteMembers(group: string, members: string[]) {
+    return groupInviteResult.parse(
+      await native().inviteMembers(group, members),
+    );
+  },
+  async changeMember(group: string, member: string, action: MemberAction) {
+    return groupDisposition.parse(
+      await native().changeMember(group, member, action),
+    );
+  },
+  async changeMembership(group: string, action: MembershipAction) {
+    return groupDisposition
+      .nullish()
+      .parse(await native().changeMembership(group, action));
+  },
   sendText: (
     group: string,
     text: string,

@@ -1,9 +1,12 @@
 import type { Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
+import { settings } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 const key = "chat.enabled";
 const presentationKey = "chat.presentation";
+const groupCreationKey = (group: string) => `chat.created.${group}`;
 
 export const chatPresentationControls = {
   textSize: { min: 12, max: 28, step: 1, initial: 16 },
@@ -99,6 +102,21 @@ export function createChatPreferences(db: Database) {
     hide(group: string, id: string) {
       setMessage(group, "pin", id, false);
       setMessage(group, "hidden", id, true);
+    },
+    recordGroupCreation(group: string, createdAt: number) {
+      setPreference(db, groupCreationKey(group), String(createdAt));
+    },
+    clearGroupCreation(group: string) {
+      db.delete(settings)
+        .where(eq(settings.key, groupCreationKey(group)))
+        .run();
+    },
+    groupCreatedAt(group: string) {
+      return z.coerce
+        .number()
+        .int()
+        .positive()
+        .safeParse(preference(db, groupCreationKey(group))).data;
     },
     enabled: () => enabled,
     setEnabled(value: boolean) {
