@@ -20,6 +20,5 @@ export async function uploadAvatar(
   } catch {
     throw new BlossomError("format");
   }
-  if (clean.length !== bytes.length) throw new BlossomError("format");
   return media.upload("profile", clean, { signal });
 }

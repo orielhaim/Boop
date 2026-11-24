@@ -15,7 +15,7 @@ import { createMediaUploads } from "./uploads";
 export type MediaSdk = ReturnType<typeof createMediaSdk>;
 
 export function createMediaSdk(db: Database, signer: NDKSigner) {
-  const owner = signer.userSync.pubkey;
+  const files = profileFiles(signer.userSync.pubkey);
   const settings = createMediaSettings({
     read: (key) => preference(db, key),
     write: (key, value) => setPreference(db, key, value),
@@ -31,6 +31,22 @@ export function createMediaSdk(db: Database, signer: NDKSigner) {
     {
       request: fetch,
       sha256,
+      async verifyProfileBlob(url, hash, signal) {
+        const transport = nativeAvatarTransport;
+        if (!transport || signal.aborted)
+          throw new Error("Profile upload verification unavailable");
+        const id = files.disk.newId();
+        const filename = `${id}.jpg`;
+        const target = files.disk.cacheTarget(filename);
+        const cancel = () => transport.cancel(id);
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          await transport.download(id, url, target, hash);
+        } finally {
+          signal.removeEventListener("abort", cancel);
+          files.disk.removeCached(filename);
+        }
+      },
       headUpload: async (url, headers, signal) =>
         (await blossomCommand(url, headers, signal)).status,
       mirrorCommand: blossomCommand,
@@ -53,7 +69,7 @@ export function createMediaSdk(db: Database, signer: NDKSigner) {
         listeners.delete(listener);
       };
     },
-    profileFiles: profileFiles(owner),
+    profileFiles: files,
     profileDownload: nativeAvatarTransport,
     downloadPreview: downloadPreviewFile,
     profileMirrors(from: string) {

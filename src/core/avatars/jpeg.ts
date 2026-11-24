@@ -1,11 +1,34 @@
 export const maxAvatarBytes = 250 * 1024;
 
+// JFIF 1.01 with unitless 1:1 density and no thumbnail.
+const jfif = Uint8Array.of(
+  0xff,
+  0xe0,
+  0,
+  16,
+  0x4a,
+  0x46,
+  0x49,
+  0x46,
+  0,
+  1,
+  1,
+  0,
+  0,
+  1,
+  0,
+  1,
+  0,
+  0,
+);
+
 export function sanitizeAvatarJpeg(bytes: Uint8Array, wide = false) {
   if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.length > maxAvatarBytes)
     throw new Error("Invalid JPEG");
-  const result = new Uint8Array(bytes.length);
+  const result = new Uint8Array(bytes.length + jfif.length);
   result.set(bytes.subarray(0, 2));
-  let written = 2;
+  result.set(jfif, 2);
+  let written = 2 + jfif.length;
   let cursor = 2;
   let dimension = 0;
   let imageHeight = 0;
@@ -16,6 +39,7 @@ export function sanitizeAvatarJpeg(bytes: Uint8Array, wide = false) {
     while (bytes[cursor] === 0xff) cursor++;
     const marker = bytes[cursor++];
     if (marker === 0xd9 && scanned && dimension) {
+      if (written + 2 > maxAvatarBytes) throw new Error("Invalid JPEG");
       result.set([0xff, 0xd9], written);
       return {
         bytes: result.slice(0, written + 2),

@@ -5,6 +5,7 @@ import { cacheEvictions } from "../src/core/media/cache-policy";
 import { createBlossomClient } from "../src/core/media/blossom";
 import {
   createMediaSettings,
+  type MediaConfiguration,
   parseServerOrigins,
 } from "../src/core/media/servers";
 import { createMediaUploads } from "../src/core/media/uploads";
@@ -56,7 +57,7 @@ function settingsFor(entries = new Map<string, string>()) {
 test("recommended servers keep roles independent and a saved empty list stays empty", () => {
   const { settings, store } = settingsFor();
   expect(settings.configured("profile").map(({ origin }) => origin)).toEqual([
-    "https://blossom.nostr.build",
+    "https://blossom.jumble.social",
   ]);
   expect(settings.configured("attachment").map(({ origin }) => origin)).toEqual(
     ["https://nostr.download"],
@@ -73,6 +74,36 @@ test("recommended servers keep roles independent and a saved empty list stays em
       ["e", foreign],
     ]),
   ).toEqual([second, first]);
+});
+
+test("opening media settings upgrades the original defaults only", () => {
+  const legacy: MediaConfiguration = {
+    servers: [
+      {
+        origin: "https://blossom.nostr.build",
+        enabled: true,
+        roles: ["profile"],
+      },
+      {
+        origin: "https://nostr.download",
+        enabled: true,
+        roles: ["attachment"],
+      },
+    ],
+    mirror: false,
+  };
+  const key = "media.servers.v1";
+  const stock = settingsFor(new Map([[key, JSON.stringify(legacy)]]));
+  expect(
+    stock.settings.configured("profile").map(({ origin }) => origin),
+  ).toEqual(["https://blossom.jumble.social"]);
+  expect(createMediaSettings(stock.store).snapshot()).toEqual(
+    stock.settings.snapshot(),
+  );
+
+  const customized = { ...legacy, mirror: true };
+  const custom = settingsFor(new Map([[key, JSON.stringify(customized)]]));
+  expect(custom.settings.snapshot()).toEqual(customized);
 });
 
 test("a signed preflight sends only encrypted metadata and unsupported handlers fall through to PUT", async () => {

@@ -188,6 +188,56 @@ test("upload signs the exact host and hash, then reads the blob back without cre
   expect(paths).toEqual([`${origin}/upload`, url]);
 });
 
+test("a separate profile delivery host requires a checked read-back", async () => {
+  const delivery = `https://images.example.net/${hash}.jpg`;
+  const verified: string[][] = [];
+  const signal = new AbortController().signal;
+  const http: BlossomHttp = {
+    sha256,
+    async request(path, options) {
+      expect(path).toBe(`${origin}/upload`);
+      expect(options.method).toBe("PUT");
+      return response({ url: delivery });
+    },
+  };
+  await expect(
+    putAvatar(signer, origin, photo, signal, http),
+  ).rejects.toHaveProperty("code", "descriptor");
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      ...http,
+      async verifyProfileBlob(path, expectedHash, signal) {
+        expect(signal.aborted).toBe(false);
+        verified.push([path, expectedHash]);
+      },
+    }),
+  ).resolves.toBe(delivery);
+  expect(verified).toEqual([[delivery, hash]]);
+
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      ...http,
+      async verifyProfileBlob() {
+        throw new Error("Native hash verification failed");
+      },
+    }),
+  ).rejects.toThrow();
+
+  let unsafeReadback = false;
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      sha256,
+      async request() {
+        return response({ url: `https://192.168.0.1/${hash}.jpg` });
+      },
+      async verifyProfileBlob() {
+        unsafeReadback = true;
+      },
+    }),
+  ).rejects.toHaveProperty("code", "descriptor");
+  expect(unsafeReadback).toBe(false);
+});
+
 test("descriptor mismatch does not trigger a GET; a corrupt read-back cannot be published", async () => {
   const signal = new AbortController().signal;
   for (const descriptor of [

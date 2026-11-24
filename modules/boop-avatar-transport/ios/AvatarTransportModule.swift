@@ -461,29 +461,13 @@ private func downloadBlossomMedia(
 }
 
 @available(iOS 17.0, *)
-private func downloadMedia(
-  _ input: String, _ output: String, _ hash: String?, _ previewImage: Bool?, _ job: DownloadJob, nip05: Bool
-) async throws -> Int {
-  let html = previewImage == false && !nip05
-  let images = !html && !nip05
-  let limit = nip05 ? 64 * 1024 : html ? 512 * 1024 : maxBytes
+private func readMediaResponse(
+  _ url: URL, _ accept: String, _ types: Set<String>, _ limit: Int, _ job: DownloadJob,
+  allowRedirect: Bool
+) async throws -> MediaResponse {
   try job.check()
-  guard let url = URL(string: input), url.scheme == "https",
-        let host = url.host, url.user == nil, url.password == nil,
-        url.port == nil || url.port == 443,
-        host.range(of: #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$"#, options: .regularExpression) != nil,
-        host.range(of: #"\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$"#, options: .regularExpression) == nil,
-        let destination = URL(string: output), destination.isFileURL,
-        destination.pathExtension == (images ? "jpg" : html ? "html" : "bin"),
-        let directory = FileManager.default.urls(for: previewImage == nil && images ? .documentDirectory : .cachesDirectory, in: .userDomainMask).first
-  else { throw AvatarTransferError.destination }
-  let root = directory.appendingPathComponent(previewImage != nil ? "link-previews" : "avatar-cache").resolvingSymlinksInPath()
-  let target = destination.resolvingSymlinksInPath()
-  guard target.path.hasPrefix(root.path + "/") else { throw AvatarTransferError.destination }
-
-  let addresses = try publicAddresses(host)
-  try Task.checkCancellation()
-  let gate = try AvatarConnectGate(host: host, addresses: addresses)
+  guard let host = blossomHost(url) else { throw AvatarTransferError.destination }
+  let gate = try AvatarConnectGate(host: host, addresses: try publicAddresses(host))
   defer { gate.close() }
   let endpoint = try await gate.start()
   try Task.checkCancellation()
@@ -501,20 +485,70 @@ private func downloadMedia(
   let session = URLSession(configuration: configuration, delegate: NoAvatarRedirect(), delegateQueue: nil)
   defer { session.invalidateAndCancel() }
   var request = URLRequest(url: url)
-  request.setValue(nip05 ? "application/json" : html ? "text/html" : "image/jpeg, image/png, image/webp", forHTTPHeaderField: "Accept")
+  request.setValue(accept, forHTTPHeaderField: "Accept")
   request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
   try job.check()
   let (stream, response) = try await session.bytes(for: request)
-  guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-        !images || imageTypes.contains(response.mimeType ?? ""),
-        !html || response.mimeType == "text/html",
-        !nip05 || response.mimeType == "application/json" || response.mimeType == "text/plain",
+  guard let http = response as? HTTPURLResponse else { throw AvatarTransferError.response }
+  if allowRedirect, [301, 302, 303, 307, 308].contains(http.statusCode),
+     let location = http.value(forHTTPHeaderField: "Location"),
+     let next = URL(string: location, relativeTo: url)?.absoluteURL {
+    return .redirect(next)
+  }
+  guard http.statusCode == 200, types.contains(response.mimeType ?? ""),
         response.expectedContentLength <= limit
   else { throw AvatarTransferError.response }
   var data = Data()
   for try await byte in stream {
     guard data.count < limit else { throw AvatarTransferError.size }
     data.append(byte)
+  }
+  return .body(data)
+}
+
+private enum MediaResponse {
+  case redirect(URL)
+  case body(Data)
+}
+
+private func mediaHash(_ url: URL) -> String? {
+  let filename = url.lastPathComponent
+  guard filename.range(of: #"^[a-f0-9]{64}(?:\.[a-z0-9]{1,8})?$"#, options: .regularExpression) != nil else { return nil }
+  return String(filename.prefix(64))
+}
+
+@available(iOS 17.0, *)
+private func downloadMedia(
+  _ input: String, _ output: String, _ hash: String?, _ previewImage: Bool?, _ job: DownloadJob, nip05: Bool
+) async throws -> Int {
+  let html = previewImage == false && !nip05
+  let images = !html && !nip05
+  let limit = nip05 ? 64 * 1024 : html ? 512 * 1024 : maxBytes
+  try job.check()
+  guard var url = URL(string: input), blossomHost(url) != nil,
+        let destination = URL(string: output), destination.isFileURL,
+        destination.pathExtension == (images ? "jpg" : html ? "html" : "bin"),
+        let directory = FileManager.default.urls(for: previewImage == nil && images ? .documentDirectory : .cachesDirectory, in: .userDomainMask).first
+  else { throw AvatarTransferError.destination }
+  let root = directory.appendingPathComponent(previewImage != nil ? "link-previews" : "avatar-cache").resolvingSymlinksInPath()
+  let target = destination.resolvingSymlinksInPath()
+  guard target.path.hasPrefix(root.path + "/") else { throw AvatarTransferError.destination }
+
+  let accept = nip05 ? "application/json" : html ? "text/html" : "image/jpeg, image/png, image/webp"
+  let types: Set<String> = nip05 ? ["application/json", "text/plain"] : html ? ["text/html"] : imageTypes
+  let redirectHash = previewImage == nil && mediaHash(url) == hash ? hash : nil
+  var data: Data
+  var redirects = 0
+  read: while true {
+    switch try await readMediaResponse(url, accept, types, limit, job, allowRedirect: redirectHash != nil) {
+    case .redirect(let next):
+      guard let redirectHash, redirects < 3, mediaHash(next) == redirectHash else { throw AvatarTransferError.destination }
+      url = next
+      redirects += 1
+    case .body(let body):
+      data = body
+      break read
+    }
   }
   if let hash, SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() != hash {
     throw AvatarTransferError.hash

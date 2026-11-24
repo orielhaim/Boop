@@ -2,8 +2,6 @@ import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { z } from "zod";
 import { blossomHash, publicMediaUrl } from "./url";
 
-export const defaultBlossomServer = "https://blossom.nostr.build";
-
 export function blossomServer(input: string) {
   const url = publicMediaUrl(input.trim());
   return url && url.pathname === "/" && !url.search && !input.includes("#")
@@ -135,6 +133,11 @@ export type BlossomHttp = {
     },
   ): Promise<BlossomResponse>;
   sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string>;
+  verifyProfileBlob?: (
+    url: string,
+    hash: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   putFile?: FilePut;
   headUpload?: (
     url: string,
@@ -170,18 +173,18 @@ export type FilePut = (request: {
   progress?: (sent: number, total: number) => void;
 }) => Promise<{ status: number; body: string }>;
 
-function jsonDescriptor(text: string, origin: string, blob: BlobInfo) {
+function jsonDescriptor(text: string, blob: BlobInfo) {
   try {
     const data = descriptor.parse(JSON.parse(text));
     const url = publicMediaUrl(data.url);
     if (
-      url?.origin === origin &&
+      url &&
       blossomHash(url) === blob.hash &&
       data.sha256 === blob.hash &&
       data.size === blob.size &&
       data.type === blob.mime
     )
-      return url.href;
+      return url;
   } catch {
     // A malformed descriptor is treated as a failed upload.
   }
@@ -198,14 +201,45 @@ export function attachmentUploadUrl(
     throw httpError(result.status);
   if (new TextEncoder().encode(result.body).length > 8192)
     throw new BlossomError("descriptor");
-  return jsonDescriptor(result.body, origin, {
+  const url = jsonDescriptor(result.body, {
     hash,
     size,
     mime: "application/octet-stream",
   });
+  if (url.origin !== origin) throw new BlossomError("descriptor");
+  return url.href;
 }
 
 export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
+  async function verifiedUrl(
+    body: string,
+    origin: string,
+    blob: BlobInfo,
+    signal: AbortSignal,
+  ) {
+    const url = jsonDescriptor(body, blob);
+    if (blob.mime === "image/jpeg" && http.verifyProfileBlob) {
+      await http.verifyProfileBlob(url.href, blob.hash, signal);
+    } else {
+      if (url.origin !== origin) throw new BlossomError("descriptor");
+      if (blob.mime === "image/jpeg") {
+        const stored = await http.request(url.href, {
+          redirect: "error",
+          credentials: "omit",
+          signal,
+        });
+        if (
+          stored.status !== 200 ||
+          (await http.sha256(await boundedBody(stored, blob.size))) !==
+            blob.hash
+        )
+          throw new BlossomError("descriptor");
+      }
+    }
+    if (signal.aborted) throw new BlossomError("cancelled");
+    return url.href;
+  }
+
   async function operation<T>(
     origin: string,
     blob: BlobInfo,
@@ -276,6 +310,7 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
             headers,
           })
         ).status;
+
     if (status >= 200 && status < 300) return "compatible" as const;
     if ([404, 405, 501].includes(status)) return "unsupported" as const;
     throw httpError(status);
@@ -363,22 +398,13 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
               body: blob.bytes,
               headers,
             });
+
             if (response.status !== 200 && response.status !== 201)
               throw httpError(response.status);
             return new TextDecoder().decode(await boundedBody(response, 8192));
           })();
           options.progress?.("validating");
-          const url = jsonDescriptor(body, args.origin, blob);
-          if (blob.mime === "image/jpeg") {
-            const stored = await http.request(url, common);
-            if (
-              stored.status !== 200 ||
-              (await http.sha256(await boundedBody(stored, blob.size))) !==
-                blob.hash
-            )
-              throw new BlossomError("descriptor");
-          }
-          return url;
+          return verifiedUrl(body, args.origin, blob, args.signal);
         },
         "uri" in blob ? 300_000 : undefined,
       );
@@ -411,7 +437,7 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
           );
           if (response.status !== 200 && response.status !== 201)
             throw httpError(response.status);
-          return jsonDescriptor(response.body, args.origin, blob);
+          return verifiedUrl(response.body, args.origin, blob, args.signal);
         }
         const response = await http.request(endpoint, {
           method: "PUT",
@@ -423,10 +449,11 @@ export function createBlossomClient(signer: NDKSigner, http: BlossomHttp) {
         });
         if (response.status !== 200 && response.status !== 201)
           throw httpError(response.status);
-        return jsonDescriptor(
+        return verifiedUrl(
           new TextDecoder().decode(await boundedBody(response, 8192)),
           args.origin,
           blob,
+          args.signal,
         );
       });
     },

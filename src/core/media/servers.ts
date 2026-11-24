@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { blossomServer, defaultBlossomServer } from "./blossom";
+import { blossomServer } from "./blossom";
 
 export const mediaRoles = ["profile", "attachment"] as const;
 export type MediaRole = (typeof mediaRoles)[number];
 export const serverListKind = 10063;
 export const maxMediaServers = 8;
 const privateDefault = "https://nostr.download";
+const previousProfileDefault = "https://blossom.nostr.build";
 const configuration = z.object({
   servers: z
     .array(
@@ -36,7 +37,7 @@ function defaultEntry(origin: string, role: MediaRole): MediaServer {
 export function recommendedMediaServers(): MediaConfiguration {
   return {
     servers: [
-      defaultEntry(defaultBlossomServer, "profile"),
+      defaultEntry("https://blossom.jumble.social", "profile"),
       defaultEntry(privateDefault, "attachment"),
     ],
     mirror: false,
@@ -66,6 +67,17 @@ export function createMediaSettings(store: Store) {
       current = configuration.parse(JSON.parse(saved));
     } catch {
       current = { servers: [], mirror: false };
+    }
+    const previousDefaults: MediaConfiguration = {
+      servers: [
+        defaultEntry(previousProfileDefault, "profile"),
+        defaultEntry(privateDefault, "attachment"),
+      ],
+      mirror: false,
+    };
+    if (JSON.stringify(current) === JSON.stringify(previousDefaults)) {
+      current = recommendedMediaServers();
+      store.write(key, JSON.stringify(current));
     }
   }
 

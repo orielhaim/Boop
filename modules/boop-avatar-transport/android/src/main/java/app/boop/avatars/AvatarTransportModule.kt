@@ -52,6 +52,7 @@ class AvatarTransportModule : Module() {
   @Volatile private var downloadsForeground = true
   private val allowedHost = Regex("(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{1,62}")
   private val localSuffix = Regex("\\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$")
+  private val hashFilename = Regex("([a-f0-9]{64})(?:\\.[a-z0-9]{1,8})?")
   private val maxBytes = 2 * 1024 * 1024
   private val types = setOf("image/jpeg", "image/png", "image/webp")
 
@@ -312,6 +313,29 @@ class AvatarTransportModule : Module() {
       address.password.isEmpty() && allowedHost.matches(address.host) &&
       !localSuffix.containsMatchIn(address.host)
 
+  private fun hashAt(address: HttpUrl) =
+    hashFilename.matchEntire(address.encodedPathSegments.last())?.groupValues?.get(1)
+
+  private fun mediaResponse(initial: HttpUrl, accept: String, hash: String?, job: Job): okhttp3.Response {
+    var address = initial
+    var redirects = 0
+    while (true) {
+      val call = client.newCall(Request.Builder().url(address)
+        .header("Accept", accept).header("Accept-Encoding", "identity").build())
+      job.call = call
+      if (job.cancelled.get()) call.cancel()
+      val response = call.execute()
+      if (hash == null || response.code !in listOf(301, 302, 303, 307, 308)) return response
+      response.use {
+        val next = it.header("Location")?.let(address::resolve)
+        if (redirects >= 3 || next == null || !isBlossomAddress(next) || hashAt(next) != hash)
+          throw IOException("MEDIA_REDIRECT")
+        address = next
+        redirects++
+      }
+    }
+  }
+
   internal data class ContentRange(val start: Long, val end: Long, val total: Long)
 
   internal fun parseContentRange(value: String?): ContentRange? {
@@ -348,9 +372,7 @@ class AvatarTransportModule : Module() {
       try {
         if (job.cancelled.get()) throw IOException("Avatar cancelled")
         val address = url.toHttpUrl()
-        require(address.isHttps && address.port == 443 && address.username.isEmpty() &&
-          address.password.isEmpty() && allowedHost.matches(address.host) &&
-          !localSuffix.containsMatchIn(address.host))
+        require(isBlossomAddress(address))
         val target = File(URI(output)).canonicalFile
         val context = appContext.reactContext ?: throw IOException("No React context")
         val html = previewImage == false && !nip05
@@ -360,15 +382,12 @@ class AvatarTransportModule : Module() {
           else File(context.filesDir, "avatar-cache")
         val extension = if (images) ".jpg" else if (html) ".html" else ".bin"
         require(target.path.startsWith(root.canonicalPath + File.separator) && target.name.endsWith(extension))
-        val call = client.newCall(Request.Builder().url(address)
-          .header("Accept", if (nip05) "application/json" else if (html) "text/html" else "image/jpeg, image/png, image/webp")
-          .header("Accept-Encoding", "identity").build())
-        job.call = call
-        if (job.cancelled.get()) call.cancel()
+        val accept = if (nip05) "application/json" else if (html) "text/html" else "image/jpeg, image/png, image/webp"
+        val redirectHash = expectedHash?.takeIf { previewImage == null && hashAt(address) == it }
         val incoming = File(target.path + ".download")
         try {
           val digest = MessageDigest.getInstance("SHA-256")
-          call.execute().use { response ->
+          mediaResponse(address, accept, redirectHash, job).use { response ->
             if (response.code != 200) throw IOException("Avatar HTTP ${response.code}")
             val body = response.body ?: throw IOException("No avatar body")
             val mime = body.contentType()?.let { "${it.type}/${it.subtype}" }
@@ -382,7 +401,7 @@ class AvatarTransportModule : Module() {
                   val read = source.read(buffer)
                   if (read < 0) break
                   total += read
-                  if (total > limit || call.isCanceled()) throw IOException("Avatar size or cancellation")
+                  if (total > limit || job.cancelled.get()) throw IOException("Avatar size or cancellation")
                   digest.update(buffer, 0, read)
                   sink.write(buffer, 0, read)
                 }
@@ -392,7 +411,7 @@ class AvatarTransportModule : Module() {
           val hash = digest.digest().joinToString("") { "%02x".format(it) }
           if (expectedHash != null && hash != expectedHash) throw IOException("MEDIA_INTEGRITY")
           if (!images) {
-            if (call.isCanceled() || incoming.length() < 1 || target.exists() ||
+            if (job.cancelled.get() || incoming.length() < 1 || target.exists() ||
                 !incoming.renameTo(target)) throw IOException("Public document transfer failed")
             return target.length().toInt()
           }
@@ -408,7 +427,7 @@ class AvatarTransportModule : Module() {
               maxOf(1, (width / scale).toInt()), maxOf(1, (height / scale).toInt()))
           }
           try {
-            if (call.isCanceled()) throw IOException("Avatar cancelled")
+            if (job.cancelled.get()) throw IOException("Avatar cancelled")
             target.outputStream().use {
               if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 86, it))
                 throw IOException("Avatar encode failed")

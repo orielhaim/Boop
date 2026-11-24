@@ -50,7 +50,7 @@ test("unsafe URL shapes are excluded before transport", () => {
   }
 });
 
-test("JPEG export removes APP markers, comments and trailing source bytes", () => {
+test("JPEG export replaces source metadata with a fixed JFIF header", () => {
   const jpeg = Uint8Array.from([
     0xff, 0xd8, 0xff, 0xe1, 0, 8, 69, 120, 105, 102, 0, 0, 0xff, 0xfe, 0, 4, 71,
     80, 0xff, 0xc0, 0, 8, 8, 0, 2, 0, 2, 0, 0xff, 0xda, 0, 2, 80, 0xff, 0, 80,
@@ -59,9 +59,11 @@ test("JPEG export removes APP markers, comments and trailing source bytes", () =
   const result = sanitizeAvatarJpeg(jpeg);
   expect(result.dimension).toBe(2);
   expect([...result.bytes]).toEqual([
-    0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 2, 0, 2, 0, 0xff, 0xda, 0, 2, 80, 0xff,
-    0, 80, 0xff, 0xd9,
+    0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    0xff, 0xc0, 0, 8, 8, 0, 2, 0, 2, 0, 0xff, 0xda, 0, 2, 80, 0xff, 0, 80, 0xff,
+    0xd9,
   ]);
+  expect(sanitizeAvatarJpeg(result.bytes).bytes).toEqual(result.bytes);
   expect(() => sanitizeAvatarJpeg(jpeg.slice(0, -5))).toThrow();
 });
 
