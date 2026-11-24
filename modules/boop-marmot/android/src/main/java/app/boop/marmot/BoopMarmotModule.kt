@@ -396,10 +396,16 @@ class BoopMarmotModule : Module() {
       }
     }
     AsyncFunction("openGroupState") Coroutine { id: String, group: String ->
-      lifecycle.withLock {
-        protocol {
-          val active = requireSession()
-          install(id, GroupStateWindow(id, active.kit.subscribeGroupState(active.account, group)))
+      withSession { active ->
+        val handle = active.kit.subscribeGroupState(active.account, group)
+        val read: suspend () -> Document = { groupDocument(active.kit, active.account, group) }
+        val details = try { read() } catch (error: Throwable) { handle.close(); throw error }
+        lifecycle.withLock {
+          if (session !== active || active.closing) {
+            handle.close()
+            throw problem("AccountClosed")
+          }
+          install(id, GroupStateWindow(id, handle, details, read))
         }
       }
     }
@@ -428,13 +434,12 @@ class BoopMarmotModule : Module() {
         val window = windows[id] ?: throw problem("WindowClosed")
         if (window.job == null) window.job = observer.launch {
           try {
-            var previous: Document? = null
             while (isActive) {
               val value = window.next() ?: break
-              val delta = previous?.let { windowDelta(it, value) }
+              val delta = windowDelta(window.latest, value)
+              window.latest = value
               sendEvent("windowChanged", if (delta == null) mapOf("id" to id, "snapshot" to value)
                 else mapOf("id" to id, "delta" to delta))
-              previous = value
             }
             sendEvent("windowClosed", mapOf("id" to id, "code" to "WindowClosed"))
           } catch (e: CancellationException) {
@@ -449,7 +454,7 @@ class BoopMarmotModule : Module() {
       lifecycle.withLock { windows.remove(id)?.stop() }
     }
     AsyncFunction("windowSnapshot") Coroutine { id: String ->
-      withWindow(id) { it.initial() ?: throw problem("WindowClosed") }
+      withWindow(id) { it.latest }
     }
     AsyncFunction("pageWindow") Coroutine { id: String, generation: String, sequence: String, direction: String ->
       withWindow(id) { it.page(generation, sequence.toULong(), direction) }
@@ -486,49 +491,7 @@ class BoopMarmotModule : Module() {
       }
     }
     AsyncFunction("groupDetails") Coroutine { group: String ->
-      withSession {
-        val details = it.kit.groupDetails(it.account, group)
-        val policy = it.kit.groupManagementState(it.account, group)
-        val pending = it.kit.groupPendingCommit(it.account, group)
-        val delivery = it.kit.groupCommitDelivery(it.account, group)
-        val recovery = it.kit.groupRecoveryStatus(it.account, group)
-        val presented = it.kit.presentedChatListRow(it.account, group)
-        val chat = presented?.row
-        val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
-        mapOf(
-          "id" to group, "name" to details.group.name, "description" to details.group.description,
-          "inviter" to details.group.welcomerAccountIdHex, "relays" to details.group.relays,
-          "avatarAsset" to presented?.avatarAsset?.document(),
-          "image" to details.group.imageHashHex, "epoch" to details.mlsState.epoch.toString(),
-          "mediaV2" to (details.group.encryptedMedia.version == EncryptedMediaVersionFfi.V2),
-          "mediaEndpoints" to details.group.encryptedMedia.defaultBlobEndpoints.map { endpoint -> endpoint.baseUrl },
-          "unrecoverable" to details.mlsState.unrecoverable,
-          "convergenceParked" to (details.mlsState.convergenceParked || recovery.automaticRecoveryFailed),
-          "historyIncomplete" to recovery.historyMayBeIncomplete,
-          "relayChangesOutstanding" to ((delivery?.owedRelayUrls?.size ?: 0) + (delivery?.refusedRelays?.size ?: 0)),
-          "membership" to details.group.selfMembership.name.lowercase(),
-          "pendingInvitation" to details.group.pendingConfirmation,
-          "kind" to chat?.conversationKind?.name?.lowercase(),
-          "pendingLeave" to details.group.leaveRequestPending, "leaveBlocked" to details.group.leaveBlocked,
-          "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
-          "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
-          "lifecycle" to policy.lifecycleState.name.lowercase(), "commit" to pending?.state?.name?.lowercase(),
-          "isAdmin" to policy.isSelfAdmin, "canInvite" to policy.canInvite, "canLeave" to policy.canLeave,
-          "canCancelLeave" to policy.canCancelLeave, "canDisband" to policy.canDisband,
-          "canEnableDisbanding" to policy.canEnableDisbanding,
-          "members" to details.members.map { member ->
-            val perms = actions[member.memberIdHex]
-            mapOf(
-              "id" to member.memberIdHex, "npub" to member.npub,
-              "name" to (member.displayName?.takeUnless { it == member.memberIdHex }
-                ?: it.kit.defaultProfilePseudonym(member.memberIdHex)),
-              "self" to member.isSelf, "admin" to member.isAdmin, "devices" to member.deviceCount.toInt(),
-              "canPromote" to (perms?.canPromote ?: false), "canRemove" to (perms?.canRemove ?: false),
-              "canDemote" to (perms?.canDemote ?: false),
-            )
-          },
-        )
-      }
+      withSession { groupDocument(it.kit, it.account, group) }
     }
     AsyncFunction("updateGroup") Coroutine { group: String, name: String?, description: String? ->
       withSession { it.kit.updateGroupProfile(it.account, group, name, description); Unit }
@@ -1005,6 +968,11 @@ class BoopMarmotModule : Module() {
         })
       }
     }
+    AsyncFunction("discardFailedSend") Coroutine { group: String, id: String ->
+      withSession {
+        it.kit.discardFailedSend(it.account, group, id).outcome.name.lowercase()
+      }
+    }
     AsyncFunction("deleteMessage") Coroutine { group: String, id: String ->
       withSession { it.kit.deleteMessage(it.account, group, id); Unit }
     }
@@ -1128,6 +1096,7 @@ class BoopMarmotModule : Module() {
       window.stop()
       throw problem("WindowClosed")
     }
+    window.latest = initial
     windows[id] = window
     return initial
   }

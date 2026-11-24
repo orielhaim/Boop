@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { randomUUID } from "expo-crypto";
 import { getDocumentAsync } from "expo-document-picker";
 import { Directory, File, Paths } from "expo-file-system";
@@ -117,10 +118,10 @@ export function createAudioSources({
                   row.sourceId === event &&
                   row.sender === source.sender &&
                   !row.deleted &&
-                  !row.invalidated &&
+                  !row.invalidationStatus &&
                   (row.expiresAt == null ||
                     row.expiresAt * 1000 > Date.now()) &&
-                  row.attachments.some(
+                  acceptedAttachments(row).some(
                     (attachment) => attachment.index === index,
                   ),
               )

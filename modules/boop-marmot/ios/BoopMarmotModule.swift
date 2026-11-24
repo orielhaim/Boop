@@ -286,9 +286,7 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("windowSnapshot") { (id: String) async throws -> Document in
       try await protocolCall {
-        let window = try await self.runtime.window(id)
-        guard let snapshot = window.initial() else { throw problem("WindowClosed") }
-        return snapshot
+        try await self.runtime.windowSnapshot(id)
       }
     }
     AsyncFunction("pageWindow") { (id: String, generation: String, sequence: String, direction: String) async throws -> Document in
@@ -334,50 +332,7 @@ public final class BoopMarmotModule: Module {
       }
     }
     AsyncFunction("groupDetails") { (group: String) async throws -> Document in
-      try await self.withAccount { kit, account in
-        let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
-        let policy = try await kit.groupManagementState(accountRef: account, groupIdHex: group)
-        let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
-        let delivery = try await kit.groupCommitDelivery(accountRef: account, groupIdHex: group)
-        let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
-        let presented = try await kit.presentedChatListRow(accountRef: account, groupIdHex: group)
-        let chat = presented?.row
-        let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
-        return [
-          "id": group, "name": details.group.name, "description": details.group.description,
-          "inviter": bridgeValue(details.group.welcomerAccountIdHex), "relays": details.group.relays,
-          "avatarAsset": bridgeValue(presented?.avatarAsset.map(avatarDocument)),
-          "image": bridgeValue(details.group.imageHashHex), "epoch": String(details.mlsState.epoch),
-          "mediaV2": details.group.encryptedMedia.version == .v2,
-          "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
-          "unrecoverable": details.mlsState.unrecoverable,
-          "convergenceParked": details.mlsState.convergenceParked || recovery.automaticRecoveryFailed,
-          "historyIncomplete": recovery.historyMayBeIncomplete,
-          "relayChangesOutstanding": (delivery?.owedRelayUrls.count ?? 0) + (delivery?.refusedRelays.count ?? 0),
-          "membership": wireName(details.group.selfMembership),
-          "pendingInvitation": details.group.pendingConfirmation,
-          "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
-          "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
-          "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
-          "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
-          "lifecycle": wireName(policy.lifecycleState), "commit": bridgeValue(pending.map { wireName($0.state) }),
-          "isAdmin": policy.isSelfAdmin, "canInvite": policy.canInvite, "canLeave": policy.canLeave,
-          "canCancelLeave": policy.canCancelLeave, "canDisband": policy.canDisband,
-          "canEnableDisbanding": policy.canEnableDisbanding,
-          "members": details.members.map { member -> Document in
-            let perms = actions[member.memberIdHex]
-            let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
-              ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
-            return [
-              "id": member.memberIdHex, "npub": member.npub,
-              "name": name,
-              "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount),
-              "canPromote": perms?.canPromote ?? false, "canRemove": perms?.canRemove ?? false,
-              "canDemote": perms?.canDemote ?? false,
-            ]
-          },
-        ]
-      }
+      try await self.withAccount { try await groupDocument($0, $1, group) }
     }
     AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws in
       try await self.withAccount { _ = try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description) }
@@ -881,6 +836,11 @@ public final class BoopMarmotModule: Module {
         return Array(sources.prefix(24))
       }
     }
+    AsyncFunction("discardFailedSend") { (group: String, id: String) async throws -> String in
+      try await self.withAccount {
+        try await wireName($0.discardFailedSend(accountRef: $1, groupIdHex: group, messageIdHex: id).outcome)
+      }
+    }
     AsyncFunction("deleteMessage") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try await $0.deleteMessage(accountRef: $1, groupIdHex: group, targetMessageId: id) }
     }
@@ -1215,6 +1175,7 @@ private actor Runtime {
   private var changingAccount = false
   private var transitionWaiters: [CheckedContinuation<Void, Never>] = []
   private var windows: [String: NativeWindow] = [:]
+  private var latestWindows: [String: Document] = [:]
   private var observers: [String: Task<Void, Never>] = [:]
 
   func account() throws -> Account {
@@ -1514,7 +1475,11 @@ private actor Runtime {
   func openGroupState(id: String, group: String) async throws -> Document {
     let account = try account()
     let handle = try await account.kit.subscribeGroupState(accountRef: account.key, groupIdHex: group)
-    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle)), id: id, account: account)
+    let read: @Sendable () async throws -> Document = {
+      try await groupDocument(account.kit, account.key, group)
+    }
+    let details = try await read()
+    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle, details: details, read: read)), id: id, account: account)
   }
 
   func openGroupCall(id: String, group: String) async throws -> Document {
@@ -1546,8 +1511,14 @@ private actor Runtime {
       await window.cancel()
       throw problem("WindowClosed")
     }
+    latestWindows[id] = initial
     windows[id] = window
     return initial
+  }
+
+  func windowSnapshot(_ id: String) throws -> Document {
+    guard let latest = latestWindows[id] else { throw problem("WindowClosed") }
+    return latest
   }
 
   func observe(id: String, notify: @escaping (String, Document) -> Void) throws {
@@ -1555,15 +1526,14 @@ private actor Runtime {
     guard observers[id] == nil else { return }
     observers[id] = Task {
       do {
-        var previous: Document?
         while !Task.isCancelled, let snapshot = try await window.next() {
           guard !Task.isCancelled else { return }
+          let previous = latestWindows.updateValue(snapshot, forKey: id)
           if let previous, let delta = windowDelta(previous, snapshot) {
             notify("windowChanged", ["id": id, "delta": delta])
           } else {
             notify("windowChanged", ["id": id, "snapshot": snapshot])
           }
-          previous = snapshot
         }
         if !Task.isCancelled { notify("windowClosed", ["id": id, "code": "WindowClosed"]) }
       } catch {
@@ -1573,6 +1543,7 @@ private actor Runtime {
   }
 
   func closeWindow(_ id: String) async {
+    latestWindows.removeValue(forKey: id)
     let handle = windows.removeValue(forKey: id)
     let observer = observers.removeValue(forKey: id)
     observer?.cancel()

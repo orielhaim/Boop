@@ -57,7 +57,6 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
-import { groupPreview, loadGroupDetails } from "./group-details-cache";
 import { marmotErrorCode, useMarmotWindow } from "./marmot-window";
 import {
   GroupShortcut,
@@ -645,11 +644,8 @@ export function MarmotGroupDetailsScreen({
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { db, identity, marmotSession, privacy } = useLocal();
+  const { db, identity, privacy } = useLocal();
   const translateError = useMarmotError();
-  const [initial] = useState(() => groupPreview(marmotSession, id));
-  const [details, setDetails] = useState(initial?.details);
-  const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loadedPhoto, setLoadedPhoto] = useState<{
     hash: string;
@@ -666,30 +662,8 @@ export function MarmotGroupDetailsScreen({
   const picker = useAvatarPicker();
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
-  const { generation, sequence } = state.snapshot ?? {};
-  const load = useCallback(
-    () => loadGroupDetails(marmotSession, id),
-    [id, marmotSession],
-  );
+  const { generation, details } = state.snapshot ?? {};
   useSyncExternalStore(privacy.subscribe, privacy.revision);
-
-  useEffect(() => {
-    if (generation === undefined || sequence === undefined) return;
-    let live = true;
-    void load().then(
-      (data) => {
-        if (!live) return;
-        setDetails(data);
-        setError(false);
-      },
-      () => {
-        if (live) setError(true);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [generation, load, sequence]);
 
   const member = details?.membership === "member" && !details.pendingInvitation;
   const canEdit = Boolean(
@@ -702,25 +676,24 @@ export function MarmotGroupDetailsScreen({
     photo ? details?.avatarAsset : undefined,
   );
   const imageUri =
-    photo && loadedPhoto?.hash === photo
-      ? loadedPhoto.uri
-      : (cachedPhoto ??
-        (photo && initial?.photo?.hash === photo
-          ? initial.photo.uri
-          : undefined));
+    photo && loadedPhoto?.hash === photo ? loadedPhoto.uri : cachedPhoto;
   const editTitle = t(
     isGroup ? "messages:marmot.editGroup" : "messages:marmot.editConversation",
   );
   const back = () =>
     router.canGoBack() ? router.back() : router.replace(conversationRoute(id));
 
-  async function update(task: () => Promise<void>, leave = false) {
+  async function update(
+    task: () => Promise<void>,
+    leave = false,
+    refresh = false,
+  ) {
     if (busy) return false;
     setBusy(true);
     try {
       await task();
       if (leave) router.back();
-      else setDetails(await load());
+      else if (refresh) state.retry();
       return true;
     } catch (reason) {
       Alert.alert(translateError(reason));
@@ -790,7 +763,6 @@ export function MarmotGroupDetailsScreen({
         );
 
   if (
-    error ||
     state.error ||
     !details ||
     details.pendingInvitation ||
@@ -806,25 +778,9 @@ export function MarmotGroupDetailsScreen({
         }
       >
         {!editing && !details?.pendingInvitation && (
-          <GroupProfileHeader
-            name={initial?.title ?? details?.name}
-            avatar={
-              initial?.title ? (
-                <GlassAvatar
-                  name={initial.title}
-                  size="xl"
-                  src={
-                    !details && privacy.photoPolicy() !== "nobody"
-                      ? initial.photo?.uri
-                      : imageUri
-                  }
-                />
-              ) : undefined
-            }
-            back={back}
-          />
+          <GroupProfileHeader name={details?.name} back={back} />
         )}
-        {error || state.error ? (
+        {state.error ? (
           <Empty
             detail=""
             icon="chat"
@@ -1031,7 +987,9 @@ export function MarmotGroupDetailsScreen({
             : "messages:marmot.muteConversation",
         )}
         disabled={busy}
-        onPress={() => void update(() => marmot.setMuted(id, !details.muted))}
+        onPress={() =>
+          void update(() => marmot.setMuted(id, !details.muted), false, true)
+        }
       />
     </>
   );
@@ -1389,7 +1347,11 @@ export function MarmotGroupDetailsScreen({
                   )}
                   disabled={busy}
                   onPress={() =>
-                    void update(() => marmot.setArchived(id, !details.archived))
+                    void update(
+                      () => marmot.setArchived(id, !details.archived),
+                      false,
+                      true,
+                    )
                   }
                 />
               )}

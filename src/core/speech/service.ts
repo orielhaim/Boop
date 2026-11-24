@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { getPowerStateAsync, BatteryState } from "expo-battery";
 import { getNetworkStateAsync, NetworkStateType } from "expo-network";
 import { Linking, Platform } from "react-native";
@@ -20,13 +21,13 @@ import {
 export function speechSource(
   group: string,
   row: MarmotMessage,
-  item: MarmotMessage["attachments"][number],
+  item: ReturnType<typeof acceptedAttachments>[number],
   account: string,
 ): SpeechSource | undefined {
   if (
     !row.sourceId ||
     row.deleted ||
-    row.invalidated ||
+    row.invalidationStatus ||
     !item.voice ||
     !item.type.startsWith("audio/")
   )

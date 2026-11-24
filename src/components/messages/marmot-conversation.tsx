@@ -1,3 +1,9 @@
+import {
+  acceptedAttachments,
+  delivery,
+} from "@/core/marmot/message-projection";
+import { quoteText } from "@/core/marmot/message-content";
+import { PreparedMessageText } from "./prepared-message-text";
 import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
@@ -11,12 +17,12 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import Transition from "react-native-screen-transitions";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import {
+  Bubble,
   Chat,
   type ChatHandle,
   Composer,
   type IMessage,
   InputToolbar,
-  MessageText,
 } from "@kesha-antonov/react-native-chat";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
@@ -41,6 +47,7 @@ import {
   BackHandler,
   Image as BackgroundImage,
   Keyboard,
+  Pressable,
   StyleSheet,
   type TextInput,
   View,
@@ -122,7 +129,6 @@ import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
 import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
-import { rememberGroupProfile } from "./group-details-cache";
 
 const locationKind = 24883;
 const systemLabels = {
@@ -396,13 +402,12 @@ export function MarmotConversationScreen({
     : peer
       ? peerName
       : snapshot?.title || t("messages:marmot.group");
-  const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
   const people = snapshot?.identities;
   const contacts = useContacts();
   const mentionRoster = useMentionMembers(
     id,
-    Boolean(snapshot && !snapshot.invited && !peer),
+    Boolean(snapshot && !snapshot.invited && !peer && composerFocused),
   );
   const mentionNames = useMemo(() => {
     const names = new Map<string, string>(
@@ -448,11 +453,13 @@ export function MarmotConversationScreen({
               row.id === message &&
               row.sourceId === source &&
               !row.deleted &&
-              !row.invalidated &&
+              !row.invalidationStatus &&
               (row.expiresAt == null || row.expiresAt * 1_000 > Date.now()) &&
               !privacy.isBlocked(row.sender),
           );
-          const asset = row?.attachments.find((asset) => asset.index === index);
+          const asset =
+            row &&
+            acceptedAttachments(row).find((asset) => asset.index === index);
           if (!row || !asset) return;
           return {
             kind: "marmot",
@@ -487,7 +494,8 @@ export function MarmotConversationScreen({
   useLayoutEffect(() => {
     presentation.reconcile();
     for (const row of snapshot?.messages ?? [])
-      if (row.deleted || row.invalidated) downloads.invalidate(id, row.id);
+      if (row.deleted || row.invalidationStatus)
+        downloads.invalidate(id, row.id);
   }, [blockedKeys, downloads, hidden, id, locked, presentation, snapshot]);
   useEffect(() => {
     if (
@@ -505,7 +513,7 @@ export function MarmotConversationScreen({
       .slice(0, 16);
     for (const row of recent) {
       if (row.sender !== self || hidden.includes(row.id)) continue;
-      for (const item of row.attachments) {
+      for (const item of acceptedAttachments(row)) {
         const source = speechSource(id, row, item, self);
         if (source) speech.outgoing(source, row.sentAt);
       }
@@ -542,66 +550,95 @@ export function MarmotConversationScreen({
     for (const contact of contacts)
       if (contact.name) names.set(contact.publicKey, contact.name);
     const user = (key: string) => ({ _id: key, name: names.get(key) });
+    const deletionLabel = (source: MarmotMessage["deletionSource"]) =>
+      t(
+        source === "admin"
+          ? "messages:marmot.removedByAdmin"
+          : "messages:marmot.removedMessage",
+      );
+    const systemText = (event: NonNullable<MarmotMessage["system"]>) => {
+      const subject = event.subject ?? event.actor;
+      const name =
+        event.name || (subject && !blocked.has(subject) && names.get(subject));
+      const label = t(systemLabel(event.type));
+      return name ? [label, name].join(" · ") : label;
+    };
     return (rows ?? [])
       .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
-      .map((row): ChatMessage => ({
-        _id: row.id,
-        direction: row.sender === self ? "outgoing" : "incoming",
-        createdAt: row.sentAt * 1_000,
-        user: user(row.sender),
-        text: row.systemType
-          ? t(systemLabel(row.systemType))
-          : row.deleted
-            ? deleted
-            : row.eventKind === timeLockKind ||
-                row.eventKind === locationKind ||
-                row.poll
-              ? ""
-              : row.text,
-        location:
-          row.eventKind === locationKind && !row.deleted
-            ? locationFromText(row.text)
-            : undefined,
-        pending: row.sender === self && !row.confirmed && !row.invalidated,
-        sent: row.sender === self && row.confirmed,
-        isFailed: row.sender === self && row.invalidated,
-        isEdited: row.edited,
-        isMediaUnread:
-          row.sender !== self &&
-          !played.has(row.id) &&
-          row.attachments.some(
-            (item) =>
-              item.type.startsWith("audio/") ||
-              item.round ||
-              item.name === "video-note.mp4",
-          ),
-        isPinned: pins.includes(row.id),
-        system: Boolean(row.systemType),
-        replyMessage:
-          row.replyPreview &&
-          !blocked.has(row.replyPreview.sender) &&
-          !omitted.has(row.replyPreview.id)
-            ? {
-                _id: row.replyPreview.id,
-                text: projectMentions(row.replyPreview.text, mentionNames).text,
-                user: user(row.replyPreview.sender),
-              }
-            : undefined,
-        reactions: row.reactions.map((reaction) => ({
-          emoji: reaction.emoji,
-          userIds:
-            reaction.own && !reaction.users.includes(self)
-              ? [...reaction.users, self]
-              : reaction.users,
-        })),
-        row,
-      }))
+      .map((row): ChatMessage => {
+        const status = row.sender === self ? delivery(row) : undefined;
+        return {
+          _id: row.id,
+          direction: row.sender === self ? "outgoing" : "incoming",
+          createdAt: row.sentAt * 1_000,
+          user: user(row.sender),
+          text: row.system
+            ? systemText(row.system)
+            : row.deleted
+              ? deletionLabel(row.deletionSource)
+              : row.eventKind === timeLockKind ||
+                  row.eventKind === locationKind ||
+                  row.poll
+                ? ""
+                : row.text,
+          location:
+            row.eventKind === locationKind && !row.deleted
+              ? locationFromText(row.text)
+              : undefined,
+          pending: status === "pending",
+          sent: status === "published" || status === "received",
+          isFailed: status === "failed",
+          isEdited: row.edited,
+          isMediaUnread:
+            row.sender !== self &&
+            !played.has(row.id) &&
+            acceptedAttachments(row).some(
+              (item) =>
+                item.type.startsWith("audio/") ||
+                item.round ||
+                item.name === "video-note.mp4",
+            ),
+          isPinned: pins.includes(row.id),
+          system: Boolean(row.system),
+          replyMessage:
+            row.replyPreview &&
+            !blocked.has(row.replyPreview.sender) &&
+            !omitted.has(row.replyPreview.id)
+              ? {
+                  _id: row.replyPreview.id,
+                  text: row.replyPreview.deleted
+                    ? deletionLabel(row.replyPreview.deletionSource)
+                    : row.replyPreview.invalidationStatus
+                      ? t("messages:unavailableQuote")
+                      : quoteText(
+                          row.replyPreview.content,
+                          row.replyPreview.text,
+                          mentionNames,
+                        ),
+                  user: user(row.replyPreview.sender),
+                }
+              : !row.replyPreview && row.replyTo && !omitted.has(row.replyTo)
+                ? {
+                    _id: row.replyTo,
+                    text: t("messages:unavailableQuote"),
+                    user: { _id: "" },
+                  }
+                : undefined,
+          reactions: row.reactions.map((reaction) => ({
+            emoji: reaction.emoji,
+            userIds:
+              reaction.own && !reaction.users.includes(self)
+                ? [...reaction.users, self]
+                : reaction.users,
+          })),
+          row,
+        };
+      })
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
   }, [
     rows,
     contacts,
     people,
-    deleted,
     blockedKeys,
     hidden,
     listened,
@@ -614,7 +651,9 @@ export function MarmotConversationScreen({
     peer &&
     rows?.some(
       (row) =>
-        row.token && row.sender === self && row.confirmed && !row.invalidated,
+        row.token &&
+        row.sender === self &&
+        (delivery(row) === "published" || delivery(row) === "received"),
     ),
   );
   const gallery = useMemo(
@@ -749,7 +788,7 @@ export function MarmotConversationScreen({
       (row) =>
         ids.has(row.id) &&
         !row.deleted &&
-        !row.systemType &&
+        !row.system &&
         !hidden.includes(row.id) &&
         (row.expiresAt == null || row.expiresAt * 1000 > Date.now()),
     );
@@ -757,7 +796,10 @@ export function MarmotConversationScreen({
   }
 
   function canDeleteForEveryone(row: MarmotMessage) {
-    return row.sender === self && row.confirmed && !row.invalidated;
+    return (
+      row.sender === self &&
+      (delivery(row) === "published" || delivery(row) === "received")
+    );
   }
 
   function requestDeletion(messageIds: readonly string[]) {
@@ -769,12 +811,26 @@ export function MarmotConversationScreen({
       {
         text: t("messages:marmot.deleteForMe"),
         onPress: () => {
-          for (const row of deletionTargets(ids) ?? []) {
-            chatPreferences.hide(id, row.id);
-            speech.invalidateMessage(id, row.id);
-            downloads.invalidate(id, row.id);
-            if (row.eventKind === timeLockKind) removeOpenedMessage(db, row.id);
-          }
+          void (async () => {
+            if (!deletionTargets(ids)) return;
+            for (const messageId of ids) {
+              if (marmotSession.revision() !== accountRevision) return;
+              const row = deletionTargets(new Set([messageId]))?.[0];
+              if (!row) continue;
+              if (
+                row.sender === self &&
+                row.invalidationStatus === "local_publish_failed"
+              ) {
+                const outcome = await marmot.discardFailedSend(id, row.id);
+                if (marmotSession.revision() !== accountRevision) return;
+                if (outcome !== "discarded") continue;
+              } else chatPreferences.hide(id, row.id);
+              speech.invalidateMessage(id, row.id);
+              downloads.invalidate(id, row.id);
+              if (row.eventKind === timeLockKind)
+                removeOpenedMessage(db, row.id);
+            }
+          })().catch(showError);
         },
       },
     ];
@@ -1091,14 +1147,6 @@ export function MarmotConversationScreen({
   function openGroupDetails() {
     if (!liveSnapshot || liveSnapshot.invited || !focused || locked) return;
     setProfileTransition({ revision: accountRevision, snapshot: liveSnapshot });
-    rememberGroupProfile(
-      marmotSession,
-      id,
-      title,
-      !peer && liveSnapshot.image && groupAvatar
-        ? { hash: liveSnapshot.image, uri: groupAvatar }
-        : undefined,
-    );
     const route = conversationRoute(id, "details");
     router.push({
       ...route,
@@ -1547,16 +1595,42 @@ export function MarmotConversationScreen({
                   />
                 );
               }}
+              renderBubble={(props) => {
+                const row = props.currentMessage?.row;
+                return (
+                  <Bubble
+                    {...props}
+                    renderTicks={
+                      row?.sender === self && delivery(row) === "received"
+                        ? () => (
+                            <View
+                              accessible
+                              accessibilityLabel={t(
+                                "messages:marmot.recipientConfirmed",
+                              )}
+                              style={styles.recipientConfirmation}
+                            >
+                              <Icon
+                                name="check"
+                                size={10}
+                                color={kit.theme.colors?.outgoingMeta}
+                              />
+                            </View>
+                          )
+                        : props.renderTicks
+                    }
+                  />
+                );
+              }}
               renderMessageText={(props) => (
-                <MessageText
+                <PreparedMessageText
                   {...props}
-                  currentMessage={{
-                    ...props.currentMessage,
-                    text: projectMentions(
-                      props.currentMessage.text,
-                      mentionNames,
-                    ).text,
-                  }}
+                  names={mentionNames}
+                  content={
+                    props.currentMessage.row?.text === props.currentMessage.text
+                      ? props.currentMessage.row?.content
+                      : undefined
+                  }
                 />
               )}
               renderInputToolbar={(props) =>
@@ -1770,7 +1844,7 @@ export function MarmotConversationScreen({
                 if (
                   message.row &&
                   !message.row.deleted &&
-                  !message.row.systemType
+                  !message.row.system
                 ) {
                   chatPreferences.setPin(id, message._id, !message.isPinned);
                 }
@@ -1796,7 +1870,7 @@ export function MarmotConversationScreen({
                     },
                   ];
                 const row = message.row;
-                if (!row || row.deleted || row.systemType) return [];
+                if (!row || row.deleted || row.system) return [];
                 const forwardable = [9, 1111, locationKind].includes(
                   row.eventKind,
                 );
@@ -1810,7 +1884,7 @@ export function MarmotConversationScreen({
                     action.key !== "delete",
                 );
                 if (row.sourceId && !message.isViewOnce) {
-                  for (const item of row.attachments) {
+                  for (const item of acceptedAttachments(row)) {
                     const source = presentation.authorize([
                       id,
                       row.id,
@@ -1978,6 +2052,38 @@ export function MarmotConversationScreen({
               }}
               reactions={{
                 isEnabled: canSend,
+                renderReactions: ({
+                  message,
+                  onReactionPress,
+                  containerStyle,
+                  reactionStyle,
+                  reactionActiveStyle,
+                  reactionCountStyle,
+                  reactionTextStyle,
+                }) => (
+                  <View style={[styles.reactionCounts, containerStyle]}>
+                    {message.row?.reactions.map(({ emoji, count, own }) => (
+                      <Pressable
+                        key={emoji}
+                        style={[
+                          styles.reactionCount,
+                          reactionStyle,
+                          own && reactionActiveStyle,
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityState={{
+                          selected: own,
+                          disabled: !onReactionPress,
+                        }}
+                        disabled={!onReactionPress}
+                        onPress={() => onReactionPress?.(emoji)}
+                      >
+                        <Ink style={reactionTextStyle}>{emoji}</Ink>
+                        <Ink style={reactionCountStyle}>{count}</Ink>
+                      </Pressable>
+                    ))}
+                  </View>
+                ),
                 onReactionPress: (row, emoji) => {
                   const own = row.row?.reactions.some(
                     (reaction) => reaction.emoji === emoji && reaction.own,
@@ -2014,9 +2120,9 @@ export function MarmotConversationScreen({
                 const row = currentMessage?.row;
                 if (!row || row.deleted) return null;
                 const failedVoice =
-                  row.invalidated &&
+                  row.invalidationStatus &&
                   row.sender === self &&
-                  row.attachments.find((item) => item.voice);
+                  acceptedAttachments(row).find((item) => item.voice);
                 if (failedVoice)
                   return (
                     <VoiceUploadAttachment
@@ -2238,6 +2344,13 @@ function MarmotInvitation({
 }
 
 const styles = StyleSheet.create({
+  recipientConfirmation: {
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E5EBFF",
+  },
+  reactionCounts: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
+  reactionCount: { flexDirection: "row", alignItems: "center", gap: space.xs },
   uploadStatus: {
     flexDirection: "row",
     alignItems: "center",

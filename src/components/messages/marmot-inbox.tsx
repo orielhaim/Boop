@@ -25,6 +25,11 @@ import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility"
 import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
+import {
+  hasMention,
+  quoteText,
+  type Content,
+} from "@/core/marmot/message-content";
 import { projectMentions } from "@/core/messaging/mentions";
 import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
@@ -50,6 +55,7 @@ type ChatRow = ChatListItem & {
   id: string;
   peer?: string;
   avatarAsset?: MarmotChatRow["avatarAsset"];
+  previewContent?: Content | null;
 };
 
 function asChat(
@@ -80,14 +86,16 @@ function asChat(
     unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
     draft: row.invited ? undefined : (row.draft ?? undefined),
     emptyPreview,
+    previewContent:
+      preview === row.preview?.text ? row.preview?.content : undefined,
     lastMessage:
       row.invited || preview == null
         ? undefined
         : {
-            _id: row.previewId ?? row.id,
+            _id: row.preview?.id ?? row.id,
             text: preview,
             createdAt: row.updatedAt * 1_000,
-            user: { _id: row.previewSender ?? row.id },
+            user: { _id: row.preview?.sender ?? row.id },
           },
   };
 }
@@ -120,6 +128,27 @@ export function MarmotInbox({
       : archived
         ? archive
         : inbox;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expires = [
+      ...(snapshot?.rows ?? []),
+      ...(archive.snapshot?.rows ?? []),
+    ].flatMap(({ preview }) =>
+      preview?.expiresAt == null ? [] : [preview.expiresAt * 1000],
+    );
+    function update() {
+      const current = Date.now();
+      setNow(current);
+      const next = Math.min(
+        ...expires.filter((deadline) => deadline > current),
+      );
+      if (Number.isFinite(next))
+        timer = setTimeout(update, Math.min(next - current, 2_147_483_647));
+    }
+    update();
+    return () => clearTimeout(timer);
+  }, [snapshot?.rows, archive.snapshot?.rows]);
   const [inviters, setInviters] = useState<Record<string, string>>();
   const pendingIds = (invitations ? snapshot : pending.snapshot)?.rows
     .map((row) => row.id)
@@ -174,15 +203,18 @@ export function MarmotInbox({
     )
     .map((row) => {
       const preview =
-        (row.previewSender && privacy.isBlocked(row.previewSender)) ||
-        (row.previewId &&
-          chatPreferences.hidden(row.id).includes(row.previewId))
+        (row.preview?.sender && privacy.isBlocked(row.preview?.sender)) ||
+        (row.preview?.id &&
+          chatPreferences.hidden(row.id).includes(row.preview?.id))
           ? undefined
-          : row.previewKind === 24881
-            ? t("messages:lockedMessage")
-            : row.previewKind === 24883
-              ? t("messages:marmot.locationPreview")
-              : (row.preview ?? undefined);
+          : row.preview?.expiresAt != null &&
+              row.preview.expiresAt * 1000 <= now
+            ? undefined
+            : row.preview?.kind === 24881
+              ? t("messages:lockedMessage")
+              : row.preview?.kind === 24883
+                ? t("messages:marmot.locationPreview")
+                : (row.preview?.text ?? undefined);
       if (row.invited) {
         const inviter = inviters?.[row.id];
         if (inviter) {
@@ -201,10 +233,7 @@ export function MarmotInbox({
         !row.invited &&
         row.membership === "member" &&
         row.kind !== "unknown" &&
-        row.previewId == null &&
-        row.previewKind == null &&
-        row.previewSender == null &&
-        row.preview == null
+        row.previewSelection === "empty"
           ? t("messages:sayHello")
           : undefined;
       return asChat(row, fallback, invitationTitle, preview, emptyPreview);
@@ -422,12 +451,14 @@ function MarmotChatCell({
     visible,
   );
   const groupAvatar = usePreparedGroupAvatar(props.chat.avatarAsset, visible);
-  const { draft, lastMessage } = props.chat;
+  const { draft, lastMessage, previewContent } = props.chat;
   const mentions = /(?:nostr:|@)npub1/i;
   const { members } = useMentionMembers(
     props.chat.id,
-    props.chat.kind === "group" &&
-      (mentions.test(draft ?? "") || mentions.test(lastMessage?.text ?? "")),
+    visible &&
+      props.chat.kind === "group" &&
+      (mentions.test(draft ?? "") ||
+        Boolean(previewContent && hasMention(previewContent))),
   );
   const names = useMemo(
     () => new Map(members?.map((member) => [member.npub, member.label])),
@@ -443,7 +474,9 @@ function MarmotChatCell({
         draft: draft && projectMentions(draft, names).text,
         lastMessage: lastMessage && {
           ...lastMessage,
-          text: projectMentions(lastMessage.text, names).text,
+          text: previewContent
+            ? quoteText(previewContent, lastMessage.text, names)
+            : lastMessage.text,
         },
       }}
     />

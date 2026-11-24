@@ -54,7 +54,7 @@ export function useOpenLater(
             row.text === text &&
             row.eventKind === timeLockKind &&
             !row.deleted &&
-            !row.invalidated &&
+            !row.invalidationStatus &&
             !omitted.has(id) &&
             !privacy.isBlocked(row.sender),
         );

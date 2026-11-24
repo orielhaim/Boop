@@ -1,6 +1,14 @@
 import { randomUUID } from "expo-crypto";
 import { requireNativeModule } from "expo-modules-core";
 import { z } from "zod";
+import {
+  mergeRows,
+  type WindowDelta,
+  windowDelta,
+  windowRevision,
+} from "./window-projection";
+import { messageContent } from "./message-content";
+import { message } from "./message-projection";
 import { mediaUploadArguments } from "./media-send";
 
 export type MarmotRelays = {
@@ -27,20 +35,6 @@ const relayLiveness = z.object({
 });
 export type MarmotRelayLiveness = z.infer<typeof relayLiveness>;
 
-const windowRevision = z.object({
-  generation: z.string(),
-  sequence: z.string().regex(/^\d{1,20}$/),
-  hasMoreBefore: z.boolean(),
-  hasMoreAfter: z.boolean(),
-});
-const identifiedRow = z.looseObject({ id: z.string() });
-const windowDelta = z.object({
-  base: windowRevision.shape.sequence,
-  field: z.enum(["rows", "messages"]),
-  metadata: windowRevision.loose(),
-  order: z.array(z.string()).max(200),
-  changed: z.array(identifiedRow).max(200),
-});
 const avatarAsset = z.object({
   target: z.string(),
   reference: z.string().nullish(),
@@ -65,81 +59,75 @@ const chatRow = z.object({
   unread: z.number().nonnegative(),
   manualUnread: z.boolean(),
   updatedAt: z.number().nonnegative(),
-  preview: z.string().nullish(),
-  previewKind: z.number().nullish(),
-  previewId: z.string().nullish(),
-  previewSender: z.string().nullish(),
+  previewSelection: z.enum(["draft", "message", "invitation", "empty"]),
+  preview: z
+    .object({
+      id: z.string(),
+      sender: z.string(),
+      kind: z.number().int().nonnegative(),
+      text: z.string().nullish(),
+      expiresAt: z.number().nonnegative().nullish(),
+      content: messageContent.nullish(),
+    })
+    .nullish(),
   draft: z.string().nullish(),
 });
 
-const message = z.object({
-  id: z.string(),
-  token: z.string().nullish(),
-  sender: z.string(),
-  text: z.string(),
-  sentAt: z.number().nonnegative(),
-  expiresAt: z.number().nonnegative().nullish(),
-  eventKind: z.number().int().nonnegative(),
-  replyTo: z.string().nullish(),
-  replyPreview: z
-    .object({ id: z.string(), sender: z.string(), text: z.string() })
-    .nullish(),
-  reactions: z.array(
-    z.object({
-      emoji: z.string(),
-      count: z.number(),
-      users: z.array(z.string()),
-      own: z.boolean(),
-    }),
-  ),
-  attachments: z.array(
-    z.object({
-      index: z.number().int(),
-      name: z.string(),
-      type: z.string(),
-      thumbhash: z.string().nullish(),
-      plaintextHash: z
-        .string()
-        .regex(/^[0-9a-f]{64}$/i)
-        .nullish(),
-      dimensions: z.string().nullish(),
-      size: z.number().nonnegative().nullish(),
-      duration: z.number().positive().nullish(),
-      waveform: z.array(z.number().int().min(0).max(31)).max(64).nullish(),
-      round: z.boolean().optional(),
-      voice: z.boolean().optional(),
-    }),
-  ),
-  sourceId: z.string().nullish(),
-  poll: z
-    .object({
-      question: z.string(),
-      multiple: z.boolean(),
-      open: z.boolean(),
-      selected: z.array(z.string()),
-      expiresAt: z.number().nullish(),
-      options: z.array(
-        z.object({ id: z.string(), name: z.string(), votes: z.number() }),
-      ),
-    })
-    .nullish(),
-  deleted: z.boolean(),
-  edited: z.boolean(),
-  confirmed: z.boolean(),
-  invalidated: z.boolean(),
-  systemType: z.string().nullish(),
-});
-
-const chatListSnapshot = windowRevision.extend({
-  kind: z.literal("chatList"),
+const chatListMetadata = windowRevision.extend({ kind: z.literal("chatList") });
+const chatListSnapshot = chatListMetadata.extend({
   rows: z.array(chatRow).max(200),
 });
 const attentionSnapshot = windowRevision.extend({
   kind: z.literal("attention"),
   count: z.number().nullish(),
 });
+const groupDetails = z.object({
+  avatarAsset: avatarAsset.nullish(),
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  inviter: z.string().nullish(),
+  image: z.string().nullish(),
+  mediaV2: z.boolean(),
+  mediaEndpoints: z.array(z.string()),
+  unrecoverable: z.boolean(),
+  convergenceParked: z.boolean(),
+  historyIncomplete: z.boolean(),
+  relayChangesOutstanding: z.number().nonnegative(),
+  relays: z.array(z.string()),
+  membership: z.string(),
+  pendingInvitation: z.boolean(),
+  kind: z.string().nullish(),
+  pendingLeave: z.boolean(),
+  leaveBlocked: z.boolean(),
+  createdAt: z.number().nullish(),
+  muted: z.boolean(),
+  archived: z.boolean(),
+  canEdit: z.boolean(),
+  lifecycle: z.string(),
+  commit: z.string().nullish(),
+  canInvite: z.boolean(),
+  canLeave: z.boolean(),
+  canCancelLeave: z.boolean(),
+  canDisband: z.boolean(),
+  canEnableDisbanding: z.boolean(),
+  members: z.array(
+    z.object({
+      id: z.string(),
+      npub: z.string(),
+      name: z.string().nullish(),
+      self: z.boolean(),
+      admin: z.boolean(),
+      devices: z.number(),
+      canPromote: z.boolean(),
+      canRemove: z.boolean(),
+      canDemote: z.boolean(),
+    }),
+  ),
+});
 const groupStateSnapshot = windowRevision.extend({
   kind: z.literal("groupState"),
+  details: groupDetails,
 });
 const groupCallSnapshot = windowRevision.extend({
   kind: z.literal("groupCall"),
@@ -154,7 +142,7 @@ const groupCallSnapshot = windowRevision.extend({
     )
     .max(64),
 });
-const conversationSnapshot = windowRevision.extend({
+const conversationMetadata = windowRevision.extend({
   kind: z.literal("conversation"),
   title: z.string().nullish(),
   peer: z.string().nullish(),
@@ -192,6 +180,8 @@ const conversationSnapshot = windowRevision.extend({
       avatarAsset: avatarAsset.nullish(),
     }),
   ),
+});
+const conversationSnapshot = conversationMetadata.extend({
   messages: z.array(message).max(200),
 });
 
@@ -309,52 +299,6 @@ const editHistory = z.object({
 });
 export type MarmotSearchResult = z.infer<typeof searchResult>;
 export type MarmotEditHistory = z.infer<typeof editHistory>;
-const groupDetails = z.object({
-  avatarAsset: avatarAsset.nullish(),
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  inviter: z.string().nullish(),
-  image: z.string().nullish(),
-  epoch: z.string(),
-  mediaV2: z.boolean(),
-  mediaEndpoints: z.array(z.string()),
-  unrecoverable: z.boolean(),
-  convergenceParked: z.boolean(),
-  historyIncomplete: z.boolean(),
-  relayChangesOutstanding: z.number().nonnegative(),
-  relays: z.array(z.string()),
-  membership: z.string(),
-  pendingInvitation: z.boolean(),
-  kind: z.string().nullish(),
-  pendingLeave: z.boolean(),
-  leaveBlocked: z.boolean(),
-  createdAt: z.number().nullish(),
-  muted: z.boolean(),
-  archived: z.boolean(),
-  canEdit: z.boolean(),
-  lifecycle: z.string(),
-  commit: z.string().nullish(),
-  isAdmin: z.boolean(),
-  canInvite: z.boolean(),
-  canLeave: z.boolean(),
-  canCancelLeave: z.boolean(),
-  canDisband: z.boolean(),
-  canEnableDisbanding: z.boolean(),
-  members: z.array(
-    z.object({
-      id: z.string(),
-      npub: z.string(),
-      name: z.string().nullish(),
-      self: z.boolean(),
-      admin: z.boolean(),
-      devices: z.number(),
-      canPromote: z.boolean(),
-      canRemove: z.boolean(),
-      canDemote: z.boolean(),
-    }),
-  ),
-});
 
 export type MarmotChatRow = z.infer<typeof chatRow>;
 export type MarmotMessage = z.infer<typeof message>;
@@ -725,6 +669,7 @@ type Bridge = {
   ): Promise<unknown>;
   editMessage(group: string, id: string, content: string): Promise<void>;
   deleteMessage(group: string, id: string): Promise<void>;
+  discardFailedSend(group: string, id: string): Promise<unknown>;
   reportMessage(group: string, id: string, spam: boolean): Promise<void>;
   reactToMessage(
     group: string,
@@ -962,6 +907,7 @@ export const marmotAccounts = {
 async function openWindow<S extends Revision, Direction extends string>(
   open: (bridge: Bridge, id: string) => Promise<unknown>,
   schema: z.ZodType<S>,
+  applyRows?: (current: S, delta: WindowDelta) => S,
 ): Promise<MarmotWindow<S, Direction>> {
   const bridge = native();
   const id = randomUUID();
@@ -974,7 +920,7 @@ async function openWindow<S extends Revision, Direction extends string>(
     if (event.id !== id) return;
     try {
       if (event.delta !== undefined) applyDelta(event.delta);
-      else install(event.snapshot);
+      else install(schema.parse(event.snapshot));
     } catch {
       terminate("InvalidWindowProjection");
     }
@@ -986,9 +932,8 @@ async function openWindow<S extends Revision, Direction extends string>(
   function emit() {
     for (const listener of listeners) listener();
   }
-  function install(value: unknown) {
+  function install(next: S) {
     if (state.status !== "ready") return;
-    const next = schema.parse(value);
     const current = state.snapshot;
     if (next.generation !== current.generation) {
       terminate("WindowGenerationChanged");
@@ -1008,24 +953,13 @@ async function openWindow<S extends Revision, Direction extends string>(
     }
     if (BigInt(delta.metadata.sequence) <= BigInt(current.sequence)) return;
     if (delta.base !== current.sequence) {
-      wantedSequence = BigInt(delta.metadata.sequence);
+      const sequence = BigInt(delta.metadata.sequence);
+      if (sequence > wantedSequence) wantedSequence = sequence;
       refresh();
       return;
     }
-    const prior =
-      delta.field === "rows" && "rows" in current
-        ? current.rows
-        : delta.field === "messages" && "messages" in current
-          ? current.messages
-          : undefined;
-    const rows = z.array(identifiedRow).max(200).parse(prior);
-    const indexed = new Map(
-      [...rows, ...delta.changed].map((row) => [row.id, row]),
-    );
-    install({
-      ...delta.metadata,
-      [delta.field]: delta.order.map((id) => indexed.get(id)),
-    });
+    if (!applyRows) throw new Error("InvalidWindowProjection");
+    install(applyRows(current, delta));
   }
   function refresh() {
     if (resyncing || state.status !== "ready") return;
@@ -1033,7 +967,7 @@ async function openWindow<S extends Revision, Direction extends string>(
     void bridge
       .windowSnapshot(id)
       .then((next) => {
-        install(next);
+        install(schema.parse(next));
         if (
           state.status === "ready" &&
           BigInt(state.snapshot.sequence) < wantedSequence
@@ -1062,7 +996,7 @@ async function openWindow<S extends Revision, Direction extends string>(
   ) {
     if (state.status !== "ready") return;
     const { generation, sequence } = state.snapshot;
-    install(await run(id, generation, sequence));
+    install(schema.parse(await run(id, generation, sequence)));
   }
   try {
     state = { status: "ready", snapshot: schema.parse(await open(bridge, id)) };
@@ -1139,6 +1073,13 @@ export const marmot = {
           options?.search?.trim().slice(0, 128) || null,
         ),
       chatListSnapshot,
+      (current, delta) => {
+        if (delta.field !== "rows") throw new Error("InvalidWindowProjection");
+        return {
+          ...chatListMetadata.parse(delta.metadata),
+          rows: mergeRows(current.rows, delta, chatRow),
+        };
+      },
     ),
   openAttention: () =>
     openWindow<z.infer<typeof attentionSnapshot>, never>(
@@ -1159,6 +1100,14 @@ export const marmot = {
     openWindow<MarmotConversation, "older" | "newer">(
       (bridge, id) => bridge.openConversation(id, group, target ?? null),
       conversationSnapshot,
+      (current, delta) => {
+        if (delta.field !== "messages")
+          throw new Error("InvalidWindowProjection");
+        return {
+          ...conversationMetadata.parse(delta.metadata),
+          messages: mergeRows(current.messages, delta, message),
+        };
+      },
     ),
   startDirect: (peer: string) => native().startDirect(peer),
   checkInvitee: (peer: string) => native().checkInvitee(peer),
@@ -1404,6 +1353,11 @@ export const marmot = {
     native().recentVoiceNotes(sender, since, onlyOutgoing),
   editMessage: (group: string, id: string, content: string) =>
     native().editMessage(group, id, content),
+  async discardFailedSend(group: string, id: string) {
+    return z
+      .enum(["discarded", "still_sending", "not_failed_send"])
+      .parse(await native().discardFailedSend(group, id));
+  },
   deleteMessage: (group: string, id: string) =>
     native().deleteMessage(group, id),
   reportMessage: (group: string, id: string, reason: "spam" | "other") =>

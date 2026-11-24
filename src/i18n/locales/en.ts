@@ -421,6 +421,8 @@ export const en = {
       temporarilyUnavailable:
         "Messaging is temporarily unavailable for this address.",
       removedMessage: "Message deleted",
+      recipientConfirmed: "Received by a participant",
+      removedByAdmin: "Message deleted by an administrator",
       eventMemberAdded: "A member was added",
       eventMemberRemoved: "A member was removed",
       eventMemberLeft: "A member left",

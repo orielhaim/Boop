@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { randomUUID } from "expo-crypto";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -257,7 +258,7 @@ export function ForwardMessage({
         return;
       if (row.attachments.length && row.sourceId) {
         const files = [];
-        for (const item of row.attachments) {
+        for (const item of acceptedAttachments(row)) {
           if (!canDispatch() || privacy.isBlocked(row.sender)) return;
           const file = await marmot.openAttachment(
             group,

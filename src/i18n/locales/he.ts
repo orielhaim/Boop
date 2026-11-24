@@ -408,6 +408,8 @@ export const he = {
       missingInboxRoute: "לכתובת זו אין ממסר זמין לקבלת הזמנות.",
       temporarilyUnavailable: "הודעות לכתובת זו אינן זמינות כרגע.",
       removedMessage: "ההודעה נמחקה",
+      recipientConfirmed: "התקבלה אצל משתתף",
+      removedByAdmin: "ההודעה נמחקה על ידי מנהל הקבוצה",
       eventMemberAdded: "משתתף נוסף",
       eventMemberRemoved: "משתתף הוסר",
       eventMemberLeft: "משתתף עזב",

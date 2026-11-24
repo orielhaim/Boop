@@ -476,13 +476,31 @@ class MarmotRelayTest {
       await("late invitee KeyPackage publication") {
         invitee.kit.accountSetupReadiness(invitee.key) == AccountSetupReadinessFfi.NETWORK_READY
       }
-      val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
-      val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
-      assertEquals(MemberResolutionStatusFfi.SELECTED, outcome.status)
-      invitee.accept(group)
-      val message = "hello after joining the group"
-      admin.kit.sendTextWithClientToken(admin.key, group, message, "late-member-message")
-      invitee.receives(group, admin.key, message)
+      val read = suspend { groupDocument(admin.kit, admin.key, group) }
+      val state = GroupStateWindow("group-test", admin.kit.subscribeGroupState(admin.key, group), read(), read)
+      fun roster(snapshot: Document): Set<Any?> {
+        val details = snapshot["details"] as Map<*, *>
+        return (details["members"] as List<*>).filterIsInstance<Map<*, *>>().map { it["id"] }.toSet()
+      }
+      val initial = checkNotNull(state.initial())
+      assertEquals("0", initial["sequence"])
+      assertFalse(roster(initial).contains(invitee.key))
+      try {
+        val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
+        val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
+        assertEquals(MemberResolutionStatusFfi.SELECTED, outcome.status)
+        invitee.accept(group)
+        val message = "hello after joining the group"
+        admin.kit.sendTextWithClientToken(admin.key, group, message, "late-member-message")
+        invitee.receives(group, admin.key, message)
+        withTimeout(15_000) {
+          while (true) {
+            val next = checkNotNull(state.next())
+            assertEquals("group-test", next["generation"])
+            if (roster(next).contains(invitee.key)) break
+          }
+        }
+      } finally { state.stop() }
     } finally {
       invitee.close()
     }
@@ -750,10 +768,19 @@ class MarmotRelayTest {
       val messages = checkNotNull(anchored.initial())["messages"] as List<*>
       val message = messages.filterIsInstance<Map<*, *>>().single { it["id"] == accepted.messageIdHex }
       val attachments = (message["attachments"] as List<*>).filterIsInstance<Map<*, *>>()
-      assertEquals(true, attachments[0]["voice"])
-      assertEquals(3.5, attachments[0]["duration"])
-      assertEquals(listOf(0, 15, 31), attachments[0]["waveform"])
-      assertEquals(true, attachments[1]["round"])
+      assertEquals(listOf("accepted", "accepted"), attachments.map { it["outcome"] })
+      assertEquals(listOf(0.0, 1.0), attachments.map { it["index"] })
+      assertEquals(listOf("13", "3.5", "0,15,31", "voice"), attachments[0]["metadata"])
+      assertEquals(listOf("13", "5.0", "", "round"), attachments[1]["metadata"])
+      val content = checkNotNull(message["content"] as? Document)
+      assertEquals(
+        listOf(mapOf("kind" to "paragraph", "children" to listOf(mapOf("kind" to "text", "text" to "Resumed upload")))),
+        content["blocks"],
+      )
+      assertEquals(row.messageIdHex, (message["replyPreview"] as? Map<*, *>)?.get("id"))
+      assertEquals(false, message["recipientConfirmed"])
+      assertNotNull(persisted.sourceMessageIdHex)
+      assertEquals(persisted.sourceMessageIdHex, message["sourceId"])
     } finally { anchored.stop() }
   }
 

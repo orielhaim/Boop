@@ -23,7 +23,6 @@ export function attachGroupCallLifecycle({
   let watching: string | undefined;
   let disposeWatch: (() => void) | undefined;
   let watchRevision = 0;
-  let refreshRevision = 0;
   let stopped = false;
   let last:
     | { group: string; call: string; members: string[]; sent: number }
@@ -116,35 +115,6 @@ export function attachGroupCallLifecycle({
     }
   }
 
-  function refresh(group: string, revision: number) {
-    const request = ++refreshRevision;
-    void client
-      .groupDetails(group)
-      .then((details) => {
-        if (
-          revision !== watchRevision ||
-          request !== refreshRevision ||
-          stopped
-        )
-          return;
-        if (
-          details.lifecycle === "disbanded" ||
-          ["removed", "device_removed", "left"].includes(details.membership)
-        ) {
-          calling.reconcileGroup(group, new Set());
-        } else if (
-          details.membership === "member" &&
-          details.lifecycle === "stable"
-        ) {
-          calling.reconcileGroup(
-            group,
-            new Set(details.members.map(({ id }) => id)),
-          );
-        }
-      })
-      .catch(() => undefined);
-  }
-
   function watch(group?: string) {
     if (watching === group) return;
     watching = group;
@@ -161,8 +131,21 @@ export function attachGroupCallLifecycle({
           return;
         }
         const onChange = () => {
-          if (window.getState().status === "ready") {
-            refresh(group, revision);
+          if (revision !== watchRevision || stopped) return;
+          const state = window.getState();
+          if (state.status === "ready") {
+            const { lifecycle, membership, members } = state.snapshot.details;
+            if (
+              lifecycle === "disbanded" ||
+              ["removed", "device_removed", "left"].includes(membership)
+            ) {
+              calling.reconcileGroup(group, new Set());
+            } else if (membership === "member" && lifecycle === "stable") {
+              calling.reconcileGroup(
+                group,
+                new Set(members.map(({ id }) => id)),
+              );
+            }
             schedule();
           } else if (revision === watchRevision) watch(undefined);
         };

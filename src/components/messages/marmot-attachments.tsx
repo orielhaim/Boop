@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import {
   AudioAttachment,
   VoiceMessageAttachment,
@@ -52,7 +53,7 @@ import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { useVoiceTranscript } from "./voice-transcript";
 
-type Item = MarmotMessage["attachments"][number];
+type Item = ReturnType<typeof acceptedAttachments>[number];
 type Asset = { target: AttachmentTarget; item: Item; speech?: SpeechSource };
 type AttachmentProps = {
   asset: Asset;
@@ -89,8 +90,8 @@ export function conversationPhotos(
   const photos: GalleryPhoto[] = [];
   for (const message of [...messages].reverse()) {
     const row = message.row;
-    if (!row?.sourceId || row.deleted || row.invalidated) continue;
-    for (const item of row.attachments) {
+    if (!row?.sourceId || row.deleted || row.invalidationStatus) continue;
+    for (const item of acceptedAttachments(row)) {
       if (photo(item))
         photos.push({
           asset: { item, target: [group, row.id, row.sourceId, item.index] },
@@ -177,16 +178,21 @@ export function MarmotAttachments({
   const [selected, setSelected] = useState<number>();
   const { reduceMotion } = useTheme();
   const { identity } = useLocal();
+  const { t } = useTranslation("messages");
   const assets = useMemo(() => {
     const source = row.sourceId;
-    if (!source) return [];
-    return row.attachments.map((item): Asset => ({
-      item,
-      target: [group, row.id, source, item.index],
-      speech: message.isViewOnce
-        ? undefined
-        : speechSource(group, row, item, identity.publicKey),
-    }));
+    const indexed = new Map<number, Asset>();
+    if (!source) return indexed;
+    for (const item of acceptedAttachments(row)) {
+      indexed.set(item.index, {
+        item,
+        target: [group, row.id, source, item.index],
+        speech: message.isViewOnce
+          ? undefined
+          : speechSource(group, row, item, identity.publicKey),
+      });
+    }
+    return indexed;
   }, [group, identity.publicKey, message.isViewOnce, row]);
   const galleryIndex =
     selected === undefined
@@ -197,18 +203,27 @@ export function MarmotAttachments({
         );
   return (
     <View style={styles.stack}>
-      {assets.map((asset) => (
-        <Attachment
-          key={attachmentKey(asset.target)}
-          asset={asset}
-          message={message}
-          conversation={conversation}
-          presentation={presentation}
-          foreground={foreground}
-          visible={visible}
-          openPhoto={() => setSelected(asset.item.index)}
-        />
-      ))}
+      {row.attachments.map((item) => {
+        if (item.outcome === "rejected")
+          return (
+            <Ink key={item.index}>{t("marmot.mediaReferenceUnavailable")}</Ink>
+          );
+        const asset = assets.get(item.index);
+        return (
+          asset && (
+            <Attachment
+              key={asset.item.index}
+              asset={asset}
+              message={message}
+              conversation={conversation}
+              presentation={presentation}
+              foreground={foreground}
+              visible={visible}
+              openPhoto={() => setSelected(asset.item.index)}
+            />
+          )
+        );
+      })}
       {galleryIndex >= 0 && (
         <Modal
           animationType={reduceMotion ? "none" : "fade"}
