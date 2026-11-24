@@ -7,11 +7,13 @@ import {
   ListGroup,
   ListRow,
   PreferenceToggle,
+  SettingsDescription,
 } from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-policy-row";
 import { Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
+import { linkPreviewPolicies } from "@/core/messaging/link-previews";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 
@@ -67,21 +69,11 @@ export default function Privacy() {
           onPress={() => router.push("/settings/privacy/permissions")}
         />
       </ListGroup>
-      <ListGroup title={t("security:callPrivacy")}>
-        <SettingsMenuRow
-          title={t("security:whoCanCall")}
-          value={selected.calls}
-          options={[
-            everyone,
-            contacts,
-            { value: "nobody", label: t("security:nobody") },
-          ]}
-          onChange={(value) => save(() => privacy.set("calls", value))}
-        />
+      <ListGroup>
         <ListRow
-          title={t("security:incomingVideo")}
-          icon="camera"
-          onPress={() => router.push("/settings/privacy/incoming-video")}
+          title={t("security:incomingCalls")}
+          icon="phone"
+          onPress={() => router.push("/settings/privacy/incoming-calls")}
         />
       </ListGroup>
       <ListGroup>
@@ -113,11 +105,21 @@ export default function Privacy() {
         />
       </ListGroup>
       <ListGroup>
-        <ListRow
+        <SettingsMenuRow
           title={t("settings:linkPreviews")}
-          detail={t(`settings:linkPreview_${selected.linkPreviews}`)}
-          onPress={() => router.push("/settings/privacy/link-previews")}
+          value={selected.linkPreviews}
+          options={linkPreviewPolicies.map((value) => ({
+            value,
+            label: t(`settings:linkPreview_${value}`),
+          }))}
+          onChange={(value) => save(() => privacy.set("linkPreviews", value))}
         />
+      </ListGroup>
+      <SettingsDescription>
+        {t(`settings:linkPreviewHelp_${selected.linkPreviews}`)}{" "}
+        {t("settings:linkPreviewPrivacy")}
+      </SettingsDescription>
+      <ListGroup>
         <ProfilePhotoPolicyRow
           title={t("settings:profilePhotos")}
           value={selected.profilePhotos}
@@ -128,6 +130,19 @@ export default function Privacy() {
           title={t("security:blockedUsers")}
           icon="lock"
           onPress={() => router.push("/settings/privacy/blocked")}
+        />
+        <PreferenceToggle
+          title={t("security:telemetry")}
+          detail={t("security:telemetryHelp")}
+          value={false}
+          onChange={(enabled) => {
+            if (enabled) {
+              Alert.alert(
+                t("security:telemetry"),
+                t("security:telemetryDeclined"),
+              );
+            }
+          }}
         />
         <ListRow
           title={t("security:privacyPolicy")}

@@ -983,8 +983,7 @@ export const en = {
     nobody: "Nobody",
     initiatedOnly: "Only people I’ve contacted first",
     messageRequests: "Message requests",
-    chatsHelp:
-      "Turn off chat sync, sending, and the Messages tab. Calls remain available.",
+    chatsHelp: "Turning this off disconnects chats completely.",
     pendingRequests: "Pending Requests",
     requestsCount: "Pending Requests ({{count}})",
     requestsHelp:
@@ -996,6 +995,10 @@ export const en = {
     requestLocked: "A scheduled message. Accept to add it to your chat.",
     blockedUsers: "Blocked users",
     privacyPolicy: "Privacy Policy",
+    telemetry: "Telemetry",
+    telemetryHelp: "Send diagnostic data to Boop.",
+    telemetryDeclined:
+      "We are very sorry; we understand how much you want to share your data with us, but frankly, that’s none of our business.",
     privacyPolicyOpenFailed: "Could not open the privacy policy.",
     block: "Block",
     unblock: "Unblock",
@@ -1011,10 +1014,9 @@ export const en = {
     showIdentityQr: "Show identity QR",
     appLock: "App Lock",
     permissions: "Device permissions",
-    incomingVideo: "Incoming video",
+    incomingCalls: "Incoming Calls",
     deviceAccess: "Device access",
-    callPrivacy: "Call privacy",
-    autoAllowed: "Automatically allowed",
+    videoAllowlist: "Automatically allow incoming video",
     noApproved: "No contacts approved",
     immediately: "Immediately",
     afterMinute: "After 1 minute",
