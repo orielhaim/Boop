@@ -26,6 +26,25 @@ describe("design theme contrast", () => {
     }
   });
   for (const theme of Object.values(themes)) {
+    test(`${theme.name} back glyph remains visible over light and dark backdrops`, () => {
+      const [red, green, blue, alpha] = theme.glass.lens.frost
+        .slice(5, -1)
+        .split(",")
+        .map(Number);
+      for (const backdrop of [0, 255]) {
+        const fill = [red, green, blue]
+          .map((channel) =>
+            Math.round(channel * alpha + backdrop * (1 - alpha))
+              .toString(16)
+              .padStart(2, "0"),
+          )
+          .join("");
+        expect(contrast(theme.colors.text, `#${fill}`)).toBeGreaterThanOrEqual(
+          3,
+        );
+      }
+    });
+
     test(`${theme.name} text remains readable across matte surfaces`, () => {
       const { colors } = theme;
       for (const surface of [

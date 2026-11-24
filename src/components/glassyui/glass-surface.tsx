@@ -27,8 +27,10 @@ export type GlassSurfaceProps = ViewProps & {
    * does over a white backdrop.
    */
   tint?: string;
-  /** Android blur samples this separate backdrop view. Other Android surfaces are opaque. */
+  /** Android blur samples this separate backdrop view. */
   blurTarget?: RefObject<ComponentRef<typeof View> | null>;
+  /** Keep the glass tint and rim on Android controls without a blur target. */
+  translucentFallback?: boolean;
 };
 
 // How strongly each preset blurs where the system's glass is unavailable. On the web these
@@ -57,6 +59,7 @@ export const GlassSurface = forwardRef<
       preset = "standard",
       style,
       tint,
+      translucentFallback = false,
       ...rest
     },
     ref,
@@ -65,6 +68,7 @@ export const GlassSurface = forwardRef<
     const material = resolveGlassMaterial(
       preferences.reduceTransparency,
       Boolean(blurTarget),
+      translucentFallback,
     );
     const borderRadius =
       StyleSheet.flatten(style)?.borderRadius ?? radius.control;
@@ -72,6 +76,9 @@ export const GlassSurface = forwardRef<
       borderRadius,
       borderCurve: "continuous",
     } as const;
+    const lens = translucentFallback ? colors.lens : undefined;
+    const rim = lens?.rim ?? colors.rim;
+    const rimHighlight = lens?.glint ?? colors.rimHighlight;
 
     return (
       <View
@@ -94,7 +101,7 @@ export const GlassSurface = forwardRef<
             tintColor={tint}
           />
         ) : null}
-        {material === "blur" ? (
+        {material === "blur" || material === "tinted" ? (
           <View
             style={[
               StyleSheet.absoluteFill,
@@ -103,21 +110,23 @@ export const GlassSurface = forwardRef<
               styles.clip,
             ]}
           >
-            <BlurView
-              style={StyleSheet.absoluteFill}
-              intensity={BLUR_INTENSITY[preset]}
-              tint={
-                preferences.theme === "dark"
-                  ? "systemUltraThinMaterialDark"
-                  : "systemUltraThinMaterialLight"
-              }
-              blurTarget={Platform.OS === "android" ? blurTarget : undefined}
-              blurMethod={
-                Platform.OS === "android" && blurTarget
-                  ? "dimezisBlurViewSdk31Plus"
-                  : "none"
-              }
-            />
+            {material === "blur" && (
+              <BlurView
+                style={StyleSheet.absoluteFill}
+                intensity={BLUR_INTENSITY[preset]}
+                tint={
+                  preferences.theme === "dark"
+                    ? "systemUltraThinMaterialDark"
+                    : "systemUltraThinMaterialLight"
+                }
+                blurTarget={Platform.OS === "android" ? blurTarget : undefined}
+                blurMethod={
+                  Platform.OS === "android"
+                    ? "dimezisBlurViewSdk31Plus"
+                    : undefined
+                }
+              />
+            )}
             <View
               style={[
                 StyleSheet.absoluteFill,
@@ -125,11 +134,12 @@ export const GlassSurface = forwardRef<
                   ? { backgroundColor: tint, opacity: 0.92 }
                   : {
                       backgroundColor:
-                        preset === "overlay"
+                        lens?.frost ??
+                        (preset === "overlay"
                           ? colors.overlaySurface
                           : preset === "prominent"
                             ? colors.glassFill.tinted
-                            : colors.glassFill.clear,
+                            : colors.glassFill.clear),
                     },
               ]}
             />
@@ -138,7 +148,7 @@ export const GlassSurface = forwardRef<
                 StyleSheet.absoluteFill,
                 corners,
                 {
-                  boxShadow: `inset 0px 1px 0px ${colors.rimHighlight}, inset 0px 0px 0px 1px ${colors.rim}`,
+                  boxShadow: `inset 0px 1px 0px ${rimHighlight}, inset 0px 0px 0px 1px ${rim}`,
                 },
               ]}
             />

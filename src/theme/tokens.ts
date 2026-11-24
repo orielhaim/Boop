@@ -189,6 +189,17 @@ function buildTheme(name: ThemeName, colors: typeof lightColors) {
             rim: "rgba(63, 90, 133, 0.23)",
             opaque: "#E0E8F4",
           },
+      lens: dark
+        ? {
+            frost: "rgba(17, 30, 50, 0.55)",
+            rim: "rgba(175, 198, 232, 0.25)",
+            glint: "rgba(228, 239, 255, 0.31)",
+          }
+        : {
+            frost: "rgba(251, 253, 255, 0.55)",
+            rim: "rgba(106, 133, 174, 0.25)",
+            glint: "rgba(255, 255, 255, 0.92)",
+          },
       accent: colors.outgoing,
       accentForeground: colors.outgoingInk,
       border: colors.line,

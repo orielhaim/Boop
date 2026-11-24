@@ -1582,6 +1582,7 @@ function MarmotConversationContent({
     <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
       <GlassBackButton
         elevation="none"
+        blurTarget={focused ? (blurTarget ?? undefined) : undefined}
         dimOnPress={false}
         style={styles.headerBack}
         onPress={
