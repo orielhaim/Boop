@@ -1,9 +1,12 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { Redirect, router } from "expo-router";
+import { Redirect, router, useIsFocused } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { Action, Ink, Screen } from "@/components/ui/kit";
+import { Action, Ink, Row, Screen } from "@/components/ui/kit";
+import { usePublicProfile } from "@/components/people/use-person";
+import { nameOrAddress } from "@/db/contacts";
+import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import { parsePublicKey } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
@@ -14,10 +17,14 @@ export default function Connect() {
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
   const chatsEnabled = useChatsEnabled();
+  const focused = useIsFocused();
+  const { exactKey, current } = useDirectorySearch(
+    address,
+    focused && chatsEnabled,
+  );
   if (!chatsEnabled) return <Redirect href="/" />;
 
-  function connect() {
-    const key = parsePublicKey(address);
+  function connect(key = exactKey ?? parsePublicKey(address)) {
     if (!key) {
       setError(t("contacts:invalidAddress"));
       return;
@@ -36,7 +43,7 @@ export default function Connect() {
     <Screen navigationHeader={<ScreenHeader title={t("messages:newChat")} />}>
       <GlassInput
         label={t("common:address")}
-        placeholder={t("common:pasteAddress")}
+        placeholder={t("messenger:searchHint")}
         value={address}
         onChangeText={(value) => {
           setAddress(value);
@@ -45,13 +52,35 @@ export default function Connect() {
         autoCapitalize="none"
         style={{ writingDirection: "ltr", textAlign: "left" }}
         autoCorrect={false}
-        maxLength={128}
-        onSubmitEditing={connect}
+        maxLength={1050}
+        onSubmitEditing={() => connect()}
       />
       {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
-      <Action variant="prominent" onPress={connect}>
+      {current?.keys
+        .filter((key) => key !== identity.publicKey)
+        .map((key) => (
+          <ConnectResult
+            key={key}
+            publicKey={key}
+            onPress={() => connect(key)}
+          />
+        ))}
+      <Action variant="prominent" onPress={() => connect()}>
         {t("messages:startChat")}
       </Action>
     </Screen>
+  );
+}
+
+function ConnectResult({
+  publicKey,
+  onPress,
+}: {
+  publicKey: string;
+  onPress: () => void;
+}) {
+  const profile = usePublicProfile(publicKey, true);
+  return (
+    <Row title={nameOrAddress(profile?.name, publicKey)} onPress={onPress} />
   );
 }

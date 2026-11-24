@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { randomUUID } from "expo-crypto";
 import { getDocumentAsync } from "expo-document-picker";
 import { Directory, File, Paths } from "expo-file-system";
@@ -97,14 +98,17 @@ export function createAudioSources({
           const [group, message, event, index] = source.target;
           if (!ready()) throw new Error("AudioUnavailable");
           check();
-          const window = await marmot.openConversation(group, message);
+          const window = await marmot.openConversation(group, {
+            target: message,
+          });
           closeWindow = async () => {
             stopWatchingWindow?.();
             await window.close();
           };
           const authorized = () => {
             const state = window.getState();
-            if (state.status !== "ready" || !allowed(track)) return false;
+            if (state.status !== "ready" || !ready() || !allowed(track))
+              return false;
             const { snapshot } = state;
             return (
               snapshot.authorityReady &&
@@ -117,10 +121,10 @@ export function createAudioSources({
                   row.sourceId === event &&
                   row.sender === source.sender &&
                   !row.deleted &&
-                  !row.invalidated &&
+                  !row.invalidationStatus &&
                   (row.expiresAt == null ||
                     row.expiresAt * 1000 > Date.now()) &&
-                  row.attachments.some(
+                  acceptedAttachments(row).some(
                     (attachment) => attachment.index === index,
                   ),
               )

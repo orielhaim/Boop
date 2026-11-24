@@ -96,6 +96,9 @@ enum NativeWindow: Sendable {
       guard direction == "forward" || direction == "backward" else { throw problem("InvalidDirection") }
       return project(try await handle.page(sequence: revision.sequence, direction: direction == "forward" ? .forward : .backward, count: 40))
     case .conversation(let handle):
+      if direction == "latest" {
+        return project(try await handle.returnToLatest(revision: revision, timeoutMs: 0))
+      }
       guard direction == "older" || direction == "newer" else { throw problem("InvalidDirection") }
       return project(try await handle.page(revision: revision, direction: direction == "older" ? .older : .newer, count: 40, timeoutMs: 0))
     case .attention, .groupState, .groupCall: throw problem("InvalidWindow")
@@ -154,29 +157,97 @@ final class GroupCallWindow: @unchecked Sendable {
 final class GroupStateWindow: @unchecked Sendable {
   private let generation: String
   private let handle: GroupStateSubscription
-  private let guardSequence = NSLock()
+  private let read: @Sendable () async throws -> Document
   private var sequence: UInt64 = 0
+  private var details: Document?
+  private let kind: String
 
-  init(generation: String, handle: GroupStateSubscription) {
+  init(generation: String, handle: GroupStateSubscription, details: Document, kind: String,
+       read: @escaping @Sendable () async throws -> Document) {
     self.generation = generation
     self.handle = handle
+    self.details = details
+    self.kind = kind
+    self.read = read
   }
 
   func initial() -> Document? {
-    handle.snapshot().map { _ in current(advance: false) }
+    defer { details = nil; _ = handle.snapshot() }
+    return details.map(project)
   }
 
   func next() async throws -> Document? {
-    try await handle.nextCancellable().map { _ in current(advance: true) }
+    guard try await handle.nextCancellable() != nil else { return nil }
+    let details = try await read()
+    sequence += 1
+    return project(details)
   }
 
-  private func current(advance: Bool) -> Document {
-    guardSequence.withLock {
-      if advance { sequence += 1 }
-      return ["kind": "groupState", "generation": generation, "sequence": String(sequence),
-        "hasMoreBefore": false, "hasMoreAfter": false]
-    }
+  private func project(_ details: Document) -> Document {
+    ["kind": kind, "generation": generation, "sequence": String(sequence),
+     "hasMoreBefore": false, "hasMoreAfter": false, "details": details]
   }
+}
+
+func groupDocument(_ kit: Marmot, _ account: String, _ group: String) async throws -> Document {
+  let snapshot = try await kit.groupConversationSnapshot(accountRef: account, groupIdHex: group)
+  let details = snapshot.details
+  let policy = snapshot.managementState
+  let presented = try await kit.presentedChatListRow(accountRef: account, groupIdHex: group)
+  let chat = presented?.row
+  let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
+  return [
+    "id": group, "name": details.group.name, "description": details.group.description,
+    "inviter": bridgeValue(details.group.welcomerAccountIdHex), "relays": details.group.relays,
+    "avatarAsset": bridgeValue(presented?.avatarAsset.map(avatarDocument)),
+    "image": bridgeValue(details.group.imageHashHex),
+    "mediaV2": details.group.encryptedMedia.version == .v2,
+    "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
+    "unrecoverable": details.mlsState.unrecoverable,
+    "convergenceParked": details.mlsState.convergenceParked,
+    "disbanding": details.mlsState.disbanding, "epoch": String(details.mlsState.epoch),
+    "membership": wireName(details.group.selfMembership),
+    "pendingInvitation": details.group.pendingConfirmation,
+    "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
+    "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
+    "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
+    "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
+    "lifecycle": wireName(policy.lifecycleState),
+    "canStepDown": policy.isSelfAdmin && !policy.isLastAdmin,
+    "canInvite": policy.canInvite, "canLeave": policy.canLeave,
+    "canCancelLeave": policy.canCancelLeave, "canDisband": policy.canDisband,
+    "canEnableDisbanding": policy.canEnableDisbanding,
+    "members": details.members.map { member -> Document in
+      let perms = actions[member.memberIdHex]
+      return memberDocument(member, kit).merging([
+        "canPromote": perms?.canPromote ?? false, "canRemove": perms?.canRemove ?? false,
+        "canDemote": perms?.canDemote ?? false,
+      ], uniquingKeysWith: { _, action in action })
+    },
+  ]
+}
+
+private func memberDocument(_ member: GroupMemberDetailsFfi, _ kit: Marmot) -> Document {
+  let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
+    ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
+  return ["id": member.memberIdHex, "npub": member.npub, "name": name,
+          "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount)]
+}
+
+func rosterDocument(_ kit: Marmot, _ account: String, _ group: String) async throws -> Document {
+  let roster = try await kit.groupRoster(accountRef: account, groupIdHex: group)
+  return ["revision": String(roster.rosterRevision), "membership": wireName(roster.selfMembership),
+          "lifecycle": wireName(roster.lifecycleState), "members": roster.members.map { memberDocument($0, kit) }]
+}
+
+func groupDiagnostics(_ kit: Marmot, _ account: String, _ group: String) async throws -> Document {
+  let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
+  let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
+  return ["commit": bridgeValue(pending.map { wireName($0.state) }),
+          "automaticRecoveryFailed": recovery.automaticRecoveryFailed, "historyIncomplete": recovery.historyMayBeIncomplete,
+          "rejoinOffers": recovery.rejoinInvitations.map {
+            ["welcome": $0.welcomeIdHex, "inviter": $0.welcomerAccountIdHex, "token": $0.localStateToken]
+          }]
 }
 
 private func project(_ snapshot: AccountAttentionSnapshotFfi, _ account: String) -> Document {
@@ -189,6 +260,11 @@ private func project(_ snapshot: AccountAttentionSnapshotFfi, _ account: String)
     "kind": "attention", "generation": snapshot.subscriptionGeneration, "sequence": String(snapshot.sequence),
     "hasMoreBefore": false, "hasMoreAfter": false, "count": bridgeValue(count),
   ]
+}
+
+func avatarDocument(_ asset: AvatarAssetFfi) -> Document {
+  ["target": asset.target, "reference": bridgeValue(asset.reference),
+   "revision": String(asset.contentRevision), "availability": wireName(asset.availability)]
 }
 
 private func literal(_ presentation: ConversationPresentationFfi) -> String? {
@@ -205,14 +281,20 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
     "hasMoreAfter": snapshot.hasMoreAfter,
     "rows": snapshot.rows.map { row -> Document in
       let chat = row.row
+      let selection: String
       let draft: String?
-      if case .draft(let preview) = row.preview { draft = preview.text }
-      else { draft = nil }
+      switch row.preview {
+      case .draft(let preview): selection = "draft"; draft = preview.text
+      case .message: selection = "message"; draft = nil
+      case .invitation: selection = "invitation"; draft = nil
+      case .empty: selection = "empty"; draft = nil
+      }
       return [
         "id": chat.groupIdHex,
         "title": bridgeValue(literal(row.presentation)),
         "peer": bridgeValue(row.presentation.peerId),
         "image": bridgeValue(chat.avatar?.imageHashHex),
+        "avatarAsset": bridgeValue(row.avatarAsset.map(avatarDocument)),
         "kind": wireName(chat.conversationKind),
         "lifecycle": wireName(chat.lifecycleState),
         "membership": wireName(chat.selfMembership),
@@ -221,16 +303,29 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
         "muted": chat.muted,
         "archived": chat.archived,
         "unread": Double(chat.unreadCount),
+        "mentioned": chat.unreadMentionCount > 0,
         "manualUnread": chat.manuallyMarkedUnread,
         "updatedAt": Double(chat.activitySortAt),
-        "preview": bridgeValue(chat.lastMessage.flatMap { $0.deleted ? nil : $0.plaintext }),
-        "previewKind": bridgeValue(chat.lastMessage.map { Double($0.kind) }),
-        "previewId": bridgeValue(chat.lastMessage?.messageIdHex),
-        "previewSender": bridgeValue(chat.lastMessage?.sender),
+        "previewSelection": selection,
+        "preview": bridgeValue(chat.lastMessage.map { message -> Document in
+          ["id": message.messageIdHex, "sender": message.sender, "kind": Double(message.kind),
+           "text": bridgeValue(message.deleted ? nil : message.plaintext),
+           "expiresAt": bridgeValue(message.retentionExpiresAt.map(Double.init)),
+           "content": bridgeValue(!message.deleted && (message.kind == 9 || message.kind == 1111)
+             ? messageContent(message.contentTokens) : nil)]
+        }),
         "draft": bridgeValue(draft),
       ]
     },
   ]
+}
+
+private func historySource(_ source: HistoryImportProvenanceFfi?) -> String? {
+  switch source {
+  case .some(.device): return "device"
+  case .some(.backup): return "backup"
+  case .none: return nil
+  }
 }
 
 private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
@@ -248,21 +343,25 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "title": bridgeValue(literal(snapshot.header.selected)),
     "peer": bridgeValue(peer),
     "image": bridgeValue(image),
+    "avatarAsset": bridgeValue(snapshot.header.avatarAsset.map(avatarDocument)),
     "lifecycle": wireName(snapshot.header.lifecycle),
     "memberCount": bridgeValue(snapshot.header.memberCount.map(Double.init)),
     "invited": snapshot.pendingConfirmation,
     "authorityReady": snapshot.header.epoch != nil,
     "canSend": snapshot.header.capabilities.canSend,
     "firstUnread": bridgeValue(snapshot.readState.firstUnreadMessageIdHex),
+    "atTail": snapshot.anchor.kind == .latest || snapshot.anchor.kind == .empty,
     "draft": bridgeValue(snapshot.draft.draft.map { draft in
       ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
         "attachments": draft.mediaAttachments.map { item -> Document in
           ["id": item.id, "size": Double(item.plaintextSize),
             "duration": bridgeValue(item.durationSeconds),
-            "waveform": item.waveformSamples.prefix(64).map { Int((min(1, max(0, $0)) * 31).rounded()) }]
+            "waveform": item.waveformSamples.prefix(64).map { Int((min(1, max(0, $0)) * 31).rounded(.toNearestOrEven)) }]
         }]
     }),
-    "identities": snapshot.identities.map { ["id": $0.accountIdHex, "name": $0.displayName] },
+    "identities": snapshot.identities.map {
+      ["id": $0.accountIdHex, "name": $0.displayName, "avatarAsset": bridgeValue($0.avatarAsset.map(avatarDocument))]
+    },
     "messages": snapshot.messages.compactMap { message -> Document? in
       let row = message.timeline
       let system = row.groupSystem.flatMap { $0.provenance == .authenticatedGroupState ? $0 : nil }
@@ -272,30 +371,39 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         "token": bridgeValue(row.clientToken),
         "sender": row.sender,
         "text": row.plaintext,
+        "content": bridgeValue(row.kind == 9 || row.kind == 1111 ? messageContent(row.contentTokens) : nil),
         "sentAt": Double(row.timelineAt),
         "expiresAt": bridgeValue(row.retentionExpiresAt.map(Double.init)),
         "eventKind": Double(row.kind),
         "replyTo": bridgeValue(row.replyToMessageIdHex),
-        "replyPreview": bridgeValue(row.replyPreview.map { ["id": $0.messageIdHex, "sender": $0.sender, "text": $0.plaintext] }),
+        "thread": bridgeValue(row.thread.map { ["root": $0.rootMessageIdHex, "parent": $0.parentMessageIdHex] }),
+        "replyPreview": bridgeValue(row.replyPreview.map { preview -> Document in
+          ["id": preview.messageIdHex, "sender": preview.sender, "text": preview.plaintext,
+           "deleted": preview.deleted, "deletionSource": wireName(preview.deletionSource),
+           "invalidationStatus": bridgeValue(preview.invalidationStatus), "content": messageContent(preview.contentTokens),
+           "expiresAt": bridgeValue(preview.retentionExpiresAt.map(Double.init)), "mentions": message.references.replyMentions]
+        }),
+        "mentions": message.references.mentions,
+        "retentionSeconds": bridgeValue(row.retentionSeconds.map(String.init)),
         "reactions": message.references.reactions.items.map { item -> Document in
           ["emoji": item.emoji, "count": Double(item.count), "users": item.reactors, "own": item.viewerReacted]
         },
-        "attachments": row.media.compactMap { outcome -> Document? in
-          guard case .accepted(let index, let reference) = outcome, reference.version == .v2 else { return nil }
-          let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" && $0.values[1] == String(index) }
-          let tag = matches.count == 1 ? matches.first?.values : nil
-          let duration = mediaDuration(tag?[3])
-          let size = tag.flatMap { UInt64($0[2]) }.flatMap { (1...9007199254740991).contains($0) ? Double($0) : nil }
-          let waveform = tag.map { value in Array(value[4].prefix(192).split(separator: ",").compactMap { token in
-            Int(token).flatMap { (0...31).contains($0) ? $0 : nil }
-          }.prefix(64)) }
-          return ["index": Int(index), "name": reference.fileName, "type": reference.mediaType,
-            "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
-            "plaintextHash": reference.plaintextSha256,
-            "size": bridgeValue(size), "duration": bridgeValue(duration),
-            "waveform": bridgeValue(waveform),
-            "round": tag?[5] == "round" && reference.mediaType.hasPrefix("video/"),
-            "voice": tag?[5] == "voice" && reference.mediaType.hasPrefix("audio/")]
+        "attachments": row.media.map { outcome -> Document in
+          switch outcome {
+          case .rejected(let index, let rejection):
+            return ["outcome": "rejected", "index": Double(index),
+                    "reason": wireName(rejection.kind), "detail": rejection.detail]
+          case .accepted(let index, let reference):
+            guard reference.version == .v2 else {
+              return ["outcome": "rejected", "index": Double(index), "reason": "unsupported_format"]
+            }
+            let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" && $0.values[1] == String(index) }
+            let metadata = matches.count == 1 ? matches.first.map { Array($0.values.dropFirst(2)) } : nil
+            return ["outcome": "accepted", "index": Double(index), "name": reference.fileName, "type": reference.mediaType,
+                    "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
+                    "plaintextHash": reference.plaintextSha256,
+                    "metadata": bridgeValue(metadata.flatMap { $0.allSatisfy { $0.utf16.count <= 192 } ? $0 : nil })]
+          }
         },
         "sourceId": bridgeValue(row.sourceMessageIdHex),
         "poll": bridgeValue(row.poll.map { poll -> Document in
@@ -305,9 +413,15 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         }),
         "deleted": row.deleted,
         "edited": row.edit != nil,
-        "confirmed": row.sourceMessageIdHex != nil || row.recipientConfirmed,
-        "invalidated": row.invalidationStatus != nil,
-        "systemType": bridgeValue(system?.systemType),
+        "recipientConfirmed": row.recipientConfirmed,
+        "invalidationStatus": bridgeValue(row.invalidationStatus),
+        "deletionSource": wireName(row.deletionSource),
+        "historyImport": bridgeValue(historySource(row.historyImportProvenance)),
+        "system": bridgeValue(system.map { event -> Document in
+          ["type": event.systemType, "actor": bridgeValue(event.actorAccountIdHex),
+           "subject": bridgeValue(event.subjectAccountIdHex), "name": bridgeValue(event.name),
+           "oldName": bridgeValue(event.oldName), "retentionSeconds": bridgeValue(event.newRetentionSeconds.map(String.init))]
+        }),
       ]
     },
   ]

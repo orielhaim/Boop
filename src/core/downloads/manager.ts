@@ -13,8 +13,6 @@ import {
   type DownloadSource,
 } from "./types";
 
-export type { TransferProgress } from "./transport";
-
 type Store = {
   load(): DownloadJob[];
   save(jobs: DownloadJob[]): void;
@@ -666,7 +664,7 @@ export function createDownloadManager({
       )
         return;
       await transport.open?.(job, async (file) => {
-        if (eligible() && jobs.get(id) === job && allowed(job))
+        if (eligible() && jobs.get(id) === job && usable(job) && allowed(job))
           await consume(file);
       });
     },

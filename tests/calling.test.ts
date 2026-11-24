@@ -73,6 +73,13 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
     replyRelays: [replyRelay],
   });
   expect(await unwrapCallSignal(wrapped.rawEvent(), third)).toBeNull();
+  expect(
+    await unwrapCallSignal(
+      wrapped.rawEvent(),
+      callee,
+      (key) => key === caller.pubkey,
+    ),
+  ).toBeNull();
   const envelope = {
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,
@@ -408,6 +415,10 @@ test("an uninvited group member joins through a correlated encrypted-control off
     expect(alice.store.getState().fullGroupCall?.callId).toBe(call.id);
     expect(alice.store.getState().joining).toBeUndefined();
     bob.store.setState({ participants: connected });
+    charlie.peerBlocked(callee.pubkey);
+    expect(charlie.store.getState().call?.phase).toBe("connected");
+    expect(revoked).toEqual([callee.pubkey]);
+    revoked.length = 0;
     roster.delete(third.pubkey);
     charlie.reconcileGroup(group, roster);
     expect(charlie.store.getState().call?.phase).toBe("ended");
@@ -474,6 +485,18 @@ test("ringing waits for recipient, connected waits for media, and remote hangup 
   await Bun.sleep(0);
   expect(a.store.getState().call?.phase).toBe("connected");
   expect(b.store.getState().call?.phase).toBe("connected");
+  const connected = a.store.getState().call;
+  a.mute();
+  expect(a.store.getState().call).toMatchObject({
+    phase: "connected",
+    muted: true,
+  });
+  expect(connected).toMatchObject({ phase: "connected", muted: false });
+  a.mute();
+  expect(a.store.getState().call).toMatchObject({
+    phase: "connected",
+    muted: false,
+  });
   const { roomId: _id, offer: _offer, ...relaySignal } = initial;
   b.receive({ ...relaySignal, type: "call.end" });
   expect(b.store.getState().call?.phase).toBe("connected");

@@ -1,6 +1,5 @@
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { decode, npubEncode } from "nostr-tools/nip19";
-import { getPublicKey } from "nostr-tools/pure";
 import { z } from "zod";
 import { isPublicRelayAddress, secureRelays } from "../nostr/relays";
 
@@ -15,8 +14,6 @@ export const publicKeySchema = z.string().refine((value) => {
   }
 });
 
-export type Identity = { publicKey: string; npub: string };
-
 export function parsePublicKey(input: string): string | null {
   return parsePublicIdentity(input)?.key ?? null;
 }
@@ -24,7 +21,7 @@ export function parsePublicKey(input: string): string | null {
 export function parsePublicIdentity(
   input: string,
 ): { key: string; relays: string[] } | null {
-  const value = input.trim().replace(/^nostr:/i, "");
+  const value = input.trim().replace(/^(?:nostr:|marmot:\/\/profile\/)/i, "");
   if (encodedKey.test(value.toLowerCase())) {
     const key = value.toLowerCase();
     return publicKeySchema.safeParse(key).success ? { key, relays: [] } : null;
@@ -54,12 +51,3 @@ export function parsePublicIdentity(
 }
 
 export const toNpub = npubEncode;
-
-export function deriveIdentity(secret: string): Identity {
-  if (!encodedKey.test(secret)) throw new Error("Invalid identity storage");
-  const bytes = Uint8Array.from({ length: 32 }, (_, index) =>
-    Number.parseInt(secret.slice(index * 2, index * 2 + 2), 16),
-  );
-  const publicKey = getPublicKey(bytes);
-  return { publicKey, npub: toNpub(publicKey) };
-}

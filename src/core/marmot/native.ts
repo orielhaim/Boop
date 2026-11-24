@@ -1,36 +1,54 @@
 import { randomUUID } from "expo-crypto";
 import { requireNativeModule } from "expo-modules-core";
-import { nip19 } from "nostr-tools";
-import { getPublicKey } from "nostr-tools/pure";
-import { hexToBytes } from "nostr-tools/utils";
 import { z } from "zod";
-import type { RelayConfiguration } from "../nostr/config";
+import {
+  mergeRows,
+  type WindowDelta,
+  windowDelta,
+  windowRevision,
+} from "./window-projection";
+import { messageContent } from "./message-content";
+import { message } from "./message-projection";
 import { mediaUploadArguments } from "./media-send";
 
-export type MarmotRelays = Pick<
-  RelayConfiguration,
-  "general" | "inbox" | "discovery"
->;
+export type MarmotRelays = {
+  general: readonly string[];
+  inbox: readonly string[];
+  discovery: readonly string[];
+};
 
-const windowRevision = z.object({
-  generation: z.string(),
-  sequence: z.string().regex(/^\d{1,20}$/),
-  hasMoreBefore: z.boolean(),
-  hasMoreAfter: z.boolean(),
+const accountRelayLists = z.object({
+  general: z.array(z.string()),
+  write: z.array(z.string()),
+  inbox: z.array(z.string()),
+  bootstrap: z.array(z.string()),
+  allowed: z.array(z.string()),
+  retiredHosts: z.array(z.string()),
 });
-const identifiedRow = z.looseObject({ id: z.string() });
-const windowDelta = z.object({
-  base: windowRevision.shape.sequence,
-  field: z.enum(["rows", "messages"]),
-  metadata: windowRevision.loose(),
-  order: z.array(z.string()).max(200),
-  changed: z.array(identifiedRow).max(200),
+export type MarmotRelayLists = z.infer<typeof accountRelayLists>;
+
+const relayLiveness = z.object({
+  url: z.string(),
+  status: z.enum(["unknown", "connecting", "connected", "offline"]),
+  lastError: z.string().nullish(),
+  lastAttempt: z.number().nullish(),
 });
+export type MarmotRelayLiveness = z.infer<typeof relayLiveness>;
+
+const avatarAsset = z.object({
+  target: z.string(),
+  reference: z.string().nullish(),
+  revision: windowRevision.shape.sequence,
+  availability: z.enum(["missing", "ready", "stale", "invalidated"]),
+});
+export type MarmotAvatarAsset = z.infer<typeof avatarAsset>;
+
 const chatRow = z.object({
   id: z.string(),
   title: z.string().nullish(),
   peer: z.string().nullish(),
   image: z.string().nullish(),
+  avatarAsset: avatarAsset.nullish(),
   kind: z.enum(["unknown", "direct", "group"]),
   lifecycle: z.string(),
   membership: z.string(),
@@ -39,83 +57,121 @@ const chatRow = z.object({
   muted: z.boolean(),
   archived: z.boolean(),
   unread: z.number().nonnegative(),
+  mentioned: z.boolean(),
   manualUnread: z.boolean(),
   updatedAt: z.number().nonnegative(),
-  preview: z.string().nullish(),
-  previewKind: z.number().nullish(),
-  previewId: z.string().nullish(),
-  previewSender: z.string().nullish(),
+  previewSelection: z.enum(["draft", "message", "invitation", "empty"]),
+  preview: z
+    .object({
+      id: z.string(),
+      sender: z.string(),
+      kind: z.number().int().nonnegative(),
+      text: z.string().nullish(),
+      expiresAt: z.number().nonnegative().nullish(),
+      content: messageContent.nullish(),
+    })
+    .nullish(),
   draft: z.string().nullish(),
 });
 
-const message = z.object({
-  id: z.string(),
-  token: z.string().nullish(),
-  sender: z.string(),
-  text: z.string(),
-  sentAt: z.number().nonnegative(),
-  expiresAt: z.number().nonnegative().nullish(),
-  eventKind: z.number().int().nonnegative(),
-  replyTo: z.string().nullish(),
-  replyPreview: z
-    .object({ id: z.string(), sender: z.string(), text: z.string() })
-    .nullish(),
-  reactions: z.array(
-    z.object({
-      emoji: z.string(),
-      count: z.number(),
-      users: z.array(z.string()),
-      own: z.boolean(),
-    }),
-  ),
-  attachments: z.array(
-    z.object({
-      index: z.number().int(),
-      name: z.string(),
-      type: z.string(),
-      thumbhash: z.string().nullish(),
-      plaintextHash: z
-        .string()
-        .regex(/^[0-9a-f]{64}$/i)
-        .nullish(),
-      dimensions: z.string().nullish(),
-      size: z.number().nonnegative().nullish(),
-      duration: z.number().positive().nullish(),
-      waveform: z.array(z.number().int().min(0).max(31)).max(64).nullish(),
-      round: z.boolean().optional(),
-      voice: z.boolean().optional(),
-    }),
-  ),
-  sourceId: z.string().nullish(),
-  poll: z
-    .object({
-      question: z.string(),
-      multiple: z.boolean(),
-      open: z.boolean(),
-      selected: z.array(z.string()),
-      expiresAt: z.number().nullish(),
-      options: z.array(
-        z.object({ id: z.string(), name: z.string(), votes: z.number() }),
-      ),
-    })
-    .nullish(),
-  deleted: z.boolean(),
-  edited: z.boolean(),
-  confirmed: z.boolean(),
-  invalidated: z.boolean(),
-  systemType: z.string().nullish(),
-});
-
-const chatListSnapshot = windowRevision.extend({
-  kind: z.literal("chatList"),
+const chatListMetadata = windowRevision.extend({ kind: z.literal("chatList") });
+const chatListSnapshot = chatListMetadata.extend({
   rows: z.array(chatRow).max(200),
 });
 const attentionSnapshot = windowRevision.extend({
   kind: z.literal("attention"),
   count: z.number().nullish(),
 });
+const groupMembership = z.enum(["member", "left", "removed", "device_removed"]);
+const groupLifecycle = z.enum([
+  "stable",
+  "pending_publish",
+  "merging",
+  "recovering",
+  "unrecoverable",
+  "disbanded",
+]);
+const groupMember = z.object({
+  id: z.string(),
+  npub: z.string(),
+  name: z.string().nullish(),
+  self: z.boolean(),
+  admin: z.boolean(),
+  devices: z.number().int().nonnegative(),
+});
+const groupAccess = z.object({
+  membership: groupMembership,
+  lifecycle: groupLifecycle,
+  pendingInvitation: z.boolean(),
+  pendingLeave: z.boolean(),
+  unrecoverable: z.boolean(),
+  disbanding: z.boolean(),
+  kind: chatRow.shape.kind.nullish(),
+  members: z.array(z.string()),
+});
+const groupInvitation = z.object({
+  inviter: z.string().nullish(),
+  name: z.string(),
+  memberCount: z.number().int().nonnegative(),
+  members: z.array(groupMember.pick({ id: true, npub: true, name: true })),
+});
+const groupDiagnostics = z.object({
+  commit: z.enum(["sending", "stuck"]).nullish(),
+  automaticRecoveryFailed: z.boolean(),
+  historyIncomplete: z.boolean(),
+  rejoinOffers: z.array(
+    z.object({ welcome: z.string(), inviter: z.string(), token: z.string() }),
+  ),
+});
+const groupRosterSnapshot = windowRevision.extend({
+  kind: z.literal("groupRoster"),
+  details: z.object({
+    revision: windowRevision.shape.sequence,
+    membership: groupMembership,
+    lifecycle: groupLifecycle,
+    members: z.array(groupMember),
+  }),
+});
+const groupDetails = z.object({
+  avatarAsset: avatarAsset.nullish(),
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  image: z.string().nullish(),
+  mediaV2: z.boolean(),
+  mediaEndpoints: z.array(z.string()),
+  unrecoverable: z.boolean(),
+  convergenceParked: z.boolean(),
+  disbanding: z.boolean(),
+  epoch: windowRevision.shape.sequence,
+  relays: z.array(z.string()),
+  membership: groupMembership,
+  pendingInvitation: z.boolean(),
+  kind: chatRow.shape.kind.nullish(),
+  pendingLeave: z.boolean(),
+  leaveBlocked: z.boolean(),
+  createdAt: z.number().nullish(),
+  muted: z.boolean(),
+  archived: z.boolean(),
+  canEdit: z.boolean(),
+  lifecycle: groupLifecycle,
+  canStepDown: z.boolean(),
+  canInvite: z.boolean(),
+  canLeave: z.boolean(),
+  canCancelLeave: z.boolean(),
+  canDisband: z.boolean(),
+  canEnableDisbanding: z.boolean(),
+  members: z.array(
+    groupMember.extend({
+      canPromote: z.boolean(),
+      canRemove: z.boolean(),
+      canDemote: z.boolean(),
+    }),
+  ),
+});
 const groupStateSnapshot = windowRevision.extend({
   kind: z.literal("groupState"),
+  details: groupDetails,
 });
 const groupCallSnapshot = windowRevision.extend({
   kind: z.literal("groupCall"),
@@ -130,17 +186,19 @@ const groupCallSnapshot = windowRevision.extend({
     )
     .max(64),
 });
-const conversationSnapshot = windowRevision.extend({
+const conversationMetadata = windowRevision.extend({
   kind: z.literal("conversation"),
   title: z.string().nullish(),
   peer: z.string().nullish(),
   image: z.string().nullish(),
+  avatarAsset: avatarAsset.nullish(),
   lifecycle: z.string(),
   memberCount: z.number().nullish(),
   invited: z.boolean(),
   authorityReady: z.boolean(),
   canSend: z.boolean(),
   firstUnread: z.string().nullish(),
+  atTail: z.boolean(),
   draft: z
     .object({
       text: z.string(),
@@ -160,7 +218,15 @@ const conversationSnapshot = windowRevision.extend({
         .max(64),
     })
     .nullish(),
-  identities: z.array(z.object({ id: z.string(), name: z.string() })),
+  identities: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      avatarAsset: avatarAsset.nullish(),
+    }),
+  ),
+});
+const conversationSnapshot = conversationMetadata.extend({
   messages: z.array(message).max(200),
 });
 
@@ -171,16 +237,63 @@ const readiness = z.enum([
   "network_ready",
   "recovery_required",
 ]);
-const diagnostics = z.object({
-  account: z.string(),
+const accountKey = z.string().regex(/^[0-9a-f]{64}$/);
+const account = z.object({
+  key: accountKey,
   readiness,
-  relays: z.number(),
-  connected: z.number(),
-  keyPackages: z.number(),
-  keyPhase: z.string().nullish(),
-  published: z.number().nullish(),
-  refreshOverdue: z.boolean(),
+  signedOut: z.boolean(),
+  unlinked: z.boolean(),
 });
+const onboardingStep = z.enum([
+  "profile",
+  "follows",
+  "relays",
+  "inbox_relays",
+  "single_device",
+  "key_package",
+]);
+const onboardingSnapshot = z.object({
+  ready: z.boolean(),
+  revision: z.string().regex(/^\d+$/),
+  epoch: z.string().nullish(),
+  proposal: z
+    .object({
+      read: z.array(z.string()),
+      write: z.array(z.string()),
+      inconclusive: z.boolean(),
+    })
+    .nullish(),
+  deviceNotice: z
+    .object({ discovery: z.string(), complete: z.boolean() })
+    .nullish(),
+  steps: z.array(
+    z.object({
+      step: onboardingStep,
+      actions: z.array(z.string()),
+      status: z.enum([
+        "pending",
+        "checking",
+        "passed",
+        "needs_input",
+        "retryable_failure",
+        "waiting_for_signer",
+        "skipped",
+      ]),
+    }),
+  ),
+});
+export type MarmotAccount = z.infer<typeof account>;
+export type MarmotOnboarding = z.infer<typeof onboardingSnapshot>;
+export type OnboardingAction =
+  | { action: "read" | "run" | "recover" | "cancel" | "cancelRepair" }
+  | {
+      action: "retry" | "skip" | "propose";
+      step: z.infer<typeof onboardingStep>;
+    }
+  | { action: "approve" | "acknowledge"; displayed: MarmotOnboarding };
+export type IdentityInput =
+  { name: string; about: string } | { importToken: string };
+
 const backupState = z.object({
   enabled: z.boolean(),
   thisDeviceWrites: z.boolean(),
@@ -204,7 +317,6 @@ const recoveryWords = z.object({
     z.number().positive().int(),
   ]),
 });
-export type MarmotDiagnostics = z.infer<typeof diagnostics>;
 export type MarmotBackupState = z.infer<typeof backupState>;
 export type MarmotRecoveryWords = z.infer<typeof recoveryWords>;
 type BackupAction =
@@ -214,8 +326,18 @@ const memberOutcome = z.object({
   status: z.string(),
   devices: z.number(),
 });
+const groupDisposition = z.enum([
+  "published",
+  "accepted_pending",
+  "completion_unknown",
+]);
+const groupInviteResult = z.object({
+  members: z.array(memberOutcome),
+  disposition: groupDisposition.nullish(),
+});
 const groupCreation = z.object({
   groupId: z.string().nullish(),
+  createdAt: z.number().int().nonnegative().nullish(),
   members: z.array(memberOutcome),
 });
 const searchResult = z.object({
@@ -232,51 +354,6 @@ const editHistory = z.object({
 });
 export type MarmotSearchResult = z.infer<typeof searchResult>;
 export type MarmotEditHistory = z.infer<typeof editHistory>;
-const groupDetails = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  inviter: z.string().nullish(),
-  image: z.string().nullish(),
-  epoch: z.string(),
-  mediaV2: z.boolean(),
-  mediaEndpoints: z.array(z.string()),
-  unrecoverable: z.boolean(),
-  convergenceParked: z.boolean(),
-  historyIncomplete: z.boolean(),
-  relayChangesOutstanding: z.number().nonnegative(),
-  relays: z.array(z.string()),
-  membership: z.string(),
-  pendingInvitation: z.boolean(),
-  kind: z.string().nullish(),
-  pendingLeave: z.boolean(),
-  leaveBlocked: z.boolean(),
-  createdAt: z.number().nullish(),
-  muted: z.boolean(),
-  archived: z.boolean(),
-  canEdit: z.boolean(),
-  lifecycle: z.string(),
-  commit: z.string().nullish(),
-  isAdmin: z.boolean(),
-  canInvite: z.boolean(),
-  canLeave: z.boolean(),
-  canCancelLeave: z.boolean(),
-  canDisband: z.boolean(),
-  canEnableDisbanding: z.boolean(),
-  members: z.array(
-    z.object({
-      id: z.string(),
-      npub: z.string(),
-      name: z.string().nullish(),
-      self: z.boolean(),
-      admin: z.boolean(),
-      devices: z.number(),
-      canPromote: z.boolean(),
-      canRemove: z.boolean(),
-      canDemote: z.boolean(),
-    }),
-  ),
-});
 
 export type MarmotChatRow = z.infer<typeof chatRow>;
 export type MarmotMessage = z.infer<typeof message>;
@@ -285,10 +362,13 @@ export type MarmotConversation = z.infer<typeof conversationSnapshot>;
 export type MarmotReadiness = z.infer<typeof readiness>;
 export type MarmotChatView = "chats" | "unread" | "archived" | "left";
 export type MarmotGroupDetails = z.infer<typeof groupDetails>;
+export type MarmotGroupInvitation = z.infer<typeof groupInvitation>;
+export type MarmotGroupDiagnostics = z.infer<typeof groupDiagnostics>;
+export type MarmotGroupDisposition = z.infer<typeof groupDisposition>;
 export type MarmotMemberOutcome = z.infer<typeof memberOutcome>;
-type MemberAction = "promote" | "demote" | "remove";
+type MemberAction = "promote" | "demote" | "remove" | "stepDown";
 type MembershipAction =
-  "leave" | "cancelLeave" | "forget" | "disband" | "enableDisbanding";
+  "leave" | "cancelLeave" | "deleteLocal" | "disband" | "enableDisbanding";
 export type MarmotUpload = {
   path: string;
   name: string;
@@ -342,7 +422,50 @@ export type MarmotDeviceState = z.infer<typeof deviceState>;
 export type MarmotDeviceAction =
   "start" | "match" | "cancel" | "link" | "decline" | "remove";
 
+const optionalText = z
+  .string()
+  .nullish()
+  .transform((value) => value ?? undefined);
+const publicProfile = z.object({
+  key: accountKey,
+  name: optionalText,
+  displayName: optionalText,
+  about: optionalText,
+  picture: optionalText,
+  banner: optionalText,
+  nip05: optionalText,
+  lud16: optionalText,
+  website: optionalText,
+  bot: z.boolean(),
+});
+export type MarmotPublicProfile = z.output<typeof publicProfile>;
+export type MarmotProfileEdits = Partial<
+  Record<
+    | "display_name"
+    | "name"
+    | "about"
+    | "picture"
+    | "banner"
+    | "nip05"
+    | "lud16"
+    | "website",
+    string
+  >
+>;
+
+const directoryResult = z.object({
+  key: accountKey,
+  profile: publicProfile.nullish(),
+});
+const blockListSnapshot = z.object({
+  revision: z.string().regex(/^\d+$/),
+  keys: accountKey.array(),
+});
+
 type Events = {
+  blockedUsers: (event: { id: string; rows: unknown }) => void;
+  relayLiveness: (event: { id: string; rows: unknown }) => void;
+  directorySearchResults: (event: { id: string; rows: unknown }) => void;
   attachmentProgress: (event: {
     transfer: string;
     received: number;
@@ -362,20 +485,86 @@ type Bridge = {
     name: Event,
     listener: Events[Event],
   ): { remove(): void };
-  openAccount(
-    key: string,
-    secret: string,
-    nsec: string,
+  listAccounts(
+    general: readonly string[],
+    discovery: readonly string[],
+    mediaOrigin: string | null,
+  ): Promise<unknown>;
+  prepareIdentityImport(
+    token: string,
+    input: string,
+    password: string,
+  ): Promise<string>;
+  discardIdentityImport(token: string): Promise<void>;
+  installAccount(
+    token: string | null,
+    name: string | null,
+    about: string | null,
     general: readonly string[],
     inbox: readonly string[],
     discovery: readonly string[],
-    mediaOrigin: string | null,
-    generated: boolean,
   ): Promise<unknown>;
-  closeAccount(): Promise<void>;
+  accountOnboarding(
+    key: string,
+    action: string,
+    step: string | null,
+    revision: string | null,
+    epoch: string | null,
+  ): Promise<unknown>;
+  selectSigner(key: string): Promise<unknown>;
+  accountNetworkReady(key: string): Promise<boolean>;
+  requestAvatarAssets(targets: string[]): Promise<unknown>;
+  readAvatarAssets(references: string[]): Promise<unknown>;
+  clearMarmotAvatarCache(owner: string): Promise<void>;
+  readProfiles(owner: string, keys: string[]): Promise<unknown>;
+  refreshPublicProfile(
+    owner: string,
+    key: string,
+    relays: readonly string[],
+  ): Promise<void>;
+  updatePublicProfile(owner: string, fields: MarmotProfileEdits): Promise<void>;
+  cachedDirectorySearch(owner: string, query: string): Promise<unknown>;
+  normalizeDirectoryIdentity(
+    owner: string,
+    reference: string,
+  ): Promise<unknown>;
+  prepareObservation(id: string, accountScoped: boolean): boolean;
+  searchDirectory(owner: string, id: string, query: string): Promise<void>;
+  cancelObservation(id: string): void;
+  removeAccount(key: string): Promise<void>;
+  signInAccount(key: string): Promise<void>;
+  signOutAccount(key: string): Promise<void>;
+  resumeAccountSetup(): Promise<void>;
+  openAccount(
+    key: string,
+    general: readonly string[],
+    discovery: readonly string[],
+    mediaOrigin: string | null,
+  ): Promise<unknown>;
+  signNostrEvent(key: string, event: string): Promise<string>;
+  nostrCipher(
+    key: string,
+    peer: string,
+    value: string,
+    nip44: boolean,
+    encrypt: boolean,
+  ): Promise<string>;
+  exportIdentity(key: string, password: string | null): Promise<string>;
+  shutdownRuntime(): Promise<void>;
+  closeAccount(pauseMessaging: boolean): Promise<void>;
   catchUp(): Promise<void>;
-  diagnostics(): Promise<unknown>;
-  rotateKeys(): Promise<void>;
+  notifyConnectivityRestored(): Promise<void>;
+  accountRelayLists(key: string): Promise<unknown>;
+  refreshAccountRelayLists(key: string, urls: readonly string[]): Promise<void>;
+  classifyRelays(key: string, urls: readonly string[]): Promise<unknown>;
+  setAccountRelays(
+    key: string,
+    inbox: boolean,
+    urls: readonly string[],
+    bootstrap: readonly string[],
+  ): Promise<void>;
+  reconnectMarmotRelay(url: string): Promise<void>;
+  watchRelayLiveness(key: string, id: string): Promise<void>;
   backupState(): Promise<unknown>;
   beginBackup(): Promise<unknown>;
   backupAction(action: BackupAction, words: string[]): Promise<void>;
@@ -388,12 +577,13 @@ type Bridge = {
     search: string | null,
   ): Promise<unknown>;
   openAttention(id: string): Promise<unknown>;
-  openGroupState(id: string, group: string): Promise<unknown>;
+  openGroupState(id: string, group: string, roster: boolean): Promise<unknown>;
   openGroupCall(id: string, group: string): Promise<unknown>;
   openConversation(
     id: string,
     group: string,
     target: string | null,
+    speculative: boolean,
   ): Promise<unknown>;
   observeWindow(id: string): Promise<void>;
   closeWindow(id: string): Promise<void>;
@@ -417,7 +607,7 @@ type Bridge = {
     target: string,
   ): Promise<unknown>;
   startDirect(peer: string): Promise<string>;
-  checkInvitee(peer: string): Promise<void>;
+  prewarmInvitees(members: string[]): Promise<void>;
   createGroup(
     name: string,
     description: string | null,
@@ -425,14 +615,13 @@ type Bridge = {
     image: string | null,
   ): Promise<unknown>;
   respondToInvitation(group: string, accept: boolean): Promise<void>;
-  groupDetails(group: string): Promise<unknown>;
-  groupImage(
-    group: string,
-    hash: string,
-    fetch: boolean,
-  ): Promise<string | null>;
-  updateGroupImage(group: string, path: string | null): Promise<void>;
-  updateGroupMedia(group: string, origins: string[]): Promise<void>;
+  groupAccess(group: string, includeMembers: boolean): Promise<unknown>;
+  groupInvitation(group: string, preview: boolean): Promise<unknown>;
+  groupDiagnostics(group: string): Promise<unknown>;
+  groupMemberIds(groups: string[]): Promise<unknown>;
+  viewGroupImage(group: string, hash: string): Promise<string>;
+  updateGroupImage(group: string, path: string | null): Promise<unknown>;
+  updateGroupMedia(group: string, origins: string[]): Promise<unknown>;
   searchConversation(
     group: string,
     text: string | null,
@@ -448,14 +637,15 @@ type Bridge = {
     group: string,
     name: string | null,
     description: string | null,
-  ): Promise<void>;
+  ): Promise<unknown>;
+  respondToRejoin(welcome: string, token: string | null): Promise<void>;
   inviteMembers(group: string, members: string[]): Promise<unknown>;
   changeMember(
     group: string,
     member: string,
     action: MemberAction,
-  ): Promise<void>;
-  changeMembership(group: string, action: MembershipAction): Promise<void>;
+  ): Promise<unknown>;
+  changeMembership(group: string, action: MembershipAction): Promise<unknown>;
   sendText(
     group: string,
     text: string,
@@ -486,12 +676,6 @@ type Bridge = {
     reply: string | null,
   ): Promise<unknown>;
   cancelUpload(token: string): Promise<boolean>;
-  attachmentStatus(
-    group: string,
-    id: string,
-    source: string,
-    index: number,
-  ): Promise<boolean>;
   audioMetadata(path: string): Promise<unknown>;
   inspectMediaFile(
     path: string,
@@ -548,6 +732,7 @@ type Bridge = {
   ): Promise<unknown>;
   editMessage(group: string, id: string, content: string): Promise<void>;
   deleteMessage(group: string, id: string): Promise<void>;
+  discardFailedSend(group: string, id: string): Promise<unknown>;
   reportMessage(group: string, id: string, spam: boolean): Promise<void>;
   reactToMessage(
     group: string,
@@ -556,11 +741,11 @@ type Bridge = {
     remove: boolean,
   ): Promise<void>;
   markRead(group: string, id: string): Promise<void>;
-  markUnread(group: string): Promise<void>;
   setArchived(group: string, archived: boolean): Promise<void>;
   setPinned(group: string, pinned: boolean): Promise<void>;
   setMuted(group: string, muted: boolean): Promise<void>;
-  setBlocked(key: string, blocked: boolean): Promise<void>;
+  watchBlockedUsers(owner: string, id: string): Promise<void>;
+  setBlocked(owner: string, key: string, blocked: boolean): Promise<unknown>;
   retryConversation(group: string): Promise<void>;
   createPoll(
     group: string,
@@ -595,37 +780,259 @@ export type MarmotWindow<S, Direction> = {
 
 const native = () => requireNativeModule<Bridge>("BoopMarmot");
 
-export async function openMarmotAccount(
-  key: string,
-  secret: string,
-  relays: MarmotRelays,
-  mediaOrigin: string | null,
-  generated: boolean,
-) {
-  const bytes = hexToBytes(secret);
-  try {
-    if (getPublicKey(bytes) !== key) throw new Error("IdentityMismatch");
-    return readiness.parse(
-      await native().openAccount(
-        key,
-        secret,
-        nip19.nsecEncode(bytes),
-        relays.general,
-        relays.inbox,
-        relays.discovery,
-        mediaOrigin,
-        generated,
-      ),
+export const marmotDirectory = {
+  async read(owner: string, keys: string[]) {
+    return publicProfile
+      .array()
+      .parse(await native().readProfiles(owner, keys));
+  },
+  refresh(owner: string, key: string, relays: readonly string[]) {
+    return native().refreshPublicProfile(owner, key, relays);
+  },
+  update(owner: string, edits: MarmotProfileEdits) {
+    return native().updatePublicProfile(owner, edits);
+  },
+  async normalize(owner: string, reference: string) {
+    return accountKey
+      .nullish()
+      .parse(await native().normalizeDirectoryIdentity(owner, reference));
+  },
+  async searchCached(owner: string, query: string) {
+    return directoryResult
+      .array()
+      .parse(await native().cachedDirectorySearch(owner, query));
+  },
+  async search(
+    owner: string,
+    id: string,
+    query: string,
+    signal: AbortSignal,
+    receive: (rows: z.infer<typeof directoryResult>[]) => void,
+  ) {
+    if (signal.aborted) return;
+    const { close, completed } = observeRows(
+      "directorySearchResults",
+      id,
+      (bridge) => bridge.searchDirectory(owner, id, query),
+      directoryResult.array(),
+      receive,
     );
-  } finally {
-    bytes.fill(0);
+    signal.addEventListener("abort", close, { once: true });
+    if (signal.aborted) close();
+    try {
+      await completed;
+    } finally {
+      signal.removeEventListener("abort", close);
+    }
+  },
+};
+
+export const marmotRelays = {
+  refresh: (key: string, urls: readonly string[]) =>
+    native().refreshAccountRelayLists(key, urls),
+  async read(key: string) {
+    return accountRelayLists.parse(await native().accountRelayLists(key));
+  },
+  async classify(key: string, urls: readonly string[]) {
+    return z
+      .array(z.enum(["allowed", "retired", "unsafe", "invalid"]))
+      .parse(await native().classifyRelays(key, urls));
+  },
+  set(
+    key: string,
+    list: "general" | "inbox",
+    urls: readonly string[],
+    bootstrap: readonly string[],
+  ) {
+    return native().setAccountRelays(key, list === "inbox", urls, bootstrap);
+  },
+  reconnect: (url: string) => native().reconnectMarmotRelay(url),
+  observe: (
+    key: string,
+    receive: (rows: MarmotRelayLiveness[]) => void,
+    ended: () => void,
+  ) =>
+    observeAccount("relayLiveness", key, relayLiveness.array(), receive, ended),
+};
+
+export const marmotBlocks = {
+  observe: (
+    owner: string,
+    receive: (snapshot: z.infer<typeof blockListSnapshot>) => void,
+    ended: (error: unknown) => void,
+  ) => observeAccount("blockedUsers", owner, blockListSnapshot, receive, ended),
+  async set(owner: string, key: string, blocked: boolean) {
+    return blockListSnapshot.parse(
+      await native().setBlocked(owner, key, blocked),
+    );
+  },
+};
+
+type ObservationEvent =
+  "directorySearchResults" | "relayLiveness" | "blockedUsers";
+
+function observeRows<T>(
+  event: ObservationEvent,
+  id: string,
+  watch: (bridge: Bridge) => Promise<void>,
+  schema: z.ZodType<T>,
+  receive: (rows: T) => void,
+) {
+  const bridge = native();
+  if (!bridge.prepareObservation(id, event === "blockedUsers"))
+    throw new Error("AccountBusy");
+  let closed = false;
+  let listener: ReturnType<Bridge["addListener"]> | undefined;
+  let fail: (error: unknown) => void = () => {};
+  function close() {
+    if (closed) return;
+    closed = true;
+    listener?.remove();
+    bridge.cancelObservation(id);
+  }
+  const invalid = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  try {
+    listener = bridge.addListener(event, (update) => {
+      if (closed || update.id !== id) return;
+      const parsed = schema.safeParse(update.rows);
+      if (parsed.success) receive(parsed.data);
+      else fail(parsed.error);
+    });
+    const completed = Promise.race([watch(bridge), invalid]).finally(close);
+    return { close, completed };
+  } catch (error) {
+    close();
+    throw error;
   }
 }
+
+function observeAccount<T>(
+  event: "relayLiveness" | "blockedUsers",
+  owner: string,
+  schema: z.ZodType<T>,
+  receive: (rows: T) => void,
+  ended: (error: unknown) => void,
+) {
+  const id = randomUUID();
+  const { close, completed } = observeRows(
+    event,
+    id,
+    (bridge) =>
+      event === "relayLiveness"
+        ? bridge.watchRelayLiveness(owner, id)
+        : bridge.watchBlockedUsers(owner, id),
+    schema,
+    receive,
+  );
+  let cancelled = false;
+  void completed.then(
+    () => {
+      if (!cancelled) ended(undefined);
+    },
+    (error: unknown) => {
+      if (!cancelled) ended(error);
+    },
+  );
+  return () => {
+    cancelled = true;
+    close();
+  };
+}
+
+export const marmotAccounts = {
+  async prepareImport(token: string, input: string, password: string) {
+    return accountKey.parse(
+      await native().prepareIdentityImport(token, input, password),
+    );
+  },
+  discardImport: (token: string) => native().discardIdentityImport(token),
+  async list({ general, discovery }: MarmotRelays, mediaOrigin: string | null) {
+    return account
+      .array()
+      .parse(await native().listAccounts(general, discovery, mediaOrigin));
+  },
+  async install(
+    input: IdentityInput,
+    { general, inbox, discovery }: MarmotRelays,
+  ) {
+    const key =
+      "importToken" in input
+        ? await native().installAccount(
+            input.importToken,
+            null,
+            null,
+            general,
+            inbox,
+            discovery,
+          )
+        : await native().installAccount(
+            null,
+            input.name,
+            input.about,
+            general,
+            inbox,
+            discovery,
+          );
+    return accountKey.parse(key);
+  },
+  async open(
+    key: string,
+    { general, discovery }: Omit<MarmotRelays, "inbox">,
+    mediaOrigin: string | null,
+  ) {
+    return readiness.parse(
+      await native().openAccount(key, general, discovery, mediaOrigin),
+    );
+  },
+  async onboarding(key: string, command: OnboardingAction) {
+    const displayed = "displayed" in command ? command.displayed : undefined;
+    return (
+      onboardingSnapshot
+        .nullish()
+        .parse(
+          await native().accountOnboarding(
+            key,
+            command.action,
+            "step" in command ? command.step : null,
+            displayed?.revision ?? null,
+            displayed?.epoch ?? null,
+          ),
+        ) ?? null
+    );
+  },
+  async selectSigner(key: string) {
+    return z
+      .object({ name: z.string().nullish(), about: z.string().nullish() })
+      .parse(await native().selectSigner(key));
+  },
+  networkReady: (key: string) => native().accountNetworkReady(key),
+  remove: (key: string) => native().removeAccount(key),
+  signIn: (key: string) => native().signInAccount(key),
+  signOut: (key: string) => native().signOutAccount(key),
+  resumeSetup: () => native().resumeAccountSetup(),
+  shutdown: () => native().shutdownRuntime(),
+  export: (key: string, password: string | null) =>
+    native().exportIdentity(key, password),
+  sign: (key: string, event: string) => native().signNostrEvent(key, event),
+  cipher: (
+    key: string,
+    peer: string,
+    value: string,
+    nip44: boolean,
+    encrypt: boolean,
+  ) => native().nostrCipher(key, peer, value, nip44, encrypt),
+};
 
 async function openWindow<S extends Revision, Direction extends string>(
   open: (bridge: Bridge, id: string) => Promise<unknown>,
   schema: z.ZodType<S>,
+  applyRows?: (current: S, delta: WindowDelta) => S,
+  profileConversationOpen = false,
+  signal?: AbortSignal,
 ): Promise<MarmotWindow<S, Direction>> {
+  if (signal?.aborted) throw new Error("WindowClosed");
   const bridge = native();
   const id = randomUUID();
   const listeners = new Set<() => void>();
@@ -637,7 +1044,7 @@ async function openWindow<S extends Revision, Direction extends string>(
     if (event.id !== id) return;
     try {
       if (event.delta !== undefined) applyDelta(event.delta);
-      else install(event.snapshot);
+      else install(schema.parse(event.snapshot));
     } catch {
       terminate("InvalidWindowProjection");
     }
@@ -649,9 +1056,8 @@ async function openWindow<S extends Revision, Direction extends string>(
   function emit() {
     for (const listener of listeners) listener();
   }
-  function install(value: unknown) {
+  function install(next: S) {
     if (state.status !== "ready") return;
-    const next = schema.parse(value);
     const current = state.snapshot;
     if (next.generation !== current.generation) {
       terminate("WindowGenerationChanged");
@@ -671,24 +1077,13 @@ async function openWindow<S extends Revision, Direction extends string>(
     }
     if (BigInt(delta.metadata.sequence) <= BigInt(current.sequence)) return;
     if (delta.base !== current.sequence) {
-      wantedSequence = BigInt(delta.metadata.sequence);
+      const sequence = BigInt(delta.metadata.sequence);
+      if (sequence > wantedSequence) wantedSequence = sequence;
       refresh();
       return;
     }
-    const prior =
-      delta.field === "rows" && "rows" in current
-        ? current.rows
-        : delta.field === "messages" && "messages" in current
-          ? current.messages
-          : undefined;
-    const rows = z.array(identifiedRow).max(200).parse(prior);
-    const indexed = new Map(
-      [...rows, ...delta.changed].map((row) => [row.id, row]),
-    );
-    install({
-      ...delta.metadata,
-      [delta.field]: delta.order.map((id) => indexed.get(id)),
-    });
+    if (!applyRows) throw new Error("InvalidWindowProjection");
+    install(applyRows(current, delta));
   }
   function refresh() {
     if (resyncing || state.status !== "ready") return;
@@ -696,7 +1091,7 @@ async function openWindow<S extends Revision, Direction extends string>(
     void bridge
       .windowSnapshot(id)
       .then((next) => {
-        install(next);
+        install(schema.parse(next));
         if (
           state.status === "ready" &&
           BigInt(state.snapshot.sequence) < wantedSequence
@@ -725,12 +1120,34 @@ async function openWindow<S extends Revision, Direction extends string>(
   ) {
     if (state.status !== "ready") return;
     const { generation, sequence } = state.snapshot;
-    install(await run(id, generation, sequence));
+    install(schema.parse(await run(id, generation, sequence)));
   }
+  const openStarted = profileConversationOpen ? performance.now() : 0;
   try {
-    state = { status: "ready", snapshot: schema.parse(await open(bridge, id)) };
+    const raw = await open(bridge, id);
+    if (signal?.aborted) throw new Error("WindowClosed");
+    const nativeCompleted = profileConversationOpen ? performance.now() : 0;
+    const decodeStarted = profileConversationOpen ? performance.now() : 0;
+    const snapshot = schema.parse(raw);
+    const decoded = profileConversationOpen ? performance.now() : 0;
+    state = { status: "ready", snapshot };
     await bridge.observeWindow(id);
+    if (signal?.aborted) throw new Error("WindowClosed");
+    if (profileConversationOpen && __DEV__)
+      console.info("[marmot window timing]", {
+        phase: "open",
+        nativeMs: Math.round(nativeCompleted - openStarted),
+        decodeMs: Math.round(decoded - decodeStarted),
+        observeMs: Math.round(performance.now() - decoded),
+        ok: true,
+      });
   } catch (error) {
+    if (profileConversationOpen && __DEV__)
+      console.info("[marmot window timing]", {
+        phase: "open",
+        elapsedMs: Math.round(performance.now() - openStarted),
+        ok: false,
+      });
     await close().catch(() => undefined);
     throw error;
   }
@@ -755,11 +1172,25 @@ async function openWindow<S extends Revision, Direction extends string>(
   };
 }
 
+const avatarRead = z.object({
+  reference: z.string(),
+  revision: windowRevision.shape.sequence,
+  availability: avatarAsset.shape.availability,
+  deferred: z.boolean(),
+  uri: z.string().startsWith("data:image/").nullish(),
+});
 export const marmot = {
-  async diagnostics() {
-    return diagnostics.parse(await native().diagnostics());
+  async requestAvatarAssets(targets: string[]) {
+    return avatarAsset
+      .array()
+      .parse(await native().requestAvatarAssets(targets));
   },
-  rotateKeys: () => native().rotateKeys(),
+  async readAvatarAssets(references: string[]) {
+    return avatarRead
+      .array()
+      .parse(await native().readAvatarAssets(references));
+  },
+  clearAvatarCache: (owner: string) => native().clearMarmotAvatarCache(owner),
   async backupState() {
     return backupState.parse(await native().backupState());
   },
@@ -771,8 +1202,10 @@ export const marmot = {
   backupConditions: (wifi: boolean, charging: boolean) =>
     native().backupConditions(wifi, charging),
   backupNow: () => native().backupNow(),
-  closeAccount: () => native().closeAccount(),
+  closeAccount: (pauseMessaging = false) =>
+    native().closeAccount(pauseMessaging),
   catchUp: () => native().catchUp(),
+  notifyConnectivityRestored: () => native().notifyConnectivityRestored(),
   openChatList: (
     view: MarmotChatView,
     options?: { invitations?: boolean; search?: string },
@@ -786,15 +1219,27 @@ export const marmot = {
           options?.search?.trim().slice(0, 128) || null,
         ),
       chatListSnapshot,
+      (current, delta) => {
+        if (delta.field !== "rows") throw new Error("InvalidWindowProjection");
+        return {
+          ...chatListMetadata.parse(delta.metadata),
+          rows: mergeRows(current.rows, delta, chatRow),
+        };
+      },
     ),
   openAttention: () =>
     openWindow<z.infer<typeof attentionSnapshot>, never>(
       (bridge, id) => bridge.openAttention(id),
       attentionSnapshot,
     ),
+  openGroupRoster: (group: string) =>
+    openWindow<z.infer<typeof groupRosterSnapshot>, never>(
+      (bridge, id) => bridge.openGroupState(id, group, true),
+      groupRosterSnapshot,
+    ),
   openGroupState: (group: string) =>
     openWindow<z.infer<typeof groupStateSnapshot>, never>(
-      (bridge, id) => bridge.openGroupState(id, group),
+      (bridge, id) => bridge.openGroupState(id, group, false),
       groupStateSnapshot,
     ),
   openGroupCall: (group: string) =>
@@ -802,13 +1247,55 @@ export const marmot = {
       (bridge, id) => bridge.openGroupCall(id, group),
       groupCallSnapshot,
     ),
-  openConversation: (group: string, target?: string) =>
-    openWindow<MarmotConversation, "older" | "newer">(
-      (bridge, id) => bridge.openConversation(id, group, target ?? null),
+  openConversation: (
+    group: string,
+    options: {
+      target?: string;
+      speculative?: boolean;
+      signal?: AbortSignal;
+    } = {},
+  ) =>
+    openWindow<MarmotConversation, "older" | "newer" | "latest">(
+      (bridge, id) =>
+        bridge.openConversation(
+          id,
+          group,
+          options.target ?? null,
+          options.speculative ?? false,
+        ),
       conversationSnapshot,
+      (current, delta) => {
+        if (delta.field !== "messages")
+          throw new Error("InvalidWindowProjection");
+        const metadata = conversationMetadata.parse(delta.metadata);
+        const identities = current.identities;
+        if (
+          metadata.identities.length === identities.length &&
+          metadata.identities.every((value, index) => {
+            const prior = identities[index];
+            return (
+              prior &&
+              prior.id === value.id &&
+              prior.name === value.name &&
+              prior.avatarAsset?.target === value.avatarAsset?.target &&
+              prior.avatarAsset?.reference === value.avatarAsset?.reference &&
+              prior.avatarAsset?.revision === value.avatarAsset?.revision &&
+              prior.avatarAsset?.availability ===
+                value.avatarAsset?.availability
+            );
+          })
+        )
+          metadata.identities = identities;
+        return {
+          ...metadata,
+          messages: mergeRows(current.messages, delta, message),
+        };
+      },
+      true,
+      options.signal,
     ),
   startDirect: (peer: string) => native().startDirect(peer),
-  checkInvitee: (peer: string) => native().checkInvitee(peer),
+  prewarmInvitees: (members: string[]) => native().prewarmInvitees(members),
   async createGroup(
     name: string,
     description: string | null,
@@ -821,11 +1308,24 @@ export const marmot = {
   },
   respondToInvitation: (group: string, accept: boolean) =>
     native().respondToInvitation(group, accept),
-  async groupDetails(group: string) {
-    return groupDetails.parse(await native().groupDetails(group));
+  async groupAccess(group: string, includeMembers = false) {
+    return groupAccess.parse(await native().groupAccess(group, includeMembers));
   },
-  groupImage: (group: string, hash: string, fetch = false) =>
-    native().groupImage(group, hash, fetch),
+  async groupInvitation(group: string, preview = false) {
+    return groupInvitation.parse(
+      await native().groupInvitation(group, preview),
+    );
+  },
+  async groupDiagnostics(group: string) {
+    return groupDiagnostics.parse(await native().groupDiagnostics(group));
+  },
+  async groupMemberIds(groups: string[]) {
+    return z
+      .record(z.string(), z.array(z.string()))
+      .parse(await native().groupMemberIds(groups));
+  },
+  viewGroupImage: (group: string, hash: string) =>
+    native().viewGroupImage(group, hash),
   async searchConversation(group: string, text: string | null, media: boolean) {
     return z
       .array(searchResult)
@@ -846,24 +1346,40 @@ export const marmot = {
       ),
     );
   },
-  updateGroupImage: (group: string, path: string | null) =>
-    native().updateGroupImage(group, path),
-  updateGroupMedia: (group: string, origins: string[]) =>
-    native().updateGroupMedia(group, origins),
-  updateGroup: (
+  async updateGroupImage(group: string, path: string | null) {
+    return groupDisposition.parse(await native().updateGroupImage(group, path));
+  },
+  async updateGroupMedia(group: string, origins: string[]) {
+    return groupDisposition.parse(
+      await native().updateGroupMedia(group, origins),
+    );
+  },
+  async updateGroup(
     group: string,
     name: string | null,
     description: string | null,
-  ) => native().updateGroup(group, name, description),
-  async inviteMembers(group: string, members: string[]) {
-    return z
-      .array(memberOutcome)
-      .parse(await native().inviteMembers(group, members));
+  ) {
+    return groupDisposition.parse(
+      await native().updateGroup(group, name, description),
+    );
   },
-  changeMember: (group: string, member: string, action: MemberAction) =>
-    native().changeMember(group, member, action),
-  changeMembership: (group: string, action: MembershipAction) =>
-    native().changeMembership(group, action),
+  respondToRejoin: (welcome: string, token: string | null) =>
+    native().respondToRejoin(welcome, token),
+  async inviteMembers(group: string, members: string[]) {
+    return groupInviteResult.parse(
+      await native().inviteMembers(group, members),
+    );
+  },
+  async changeMember(group: string, member: string, action: MemberAction) {
+    return groupDisposition.parse(
+      await native().changeMember(group, member, action),
+    );
+  },
+  async changeMembership(group: string, action: MembershipAction) {
+    return groupDisposition
+      .nullish()
+      .parse(await native().changeMembership(group, action));
+  },
   sendText: (
     group: string,
     text: string,
@@ -943,12 +1459,6 @@ export const marmot = {
     }
   },
   discardMediaDraft: (group: string) => native().discardMediaDraft(group),
-  attachmentStatus: (
-    group: string,
-    id: string,
-    source: string,
-    index: number,
-  ) => native().attachmentStatus(group, id, source, index),
   audioMetadata: async (path: string) =>
     z
       .object({
@@ -1051,6 +1561,11 @@ export const marmot = {
     native().recentVoiceNotes(sender, since, onlyOutgoing),
   editMessage: (group: string, id: string, content: string) =>
     native().editMessage(group, id, content),
+  async discardFailedSend(group: string, id: string) {
+    return z
+      .enum(["discarded", "still_sending", "not_failed_send"])
+      .parse(await native().discardFailedSend(group, id));
+  },
   deleteMessage: (group: string, id: string) =>
     native().deleteMessage(group, id),
   reportMessage: (group: string, id: string, reason: "spam" | "other") =>
@@ -1058,14 +1573,11 @@ export const marmot = {
   reactToMessage: (group: string, id: string, emoji: string, remove: boolean) =>
     native().reactToMessage(group, id, emoji, remove),
   markRead: (group: string, id: string) => native().markRead(group, id),
-  markUnread: (group: string) => native().markUnread(group),
   setArchived: (group: string, archived: boolean) =>
     native().setArchived(group, archived),
   setPinned: (group: string, pinned: boolean) =>
     native().setPinned(group, pinned),
   setMuted: (group: string, muted: boolean) => native().setMuted(group, muted),
-  setBlocked: (key: string, blocked: boolean) =>
-    native().setBlocked(key, blocked),
   retryConversation: (group: string) => native().retryConversation(group),
   createPoll: (
     group: string,

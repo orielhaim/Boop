@@ -1,12 +1,3 @@
-CREATE TABLE `avatar_cache` (
-	`public_key` text PRIMARY KEY NOT NULL,
-	`source_url` text NOT NULL,
-	`filename` text NOT NULL,
-	`size` integer NOT NULL,
-	`fetched_at` integer NOT NULL,
-	`accessed_at` integer NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE `call_history` (
 	`id` text PRIMARY KEY NOT NULL,
 	`peer_key` text NOT NULL,
@@ -39,28 +30,10 @@ CREATE TABLE `link_preview_cache` (
 	`expires_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE `nostr_profiles` (
-	`public_key` text PRIMARY KEY NOT NULL,
-	`event_id` text NOT NULL,
-	`created_at` integer NOT NULL,
-	`fields` text NOT NULL,
-	`picture` text,
-	`name` text
-);
---> statement-breakpoint
 CREATE TABLE `peer_permissions` (
 	`public_key` text PRIMARY KEY NOT NULL,
-	`blocked_at` integer,
 	`initiated` integer DEFAULT false NOT NULL,
 	`approved` integer DEFAULT false NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE `relay_settings` (
-	`url` text PRIMARY KEY NOT NULL,
-	`enabled` integer DEFAULT true NOT NULL,
-	`general` integer DEFAULT true NOT NULL,
-	`inbox` integer DEFAULT true NOT NULL,
-	`discovery` integer DEFAULT false NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE `settings` (
@@ -69,4 +42,4 @@ CREATE TABLE `settings` (
 );
 
 --> statement-breakpoint
-PRAGMA user_version = 2;
+PRAGMA user_version = 4;

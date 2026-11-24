@@ -1,3 +1,4 @@
+import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { getPowerStateAsync, BatteryState } from "expo-battery";
 import { getNetworkStateAsync, NetworkStateType } from "expo-network";
 import { Linking, Platform } from "react-native";
@@ -20,13 +21,13 @@ import {
 export function speechSource(
   group: string,
   row: MarmotMessage,
-  item: MarmotMessage["attachments"][number],
+  item: ReturnType<typeof acceptedAttachments>[number],
   account: string,
 ): SpeechSource | undefined {
   if (
     !row.sourceId ||
     row.deleted ||
-    row.invalidated ||
+    row.invalidationStatus ||
     !item.voice ||
     !item.type.startsWith("audio/")
   )
@@ -101,13 +102,7 @@ export function createVoiceTranscription({
     for (const group of scoped) for (const listener of group ?? []) listener();
   };
   const access = () =>
-    mounted &&
-    !accountClosing &&
-    !clearing &&
-    active() &&
-    available() &&
-    preference(db, "identity.publicKey") === account &&
-    !preference(db, "identity.pendingSwitch");
+    mounted && !accountClosing && !clearing && active() && available();
   const canRun = (automatic: boolean) =>
     !recording &&
     !audioBusy() &&
@@ -134,14 +129,16 @@ export function createVoiceTranscription({
       bytes > 100 * 1024 * 1024
     )
       return false;
-    const details = await marmot.groupDetails(group);
+    const details = await marmot.groupAccess(group, true);
     return (
+      !blocked(source.sender) &&
       details.membership === "member" &&
       !details.pendingInvitation &&
       !details.pendingLeave &&
       !details.unrecoverable &&
-      (details.kind !== "direct" ||
-        details.members.every((member) => !blocked(member.id)))
+      (details.kind === "group" ||
+        (details.kind === "direct" &&
+          details.members.every((member) => !blocked(member))))
     );
   };
   const encryption = createTranscriptEncryption(account);

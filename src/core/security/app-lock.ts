@@ -1,3 +1,6 @@
+import { immer } from "zustand/middleware/immer";
+import { createStore } from "zustand/vanilla";
+
 export type AuthFailure =
   | "enrollDevice"
   | "authCancelled"
@@ -14,6 +17,16 @@ export class AppAuthenticationError extends Error {
 export const lockTimeouts = [0, 60_000, 300_000, 1_800_000] as const;
 export type LockTimeout = (typeof lockTimeouts)[number];
 const lockPreference = "security.appLock";
+
+type LockState = {
+  enabled: boolean;
+  timeout: LockTimeout;
+  locked: boolean;
+  hasOpened: boolean;
+  active: boolean;
+  authenticating: boolean;
+  error: AuthFailure | null;
+};
 
 export function createAppLock({
   read,
@@ -33,31 +46,34 @@ export function createAppLock({
   const saved = read(lockPreference);
   const timeout = lockTimeouts.find((value) => String(value) === saved) ?? 0;
   const enabled = saved !== null && saved !== "off";
-  let state = {
-    enabled,
-    timeout,
-    locked: enabled,
-    hasOpened: !enabled,
-    active: startActive,
-    authenticating: false,
-    error: null as AuthFailure | null,
-  };
+  const store = createStore<LockState>()(
+    immer(() => ({
+      enabled,
+      timeout,
+      locked: enabled,
+      hasOpened: !enabled,
+      active: startActive,
+      authenticating: false,
+      error: null,
+    })),
+  );
+  const get = store.getState;
   let awayAt: number | null = startActive ? null : now();
-  const listeners = new Set<() => void>();
   let protectedWindow = false;
   let autoPrompted = false;
   let returnBy: number | null = null;
 
-  function update(patch: Partial<typeof state>) {
-    state = { ...state, ...patch };
-    if (state.active && !state.locked) state.hasOpened = true;
-    for (const listener of listeners) listener();
+  function update(patch: Partial<LockState>) {
+    store.setState((state) => {
+      Object.assign(state, patch);
+      if (state.active && !state.locked) state.hasOpened = true;
+    });
   }
 
   async function change(operation: "enable" | "disable" | "unlock") {
-    if (state.authenticating || !state.active) return;
-    if (operation === "enable" ? state.enabled : !state.enabled) return;
-    if ((operation === "unlock") !== state.locked) return;
+    if (get().authenticating || !get().active) return;
+    if (operation === "enable" ? get().enabled : !get().enabled) return;
+    if ((operation === "unlock") !== get().locked) return;
     if (operation === "unlock") autoPrompted = true;
     update({ authenticating: true, error: null });
     try {
@@ -68,24 +84,24 @@ export function createAppLock({
       }
       if (operation !== "unlock") {
         const enable = operation === "enable";
-        write(lockPreference, enable ? String(state.timeout) : "off");
+        write(lockPreference, enable ? String(get().timeout) : "off");
         update({ enabled: enable });
         if (!enable && protectedWindow) {
           await protect(false);
           protectedWindow = false;
         }
       }
-      if (!state.active && state.enabled) returnBy = now() + 2_000;
+      if (!get().active && get().enabled) returnBy = now() + 2_000;
       autoPrompted = false;
       update({ locked: false });
     } catch (error) {
-      if (state.enabled && !state.active && awayAt === null) awayAt = now();
+      if (get().enabled && !get().active && awayAt === null) awayAt = now();
       update({
         error:
           error instanceof AppAuthenticationError ? error.code : "authFailed",
       });
     } finally {
-      if (state.active) awayAt = null;
+      if (get().active) awayAt = null;
       // The native result can resolve before the foreground event. In either order,
       // content remains covered until active and the successful prompt is not a departure.
       update({ authenticating: false });
@@ -93,56 +109,51 @@ export function createAppLock({
   }
 
   return {
-    getState: () => state,
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    getState: get,
+    subscribe: store.subscribe,
     setActive(active: boolean) {
-      if (active === state.active) return;
-      let locked = state.locked;
+      if (active === get().active) return;
+      let locked = get().locked;
       if (active) {
-        if (state.enabled && returnBy !== null) locked ||= now() > returnBy;
+        if (get().enabled && returnBy !== null) locked ||= now() > returnBy;
         returnBy = null;
-        if (state.enabled && awayAt !== null) {
+        if (get().enabled && awayAt !== null) {
           const elapsed = now() - awayAt;
-          locked ||= elapsed < 0 || elapsed >= state.timeout;
+          locked ||= elapsed < 0 || elapsed >= get().timeout;
         }
         awayAt = null;
-      } else if (!state.authenticating) {
+      } else if (!get().authenticating) {
         awayAt = now();
-        locked ||= state.enabled && state.timeout === 0;
+        locked ||= get().enabled && get().timeout === 0;
       }
       update({ active, locked });
     },
     setTimeout(timeout: LockTimeout) {
-      if (!state.enabled || state.locked || state.authenticating) return;
+      if (!get().enabled || get().locked || get().authenticating) return;
       write(lockPreference, String(timeout));
       update({ timeout });
     },
     autoUnlock() {
       if (
         autoPrompted ||
-        !state.active ||
-        !state.locked ||
-        state.authenticating
+        !get().active ||
+        !get().locked ||
+        get().authenticating
       )
         return;
       void change("unlock");
     },
     async confirmSensitive(confirm: () => Promise<boolean>) {
-      if (!state.active || state.locked || state.authenticating) return false;
+      if (!get().active || get().locked || get().authenticating) return false;
       update({ authenticating: true });
       let confirmed = false;
       try {
         confirmed = await confirm();
-        if (confirmed && state.enabled && !state.active)
+        if (confirmed && get().enabled && !get().active)
           returnBy = now() + 2_000;
         return confirmed;
       } finally {
-        if (!confirmed && state.enabled && !state.active) awayAt ??= now();
+        if (!confirmed && get().enabled && !get().active) awayAt ??= now();
         update({ authenticating: false });
       }
     },

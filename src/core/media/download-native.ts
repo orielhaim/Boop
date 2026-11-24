@@ -19,7 +19,6 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
     url: string,
     output: string,
     hash: string | null,
-    attachmentLimit: number | null,
   ): Promise<number>;
   downloadPreview?(
     id: string,
@@ -128,7 +127,7 @@ export const nativeAvatarTransport: AvatarTransport | null =
     ? {
         download(id, url, destination, hash) {
           native.prepare(id);
-          return native.download(id, url, destination, hash ?? null, null);
+          return native.download(id, url, destination, hash ?? null);
         },
         cancel(id) {
           native.cancel(id);

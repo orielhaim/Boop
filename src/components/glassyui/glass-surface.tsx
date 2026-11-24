@@ -3,7 +3,6 @@ import { BlurView } from "expo-blur";
 import { GlassView } from "expo-glass-effect";
 import { Children, forwardRef } from "react";
 import { StyleSheet, Text, View, type ViewProps } from "react-native";
-import { useGlassBackdrop } from "./glass-backdrop";
 import { useGlassTheme } from "./glass-provider";
 import { resolveGlassMaterial } from "./lib/material";
 import { GLASS_RADIUS } from "./lib/tokens";
@@ -41,9 +40,8 @@ const BLUR_INTENSITY: Record<SurfacePreset, number> = {
 };
 
 /**
- * The glass material on its own. iOS 26 and later draw the system's own glass; earlier iOS,
- * Android and the web blur what lies behind and light the rim; Reduce Transparency turns the
- * glass opaque. Text children are set in the theme's ink.
+ * Uses system glass on iOS 26 and the platform surface elsewhere.
+ * Reduce Transparency turns the glass opaque.
  */
 export const GlassSurface = forwardRef<
   ComponentRef<typeof View>,
@@ -54,14 +52,12 @@ export const GlassSurface = forwardRef<
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
-    const backdrop = useGlassBackdrop();
     const material = resolveGlassMaterial(preferences.reduceTransparency);
     const radius = StyleSheet.flatten(style)?.borderRadius ?? GLASS_RADIUS.md;
     const corners = {
       borderRadius: radius,
       borderCurve: "continuous",
     } as const;
-    const blurTarget = backdrop?.target ?? undefined;
 
     return (
       <View
@@ -106,8 +102,7 @@ export const GlassSurface = forwardRef<
                   ? "systemUltraThinMaterialDark"
                   : "systemUltraThinMaterialLight"
               }
-              blurMethod={blurTarget ? "dimezisBlurViewSdk31Plus" : "none"}
-              blurTarget={blurTarget}
+              blurMethod="none"
             />
             <View
               style={[

@@ -11,11 +11,9 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl
 import okhttp3.Request
-import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okio.BufferedSink
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -54,6 +52,7 @@ class AvatarTransportModule : Module() {
   @Volatile private var downloadsForeground = true
   private val allowedHost = Regex("(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{1,62}")
   private val localSuffix = Regex("\\.(localhost|local|internal|lan|home|test|invalid|example|onion|arpa)$")
+  private val hashFilename = Regex("([a-f0-9]{64})(?:\\.[a-z0-9]{1,8})?")
   private val maxBytes = 2 * 1024 * 1024
   private val types = setOf("image/jpeg", "image/png", "image/webp")
 
@@ -100,7 +99,7 @@ class AvatarTransportModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("BoopAvatarTransport")
-    Events("attachmentProgress", "uploadProgress")
+    Events("attachmentProgress")
 
     Function("available") { true }
 
@@ -118,17 +117,17 @@ class AvatarTransportModule : Module() {
       jobs[id]?.cancel()
     }
 
-    AsyncFunction("download") { id: String, url: String, output: String, expectedHash: String?, attachmentLimit: Int? ->
-      download(id, url, output, expectedHash, attachmentLimit, null)
+    AsyncFunction("download") { id: String, url: String, output: String, expectedHash: String? ->
+      download(id, url, output, expectedHash, null)
     }
     AsyncFunction("downloadBlossom") { id: String, url: String, output: String, expectedHash: String, expectedSize: Int? ->
       downloadBlossom(id, url, output, expectedHash, expectedSize)
     }
     AsyncFunction("downloadNip05") { id: String, url: String, output: String ->
-      download(id, url, output, null, null, false, true)
+      download(id, url, output, null, false, true)
     }
     AsyncFunction("downloadPreview") { id: String, url: String, output: String, image: Boolean ->
-      download(id, url, output, null, null, image)
+      download(id, url, output, null, image)
     }
     AsyncFunction("blossomCommand") { id: String, url: String, headers: Map<String, String>, body: String? ->
       val job = jobs[id] ?: throw IOException("Media operation missing")
@@ -156,9 +155,7 @@ class AvatarTransportModule : Module() {
         jobs.remove(id, job)
       }
     }
-    AsyncFunction("uploadAttachment") { id: String, url: String, source: String, headers: Map<String, String>, size: Int ->
-      uploadAttachment(id, url, source, headers, size)
-    }
+
   }
 
   private fun downloadBlossom(id: String, url: String, output: String, expectedHash: String, expectedSize: Int?): Int {
@@ -316,6 +313,29 @@ class AvatarTransportModule : Module() {
       address.password.isEmpty() && allowedHost.matches(address.host) &&
       !localSuffix.containsMatchIn(address.host)
 
+  private fun hashAt(address: HttpUrl) =
+    hashFilename.matchEntire(address.encodedPathSegments.last())?.groupValues?.get(1)
+
+  private fun mediaResponse(initial: HttpUrl, accept: String, hash: String?, job: Job): okhttp3.Response {
+    var address = initial
+    var redirects = 0
+    while (true) {
+      val call = client.newCall(Request.Builder().url(address)
+        .header("Accept", accept).header("Accept-Encoding", "identity").build())
+      job.call = call
+      if (job.cancelled.get()) call.cancel()
+      val response = call.execute()
+      if (hash == null || response.code !in listOf(301, 302, 303, 307, 308)) return response
+      response.use {
+        val next = it.header("Location")?.let(address::resolve)
+        if (redirects >= 3 || next == null || !isBlossomAddress(next) || hashAt(next) != hash)
+          throw IOException("MEDIA_REDIRECT")
+        address = next
+        redirects++
+      }
+    }
+  }
+
   internal data class ContentRange(val start: Long, val end: Long, val total: Long)
 
   internal fun parseContentRange(value: String?): ContentRange? {
@@ -347,85 +367,27 @@ class AvatarTransportModule : Module() {
       else IOException(fallback, error)
   }
 
-  private fun uploadAttachment(id: String, url: String, source: String, headers: Map<String, String>, size: Int): Map<String, Any> {
-    val job = jobs[id] ?: throw IOException("Media operation missing")
-    try {
-      if (job.cancelled.get()) throw IOException("Media cancelled")
-      val address = url.toHttpUrl()
-      require(address.isHttps && address.port == 443 && address.username.isEmpty() &&
-        address.password.isEmpty() && allowedHost.matches(address.host) &&
-        !localSuffix.containsMatchIn(address.host) && address.encodedPath == "/upload" &&
-        address.query == null && address.fragment == null)
-      val context = appContext.reactContext ?: throw IOException("No React context")
-      val root = File(context.filesDir, "attachment-blobs").canonicalFile
-      val file = File(URI(source)).canonicalFile
-      require(file.path.startsWith(root.path + File.separator) &&
-        file.name.matches(Regex("sent-[a-f0-9]{64}\\.bin")) &&
-        size in 17..(32 * 1024 * 1024) && file.length() == size.toLong())
-      val body = object : RequestBody() {
-        override fun contentType() = "application/octet-stream".toMediaType()
-        override fun contentLength() = size.toLong()
-        override fun isOneShot() = true
-        override fun writeTo(sink: BufferedSink) {
-          file.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            var sent = 0
-            while (sent < size) {
-              if (job.cancelled.get()) throw IOException("Media cancelled")
-              val count = input.read(buffer, 0, minOf(buffer.size, size - sent))
-              if (count <= 0) throw IOException("Media source ended")
-              sink.write(buffer, 0, count)
-              sent += count
-              sendEvent("uploadProgress", mapOf("id" to id, "sent" to sent))
-            }
-          }
-        }
-      }
-      val request = Request.Builder().url(address).put(body).header("Accept-Encoding", "identity")
-      headers.forEach { (key, value) -> request.header(key, value) }
-      val call = attachmentClient.newCall(request.build())
-      job.call = call
-      if (job.cancelled.get()) call.cancel()
-      return call.execute().use { response ->
-        val data = response.body?.source()
-        if (data?.request(8193) == true) throw IOException("Media response too large")
-        mapOf("status" to response.code, "body" to (data?.readUtf8() ?: ""))
-      }
-    } finally {
-      jobs.remove(id, job)
-    }
-  }
-
-  private fun download(id: String, url: String, output: String, expectedHash: String?, attachmentLimit: Int?, previewImage: Boolean?, nip05: Boolean = false): Int {
+  private fun download(id: String, url: String, output: String, expectedHash: String?, previewImage: Boolean?, nip05: Boolean = false): Int {
       val job = jobs[id] ?: throw IOException("Avatar operation missing")
       try {
         if (job.cancelled.get()) throw IOException("Avatar cancelled")
         val address = url.toHttpUrl()
-        require(address.isHttps && address.port == 443 && address.username.isEmpty() &&
-          address.password.isEmpty() && allowedHost.matches(address.host) &&
-          !localSuffix.containsMatchIn(address.host))
+        require(isBlossomAddress(address))
         val target = File(URI(output)).canonicalFile
         val context = appContext.reactContext ?: throw IOException("No React context")
         val html = previewImage == false && !nip05
-        val images = attachmentLimit == null && !html && !nip05 && !nip05
-        val limit = if (nip05) 64 * 1024 else if (html) 512 * 1024 else attachmentLimit ?: maxBytes
-        require(attachmentLimit == null || (limit in 17..(32 * 1024 * 1024) &&
-          expectedHash?.matches(Regex("[a-f0-9]{64}")) == true))
+        val images = !html && !nip05
+        val limit = if (nip05) 64 * 1024 else if (html) 512 * 1024 else maxBytes
         val root = if (previewImage != null) File(context.cacheDir, "link-previews")
-          else if (attachmentLimit == null) File(context.filesDir, "avatar-cache")
-          else File(context.cacheDir, "attachment-work")
+          else File(context.filesDir, "avatar-cache")
         val extension = if (images) ".jpg" else if (html) ".html" else ".bin"
         require(target.path.startsWith(root.canonicalPath + File.separator) && target.name.endsWith(extension))
-        val call = (if (attachmentLimit != null) attachmentClient else client).newCall(Request.Builder().url(address)
-          .header("Accept", if (nip05) "application/json" else if (html) "text/html" else if (images) "image/jpeg, image/png, image/webp" else "*/*")
-          .header("Accept-Encoding", "identity").build())
-        job.call = call
-        if (job.cancelled.get()) call.cancel()
+        val accept = if (nip05) "application/json" else if (html) "text/html" else "image/jpeg, image/png, image/webp"
+        val redirectHash = expectedHash?.takeIf { previewImage == null && hashAt(address) == it }
         val incoming = File(target.path + ".download")
         try {
           val digest = MessageDigest.getInstance("SHA-256")
-          call.execute().use { response ->
-            if (attachmentLimit != null && response.code == 404) throw IOException("MEDIA_MISSING")
+          mediaResponse(address, accept, redirectHash, job).use { response ->
             if (response.code != 200) throw IOException("Avatar HTTP ${response.code}")
             val body = response.body ?: throw IOException("No avatar body")
             val mime = body.contentType()?.let { "${it.type}/${it.subtype}" }
@@ -434,21 +396,14 @@ class AvatarTransportModule : Module() {
             body.byteStream().use { source ->
               incoming.outputStream().use { sink ->
                 val buffer = ByteArray(16 * 1024)
-                val expected = body.contentLength().takeIf { it > 0 } ?: -1
-                var lastProgress = 0
                 var total = 0
                 while (true) {
                   val read = source.read(buffer)
                   if (read < 0) break
                   total += read
-                  if (total > limit || call.isCanceled()) throw IOException("Avatar size or cancellation")
+                  if (total > limit || job.cancelled.get()) throw IOException("Avatar size or cancellation")
                   digest.update(buffer, 0, read)
                   sink.write(buffer, 0, read)
-                  if (attachmentLimit != null &&
-                      (total - lastProgress >= 64 * 1024 || total.toLong() == expected)) {
-                    lastProgress = total
-                    sendEvent("attachmentProgress", mapOf("id" to id, "received" to total, "total" to expected))
-                  }
                 }
               }
             }
@@ -456,8 +411,8 @@ class AvatarTransportModule : Module() {
           val hash = digest.digest().joinToString("") { "%02x".format(it) }
           if (expectedHash != null && hash != expectedHash) throw IOException("MEDIA_INTEGRITY")
           if (!images) {
-            if (call.isCanceled() || incoming.length() < (if (html || nip05) 1 else 17) || target.exists() ||
-                !incoming.renameTo(target)) throw IOException("Attachment transfer failed")
+            if (job.cancelled.get() || incoming.length() < 1 || target.exists() ||
+                !incoming.renameTo(target)) throw IOException("Public document transfer failed")
             return target.length().toInt()
           }
           val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(incoming)) { decoder, info, _ ->
@@ -472,7 +427,7 @@ class AvatarTransportModule : Module() {
               maxOf(1, (width / scale).toInt()), maxOf(1, (height / scale).toInt()))
           }
           try {
-            if (call.isCanceled()) throw IOException("Avatar cancelled")
+            if (job.cancelled.get()) throw IOException("Avatar cancelled")
             target.outputStream().use {
               if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 86, it))
                 throw IOException("Avatar encode failed")

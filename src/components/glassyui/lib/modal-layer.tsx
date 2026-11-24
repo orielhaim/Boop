@@ -1,14 +1,11 @@
 import type { ComponentRef } from "react";
 import {
-  Children,
-  cloneElement,
   createContext,
   forwardRef,
   useCallback,
   useContext,
   useMemo,
   useState,
-  type ReactElement,
   type ReactNode,
 } from "react";
 import {
@@ -19,8 +16,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  type AccessibilityState,
-  type GestureResponderEvent,
   type ModalProps,
   type StyleProp,
   type TextProps,
@@ -32,7 +27,6 @@ import {
 } from "react-native-safe-area-context";
 import { useGlassTheme } from "../glass-provider";
 import { GlassIcon } from "./icons";
-import { useControllableState } from "./use-controllable-state";
 
 /** Arrivals ease out on the library's curve (`--lg-ease-out`); exits ease in. */
 export const LAYER_EASING = {
@@ -98,24 +92,19 @@ const ModalLayerContext = createContext<ModalLayerState | null>(null);
 
 export type ModalLayerRootProps = {
   children?: ReactNode;
-  defaultOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  open?: boolean;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
 };
 
-/** Holds a modal layer's open state for its trigger, content and close controls. */
 export function ModalLayerRoot({
   children,
-  defaultOpen = false,
   onOpenChange,
   open,
 }: ModalLayerRootProps) {
-  const [current, setOpen] = useControllableState(
-    open,
-    defaultOpen,
-    onOpenChange,
+  const value = useMemo(
+    () => ({ open, setOpen: onOpenChange }),
+    [open, onOpenChange],
   );
-  const value = useMemo(() => ({ open: current, setOpen }), [current, setOpen]);
 
   return (
     <ModalLayerContext.Provider value={value}>
@@ -131,52 +120,6 @@ export function useModalLayer(component: string, root: string) {
   if (!context) throw new Error(`${component} must be used within ${root}`);
 
   return context;
-}
-
-type PressableChildProps = {
-  accessibilityState?: AccessibilityState;
-  onPress?: ((event: GestureResponderEvent) => void) | null;
-};
-
-export type ModalLayerSlotProps = {
-  /** One pressable element, such as a GlassButton. It keeps its own onPress. */
-  children: ReactElement<PressableChildProps>;
-};
-
-type SlotOwnerProps = ModalLayerSlotProps & {
-  component: string;
-  root: string;
-};
-
-/** Gives its child an onPress that toggles the layer, and tells assistive tech whether it is open. */
-export function ModalLayerTrigger({
-  children,
-  component,
-  root,
-}: SlotOwnerProps) {
-  const { open, setOpen } = useModalLayer(component, root);
-  const child = Children.only(children);
-
-  return cloneElement(child, {
-    accessibilityState: { ...child.props.accessibilityState, expanded: open },
-    onPress: (event: GestureResponderEvent) => {
-      child.props.onPress?.(event);
-      setOpen(!open);
-    },
-  });
-}
-
-/** Gives its child an onPress that closes the layer. */
-export function ModalLayerClose({ children, component, root }: SlotOwnerProps) {
-  const { setOpen } = useModalLayer(component, root);
-  const child = Children.only(children);
-
-  return cloneElement(child, {
-    onPress: (event: GestureResponderEvent) => {
-      child.props.onPress?.(event);
-      setOpen(false);
-    },
-  });
 }
 
 type ModalLayerHostProps = {

@@ -15,15 +15,11 @@ export function attachGroupCallLifecycle({
   calling: ReturnType<typeof createCallController>;
   localKey: string;
   ready: () => Promise<unknown>;
-  client: Pick<
-    typeof marmot,
-    "groupDetails" | "openGroupState" | "sendSpecial"
-  >;
+  client: Pick<typeof marmot, "openGroupRoster" | "sendSpecial">;
 }) {
   let watching: string | undefined;
   let disposeWatch: (() => void) | undefined;
   let watchRevision = 0;
-  let refreshRevision = 0;
   let stopped = false;
   let last:
     | { group: string; call: string; members: string[]; sent: number }
@@ -83,26 +79,15 @@ export function attachGroupCallLifecycle({
     ended = false,
   ) {
     try {
-      await ready();
-      const details = await client.groupDetails(group);
-      const roster = new Set(details.members.map(({ id }) => id));
+      if (stopped || !(await calling.groupAllowed(group, members)))
+        return false;
       const state = calling.store.getState();
       const connected =
         state.call?.id === call &&
         state.call.phase === "connected" &&
         !state.call.reconnecting;
       const lobby = state.groupLobby?.callId === call;
-      if (
-        stopped ||
-        details.kind !== "group" ||
-        details.membership !== "member" ||
-        details.lifecycle !== "stable" ||
-        details.pendingInvitation ||
-        !roster.has(localKey) ||
-        !members.every((key) => roster.has(key)) ||
-        (members.length > 0 && !connected && !lobby)
-      )
-        return false;
+      if (stopped || (members.length > 0 && !connected && !lobby)) return false;
       publicationTime = Math.max(Date.now(), publicationTime + 1);
       await client.sendSpecial(
         group,
@@ -116,35 +101,6 @@ export function attachGroupCallLifecycle({
     }
   }
 
-  function refresh(group: string, revision: number) {
-    const request = ++refreshRevision;
-    void client
-      .groupDetails(group)
-      .then((details) => {
-        if (
-          revision !== watchRevision ||
-          request !== refreshRevision ||
-          stopped
-        )
-          return;
-        if (
-          details.lifecycle === "disbanded" ||
-          ["removed", "device_removed", "left"].includes(details.membership)
-        ) {
-          calling.reconcileGroup(group, new Set());
-        } else if (
-          details.membership === "member" &&
-          details.lifecycle === "stable"
-        ) {
-          calling.reconcileGroup(
-            group,
-            new Set(details.members.map(({ id }) => id)),
-          );
-        }
-      })
-      .catch(() => undefined);
-  }
-
   function watch(group?: string) {
     if (watching === group) return;
     watching = group;
@@ -153,7 +109,7 @@ export function attachGroupCallLifecycle({
     disposeWatch = undefined;
     if (!group) return;
     void ready()
-      .then(() => client.openGroupState(group))
+      .then(() => client.openGroupRoster(group))
       .then((window) => {
         const close = () => void window.close().catch(() => undefined);
         if (revision !== watchRevision || stopped) {
@@ -161,8 +117,21 @@ export function attachGroupCallLifecycle({
           return;
         }
         const onChange = () => {
-          if (window.getState().status === "ready") {
-            refresh(group, revision);
+          if (revision !== watchRevision || stopped) return;
+          const state = window.getState();
+          if (state.status === "ready") {
+            const { lifecycle, membership, members } = state.snapshot.details;
+            if (
+              lifecycle === "disbanded" ||
+              ["removed", "device_removed", "left"].includes(membership)
+            ) {
+              calling.reconcileGroup(group, new Set());
+            } else if (membership === "member" && lifecycle === "stable") {
+              calling.reconcileGroup(
+                group,
+                new Set(members.map(({ id }) => id)),
+              );
+            }
             schedule();
           } else if (revision === watchRevision) watch(undefined);
         };

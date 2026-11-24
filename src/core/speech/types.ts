@@ -80,7 +80,7 @@ export const jobSchema = z.object({
 });
 export type SpeechJob = z.infer<typeof jobSchema>;
 
-export const speechFormat = "expo-speech@0.4.0/required/1";
+const speechFormat = "expo-speech@0.4.0/required/1";
 export const speechKeySlot = (account: string) => `boop.speech.v1.${account}`;
 export const attachmentId = ({ target, hash }: SpeechSource) =>
   JSON.stringify([...target, hash]);

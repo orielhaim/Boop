@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import { namespaces } from "@/i18n";
@@ -11,21 +11,34 @@ export function usePrivacy() {
 }
 
 export function useBlockAction(key: string, onBlocked?: () => void) {
-  const privacy = usePrivacy();
+  const {
+    privacy: { blocks },
+  } = useLocal();
   const { t } = useTranslation(namespaces);
-  const blocked = privacy.isBlocked(key);
+  const snapshot = useSyncExternalStore(blocks.subscribe, blocks.snapshot);
+  const blocked = snapshot.status === "ready" && snapshot.keys.has(key);
+  const [pending, setPending] = useState(false);
+  const change = async () => {
+    setPending(true);
+    try {
+      if (blocked) await blocks.unblock(key);
+      else {
+        await blocks.block(key);
+        onBlocked?.();
+      }
+    } catch {
+      Alert.alert(t("security:privacyWriteFailed"));
+    } finally {
+      setPending(false);
+    }
+  };
   return {
     blocked,
     label: blocked ? t("security:unblock") : t("security:block"),
+    disabled: pending || snapshot.status !== "ready",
     onPress() {
-      const change = (mutate: () => void) => {
-        try {
-          mutate();
-        } catch {
-          Alert.alert(t("security:privacyWriteFailed"));
-        }
-      };
-      if (blocked) change(() => privacy.unblock(key));
+      if (pending || snapshot.status !== "ready") return;
+      if (blocked) void change();
       else
         Alert.alert(
           t("security:blockConfirm"),
@@ -35,11 +48,7 @@ export function useBlockAction(key: string, onBlocked?: () => void) {
             {
               text: t("security:block"),
               style: "destructive",
-              onPress: () =>
-                change(() => {
-                  privacy.block(key);
-                  onBlocked?.();
-                }),
+              onPress: () => void change(),
             },
           ],
           { cancelable: false },

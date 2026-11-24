@@ -1,6 +1,6 @@
 {
   "name": "boop",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "main": "./src/entry.ts",
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
@@ -13,7 +13,7 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@shopify/flash-list": "2.3.2",
+    "@tanstack/pacer": "0.23.1",
     "@trystero-p2p/core": "0.27.0",
     "blossom-client-sdk": "5.2.1",
     "dayjs": "^1.11.23",
@@ -58,7 +58,9 @@
     "expo-system-ui": "~58.0.7",
     "expo-video": "~58.0.14",
     "htmlparser2": "^12.0.0",
-    "i18next": "^27.2.6",
+    "i18next": "^27.2.7",
+    "immer": "^11.2.10",
+    "lru-cache": "11.5.3",
     "nostr-tools": "^2.26.1",
     "react": "19.3.0",
     "react-i18next": "^18.0.3",
@@ -75,11 +77,11 @@
     "react-native-safe-area-context": "^5.11.1",
     "react-native-screen-transitions": "4.2.0",
     "react-native-screens": "~4.30.1",
-    "react-native-skia": "^3.11.0",
+    "react-native-skia": "^3.12.0",
     "react-native-sortables": "1.10.1",
     "react-native-svg": "15.16.0",
     "react-native-vision-camera": "^5.2.4",
-    "react-native-webgpu": "^0.23.0",
+    "react-native-webgpu": "^0.24.0",
     "react-native-webrtc": "^155.0.1",
     "react-native-worklets": "0.13.0",
     "tlock-js": "./vendor/tlock-js-1.0.0-pr52-b311ee2.tgz",
@@ -89,6 +91,7 @@
   "devDependencies": {
     "@types/bun": "^1.4.5",
     "@types/react": "~19.3.0",
+    "babel-plugin-inline-import": "^3.0.0",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.0",
     "eslint-config-expo": "^58.0.4",
@@ -101,7 +104,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "check": "bun fmt --check . && bun run lint && bun run typecheck",
-    "db:generate": "drizzle-kit generate && bun scripts/bundle-migrations.ts"
+    "db:generate": "drizzle-kit generate"
   },
   "private": true,
   "patchedDependencies": {
@@ -114,6 +117,7 @@
     "@hzblj/expo-speech@0.4.0": "patches/@hzblj%2Fexpo-speech@0.4.0.patch",
     "react-native-animated-codes@1.0.2": "patches/react-native-animated-codes@1.0.2.patch",
     "expo-audio@58.0.12": "patches/expo-audio@58.0.12.patch",
-    "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch"
+    "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch",
+    "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch"
   }
 }

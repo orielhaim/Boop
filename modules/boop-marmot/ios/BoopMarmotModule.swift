@@ -8,8 +8,15 @@ private let attachmentStallTimeout: TimeInterval = 180
 
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
+  private var draftStages: Set<String> = [] // Guarded by uploadLock.
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
+  private let directoryLock = NSLock()
+  private struct Observation {
+    let accountScoped: Bool
+    var task: Task<Void, Error>?
+  }
+  private var observations: [String: Observation] = [:]
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
   private var isForeground = true
   private var foregroundGeneration: UInt64 = 0
@@ -17,14 +24,18 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
     OnAppEntersBackground {
+      self.directoryLock.withLock { self.observations.values.filter { !$0.accountScoped }.forEach { $0.task?.cancel() } }
       let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
         self.isForeground = false
         self.foregroundGeneration &+= 1
         return Array(self.attachmentAdmissions.values)
       }
-      Task { for attempt in pending { await attempt.cancel() } }
+      Task {
+        await self.runtime.discardImport()
+        for attempt in pending { await attempt.cancel() }
+      }
     }
     OnAppBecomesActive {
       self.attachmentLock.withLock {
@@ -33,28 +44,189 @@ public final class BoopMarmotModule: Module {
       }
     }
 
-    AsyncFunction("openAccount") { (key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?, generated: Bool) async throws -> String in
-      try await protocolCall { try await self.runtime.open(key: key, secret: secret, nsec: nsec, general: general, inbox: inbox, discovery: discovery, mediaOrigin: mediaOrigin, generated: generated) }
+    AsyncFunction("listAccounts") { (general: [String], discovery: [String], origin: String?) async throws -> [Document] in
+      try await protocolCall { try await self.runtime.listAccounts(general: general, discovery: discovery, origin: origin) }
     }
-    AsyncFunction("closeAccount") { () async throws in
-      try await protocolCall { try await self.closeAccount() }
+    AsyncFunction("prepareIdentityImport") { (token: String, input: String, password: String) async throws -> String in
+      try await protocolCall {
+        let generation = self.attachmentLock.withLock { self.isForeground ? self.foregroundGeneration : nil }
+        guard let generation else { throw problem("AccountClosed") }
+        let key = try await self.runtime.prepareImport(token: token, input: input, password: password)
+        guard self.attachmentLock.withLock({ self.isForeground && self.foregroundGeneration == generation }) else {
+          await self.runtime.discardImport(token: token)
+          throw problem("AccountClosed")
+        }
+        return key
+      }
+    }
+    AsyncFunction("discardIdentityImport") { (token: String) async in
+      await self.runtime.discardImport(token: token)
+    }
+    AsyncFunction("installAccount") { (token: String?, name: String?, about: String?, general: [String], inbox: [String], discovery: [String]) async throws -> String in
+      try await protocolCall {
+        guard self.attachmentLock.withLock({ self.isForeground }) else { throw problem("AccountClosed") }
+        return try await self.runtime.install(token: token, name: name, about: about, general: general, inbox: inbox, discovery: discovery)
+      }
+    }
+    AsyncFunction("accountOnboarding") { (key: String, action: String, step: String?, revision: String?, epoch: String?) async throws -> Document? in
+      try await protocolCall {
+        try await self.runtime.onboarding(key: key, action: action, step: step, revision: revision, epoch: epoch)
+      }
+    }
+    AsyncFunction("selectSigner") { (key: String) async throws -> Document in
+      try await protocolCall { try await self.runtime.selectSigner(key) }
+    }
+    AsyncFunction("readProfiles") { (owner: String, keys: [String]) async throws -> [Document] in
+      try await self.withSigner(owner) { kit in
+        try kit.cachedIdentityProjections(accountIdHexes: keys).compactMap { item in
+          guard let key = item.accountIdHex, let profile = item.profile else { return nil }
+          return profileDocument(key, profile, item.website, item.bot)
+        }
+      }
+    }
+    AsyncFunction("refreshPublicProfile") { (owner: String, key: String, relays: [String]) async throws in
+      try await self.withSigner(owner) { try await $0.refreshProfile(accountIdHex: key, relays: relays) }
+    }
+    AsyncFunction("updatePublicProfile") { (owner: String, fields: [String: String]) async throws in
+      try await self.withSigner(owner) { kit in
+        _ = try await kit.updateUserProfileUsingAccountRelays(accountRef: owner, edits: fields)
+      }
+    }
+    AsyncFunction("normalizeDirectoryIdentity") { (owner: String, reference: String) async throws -> String? in
+      try await self.withSigner(owner) { $0.accountIdHex(reference: reference) }
+    }
+    AsyncFunction("cachedDirectorySearch") { (owner: String, query: String) async throws -> [Document] in
+      try await self.withSigner(owner) { try $0.searchCachedUsers(accountIdHex: owner, query: query, limit: 48).map(searchResultDocument) }
+    }
+    Function("prepareObservation") { (id: String, accountScoped: Bool) -> Bool in
+      self.directoryLock.withLock {
+        guard self.observations.count < 8, self.observations.index(forKey: id) == nil else { return false }
+        self.observations[id] = Observation(accountScoped: accountScoped)
+        return true
+      }
+    }
+    AsyncFunction("searchDirectory") { (owner: String, id: String, query: String) async throws in
+      try await self.withObservation(id) {
+        let search = try await self.withSigner(owner) {
+          try await $0.searchUsers(accountIdHex: owner, query: query, radiusStart: 0, radiusEnd: 2)
+        }
+        while let update = try await search.nextCancellable() {
+          try Task.checkCancellation()
+          if case .error = update.trigger { continue }
+          let rows = (update.newResults + update.updatedResults).prefix(48).map(searchResultDocument)
+          if !rows.isEmpty { self.sendEvent("directorySearchResults", ["id": id, "rows": rows]) }
+        }
+      }
+    }
+    Function("cancelObservation") { (id: String) in
+      self.directoryLock.withLock { self.observations.removeValue(forKey: id)?.task?.cancel() }
+    }
+    AsyncFunction("requestAvatarAssets") { (targets: [String]) async throws -> [Document] in
+      try await self.withAccount { try await $0.requestAvatarAssets(accountRef: $1, targets: targets).map(avatarDocument) }
+    }
+    AsyncFunction("readAvatarAssets") { (references: [String]) async throws -> [Document] in
+      try await self.withAccount { kit, account in
+        try await kit.readAvatarAssets(accountRef: account, references: references, maxBytes: 4 * 1024 * 1024).map { asset in
+          let uri = asset.mediaType.flatMap { mime -> String? in
+            guard !asset.bytes.isEmpty,
+              ["image/jpeg", "image/png", "image/webp", "image/gif"].contains(mime) else { return nil }
+            return "data:\(mime);base64,\(asset.bytes.base64EncodedString())"
+          }
+          return ["reference": asset.reference, "revision": String(asset.contentRevision),
+                  "availability": wireName(asset.availability), "deferred": asset.deferred, "uri": bridgeValue(uri)]
+        }
+      }
+    }
+    AsyncFunction("clearMarmotAvatarCache") { (owner: String) async throws in
+      try await self.withSigner(owner) { try await $0.clearAvatarCache(accountRef: owner) }
+    }
+    AsyncFunction("accountNetworkReady") { (key: String) async throws -> Bool in
+      try await self.withSigner(key) { try $0.accountSetupReadiness(accountRef: key) == .networkReady }
+    }
+    AsyncFunction("removeAccount") { (key: String) async throws in
+      try await protocolCall { try await self.runtime.remove(key) }
+    }
+    AsyncFunction("signOutAccount") { (key: String) async throws in
+      try await protocolCall { try await self.runtime.signOut(key) }
+    }
+    AsyncFunction("resumeAccountSetup") { () async throws in
+      try await protocolCall { try await self.runtime.resumeSetup() }
+    }
+    AsyncFunction("signInAccount") { (key: String) async throws in
+      try await protocolCall { try await self.runtime.signIn(key) }
+    }
+    AsyncFunction("openAccount") { (key: String, general: [String], discovery: [String], mediaOrigin: String?) async throws -> String in
+      try await protocolCall { try await self.runtime.open(key: key, general: general, discovery: discovery, mediaOrigin: mediaOrigin) }
+    }
+    AsyncFunction("signNostrEvent") { (key: String, event: String) async throws -> String in
+      try await self.withSigner(key) { try await $0.signNostrEvent(accountRef: key, unsignedJson: event) }
+    }
+    AsyncFunction("nostrCipher") { (key: String, peer: String, value: String, nip44: Bool, encrypt: Bool) async throws -> String in
+      try await self.withSigner(key) { try await $0.nostrCipher(accountRef: key, peer: peer, content: value, nip44: nip44, encrypt: encrypt) }
+    }
+    AsyncFunction("exportIdentity") { (key: String, password: String?) async throws -> String in
+      try await self.withSigner(key) { kit in
+        if let password { return try kit.exportEncryptedSecretKey(accountRef: key, passphrase: password) }
+        return try kit.revealNsec(accountRef: key)
+      }
+    }
+    AsyncFunction("closeAccount") { (pauseMessaging: Bool) async throws in
+      try await protocolCall { try await self.closeAccount(pauseMessaging: pauseMessaging) }
+    }
+    AsyncFunction("shutdownRuntime") { () async throws in
+      try await protocolCall { try await self.closeAccount(closeRuntime: true) }
     }
     AsyncFunction("catchUp") { () async throws in
       try await self.withAccount { kit, _ in try await kit.catchUpAccounts() }
     }
-    AsyncFunction("diagnostics") { () async throws -> Document in
-      try await self.withAccount { kit, account in
-        let relays = try await kit.relayHealth()
-        let keys = try await kit.keyPackageMaintenanceStatus(accountRef: account)
-        return ["account": account, "readiness": try wireName(kit.accountSetupReadiness(accountRef: account)),
-          "relays": Int(relays.totalRelays), "connected": Int(relays.connected),
-          "keyPackages": try kit.localAccountKeyPackages(accountRef: account).count,
-          "keyPhase": bridgeValue(keys.map { wireName($0.phase) }), "published": bridgeValue(keys.map { Int($0.acceptedFanoutTargets) }),
-          "refreshOverdue": try await kit.keyPackageRefreshOverdue(accountRef: account)]
+    AsyncFunction("notifyConnectivityRestored") { () async throws in
+      try await self.withAccount { kit, _ in try await kit.notifyConnectivityRestored() }
+    }
+    AsyncFunction("accountRelayLists") { (key: String) async throws -> Document in
+      try await self.withSigner(key) { kit in
+        let lists = try kit.accountRelayLists(accountRef: key)
+        let general = try kit.accountNip65Relays(accountRef: key)
+        let inbox = lists.inbox.relays
+        let allowed = kit.classifyRelayEndpoints(endpoints: general + inbox)
+          .filter { $0.policy == .allowed }.map(\.endpoint)
+        return ["general": general, "write": lists.nip65.relays, "inbox": inbox,
+          "bootstrap": lists.bootstrapRelays, "allowed": allowed, "retiredHosts": kit.retiredRelayHosts()]
       }
     }
-    AsyncFunction("rotateKeys") { () async throws in
-      try await self.withAccount { _ = try await $0.rotateKeyPackage(accountRef: $1) }
+    AsyncFunction("refreshAccountRelayLists") { (key: String, urls: [String]) async throws in
+      try await self.withSigner(key) { kit in _ = try await kit.refreshUserRelayLists(accountIdHex: key, relays: urls) }
+    }
+    AsyncFunction("classifyRelays") { (key: String, urls: [String]) async throws -> [String] in
+      try await self.withSigner(key) { kit in
+        kit.classifyRelayEndpoints(endpoints: urls).map { wireName($0.policy) }
+      }
+    }
+    AsyncFunction("setAccountRelays") { (key: String, inbox: Bool, urls: [String], bootstrap: [String]) async throws in
+      try await self.withSigner(key) { kit in
+        if inbox { _ = try await kit.setAccountInboxRelays(accountRef: key, relays: urls, bootstrapRelays: bootstrap) }
+        else { _ = try await kit.setAccountNip65Relays(accountRef: key, relays: urls, bootstrapRelays: bootstrap) }
+      }
+    }
+    AsyncFunction("reconnectMarmotRelay") { (url: String) async throws in
+      try await self.withAccount { kit, key in _ = try await kit.reconnectRelay(accountRef: key, url: url) }
+    }
+    AsyncFunction("watchRelayLiveness") { (key: String, id: String) async throws in
+      try await self.withObservation(id) {
+        let stream = try await self.withSigner(key) { try await $0.subscribeRelayLiveness(accountRef: key) }
+        defer { stream.cancel() }
+        func emit(_ rows: [RelayLivenessFfi]) {
+          self.sendEvent("relayLiveness", ["id": id, "rows": rows.map { row -> Document in
+            ["url": row.url, "status": wireName(row.status), "lastError": bridgeValue(row.lastError),
+             "lastAttempt": bridgeValue(row.lastAttemptUnix.map { Double($0) })]
+          }])
+        }
+        try Task.checkCancellation()
+        emit(stream.snapshot())
+        while let rows = try await withTaskCancellationHandler(operation: { try await stream.next() }, onCancel: { stream.cancel() }) {
+          try Task.checkCancellation()
+          emit(rows)
+        }
+      }
     }
     AsyncFunction("backupState") { () async throws -> Document in
       try await self.withAccount { kit, account in
@@ -99,14 +271,14 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("openAttention") { (id: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openAttention(id: id) }
     }
-    AsyncFunction("openGroupState") { (id: String, group: String) async throws -> Document in
-      try await protocolCall { try await self.runtime.openGroupState(id: id, group: group) }
+    AsyncFunction("openGroupState") { (id: String, group: String, roster: Bool) async throws -> Document in
+      try await protocolCall { try await self.runtime.openGroupState(id: id, group: group, roster: roster) }
     }
     AsyncFunction("openGroupCall") { (id: String, group: String) async throws -> Document in
       try await protocolCall { try await self.runtime.openGroupCall(id: id, group: group) }
     }
-    AsyncFunction("openConversation") { (id: String, group: String, target: String?) async throws -> Document in
-      try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target) }
+    AsyncFunction("openConversation") { (id: String, group: String, target: String?, speculative: Bool) async throws -> Document in
+      try await protocolCall { try await self.runtime.openConversation(id: id, group: group, target: target, speculative: speculative) }
     }
     AsyncFunction("observeWindow") { (id: String) async throws in
       try await self.runtime.observe(id: id) { [weak self] event, value in
@@ -118,9 +290,7 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("windowSnapshot") { (id: String) async throws -> Document in
       try await protocolCall {
-        let window = try await self.runtime.window(id)
-        guard let snapshot = window.initial() else { throw problem("WindowClosed") }
-        return snapshot
+        try await self.runtime.windowSnapshot(id)
       }
     }
     AsyncFunction("pageWindow") { (id: String, generation: String, sequence: String, direction: String) async throws -> Document in
@@ -145,8 +315,8 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("startDirect") { (peer: String) async throws -> String in
       try await self.withAccount { try await $0.startDirectConversation(accountRef: $1, peerAccountId: peer) }
     }
-    AsyncFunction("checkInvitee") { (peer: String) async throws in
-      try await self.withAccount { _ = try await $0.prewarmGroupMemberKeyPackages(accountRef: $1, memberRefs: [peer]) }
+    AsyncFunction("prewarmInvitees") { (members: [String]) async throws in
+      try await self.withAccount { _ = try await $0.prewarmGroupMemberKeyPackages(accountRef: $1, memberRefs: members) }
     }
     AsyncFunction("createGroup") { (name: String, description: String?, members: [String], image: String?) async throws -> Document in
       try await self.withAccount { kit, account in
@@ -154,7 +324,8 @@ public final class BoopMarmotModule: Module {
           InitialGroupImageFfi(plaintext: try groupImageInput(path), mediaType: "image/jpeg", sourceUrl: nil, dim: nil, thumbhash: nil)
         }
         let result = try await kit.createGroupWithInitialImageDetailed(accountRef: account, name: name, memberRefs: members, description: description, initialImage: initial)
-        return ["groupId": bridgeValue(result.created?.groupIdHex), "members": result.memberOutcomes.map { member -> Document in
+        return ["groupId": bridgeValue(result.created?.groupIdHex),
+                "createdAt": bridgeValue(result.created.map { Double($0.chatListRow.conversationCreatedAt) }), "members": result.memberOutcomes.map { member -> Document in
           ["account": member.accountIdHex, "status": wireName(member.status), "devices": Int(member.selectedDeviceCount)]
         }]
       }
@@ -165,89 +336,76 @@ public final class BoopMarmotModule: Module {
         else { _ = try await kit.declineGroupInvite(accountRef: account, groupIdHex: group) }
       }
     }
-    AsyncFunction("groupDetails") { (group: String) async throws -> Document in
+    AsyncFunction("groupDiagnostics") { (group: String) async throws -> Document in
+      try await self.withAccount { try await groupDiagnostics($0, $1, group) }
+    }
+    AsyncFunction("groupAccess") { (group: String, includeMembers: Bool) async throws -> Document in
       try await self.withAccount { kit, account in
         let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
-        let policy = try await kit.groupManagementState(accountRef: account, groupIdHex: group)
-        let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
-        let delivery = try await kit.groupCommitDelivery(accountRef: account, groupIdHex: group)
-        let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
-        let chat = try kit.chatListRow(accountRef: account, groupIdHex: group)
-        let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
-        return [
-          "id": group, "name": details.group.name, "description": details.group.description,
-          "inviter": bridgeValue(details.group.welcomerAccountIdHex), "relays": details.group.relays,
-          "image": bridgeValue(details.group.imageHashHex), "epoch": String(details.mlsState.epoch),
-          "mediaV2": details.group.encryptedMedia.version == .v2,
-          "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
-          "unrecoverable": details.mlsState.unrecoverable,
-          "convergenceParked": details.mlsState.convergenceParked || recovery.automaticRecoveryFailed,
-          "historyIncomplete": recovery.historyMayBeIncomplete,
-          "relayChangesOutstanding": (delivery?.owedRelayUrls.count ?? 0) + (delivery?.refusedRelays.count ?? 0),
-          "membership": wireName(details.group.selfMembership),
-          "pendingInvitation": details.group.pendingConfirmation,
-          "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
-          "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
-          "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
-          "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
-          "lifecycle": wireName(policy.lifecycleState), "commit": bridgeValue(pending.map { wireName($0.state) }),
-          "isAdmin": policy.isSelfAdmin, "canInvite": policy.canInvite, "canLeave": policy.canLeave,
-          "canCancelLeave": policy.canCancelLeave, "canDisband": policy.canDisband,
-          "canEnableDisbanding": policy.canEnableDisbanding,
-          "members": details.members.map { member -> Document in
-            let perms = actions[member.memberIdHex]
-            let name = member.displayName.flatMap { $0 == member.memberIdHex ? nil : $0 }
-              ?? kit.defaultProfilePseudonym(accountIdHex: member.memberIdHex)
-            return [
-              "id": member.memberIdHex, "npub": member.npub,
-              "name": name,
-              "self": member.isSelf, "admin": member.isAdmin, "devices": Int(member.deviceCount),
-              "canPromote": perms?.canPromote ?? false, "canRemove": perms?.canRemove ?? false,
-              "canDemote": perms?.canDemote ?? false,
-            ]
-          },
-        ]
+        let row = includeMembers ? try kit.chatListRow(accountRef: account, groupIdHex: group) : nil
+        return ["membership": wireName(details.group.selfMembership),
+                "pendingInvitation": details.group.pendingConfirmation,
+                "pendingLeave": details.group.leaveRequestPending,
+                "unrecoverable": details.mlsState.unrecoverable, "disbanding": details.mlsState.disbanding,
+                "lifecycle": wireName(details.mlsState.lifecycleState),
+                "kind": bridgeValue(row.map { wireName($0.conversationKind) }),
+                "members": includeMembers ? details.members.map(\.memberIdHex) : []]
       }
     }
-    AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws in
-      try await self.withAccount { _ = try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description) }
+    AsyncFunction("groupInvitation") { (group: String, preview: Bool) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let details = try await kit.groupDetails(accountRef: account, groupIdHex: group)
+        let members: [Document] = preview ? details.members.lazy.filter { !$0.isSelf }.prefix(16).map {
+          ["id": $0.memberIdHex, "npub": $0.npub, "name": bridgeValue($0.displayName)]
+        } : []
+        return ["inviter": bridgeValue(details.group.pendingConfirmation ? details.group.welcomerAccountIdHex : nil),
+                "name": details.group.name, "memberCount": details.members.count, "members": members]
+      }
     }
-    AsyncFunction("updateGroupImage") { (group: String, path: String?) async throws in
+    AsyncFunction("groupMemberIds") { (groups: [String]) async throws -> [String: [String]] in
+      try await self.withAccount { kit, account in
+        let rows = try await kit.groupMemberIdsPage(accountRef: account, groupIdsHex: groups)
+        return Dictionary(rows.map { ($0.groupIdHex, $0.memberIdsHex) }, uniquingKeysWith: { first, _ in first })
+      }
+    }
+    AsyncFunction("updateGroup") { (group: String, name: String?, description: String?) async throws -> String in
+      try await self.withAccount { wireName(try await $0.updateGroupProfile(accountRef: $1, groupIdHex: group, name: name, description: description).acceptDisposition) }
+    }
+    AsyncFunction("updateGroupImage") { (group: String, path: String?) async throws -> String in
       try await self.withAccount { kit, account in
         if let path {
-          _ = try await kit.updateGroupImage(accountRef: account, groupIdHex: group, plaintext: groupImageInput(path), mediaType: "image/jpeg")
+          return wireName(try await kit.updateGroupImage(accountRef: account, groupIdHex: group, plaintext: groupImageInput(path), mediaType: "image/jpeg").acceptDisposition)
         } else {
-          _ = try await kit.clearGroupImage(accountRef: account, groupIdHex: group)
+          return wireName(try await kit.clearGroupImage(accountRef: account, groupIdHex: group).acceptDisposition)
         }
       }
     }
-    AsyncFunction("updateGroupMedia") { (group: String, origins: [String]) async throws in
+    AsyncFunction("updateGroupMedia") { (group: String, origins: [String]) async throws -> String in
       try await self.withAccount { kit, account in
-        _ = try await kit.replaceEncryptedMediaBlobEndpoints(accountRef: account, groupIdHex: group, endpoints: origins.map {
+        let result = try await kit.replaceEncryptedMediaBlobEndpoints(accountRef: account, groupIdHex: group, endpoints: origins.map {
           AppBlobEndpointFfi(locatorKind: "blossom", baseUrl: $0)
         })
+        return wireName(result.acceptDisposition)
       }
     }
-    AsyncFunction("groupImage") { (group: String, hash: String, fetch: Bool) async throws -> String? in
+    AsyncFunction("viewGroupImage") { (group: String, hash: String) async throws -> String in
       try await self.withAccount { kit, account in
-        guard hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw problem("InvalidMedia") }
         let details = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
-        guard !details.pendingConfirmation, details.selfMembership == .member, details.imageHashHex == hash else { throw problem("MediaUnavailable") }
-        let manager = FileManager.default
-        let cache = try manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let folder = cache.appendingPathComponent("marmot-group-images").appendingPathComponent(account)
-        let file = folder.appendingPathComponent(hash + ".jpg")
-        if !manager.fileExists(atPath: file.path) {
-          guard fetch else { return nil }
-          let bytes = try await kit.downloadGroupBlossomImage(accountRef: account, groupIdHex: group)
-          let current = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
-          guard !bytes.isEmpty, bytes.count <= maxGroupImage, current.selfMembership == .member, current.imageHashHex == hash else {
-            throw problem("MediaUnavailable")
-          }
-          try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-          try bytes.write(to: file, options: [.atomic, .completeFileProtection])
-        }
-        return file.path
+        guard !details.pendingConfirmation, details.selfMembership == .member,
+          details.imageHashHex == hash else { throw problem("MediaUnavailable") }
+        let bytes = try await kit.downloadGroupBlossomImage(accountRef: account, groupIdHex: group)
+        let current = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
+        guard !bytes.isEmpty, bytes.count <= maxGroupImage, !current.pendingConfirmation,
+          current.selfMembership == .member, current.imageHashHex == hash else { throw problem("MediaUnavailable") }
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+          let type = CGImageSourceGetType(source),
+          let mime = ["public.jpeg": "image/jpeg", "public.png": "image/png",
+                      "org.webmproject.webp": "image/webp", "com.compuserve.gif": "image/gif"][type as String],
+          let dimensions = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = dimensions[kCGImagePropertyPixelWidth] as? Int, (1...4096).contains(width),
+          let height = dimensions[kCGImagePropertyPixelHeight] as? Int, (1...4096).contains(height)
+        else { throw problem("InvalidMedia") }
+        return "data:\(mime);base64,\(bytes.base64EncodedString())"
       }
     }
     AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool) async throws -> [Document] in
@@ -265,31 +423,43 @@ public final class BoopMarmotModule: Module {
         return ["more": page.hasMoreBefore, "versions": versions]
       }
     }
-    AsyncFunction("inviteMembers") { (group: String, members: [String]) async throws -> [Document] in
+    AsyncFunction("inviteMembers") { (group: String, members: [String]) async throws -> Document in
       try await self.withAccount { kit, account in
         let result = try await kit.inviteMembersDetailed(accountRef: account, groupIdHex: group, memberRefs: members)
-        return result.invite.memberOutcomes.map { ["account": $0.accountIdHex, "status": wireName($0.status), "devices": Int($0.selectedDeviceCount)] }
+        return ["disposition": bridgeValue(result.invite.summary.map { wireName($0.acceptDisposition) }),
+                "members": result.invite.memberOutcomes.map { ["account": $0.accountIdHex, "status": wireName($0.status), "devices": Int($0.selectedDeviceCount)] as Document }]
       }
     }
-    AsyncFunction("changeMember") { (group: String, member: String, action: String) async throws in
+    AsyncFunction("changeMember") { (group: String, member: String, action: String) async throws -> String in
       try await self.withAccount { kit, account in
         switch action {
-        case "remove": _ = try await kit.removeMembers(accountRef: account, groupIdHex: group, memberRefs: [member])
-        case "promote": _ = try await kit.promoteAdmin(accountRef: account, groupIdHex: group, memberRef: member)
-        case "demote": _ = try await kit.demoteAdmin(accountRef: account, groupIdHex: group, memberRef: member)
+        case "remove": return wireName(try await kit.removeMembers(accountRef: account, groupIdHex: group, memberRefs: [member]).acceptDisposition)
+        case "promote": return wireName(try await kit.promoteAdmin(accountRef: account, groupIdHex: group, memberRef: member).acceptDisposition)
+        case "demote": return wireName(try await kit.demoteAdmin(accountRef: account, groupIdHex: group, memberRef: member).acceptDisposition)
+        case "stepDown": return wireName(try await kit.selfDemoteAdmin(accountRef: account, groupIdHex: group).acceptDisposition)
         default: throw problem("InvalidGroupAction")
         }
       }
     }
-    AsyncFunction("changeMembership") { (group: String, action: String) async throws in
+    AsyncFunction("changeMembership") { (group: String, action: String) async throws -> String? in
       try await self.withAccount { kit, account in
         switch action {
-        case "leave": _ = try await kit.leaveGroup(accountRef: account, groupIdHex: group)
+        case "leave": return wireName(try await kit.leaveGroup(accountRef: account, groupIdHex: group).acceptDisposition)
         case "cancelLeave": try await kit.cancelLeave(accountRef: account, groupIdHex: group)
-        case "forget": _ = try await kit.deleteGroupLocal(accountRef: account, groupIdHex: group)
+        case "deleteLocal": _ = try await kit.deleteGroupLocal(accountRef: account, groupIdHex: group)
         case "disband": _ = try await kit.disbandGroup(accountRef: account, groupIdHex: group)
-        case "enableDisbanding": _ = try await kit.enableGroupDisbanding(accountRef: account, groupIdHex: group)
+        case "enableDisbanding": return wireName(try await kit.enableGroupDisbanding(accountRef: account, groupIdHex: group).summary.acceptDisposition)
         default: throw problem("InvalidGroupAction")
+        }
+        return nil
+      }
+    }
+    AsyncFunction("respondToRejoin") { (welcome: String, token: String?) async throws in
+      try await self.withAccount { kit, account in
+        if let token {
+          _ = try await kit.confirmGroupRejoin(accountRef: account, welcomeIdHex: welcome, localStateToken: token)
+        } else {
+          try await kit.declineGroupRejoin(accountRef: account, welcomeIdHex: welcome)
         }
       }
     }
@@ -303,12 +473,15 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("saveDraft") { (group: String, text: String, reply: String?) async throws in
       try await self.withAccount { kit, account in
-        let draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        let retained = (draft.draft?.mediaAttachments ?? []).map { MessageDraftAttachmentInputFfi.retained(id: $0.id) }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && retained.isEmpty {
-          _ = try kit.clearMessageDraftIfRevision(accountRef: account, revision: draft.revision)
-        } else {
-          _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision, content: text, replyToMessageIdHex: reply, mediaAttachments: retained)
+        try retryDraftEdit {
+          let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+          if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+             selected.draft?.mediaAttachments.isEmpty != false {
+            _ = try kit.clearMessageDraftIfRevision(accountRef: account, revision: selected.revision)
+          } else {
+            _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+              content: text, replyToMessageIdHex: reply, mediaAttachments: [])
+          }
         }
       }
     }
@@ -322,17 +495,23 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("stageMediaDraft") { (group: String, files: [[String: String]], caption: String, token: String, reply: String?) async throws in
       try await self.withAccount { kit, account in
         let inputs = try self.uploadInputs(files)
-        var draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        guard draft.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
-        draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision, content: caption, replyToMessageIdHex: reply, mediaAttachments: [])
         let control = MediaFileTransferControlFfi()
         let registered = self.uploadLock.withLock {
-          guard self.uploads[token] == nil else { return false }
+          guard self.uploads[token] == nil, self.draftStages.insert(group).inserted else { return false }
           self.uploads[token] = control
           return true
         }
         guard registered else { throw problem("TransferInProgress") }
-        defer { _ = self.uploadLock.withLock { self.uploads.removeValue(forKey: token) } }
+        defer {
+          self.uploadLock.withLock {
+            self.uploads.removeValue(forKey: token)
+            self.draftStages.remove(group)
+          }
+        }
+        var draft = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+        guard draft.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
+        draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: draft.revision,
+          content: caption, replyToMessageIdHex: reply, mediaAttachments: [])
         self.sendEvent("attachmentProgress", ["transfer": token, "received": 0.0, "state": "preparing"])
         for (index, input) in inputs.enumerated() {
           let file = files[index]
@@ -347,10 +526,20 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("discardMediaDraft") { (group: String) async throws in
       try await self.withAccount { kit, account in
-        let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
-        guard let draft = selected.draft else { return }
-        _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
-          content: draft.content, replyToMessageIdHex: draft.replyToMessageIdHex, mediaAttachments: [])
+        if self.uploadLock.withLock({ self.draftStages.contains(group) }) { throw problem("TransferInProgress") }
+        var idsToRemove: Set<String>?
+        try retryDraftEdit {
+          let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+          guard let draft = selected.draft else { return }
+          let ids = idsToRemove ?? Set(draft.mediaAttachments.map(\.id))
+          idsToRemove = ids
+          let removed = draft.mediaAttachments.filter { ids.contains($0.id) }.map {
+            MessageDraftAttachmentInputFfi.removed(id: $0.id)
+          }
+          guard !removed.isEmpty else { return }
+          _ = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+            content: draft.content, replyToMessageIdHex: draft.replyToMessageIdHex, mediaAttachments: removed)
+        }
       }
     }
     AsyncFunction("sendMedia") { (group: String, files: [[String: String]], caption: String?, token: String, server: String?, reply: String?) async throws -> Document in
@@ -407,8 +596,8 @@ public final class BoopMarmotModule: Module {
               mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples,
                 item.id.split(separator: ":").last.map(String.init) ?? "file")
             }
-            let accepted = try await kit.sendTaggedMessageDraftWithClientToken(accountRef: account, revision: selected.revision,
-              attachments: uploaded.attachments.map(\.reference), messageTags: metadata, clientToken: token)
+            let accepted = try await kit.sendMessageDraftWithClientToken(accountRef: account, revision: selected.revision,
+              attachments: uploaded.attachments.map(\.reference), tags: metadata, clientToken: token)
             id = accepted.messageIdHex
           } else {
             let result = try await kit.uploadMediaFilesWithClientToken(accountRef: account, groupIdHex: group, request: request, control: control, clientToken: token)
@@ -511,12 +700,6 @@ public final class BoopMarmotModule: Module {
         try jpeg.write(to: output, options: [.atomic, .completeFileProtection])
         result["path"] = output.path
         return result
-      }
-    }
-    AsyncFunction("attachmentStatus") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
-      try await self.withAccount { kit, account in
-        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
-        return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.state == .ready
       }
     }
     AsyncFunction("retainedAttachmentBytes") { (group: String, id: String, source: String, index: UInt32) async throws -> Double? in
@@ -694,6 +877,11 @@ public final class BoopMarmotModule: Module {
         return Array(sources.prefix(24))
       }
     }
+    AsyncFunction("discardFailedSend") { (group: String, id: String) async throws -> String in
+      try await self.withAccount {
+        try await wireName($0.discardFailedSend(accountRef: $1, groupIdHex: group, messageIdHex: id).outcome)
+      }
+    }
     AsyncFunction("deleteMessage") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try await $0.deleteMessage(accountRef: $1, groupIdHex: group, targetMessageId: id) }
     }
@@ -711,9 +899,6 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("markRead") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try $0.markTimelineMessageRead(accountRef: $1, groupIdHex: group, messageIdHex: id) }
     }
-    AsyncFunction("markUnread") { (group: String) async throws in
-      try await self.withAccount { _ = try $0.setChatManuallyUnread(accountRef: $1, groupIdHex: group, manuallyUnread: true) }
-    }
     AsyncFunction("setArchived") { (group: String, archived: Bool) async throws in
       try await self.withAccount { _ = try await $0.setGroupArchived(accountRef: $1, groupIdHex: group, archived: archived) }
     }
@@ -726,10 +911,28 @@ public final class BoopMarmotModule: Module {
         else { _ = try kit.clearChatMuted(accountRef: account, groupIdHex: group) }
       }
     }
-    AsyncFunction("setBlocked") { (key: String, blocked: Bool) async throws in
-      try await self.withAccount { kit, account in
-        if blocked { _ = try await kit.blockUser(accountRef: account, userAccountIdHex: key) }
-        else { _ = try await kit.unblockUser(accountRef: account, userAccountIdHex: key) }
+    AsyncFunction("watchBlockedUsers") { (owner: String, id: String) async throws in
+      try await self.withObservation(id) {
+        let stream = try await self.withSigner(owner, foreground: false) { try $0.subscribeBlockedUsers(accountRef: owner) }
+        func emit(_ snapshot: BlockListSnapshotFfi) {
+          self.sendEvent("blockedUsers", ["id": id, "rows": self.blockListDocument(snapshot)])
+        }
+        try Task.checkCancellation()
+        guard let initial = stream.snapshot() else { throw problem("BlockListUnavailable") }
+        emit(initial)
+        while let snapshot = try await stream.nextCancellable() {
+          try Task.checkCancellation()
+          emit(snapshot)
+        }
+      }
+    }
+    AsyncFunction("setBlocked") { (owner: String, key: String, blocked: Bool) async throws -> Document in
+      try await self.withSigner(owner) { kit in
+        if blocked { try await kit.blockUser(accountRef: owner, userAccountIdHex: key) }
+        else { try await kit.unblockUser(accountRef: owner, userAccountIdHex: key) }
+        let stream = try kit.subscribeBlockedUsers(accountRef: owner)
+        guard let snapshot = stream.snapshot() else { throw problem("BlockListUnavailable") }
+        return self.blockListDocument(snapshot)
       }
     }
     AsyncFunction("retryConversation") { (group: String) async throws in
@@ -787,12 +990,19 @@ public final class BoopMarmotModule: Module {
         }
       }
     }
-    OnDestroy { Task { try? await self.closeAccount() } }
+    OnDestroy { Task { try? await self.closeAccount(closeRuntime: true) } }
   }
 
-  private func closeAccount() async throws {
+  private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
+    let work = directoryLock.withLock { () -> [Task<Void, Error>] in
+      let work = observations.values.compactMap(\.task)
+      observations.removeAll()
+      return work
+    }
+    for task in work { task.cancel() }
+    for task in work { _ = await task.result }
     uploadLock.withLock { uploads.values.forEach { $0.cancel() } }
-    try await runtime.close { [weak self] id in
+    try await runtime.close(closeRuntime: closeRuntime, pauseMessaging: pauseMessaging) { [weak self] id in
       self?.sendEvent("windowClosed", ["id": id, "code": "AccountClosed"])
     }
   }
@@ -811,10 +1021,49 @@ public final class BoopMarmotModule: Module {
     }
   }
 
+  private func withObservation(_ id: String, work: @escaping () async throws -> Void) async throws {
+    let task = directoryLock.withLock { () -> Task<Void, Error>? in
+      guard var observation = observations[id], observation.task == nil else { return nil }
+      let task = Task { try await work() }
+      observation.task = task
+      observations[id] = observation
+      return task
+    }
+    guard let task else { throw problem("AccountClosed") }
+    defer { _ = directoryLock.withLock { observations.removeValue(forKey: id) } }
+    try await task.value
+  }
+
+  private func blockListDocument(_ snapshot: BlockListSnapshotFfi) -> Document {
+    ["revision": String(snapshot.revision), "keys": snapshot.users.map { $0.publicKey }]
+  }
+
+  private func withSigner<T>(_ key: String, foreground: Bool = true, _ call: (Marmot) async throws -> T) async throws -> T {
+    try await protocolCall {
+      guard !foreground || attachmentLock.withLock({ isForeground }) else { throw problem("AccountClosed") }
+      let kit = try await runtime.beginSignerCall(key)
+      do {
+        let result = try await call(kit)
+        await runtime.endCall()
+        return result
+      } catch {
+        await runtime.endCall()
+        throw error
+      }
+    }
+  }
+
   private func withAccount<T>(_ call: (Marmot, String) async throws -> T) async throws -> T {
     try await protocolCall {
-      let account = try await runtime.account()
-      return try await call(account.kit, account.key)
+      let account = try await runtime.beginAccountCall()
+      do {
+        let result = try await call(account.kit, account.key)
+        await runtime.endCall()
+        return result
+      } catch {
+        await runtime.endCall()
+        throw error
+      }
     }
   }
 }
@@ -852,6 +1101,17 @@ private func withAttachmentAttempt<T>(
 
 private struct AttachmentCancelControl: @unchecked Sendable {
   let run: () async -> Void
+}
+
+private func retryDraftEdit(_ edit: () throws -> Void) throws {
+  for attempt in 0..<3 {
+    do {
+      try edit()
+      return
+    } catch MarmotKitError.MessageDraftRevisionConflict where attempt < 2 {
+      continue
+    }
+  }
 }
 
 private actor AttachmentCancellation {
@@ -920,6 +1180,23 @@ private actor AttachmentCancellation {
 
 private let maxGroupImage = 4 * 1024 * 1024
 
+private func searchResultDocument(_ row: UserDirectorySearchResultFfi) -> Document {
+  ["key": row.accountIdHex, "profile": bridgeValue(row.profile.map { profileDocument(row.accountIdHex, $0, nil, false) })]
+}
+
+private func profileDocument(_ key: String, _ profile: UserProfileMetadataFfi, _ website: String?, _ bot: Bool) -> Document {
+  var result: Document = ["key": key, "bot": bot]
+  result["name"] = profile.name
+  result["displayName"] = profile.displayName
+  result["about"] = profile.about
+  result["picture"] = profile.picture
+  result["banner"] = profile.banner
+  result["nip05"] = profile.nip05
+  result["lud16"] = profile.lud16
+  result["website"] = website
+  return result
+}
+
 private func groupImageInput(_ path: String) throws -> Data {
   let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
   let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
@@ -936,13 +1213,30 @@ private func groupImageInput(_ path: String) throws -> Data {
 
 private actor Runtime {
   struct Account {
+    let generation = UUID()
     let key: String
     let kit: Marmot
   }
 
+  private struct Configuration: Equatable {
+    let general: [String]
+    let discovery: [String]
+    let origin: String?
+  }
+
+  private var kit: Marmot?
+  private var identityImport: (token: String, prepared: PreparedIdentityImport)?
+  private var cancelledImport: String?
+  private var configuration: Configuration?
+  private var started = false
+  private var activeCalls = 0
+  private var drained: CheckedContinuation<Void, Never>?
   private var active: Account?
+  private var signerAccount: String?
   private var changingAccount = false
+  private var transitionWaiters: [CheckedContinuation<Void, Never>] = []
   private var windows: [String: NativeWindow] = [:]
+  private var latestWindows: [String: Document] = [:]
   private var observers: [String: Task<Void, Never>] = [:]
 
   func account() throws -> Account {
@@ -950,68 +1244,272 @@ private actor Runtime {
     return active
   }
 
-  func open(key: String, secret: String, nsec: String, general: [String], inbox: [String], discovery: [String], mediaOrigin: String?, generated: Bool) async throws -> String {
-    guard !changingAccount else { throw problem("AccountBusy") }
-    if let active {
-      guard active.key == key else { throw problem("IdentityMismatch") }
-      return try wireName(active.kit.accountSetupReadiness(accountRef: key))
+  func beginAccountCall() throws -> Account {
+    let current = try account()
+    activeCalls += 1
+    return current
+  }
+
+  func selectSigner(_ key: String) throws -> Document {
+    guard signerAccount == nil || signerAccount == key else { throw problem("AccountBusy") }
+    let kit = try existingRuntime()
+    guard try availableSigner(kit, key) else { throw problem("AccountSignedOut") }
+    _ = try kit.localAccountKeyPackages(accountRef: key)
+    let profile = try kit.userProfile(accountIdHex: key)
+    signerAccount = key
+    return ["name": bridgeValue(profile?.displayName ?? profile?.name), "about": bridgeValue(profile?.about)]
+  }
+
+  private func availableSigner(_ kit: Marmot, _ key: String) throws -> Bool {
+    try kit.listAccounts().contains { $0.accountIdHex == key && $0.localSigning && !$0.signedOut && !$0.unlinked }
+  }
+
+  func beginSignerCall(_ key: String) throws -> Marmot {
+    guard signerAccount == key else { throw problem("AccountClosed") }
+    let kit = try existingRuntime()
+    activeCalls += 1
+    return kit
+  }
+
+  func endCall() {
+    activeCalls -= 1
+    if activeCalls == 0 {
+      drained?.resume()
+      drained = nil
     }
-    guard [key, secret].allSatisfy({ $0.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil }) else {
-      throw problem("IdentityMismatch")
+  }
+
+  private func existingRuntime() throws -> Marmot {
+    guard !changingAccount, let kit else { throw problem("AccountClosed") }
+    return kit
+  }
+
+  private func stopRuntime() async throws {
+    discardImport()
+    let current = kit
+    kit = nil
+    configuration = nil
+    started = false
+    try await current?.shutdownAndClose()
+  }
+
+  // The caller owns changingAccount across construction and use.
+  private func prepare(_ next: Configuration, start: Bool = true) async throws -> Marmot {
+    if let kit, configuration == next {
+      if start && !started { try await startRuntime(kit) }
+      return kit
     }
-    changingAccount = true
-    defer { changingAccount = false }
+    guard active == nil else { throw problem("AccountBusy") }
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
+    try await stopRuntime()
     let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    var directory = base.appendingPathComponent("marmot", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var root = base.appendingPathComponent("marmot-accounts", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     var resources = URLResourceValues()
     resources.isExcludedFromBackup = true
-    try directory.setResourceValues(resources)
-    let root = directory.appendingPathComponent(key, isDirectory: true)
-    let store = AccountCredential(account: key, secret: secret, marker: root.appendingPathComponent("boop-credential"))
+    try root.setResourceValues(resources)
     var deployment = marmotDeploymentNeutral()
-    deployment.discoveryIndexerRelays = discovery
-    deployment.groupImageEndpoint = mediaOrigin
-    deployment.newGroupMediaEndpoints = mediaOrigin.map { [$0] } ?? []
+    deployment.keychainService = "app.boop.accounts"
+    deployment.discoveryIndexerRelays = next.discovery
+    deployment.groupImageEndpoint = next.origin
+    deployment.newGroupMediaEndpoints = next.origin.map { [$0] } ?? []
     var seen = Set<String>()
-    let directorySources = (general + discovery).filter { seen.insert($0).inserted }
-    let kit = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: directorySources, options: MarmotOptions(
-      clientName: "Boop", devicePlatform: "iOS", secretStore: store,
-      attachmentAcquisitionMode: .hostManaged, deployment: deployment
+    let relays = (next.general + next.discovery).filter { seen.insert($0).inserted }
+    let opened = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: relays, options: MarmotOptions(
+      clientName: "Boop", devicePlatform: "iOS", attachmentAcquisitionMode: .hostManaged,
+      acquirePublicAvatars: false, deployment: deployment
     ))
+    kit = opened
+    configuration = next
+    if start { try await startRuntime(opened) }
+    return opened
+  }
+
+  private func startRuntime(_ kit: Marmot) async throws {
+    if started { return }
     do {
-      let known = try kit.listAccounts()
-      guard !known.contains(where: { $0.accountIdHex != key || $0.label != key }) else { throw problem("IdentityMismatch") }
-      guard !known.contains(where: { $0.unlinked || $0.signedOut }) else { throw problem("AccountSignedOut") }
       try await kit.start()
-      if known.isEmpty {
-        let created = if generated {
-          try await kit.createHostIdentity(nsec: nsec, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox)
-        } else {
-          try await kit.login(identity: nsec, defaultRelays: general, bootstrapRelays: discovery, inboxRelays: inbox)
-        }
-        guard created.accountIdHex == key, created.label == key else { throw problem("IdentityMismatch") }
-      }
-      let readiness = try wireName(kit.accountSetupReadiness(accountRef: key))
-      active = Account(key: key, kit: kit)
-      return readiness
+      started = true
     } catch {
-      try? await kit.shutdownAndClose()
+      let previous = configuration
+      try? await stopRuntime()
+      if signerAccount != nil, let previous { _ = try? await prepare(previous, start: false) }
       throw error
     }
   }
 
-  func close(notify: (String) -> Void) async throws {
+  func listAccounts(general: [String], discovery: [String], origin: String?) async throws -> [Document] {
     guard !changingAccount else { throw problem("AccountBusy") }
-    guard let active else { return }
     changingAccount = true
-    defer { changingAccount = false }
-    self.active = nil
+    defer { endTransition() }
+    let kit = try await prepare(Configuration(general: general, discovery: discovery, origin: origin), start: false)
+    return try kit.listAccounts().filter { $0.localSigning }.map {
+      let key = $0.accountIdHex
+      let readiness = try kit.onboardingRecoveryRequired(accountRef: key)
+        ? "recovery_required" : wireName(kit.accountSetupReadiness(accountRef: key))
+      return ["key": key, "signedOut": $0.signedOut, "unlinked": $0.unlinked, "readiness": readiness]
+    }
+  }
+
+  func prepareImport(token: String, input: String, password: String) async throws -> String {
+    let kit = try existingRuntime()
+    changingAccount = true
+    defer { endTransition() }
+    identityImport = nil
+    cancelledImport = nil
+    let prepared = try await kit.prepareIdentityImport(input: input, password: password)
+    guard cancelledImport != token else { throw problem("IdentityImportExpired") }
+    identityImport = (token, prepared)
+    return prepared.publicKey()
+  }
+
+  func discardImport(token: String? = nil) {
+    if let token {
+      cancelledImport = token
+      if identityImport?.token != token { return }
+    }
+    identityImport = nil
+  }
+
+  func install(token: String?, name: String?, about: String?, general: [String], inbox: [String], discovery: [String]) async throws -> String {
+    guard !changingAccount else { throw problem("AccountBusy") }
+    changingAccount = true
+    defer { endTransition() }
+    let current: Marmot
+    if let configuration { current = try await prepare(configuration) }
+    else { current = try await prepare(Configuration(general: general, discovery: discovery, origin: nil)) }
+    if let token {
+      guard let candidate = identityImport, candidate.token == token else { throw problem("IdentityImportExpired") }
+      identityImport = nil
+      return try await current.beginPreparedOnboarding(identity: candidate.prepared, options: OnboardingOptionsFfi(defaultRelays: general, discoveryRelays: discovery, inboxRelays: inbox)).accountIdHex
+    }
+    let profile = UserProfileMetadataFfi(name: name, displayName: name, about: about, picture: nil, banner: nil, nip05: nil, lud16: nil)
+    return try await current.createIdentityWithInitialProfile(profile: profile, defaultRelays: general, bootstrapRelays: general, inboxRelays: inbox).account.accountIdHex
+  }
+
+  func onboarding(key: String, action: String, step: String?, revision: String?, epoch: String?) async throws -> Document? {
+    let kit = try existingRuntime()
+    changingAccount = true
+    defer { endTransition() }
+    if action != "read" { try await startRuntime(kit) }
+    func selectedStep() throws -> OnboardingStepFfi {
+      switch step {
+      case "profile": return .profile
+      case "follows": return .follows
+      case "relays": return .relays
+      case "inbox_relays": return .inboxRelays
+      case "single_device": return .singleDevice
+      case "key_package": return .keyPackage
+      default: throw problem("InvalidOnboardingStep")
+      }
+    }
+    let snapshot: OnboardingSnapshotFfi?
+    switch action {
+    case "read": snapshot = try kit.onboardingSnapshot(accountRef: key)
+    case "run": snapshot = try await kit.runOnboarding(accountRef: key)
+    case "retry": snapshot = try await kit.retryOnboardingStep(accountRef: key, step: selectedStep())
+    case "skip": snapshot = try await kit.continueOnboardingWithout(accountRef: key, step: selectedStep())
+    case "propose": snapshot = try await kit.proposeOnboardingRecommendedRelays(accountRef: key, step: selectedStep())
+    case "approve", "acknowledge":
+      guard let revision, let displayed = UInt64(revision) else { throw problem("InvalidOnboardingRevision") }
+      if action == "approve" {
+        if let epoch { snapshot = try await kit.approveOnboardingRepairInEpoch(accountRef: key, revision: displayed, recoveryEpoch: epoch) }
+        else { snapshot = try await kit.approveOnboardingRepair(accountRef: key, revision: displayed) }
+      } else {
+        if let epoch { snapshot = try await kit.acknowledgeOnboardingSingleDeviceInEpoch(accountRef: key, revision: displayed, recoveryEpoch: epoch) }
+        else { snapshot = try await kit.acknowledgeOnboardingSingleDevice(accountRef: key, revision: displayed) }
+      }
+    case "cancelRepair": snapshot = try await kit.cancelOnboardingRepair(accountRef: key)
+    case "recover":
+      _ = try await kit.recoverOnboarding(accountRef: key, acknowledgeLatestOnlyEvidence: true)
+      return nil
+    case "cancel":
+      try await kit.cancelOnboarding(accountRef: key)
+      return nil
+    default: throw problem("InvalidOnboardingAction")
+    }
+    guard let snapshot else { return nil }
+    let proposal: Document? = snapshot.proposal.map {
+      ["read": $0.readRelays, "write": $0.writeRelays, "inconclusive": $0.inconclusive]
+    }
+    let notice: Document? = snapshot.singleDeviceNotice.map {
+      ["discovery": wireName($0.discovery), "complete": $0.discoveryComplete]
+    }
+    return ["ready": snapshot.ready, "revision": String(snapshot.revision), "epoch": bridgeValue(snapshot.recoveryEpoch),
+      "proposal": bridgeValue(proposal), "deviceNotice": bridgeValue(notice),
+      "steps": snapshot.steps.map { ["step": wireName($0.step), "status": wireName($0.status), "actions": $0.actions.map { wireName($0) }] }]
+  }
+
+  func remove(_ key: String) async throws {
+    let kit = try existingRuntime()
+    guard active?.key != key && signerAccount != key else { throw problem("AccountBusy") }
+    changingAccount = true
+    defer { endTransition() }
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
+    try await kit.removeAccount(accountRef: key)
+  }
+
+  func resumeSetup() async throws {
+    let kit = try existingRuntime()
+    changingAccount = true
+    defer { endTransition() }
+    try await startRuntime(kit)
+  }
+
+  func signOut(_ key: String) async throws {
+    let kit = try existingRuntime()
+    guard active?.key != key else { throw problem("AccountBusy") }
+    changingAccount = true
+    defer { endTransition() }
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
+    _ = try await kit.signOut(accountRef: key, deleteKeyPackages: false)
+  }
+
+  func signIn(_ key: String) async throws {
+    let kit = try existingRuntime()
+    changingAccount = true
+    defer { endTransition() }
+    _ = try await kit.signInAccount(accountRef: key)
+  }
+
+  func open(key: String, general: [String], discovery: [String], mediaOrigin: String?) async throws -> String {
+    guard !changingAccount else { throw problem("AccountBusy") }
+    changingAccount = true
+    defer { endTransition() }
+    guard signerAccount == key else { throw problem("IdentityMismatch") }
+    let kit = try await prepare(Configuration(general: general, discovery: discovery, origin: mediaOrigin))
+    guard let known = try kit.listAccounts().first(where: { $0.accountIdHex == key && $0.localSigning }) else { throw problem("IdentityMismatch") }
+    guard !known.unlinked && !known.signedOut else { throw problem("AccountSignedOut") }
+    guard active == nil || active?.key == key else { throw problem("IdentityMismatch") }
+    let readiness = try wireName(kit.accountSetupReadiness(accountRef: key))
+    active = Account(key: key, kit: kit)
+    return readiness
+  }
+
+  private func endTransition() {
+    changingAccount = false
+    let waiters = transitionWaiters
+    transitionWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+  }
+
+  func close(closeRuntime: Bool, pauseMessaging: Bool, notify: (String) -> Void) async throws {
+    while changingAccount { await withCheckedContinuation { transitionWaiters.append($0) } }
+    changingAccount = true
+    defer { endTransition() }
+    active = nil
     for id in Array(windows.keys) {
       await closeWindow(id)
       notify(id)
     }
-    try await active.kit.shutdownAndClose()
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
+    if closeRuntime {
+      signerAccount = nil
+      try await stopRuntime()
+    } else if pauseMessaging, started, let configuration {
+      try await stopRuntime()
+      _ = try await prepare(configuration, start: false)
+    }
   }
 
   func window(_ id: String) throws -> NativeWindow {
@@ -1037,10 +1535,15 @@ private actor Runtime {
     let handle = try await account.kit.subscribeAccountAttention()
     return try await install(.attention(handle, account.key), id: id, account: account)
   }
-  func openGroupState(id: String, group: String) async throws -> Document {
+  func openGroupState(id: String, group: String, roster: Bool) async throws -> Document {
     let account = try account()
     let handle = try await account.kit.subscribeGroupState(accountRef: account.key, groupIdHex: group)
-    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle)), id: id, account: account)
+    let read: @Sendable () async throws -> Document = {
+      if roster { return try await rosterDocument(account.kit, account.key, group) }
+      return try await groupDocument(account.kit, account.key, group)
+    }
+    let details = try await read()
+    return try await install(.groupState(GroupStateWindow(generation: id, handle: handle, details: details, kind: roster ? "groupRoster" : "groupState", read: read)), id: id, account: account)
   }
 
   func openGroupCall(id: String, group: String) async throws -> Document {
@@ -1053,14 +1556,38 @@ private actor Runtime {
     return try await install(.groupCall(window), id: id, account: account)
   }
 
-  func openConversation(id: String, group: String, target: String?) async throws -> Document {
-    let account = try account()
-    let handle = try await account.kit.openConversationWindow(accountRef: account.key, groupIdHex: group, mode: target == nil ? .automatic : .message, messageIdHex: target, initialRows: 40, timeoutMs: 0)
-    return try await install(.conversation(handle), id: id, account: account)
+  func openConversation(id: String, group: String, target: String?, speculative: Bool) async throws -> Document {
+    let account = try beginAccountCall()
+    let started = ProcessInfo.processInfo.systemUptime
+    let rows: UInt32 = speculative ? 56 : target == nil ? 100 : 40
+    do {
+      let handle = try await account.kit.openConversationWindow(
+        accountRef: account.key,
+        groupIdHex: group,
+        mode: target != nil ? .message : speculative ? .latest : .automatic,
+        messageIdHex: target,
+        initialRows: rows,
+        timeoutMs: speculative ? 1_500 : 0
+      )
+      let snapshot = try await install(.conversation(handle), id: id, account: account)
+      #if DEBUG
+      NSLog("[BoopMarmot] conversation_open elapsedMs=%d speculative=%@ rows=%u ok=true",
+            Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), String(speculative), rows)
+      #endif
+      endCall()
+      return snapshot
+    } catch {
+      #if DEBUG
+      NSLog("[BoopMarmot] conversation_open elapsedMs=%d speculative=%@ rows=%u ok=false",
+            Int((ProcessInfo.processInfo.systemUptime - started) * 1_000), String(speculative), rows)
+      #endif
+      endCall()
+      throw error
+    }
   }
 
   private func install(_ window: NativeWindow, id: String, account: Account) async throws -> Document {
-    guard active?.kit === account.kit else {
+    guard active?.generation == account.generation else {
       await window.cancel()
       throw problem("AccountClosed")
     }
@@ -1072,8 +1599,14 @@ private actor Runtime {
       await window.cancel()
       throw problem("WindowClosed")
     }
+    latestWindows[id] = initial
     windows[id] = window
     return initial
+  }
+
+  func windowSnapshot(_ id: String) throws -> Document {
+    guard let latest = latestWindows[id] else { throw problem("WindowClosed") }
+    return latest
   }
 
   func observe(id: String, notify: @escaping (String, Document) -> Void) throws {
@@ -1081,15 +1614,14 @@ private actor Runtime {
     guard observers[id] == nil else { return }
     observers[id] = Task {
       do {
-        var previous: Document?
         while !Task.isCancelled, let snapshot = try await window.next() {
           guard !Task.isCancelled else { return }
+          let previous = latestWindows.updateValue(snapshot, forKey: id)
           if let previous, let delta = windowDelta(previous, snapshot) {
             notify("windowChanged", ["id": id, "delta": delta])
           } else {
             notify("windowChanged", ["id": id, "snapshot": snapshot])
           }
-          previous = snapshot
         }
         if !Task.isCancelled { notify("windowClosed", ["id": id, "code": "WindowClosed"]) }
       } catch {
@@ -1099,67 +1631,13 @@ private actor Runtime {
   }
 
   func closeWindow(_ id: String) async {
+    latestWindows.removeValue(forKey: id)
     let handle = windows.removeValue(forKey: id)
     let observer = observers.removeValue(forKey: id)
     observer?.cancel()
     await handle?.cancel()
     await observer?.value
   }
-}
-
-private final class AccountCredential: SecretStore, @unchecked Sendable {
-  let account: String
-  private let secret: String
-  private let marker: URL
-  private let lock = NSLock()
-
-  init(account: String, secret: String, marker: URL) {
-    self.account = account
-    self.secret = secret
-    self.marker = marker
-  }
-
-  func hasSecretForLabel(label: String) throws -> Bool {
-    try lock.withLock { try label == account && registered() }
-  }
-  func hasSecretForAccountId(accountIdHex: String) throws -> Bool {
-    try lock.withLock { try accountIdHex == account && registered() }
-  }
-  func writeSecret(label: String, accountIdHex: String, secretKeyHex: String) throws {
-    try lock.withLock {
-      guard label == account, accountIdHex == account, secretKeyHex == secret else {
-        throw MarmotKitError.KeystoreUnavailable(details: "Identity mismatch")
-      }
-      try Data(account.utf8).write(to: marker, options: .atomic)
-    }
-  }
-  func loadSecret(label: String, accountIdHex: String) throws -> String {
-    try lock.withLock {
-      guard label == account, accountIdHex == account, try registered() else {
-        throw MarmotKitError.SecretNotFound(details: "Account credential unavailable")
-      }
-      return secret
-    }
-  }
-  func removeSecret(label: String, accountIdHex: String) throws {
-    try lock.withLock {
-      if label == account, accountIdHex == account, FileManager.default.fileExists(atPath: marker.path) {
-        try FileManager.default.removeItem(at: marker)
-      }
-    }
-  }
-  private func registered() throws -> Bool {
-    guard FileManager.default.fileExists(atPath: marker.path) else { return false }
-    guard try Data(contentsOf: marker) == Data(account.utf8) else {
-      throw MarmotKitError.KeystoreUnavailable(details: "Identity mismatch")
-    }
-    return true
-  }
-}
-
-private func revision(_ generation: String, _ sequence: String) throws -> ConversationWindowRevisionFfi {
-  guard let number = UInt64(sequence) else { throw problem("InvalidSequence") }
-  return ConversationWindowRevisionFfi(generation: generation, sequence: number)
 }
 
 func problem(_ code: String) -> Exception {
@@ -1169,6 +1647,9 @@ func problem(_ code: String) -> Exception {
 private func errorCode(_ error: Error) -> String {
   if let error = error as? Exception { return error.code }
   if let error = error as? MarmotKitError {
+    if case .InvalidIdentity(let details) = error, details == "identity backup exceeds the supported scrypt cost" {
+      return "BackupCost"
+    }
     if case .Runtime(let details) = error, details == "device group refused: device_link_pending" {
       return "DeviceLinkPending"
     }

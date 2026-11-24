@@ -1,5 +1,5 @@
+import type { BlockedUsers } from "@/core/marmot/blocked-users";
 import { useLayoutEffect, useRef, useState } from "react";
-import { isPinnedIdentity } from "@/core/identity/storage";
 import type { MarmotConversation, MarmotWindow } from "@/core/marmot/native";
 import {
   createOpenLaterResolver,
@@ -21,9 +21,9 @@ export function useOpenLater(
   snapshot: MarmotConversation | undefined,
   active: boolean,
   hidden: readonly string[],
-  blockedKeys: string,
+  blockState: ReturnType<BlockedUsers["snapshot"]>,
 ) {
-  const { db, identity, lock, privacy } = useLocal();
+  const { db, isCurrent, lock, privacy } = useLocal();
   const resolver = useRef<ReturnType<typeof createOpenLaterResolver>>(null);
   const [result, setResult] = useState<{
     window: Window;
@@ -44,7 +44,7 @@ export function useOpenLater(
           status.status !== "ready" ||
           !app.active ||
           app.locked ||
-          !isPinnedIdentity(db, identity.publicKey)
+          !isCurrent()
         )
           return false;
         const current = status.snapshot;
@@ -55,7 +55,7 @@ export function useOpenLater(
             row.text === text &&
             row.eventKind === timeLockKind &&
             !row.deleted &&
-            !row.invalidated &&
+            !row.invalidationStatus &&
             !omitted.has(id) &&
             !privacy.isBlocked(row.sender),
         );
@@ -69,7 +69,7 @@ export function useOpenLater(
       omitted.clear();
       resolver.current = null;
     };
-  }, [active, db, hidden, identity.publicKey, lock, privacy, window]);
+  }, [active, db, hidden, isCurrent, lock, privacy, window]);
 
   useLayoutEffect(() => {
     const rows = snapshot?.messages.filter(
@@ -79,7 +79,7 @@ export function useOpenLater(
       if (row.deleted) removeOpenedMessage(db, row.id);
     }
     resolver.current?.scan(rows ?? []);
-  }, [active, blockedKeys, db, hidden, snapshot, window]);
+  }, [active, blockState, db, hidden, snapshot, window]);
 
   return {
     states: active && result?.window === window ? result?.states : undefined,

@@ -1,27 +1,33 @@
+import {
+  acceptedAttachments,
+  delivery,
+} from "@/core/marmot/message-projection";
+import { quoteText } from "@/core/marmot/message-content";
+import { PreparedMessageText } from "./prepared-message-text";
+import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
-import {
-  useActiveWithAudioOverlay,
-  usePlayerPresentation,
-} from "@/components/audio/presentation";
+import { usePlayerPresentation } from "@/components/audio/presentation";
+import { conversationWindowActive } from "@/core/marmot/conversation-route";
+import { messagingMetric } from "@/core/messaging/diagnostics";
 import { audioFile, showMiniPlayer } from "@/core/audio/types";
 import { playerPlayback } from "@/core/audio/controller";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import Transition from "react-native-screen-transitions";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import {
+  Bubble,
   Chat,
   type ChatHandle,
   Composer,
   type IMessage,
   InputToolbar,
-  MessageText,
 } from "@kesha-antonov/react-native-chat";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, useIsFocused, useNavigation } from "expo-router";
+import { router, useIsFocused, useNavigation, useRoute } from "expo-router";
 import {
   type ComponentRef,
   useCallback,
@@ -40,6 +46,9 @@ import {
   BackHandler,
   Image as BackgroundImage,
   Keyboard,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Pressable,
   StyleSheet,
   type TextInput,
   View,
@@ -62,7 +71,7 @@ import {
   tapFeedback,
 } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
-import { usePerson } from "@/components/people/use-person";
+import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
 import {
@@ -80,8 +89,7 @@ import { createAttachmentPresentation } from "@/core/marmot/attachment-presentat
 import { speechSource } from "@/core/speech/service";
 import {
   marmot,
-  type MarmotConversation,
-  type MarmotGroupDetails,
+  type MarmotGroupInvitation,
   type MarmotMessage,
   type MarmotUpload,
 } from "@/core/marmot/native";
@@ -116,12 +124,11 @@ import {
   MessageEditHistory,
 } from "./marmot-message-tools";
 import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
-import { useAccountMarmotWindow } from "./marmot-window";
+import { useConversationWindow } from "./marmot-window";
 import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
-import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
-import { rememberGroupProfile } from "./group-details-cache";
 
 const locationKind = 24883;
 const systemLabels = {
@@ -145,6 +152,7 @@ function subscribeForeground(listener: () => void) {
   return () => subscription.remove();
 }
 const isForeground = () => AppState.currentState === "active";
+const noVisibleMessages: ReadonlySet<string> = new Set();
 
 export function OpenMarmotDirect({ peer }: { peer: string }) {
   const { t } = useTranslation(namespaces);
@@ -219,6 +227,27 @@ type ChatMessage = IMessage & {
   originalText?: string;
 };
 
+type PreparedMessageEntry = {
+  context: readonly unknown[];
+  message: ChatMessage;
+};
+// Native deltas keep unchanged rows by reference. Weak keys tie prepared
+// rows to the lifetime of that projection, including across React mounts.
+const preparedMessages = new WeakMap<MarmotMessage, PreparedMessageEntry>();
+
+const locationsByMessage = new WeakMap<
+  MarmotMessage,
+  { text: string; location: ReturnType<typeof locationFromText> }
+>();
+
+function messageLocation(row: MarmotMessage) {
+  const cached = locationsByMessage.get(row);
+  if (cached?.text === row.text) return cached.location;
+  const location = locationFromText(row.text);
+  locationsByMessage.set(row, { text: row.text, location });
+  return location;
+}
+
 type AttachmentRequest = Pick<
   Parameters<typeof sendMarmotAttachment>[0],
   "caption" | "reply" | "token"
@@ -260,6 +289,7 @@ export function MarmotConversationScreen({
     chatPreferences,
     db,
     marmotSession,
+    conversations,
     speech,
     audio,
     calling,
@@ -277,7 +307,15 @@ export function MarmotConversationScreen({
   );
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
-  const keepChatWindow = useActiveWithAudioOverlay();
+  const route = useRoute();
+  const subscribeNavigation = useCallback(
+    (notify: () => void) => navigation.addListener("state", notify),
+    [navigation],
+  );
+  const keepChatWindow = useSyncExternalStore(subscribeNavigation, () => {
+    const state = navigation.getState();
+    return state ? conversationWindowActive(state, route.key, id) : focused;
+  });
   const { miniHeight } = usePlayerPresentation();
   const { top: safeTop } = useSafeAreaInsets();
   const playerClearance = miniHeight - safeTop + space.sm;
@@ -293,38 +331,39 @@ export function MarmotConversationScreen({
     marmotSession.subscribe,
     marmotSession.revision,
   );
-  const open = useCallback(() => {
-    if (!audioMessage || chatPreferences.hidden(id).includes(audioMessage))
-      return marmot.openConversation(id);
-    return marmot
-      .openConversation(id, audioMessage)
-      .catch(() => marmot.openConversation(id));
-  }, [audioMessage, chatPreferences, id]);
-  const {
-    snapshot: liveSnapshot,
-    window,
-    error,
-    retry,
-  } = useAccountMarmotWindow(open, keepChatWindow);
-  const [profileTransition, setProfileTransition] = useState<{
-    revision: number;
-    snapshot: MarmotConversation;
-  }>();
-  const snapshot =
-    liveSnapshot ??
-    (!focused &&
-    foreground &&
-    !locked &&
-    profileTransition?.revision === accountRevision
-      ? profileTransition.snapshot
-      : undefined);
-  const [readyGeneration, setReadyGeneration] = useState<string>();
+  const target =
+    audioMessage && !chatPreferences.hidden(id).includes(audioMessage)
+      ? audioMessage
+      : undefined;
+  const { snapshot, window, error, retry } = useConversationWindow(
+    id,
+    target,
+    keepChatWindow,
+  );
+  const [opening] = useState(() => ({
+    at: conversations.navigationStarted(id),
+    cached: Boolean(snapshot),
+    position: conversations.position(id, target),
+  }));
+  const presentedGeneration = useRef<string>(undefined);
+  const readyGeneration = useRef<string>(undefined);
+  useLayoutEffect(() => {
+    if (!snapshot || presentedGeneration.current === snapshot.generation)
+      return;
+    presentedGeneration.current = snapshot.generation;
+    messagingMetric("conversation snapshot committed", {
+      cached: opening.cached,
+      ms: performance.now() - opening.at,
+      rows: snapshot.messages.length,
+    });
+  }, [opening, snapshot]);
   const messageStyle = useChatPresentation();
   const kit = useChatAppearance(messageStyle);
   const material = conversationMaterials[kit.colorScheme];
   const translateError = useMarmotError();
   const [reply, setReply] = useState<ChatMessage | null>(null);
   const [paging, setPaging] = useState(false);
+  const pagingWindow = useRef<typeof window>(undefined);
   const [busy, setBusy] = useState(false);
   const sendingAttachment = useRef<AbortController>(undefined);
   const [upload, setUpload] = useState<
@@ -350,7 +389,15 @@ export function MarmotConversationScreen({
   const composerRef = useRef<ComponentRef<typeof TextInput>>(null);
   const [later, setLater] = useState(false);
   const [laterError, setLaterError] = useState<string>();
-  const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
+  const [visibility, setVisibility] = useState<{
+    generation: string;
+    ids: ReadonlySet<string>;
+  }>();
+  const visibleGeneration = snapshot?.generation;
+  const visible =
+    visibility && visibility.generation === visibleGeneration
+      ? visibility.ids
+      : noVisibleMessages;
   const [panel, setPanel] = useState<
     "search" | "media" | "edits" | "forward" | "poll" | null
   >(initialPanel ?? null);
@@ -369,7 +416,7 @@ export function MarmotConversationScreen({
     return () => back.remove();
   }, [closeSearch, focused, searching]);
   const [selected, setSelected] = useState<MarmotMessage>();
-  const [jump, setJump] = useState<string>();
+  const [jump, setJump] = useState<{ message: string } | { latest: true }>();
   const [highlight, setHighlight] = useState("");
   const [pinOffset, setPinOffset] = useState(0);
   const chatRef = useRef<ChatHandle | null>(null);
@@ -379,12 +426,14 @@ export function MarmotConversationScreen({
     undefined,
   );
   const peer = snapshot?.peer;
-  const { name: peerName, photo: avatar } = usePerson(
+  const { name: peerName, photo: avatar } = usePresentedPerson(
     snapshot?.invited ? "" : (peer ?? ""),
+    snapshot?.title,
   );
-  const groupAvatar = useMarmotGroupAvatar(
-    id,
-    snapshot?.invited ? undefined : snapshot?.image,
+  const groupAvatar = usePreparedGroupAvatar(
+    !peer && !snapshot?.invited && snapshot?.image
+      ? snapshot.avatarAsset
+      : undefined,
   );
   const self = identity.publicKey;
   const blocked = Boolean(peer && privacy.isBlocked(peer));
@@ -393,12 +442,12 @@ export function MarmotConversationScreen({
     : peer
       ? peerName
       : snapshot?.title || t("messages:marmot.group");
-  const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
   const people = snapshot?.identities;
+  const contacts = useContacts();
   const mentionRoster = useMentionMembers(
     id,
-    Boolean(snapshot && !snapshot.invited && !peer),
+    Boolean(snapshot && !snapshot.invited && !peer && composerFocused),
   );
   const mentionNames = useMemo(() => {
     const names = new Map<string, string>(
@@ -406,8 +455,11 @@ export function MarmotConversationScreen({
     );
     for (const member of mentionRoster.members ?? [])
       names.set(member.npub, member.label);
+    for (const contact of contacts)
+      if (contact.name && names.has(toNpub(contact.publicKey)))
+        names.set(toNpub(contact.publicKey), contact.name);
     return names;
-  }, [mentionRoster.members, people]);
+  }, [contacts, mentionRoster.members, people]);
   const pins = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.pinned(id),
   );
@@ -417,7 +469,7 @@ export function MarmotConversationScreen({
   const listened = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.listened(id),
   );
-  const blockedKeys = privacy.blockedKeys().join(",");
+  const blockState = privacy.blocks.snapshot();
   const presentation = useMemo(
     () =>
       createAttachmentPresentation(
@@ -441,11 +493,13 @@ export function MarmotConversationScreen({
               row.id === message &&
               row.sourceId === source &&
               !row.deleted &&
-              !row.invalidated &&
+              !row.invalidationStatus &&
               (row.expiresAt == null || row.expiresAt * 1_000 > Date.now()) &&
               !privacy.isBlocked(row.sender),
           );
-          const asset = row?.attachments.find((asset) => asset.index === index);
+          const asset =
+            row &&
+            acceptedAttachments(row).find((asset) => asset.index === index);
           if (!row || !asset) return;
           return {
             kind: "marmot",
@@ -480,8 +534,9 @@ export function MarmotConversationScreen({
   useLayoutEffect(() => {
     presentation.reconcile();
     for (const row of snapshot?.messages ?? [])
-      if (row.deleted || row.invalidated) downloads.invalidate(id, row.id);
-  }, [blockedKeys, downloads, hidden, id, locked, presentation, snapshot]);
+      if (row.deleted || row.invalidationStatus)
+        downloads.invalidate(id, row.id);
+  }, [blockState, downloads, hidden, id, locked, presentation, snapshot]);
   useEffect(() => {
     if (
       !focused ||
@@ -498,7 +553,7 @@ export function MarmotConversationScreen({
       .slice(0, 16);
     for (const row of recent) {
       if (row.sender !== self || hidden.includes(row.id)) continue;
-      for (const item of row.attachments) {
+      for (const item of acceptedAttachments(row)) {
         const source = speechSource(id, row, item, self);
         if (source) speech.outgoing(source, row.sentAt);
       }
@@ -525,74 +580,145 @@ export function MarmotConversationScreen({
       !blocked,
     ),
     hidden,
-    blockedKeys,
+    blockState,
   );
   const messages = useMemo(() => {
-    const blocked = new Set(blockedKeys.split(","));
+    const blocked = (key: string) =>
+      key !== self &&
+      (blockState.status !== "ready" || blockState.keys.has(key));
     const omitted = new Set(hidden);
     const played = new Set(listened);
     const names = new Map(people?.map((person) => [person.id, person.name]));
+    for (const contact of contacts)
+      if (contact.name) names.set(contact.publicKey, contact.name);
     const user = (key: string) => ({ _id: key, name: names.get(key) });
-    return (rows ?? [])
-      .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
-      .map((row): ChatMessage => ({
-        _id: row.id,
-        direction: row.sender === self ? "outgoing" : "incoming",
-        createdAt: row.sentAt * 1_000,
-        user: user(row.sender),
-        text: row.systemType
-          ? t(systemLabel(row.systemType))
-          : row.deleted
-            ? deleted
-            : row.eventKind === timeLockKind ||
-                row.eventKind === locationKind ||
-                row.poll
-              ? ""
-              : row.text,
-        location:
-          row.eventKind === locationKind && !row.deleted
-            ? locationFromText(row.text)
-            : undefined,
-        pending: row.sender === self && !row.confirmed && !row.invalidated,
-        sent: row.sender === self && row.confirmed,
-        isFailed: row.sender === self && row.invalidated,
-        isEdited: row.edited,
-        isMediaUnread:
-          row.sender !== self &&
-          !played.has(row.id) &&
-          row.attachments.some(
-            (item) =>
-              item.type.startsWith("audio/") ||
-              item.round ||
-              item.name === "video-note.mp4",
-          ),
-        isPinned: pins.includes(row.id),
-        system: Boolean(row.systemType),
-        replyMessage:
-          row.replyPreview &&
-          !blocked.has(row.replyPreview.sender) &&
-          !omitted.has(row.replyPreview.id)
+    const deletionLabel = (source: MarmotMessage["deletionSource"]) =>
+      t(
+        source === "admin"
+          ? "messages:marmot.removedByAdmin"
+          : "messages:marmot.removedMessage",
+      );
+    const prepared = (rows ?? [])
+      .filter((row) => {
+        if ((row.system || !blocked(row.sender)) && !omitted.has(row.id))
+          return true;
+        preparedMessages.delete(row);
+        return false;
+      })
+      .map((row): ChatMessage => {
+        const sender = names.get(row.sender);
+        const pinned = pins.includes(row.id);
+        const unheard = !played.has(row.id);
+        const subject = row.system?.subject ?? row.system?.actor;
+        const eventName =
+          row.system?.name ||
+          (subject && !blocked(subject) && names.get(subject));
+        const quote = row.replyPreview;
+        const visibleQuote =
+          quote && !blocked(quote.sender) && !omitted.has(quote.id)
+            ? quote
+            : undefined;
+        const missingQuote =
+          !quote && row.replyTo && !omitted.has(row.replyTo)
+            ? row.replyTo
+            : undefined;
+        const context = [
+          self,
+          sender,
+          pinned,
+          unheard,
+          eventName,
+          missingQuote,
+          (row.system || row.deleted || missingQuote) && t,
+        ];
+        // Quote plans are cached separately. Their labels and relative
+        // timestamps are formatted against the current presentation.
+        const prior = visibleQuote ? undefined : preparedMessages.get(row);
+        if (prior?.context.every((value, index) => value === context[index]))
+          return prior.message;
+        const status = row.sender === self ? delivery(row) : undefined;
+        const message: ChatMessage = {
+          _id: row.id,
+          direction: row.sender === self ? "outgoing" : "incoming",
+          createdAt: row.sentAt * 1_000,
+          user: { _id: row.sender, name: sender },
+          text: row.system
+            ? [t(systemLabel(row.system.type)), eventName]
+                .filter(Boolean)
+                .join(" · ")
+            : row.deleted
+              ? deletionLabel(row.deletionSource)
+              : row.eventKind === timeLockKind ||
+                  row.eventKind === locationKind ||
+                  row.poll
+                ? ""
+                : row.text,
+          location:
+            row.eventKind === locationKind && !row.deleted
+              ? messageLocation(row)
+              : undefined,
+          pending: status === "pending",
+          sent: status === "published" || status === "received",
+          isFailed: status === "failed",
+          isEdited: row.edited,
+          isMediaUnread:
+            row.sender !== self &&
+            unheard &&
+            acceptedAttachments(row).some(
+              (item) =>
+                item.type.startsWith("audio/") ||
+                item.round ||
+                item.name === "video-note.mp4",
+            ),
+          isPinned: pinned,
+          system: Boolean(row.system),
+          replyMessage: visibleQuote
             ? {
-                _id: row.replyPreview.id,
-                text: projectMentions(row.replyPreview.text, mentionNames).text,
-                user: user(row.replyPreview.sender),
+                _id: visibleQuote.id,
+                text: visibleQuote.deleted
+                  ? deletionLabel(visibleQuote.deletionSource)
+                  : visibleQuote.invalidationStatus
+                    ? t("messages:unavailableQuote")
+                    : quoteText(
+                        visibleQuote.content,
+                        visibleQuote.text,
+                        mentionNames,
+                      ),
+                user: user(visibleQuote.sender),
               }
-            : undefined,
-        reactions: row.reactions.map((reaction) => ({
-          emoji: reaction.emoji,
-          userIds:
-            reaction.own && !reaction.users.includes(self)
-              ? [...reaction.users, self]
-              : reaction.users,
-        })),
-        row,
-      }))
-      .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+            : missingQuote
+              ? {
+                  _id: missingQuote,
+                  text: t("messages:unavailableQuote"),
+                  user: { _id: "" },
+                }
+              : undefined,
+          reactions: row.reactions.map((reaction) => ({
+            emoji: reaction.emoji,
+            userIds:
+              reaction.own && !reaction.users.includes(self)
+                ? [...reaction.users, self]
+                : reaction.users,
+          })),
+          row,
+        };
+        if (!visibleQuote) preparedMessages.set(row, { context, message });
+        return message;
+      });
+    const alreadyNewestFirst = prepared.every(
+      (message, index) =>
+        index === 0 ||
+        Number(prepared[index - 1].createdAt) >= Number(message.createdAt),
+    );
+    const ordered = alreadyNewestFirst
+      ? prepared
+      : prepared.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+    return ordered;
   }, [
     rows,
+    contacts,
     people,
-    deleted,
-    blockedKeys,
+    blockState,
     hidden,
     listened,
     mentionNames,
@@ -604,7 +730,9 @@ export function MarmotConversationScreen({
     peer &&
     rows?.some(
       (row) =>
-        row.token && row.sender === self && row.confirmed && !row.invalidated,
+        row.token &&
+        row.sender === self &&
+        (delivery(row) === "published" || delivery(row) === "received"),
     ),
   );
   const gallery = useMemo(
@@ -647,7 +775,7 @@ export function MarmotConversationScreen({
     if (hidden.includes(message)) return;
     setPanel(null);
     setHighlight(query);
-    setJump(message);
+    setJump({ message });
     if (!messages.some((row) => row._id === message)) {
       void window?.jump(message).catch((reason) => {
         setJump(undefined);
@@ -656,13 +784,21 @@ export function MarmotConversationScreen({
     }
   }
   useEffect(() => {
-    if (!jump || !messages.some((row) => row._id === jump)) return;
+    if (!jump || !focused || !foreground || locked) return;
+    const latest = "latest" in jump;
+    const target = latest ? messages[0]?._id : jump.message;
+    if (!target || (!latest && !messages.some((row) => row._id === target)))
+      return;
     const task = requestAnimationFrame(() => {
-      chatRef.current?.scrollToMessage(jump, { isHighlighted: true });
+      if (!navigation.isFocused() || lock.getState().locked) return;
+      chatRef.current?.scrollToMessage(
+        target,
+        latest ? { viewPosition: 1, animated: false } : { isHighlighted: true },
+      );
       setJump(undefined);
     });
     return () => cancelAnimationFrame(task);
-  }, [jump, messages]);
+  }, [focused, foreground, jump, lock, locked, messages, navigation]);
   const canSend = Boolean(snapshot?.canSend && !blocked && !snapshot.invited);
   const pendingMedia = pendingMediaDraft(snapshot?.draft);
   const canCompose = canSend && !pendingMedia && !upload;
@@ -689,6 +825,31 @@ export function MarmotConversationScreen({
     );
   if (voiceSend && voiceSend.phase !== "uploading" && !showVoice)
     setVoiceSend(undefined);
+  const groupCreatedAt = useMemo(
+    () => chatPreferences.groupCreatedAt(id),
+    [chatPreferences, id],
+  );
+  const showGroupCreation = Boolean(
+    snapshot &&
+    !snapshot.invited &&
+    !peer &&
+    !snapshot.hasMoreBefore &&
+    groupCreatedAt,
+  );
+  const timeline = useMemo<ChatMessage[]>(() => {
+    if (!showGroupCreation || !groupCreatedAt) return translated.displayed;
+    return [
+      ...translated.displayed,
+      {
+        _id: `group-created:${id}`,
+        direction: "incoming",
+        createdAt: groupCreatedAt * 1000,
+        user: { _id: self },
+        text: t("messages:marmot.eventGroupCreated"),
+        system: true,
+      },
+    ];
+  }, [groupCreatedAt, id, self, showGroupCreation, t, translated.displayed]);
   const displayed: ChatMessage[] =
     showVoice && voice
       ? [
@@ -701,12 +862,34 @@ export function MarmotConversationScreen({
             pending: voice.phase !== "failed",
             isFailed: voice.phase === "failed",
           },
-          ...translated.displayed,
+          ...timeline,
         ]
-      : translated.displayed;
-  const audioMessageIndex = audioMessage
-    ? displayed.findIndex((row) => row._id === audioMessage)
+      : timeline;
+  const initialMessage =
+    target ?? (snapshot?.firstUnread ? undefined : opening.position?.id);
+  const initialMessageIndex = initialMessage
+    ? displayed.findIndex((row) => row._id === initialMessage)
     : -1;
+  const rememberedScroll = opening.position?.scroll;
+  const initialScrollOffset =
+    !target &&
+    initialMessageIndex >= 0 &&
+    rememberedScroll &&
+    rememberedScroll.generation === snapshot?.generation &&
+    rememberedScroll.sequence === snapshot?.sequence
+      ? rememberedScroll.y
+      : undefined;
+  const rememberScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (navigation.isFocused() && isForeground() && !lock.getState().locked)
+        conversations.rememberOffset(
+          id,
+          target,
+          event.nativeEvent.contentOffset.y,
+        );
+    },
+    [conversations, id, lock, navigation, target],
+  );
   const canSendFromWindow = () => {
     const state = window?.getState();
     return Boolean(
@@ -739,7 +922,7 @@ export function MarmotConversationScreen({
       (row) =>
         ids.has(row.id) &&
         !row.deleted &&
-        !row.systemType &&
+        !row.system &&
         !hidden.includes(row.id) &&
         (row.expiresAt == null || row.expiresAt * 1000 > Date.now()),
     );
@@ -747,7 +930,10 @@ export function MarmotConversationScreen({
   }
 
   function canDeleteForEveryone(row: MarmotMessage) {
-    return row.sender === self && row.confirmed && !row.invalidated;
+    return (
+      row.sender === self &&
+      (delivery(row) === "published" || delivery(row) === "received")
+    );
   }
 
   function requestDeletion(messageIds: readonly string[]) {
@@ -759,12 +945,26 @@ export function MarmotConversationScreen({
       {
         text: t("messages:marmot.deleteForMe"),
         onPress: () => {
-          for (const row of deletionTargets(ids) ?? []) {
-            chatPreferences.hide(id, row.id);
-            speech.invalidateMessage(id, row.id);
-            downloads.invalidate(id, row.id);
-            if (row.eventKind === timeLockKind) removeOpenedMessage(db, row.id);
-          }
+          void (async () => {
+            if (!deletionTargets(ids)) return;
+            for (const messageId of ids) {
+              if (marmotSession.revision() !== accountRevision) return;
+              const row = deletionTargets(new Set([messageId]))?.[0];
+              if (!row) continue;
+              if (
+                row.sender === self &&
+                row.invalidationStatus === "local_publish_failed"
+              ) {
+                const outcome = await marmot.discardFailedSend(id, row.id);
+                if (marmotSession.revision() !== accountRevision) return;
+                if (outcome !== "discarded") continue;
+              } else chatPreferences.hide(id, row.id);
+              speech.invalidateMessage(id, row.id);
+              downloads.invalidate(id, row.id);
+              if (row.eventKind === timeLockKind)
+                removeOpenedMessage(db, row.id);
+            }
+          })().catch(showError);
         },
       },
     ];
@@ -827,41 +1027,108 @@ export function MarmotConversationScreen({
     }: {
       viewableItems: { item: ChatMessage; isViewable: boolean }[];
     }) => {
-      const items = viewableItems
-        .filter(({ isViewable }) => isViewable)
-        .map(({ item }) => item);
-      setVisible(new Set(items.map(({ _id }) => _id)));
-      const latest = items.reduce<ChatMessage | undefined>(
-        (selected, item) =>
-          !selected || Number(item.createdAt) > Number(selected.createdAt)
-            ? item
-            : selected,
-        undefined,
-      );
       if (
-        !latest?.row ||
-        latest._id === lastRead.current ||
-        !focused ||
-        AppState.currentState !== "active" ||
+        !visibleGeneration ||
+        !navigation.isFocused() ||
+        !isForeground() ||
         lock.getState().locked
       )
         return;
-      lastRead.current = latest._id;
-      void marmot.markRead(id, latest._id).catch(() => {
-        lastRead.current = undefined;
-      });
+      const next = new Set(
+        viewableItems
+          .filter(({ isViewable }) => isViewable)
+          .map(({ item }) => item._id),
+      );
+      setVisibility((previous) =>
+        previous?.generation === visibleGeneration &&
+        next.size === previous.ids.size &&
+        [...next].every((key) => previous.ids.has(key))
+          ? previous
+          : { generation: visibleGeneration, ids: next },
+      );
     },
-    [focused, id, lock],
+    [lock, navigation, visibleGeneration],
   );
-  async function page(direction: "older" | "newer") {
-    if (!window || paging) return;
+  useEffect(() => {
+    if (
+      !focused ||
+      !foreground ||
+      locked ||
+      snapshot?.invited ||
+      blocked ||
+      !navigation.isFocused() ||
+      lock.getState().locked
+    )
+      return;
+    const latest = messages.reduce<ChatMessage | undefined>(
+      (selected, item) =>
+        item.row &&
+        visible.has(item._id) &&
+        (!selected || Number(item.createdAt) > Number(selected.createdAt))
+          ? item
+          : selected,
+      undefined,
+    );
+    if (!latest?.row) return;
+    conversations.remember(
+      id,
+      target,
+      latest === messages[0] && !snapshot?.hasMoreAfter
+        ? undefined
+        : latest._id,
+    );
+    if (latest._id === lastRead.current) return;
+    lastRead.current = latest._id;
+    void marmot.markRead(id, latest._id).catch(() => {
+      if (lastRead.current === latest._id) lastRead.current = undefined;
+    });
+  }, [
+    blocked,
+    conversations,
+    focused,
+    foreground,
+    id,
+    lock,
+    locked,
+    messages,
+    navigation,
+    snapshot?.hasMoreAfter,
+    snapshot?.invited,
+    target,
+    visible,
+  ]);
+  async function page(direction: "older" | "latest") {
+    if (
+      !window ||
+      pagingWindow.current === window ||
+      !navigation.isFocused() ||
+      !isForeground() ||
+      lock.getState().locked
+    )
+      return;
+    pagingWindow.current = window;
     setPaging(true);
     try {
+      const anchor = messages.find((item) => visible.has(item._id))?._id;
+      if (
+        direction === "older" &&
+        anchor &&
+        snapshot &&
+        snapshot.messages.length >= 160
+      )
+        await window.anchor(anchor);
       await window.page(direction);
+      if (direction === "latest") {
+        conversations.remember(id, target);
+        setJump({ latest: true });
+      }
     } catch (reason) {
       showError(reason);
     } finally {
-      setPaging(false);
+      if (pagingWindow.current === window) {
+        pagingWindow.current = undefined;
+        setPaging(false);
+      }
     }
   }
 
@@ -1079,16 +1346,8 @@ export function MarmotConversationScreen({
   }
 
   function openGroupDetails() {
-    if (!liveSnapshot || liveSnapshot.invited || !focused || locked) return;
-    setProfileTransition({ revision: accountRevision, snapshot: liveSnapshot });
-    rememberGroupProfile(
-      marmotSession,
-      id,
-      title,
-      !peer && liveSnapshot.image && groupAvatar
-        ? { hash: liveSnapshot.image, uri: groupAvatar }
-        : undefined,
-    );
+    if (!snapshot || snapshot.invited || !navigation.isFocused() || locked)
+      return;
     const route = conversationRoute(id, "details");
     router.push({
       ...route,
@@ -1111,7 +1370,7 @@ export function MarmotConversationScreen({
     return (
       <Screen scroll={false} navigationHeader={<ScreenHeader title={title} />}>
         <View style={styles.syncing}>
-          <LoadingStatus label={t("messages:marmot.syncingChat")} />
+          <LoadingStatus label={t("messages:marmot.openingChat")} />
         </View>
       </Screen>
     );
@@ -1315,7 +1574,6 @@ export function MarmotConversationScreen({
   return (
     <ScreenInsets
       edges={["top", "left", "right"]}
-      pointerEvents={liveSnapshot ? "auto" : "none"}
       style={[styles.screen, { backgroundColor: kit.colors.background }]}
     >
       <LinearGradient
@@ -1458,7 +1716,7 @@ export function MarmotConversationScreen({
               />
             )}
             {snapshot.hasMoreAfter && (
-              <Action size="sm" onPress={() => void page("newer")}>
+              <Action size="sm" onPress={() => void page("latest")}>
                 {t("messages:latest")}
               </Action>
             )}
@@ -1537,16 +1795,42 @@ export function MarmotConversationScreen({
                   />
                 );
               }}
+              renderBubble={(props) => {
+                const row = props.currentMessage?.row;
+                return (
+                  <Bubble
+                    {...props}
+                    renderTicks={
+                      row?.sender === self && delivery(row) === "received"
+                        ? () => (
+                            <View
+                              accessible
+                              accessibilityLabel={t(
+                                "messages:marmot.recipientConfirmed",
+                              )}
+                              style={styles.recipientConfirmation}
+                            >
+                              <Icon
+                                name="check"
+                                size={10}
+                                color={kit.theme.colors?.outgoingMeta}
+                              />
+                            </View>
+                          )
+                        : props.renderTicks
+                    }
+                  />
+                );
+              }}
               renderMessageText={(props) => (
-                <MessageText
+                <PreparedMessageText
                   {...props}
-                  currentMessage={{
-                    ...props.currentMessage,
-                    text: projectMentions(
-                      props.currentMessage.text,
-                      mentionNames,
-                    ).text,
-                  }}
+                  names={mentionNames}
+                  content={
+                    props.currentMessage.row?.text === props.currentMessage.text
+                      ? props.currentMessage.row?.content
+                      : undefined
+                  }
                 />
               )}
               renderInputToolbar={(props) =>
@@ -1590,7 +1874,13 @@ export function MarmotConversationScreen({
                     <InputToolbar {...props} />
                   </>
                 ) : blocked ? (
-                  <Ink>{t("messages:marmot.blocked")}</Ink>
+                  <Ink>
+                    {t(
+                      blockState.status === "ready"
+                        ? "messages:marmot.blocked"
+                        : "security:blockedUnavailable",
+                    )}
+                  </Ink>
                 ) : null
               }
               onDraftChange={(text) => {
@@ -1598,18 +1888,32 @@ export function MarmotConversationScreen({
               }}
               listProps={{
                 onViewableItemsChanged: onVisible,
+                onScrollEndDrag: rememberScroll,
+                onMomentumScrollEnd: rememberScroll,
                 dataKey: snapshot.generation,
-                onReady: () => setReadyGeneration(snapshot.generation),
+                onReady: () => {
+                  if (readyGeneration.current === snapshot.generation) return;
+                  readyGeneration.current = snapshot.generation;
+                  messagingMetric("conversation list ready", {
+                    cached: opening.cached,
+                    ms: performance.now() - opening.at,
+                  });
+                },
                 // Keep the oldest message reachable under the player chrome.
                 contentContainerStyle: { paddingTop: playerClearance },
-                ...(audioMessageIndex >= 0 && {
-                  initialScrollAtEnd: false,
-                  initialScrollIndex: {
-                    // Chat Kit presents the inverted message data in reverse order.
-                    index: displayed.length - 1 - audioMessageIndex,
-                    viewPosition: 0.5,
-                  },
-                }),
+                ...(initialScrollOffset !== undefined
+                  ? {
+                      initialScrollAtEnd: false,
+                      initialScrollOffset,
+                    }
+                  : initialMessageIndex >= 0 && {
+                      initialScrollAtEnd: false,
+                      initialScrollIndex: {
+                        // Chat Kit presents the inverted message data in reverse order.
+                        index: displayed.length - 1 - initialMessageIndex,
+                        viewPosition: 0.5,
+                      },
+                    }),
               }}
               attachments={{
                 isEnabled: canCompose,
@@ -1660,6 +1964,7 @@ export function MarmotConversationScreen({
               loadEarlierMessagesProps={{
                 isAvailable: snapshot.hasMoreBefore,
                 isLoading: paging,
+                isInfiniteScrollEnabled: focused && foreground && !locked,
                 onPress: () => void page("older"),
               }}
               onSend={
@@ -1760,7 +2065,7 @@ export function MarmotConversationScreen({
                 if (
                   message.row &&
                   !message.row.deleted &&
-                  !message.row.systemType
+                  !message.row.system
                 ) {
                   chatPreferences.setPin(id, message._id, !message.isPinned);
                 }
@@ -1786,7 +2091,7 @@ export function MarmotConversationScreen({
                     },
                   ];
                 const row = message.row;
-                if (!row || row.deleted || row.systemType) return [];
+                if (!row || row.deleted || row.system) return [];
                 const forwardable = [9, 1111, locationKind].includes(
                   row.eventKind,
                 );
@@ -1800,7 +2105,7 @@ export function MarmotConversationScreen({
                     action.key !== "delete",
                 );
                 if (row.sourceId && !message.isViewOnce) {
-                  for (const item of row.attachments) {
+                  for (const item of acceptedAttachments(row)) {
                     const source = presentation.authorize([
                       id,
                       row.id,
@@ -1968,6 +2273,38 @@ export function MarmotConversationScreen({
               }}
               reactions={{
                 isEnabled: canSend,
+                renderReactions: ({
+                  message,
+                  onReactionPress,
+                  containerStyle,
+                  reactionStyle,
+                  reactionActiveStyle,
+                  reactionCountStyle,
+                  reactionTextStyle,
+                }) => (
+                  <View style={[styles.reactionCounts, containerStyle]}>
+                    {message.row?.reactions.map(({ emoji, count, own }) => (
+                      <Pressable
+                        key={emoji}
+                        style={[
+                          styles.reactionCount,
+                          reactionStyle,
+                          own && reactionActiveStyle,
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityState={{
+                          selected: own,
+                          disabled: !onReactionPress,
+                        }}
+                        disabled={!onReactionPress}
+                        onPress={() => onReactionPress?.(emoji)}
+                      >
+                        <Ink style={reactionTextStyle}>{emoji}</Ink>
+                        <Ink style={reactionCountStyle}>{count}</Ink>
+                      </Pressable>
+                    ))}
+                  </View>
+                ),
                 onReactionPress: (row, emoji) => {
                   const own = row.row?.reactions.some(
                     (reaction) => reaction.emoji === emoji && reaction.own,
@@ -2004,9 +2341,9 @@ export function MarmotConversationScreen({
                 const row = currentMessage?.row;
                 if (!row || row.deleted) return null;
                 const failedVoice =
-                  row.invalidated &&
+                  row.invalidationStatus &&
                   row.sender === self &&
-                  row.attachments.find((item) => item.voice);
+                  acceptedAttachments(row).find((item) => item.voice);
                 if (failedVoice)
                   return (
                     <VoiceUploadAttachment
@@ -2038,7 +2375,7 @@ export function MarmotConversationScreen({
                       message={currentMessage}
                       presentation={presentation}
                       gallery={gallery}
-                      foreground={foreground}
+                      foreground={focused && foreground}
                       visible={focused && foreground && visible.has(row.id)}
                     />
                   ) : null
@@ -2092,17 +2429,6 @@ export function MarmotConversationScreen({
                 isViewOnceEnabled: false,
               }}
             />
-            {readyGeneration !== snapshot.generation && (
-              <View
-                style={[
-                  StyleSheet.absoluteFill,
-                  styles.syncing,
-                  { backgroundColor: kit.colors.background },
-                ]}
-              >
-                <LoadingStatus label={t("messages:marmot.syncingChat")} />
-              </View>
-            )}
           </View>
           {panel === "poll" && canSend && (
             <MarmotPollComposer
@@ -2140,25 +2466,31 @@ function MarmotInvitation({
   setBusy: (value: boolean) => void;
 }) {
   const { t } = useTranslation(namespaces);
-  const { privacy, db } = useLocal();
+  const { privacy, db, identity, isCurrent, lock } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const translateError = useMarmotError();
-  const [invitation, setInvitation] =
-    useState<Pick<MarmotGroupDetails, "inviter" | "name" | "members">>();
+  const [loaded, setLoaded] = useState<{
+    group: string;
+    account: string;
+    preview: MarmotGroupInvitation;
+  }>();
+  const invitation =
+    loaded?.group === id && loaded.account === identity.publicKey
+      ? loaded.preview
+      : undefined;
   useEffect(() => {
     let active = true;
     void marmot
-      .groupDetails(id)
-      .then((group) => {
-        if (active) setInvitation(group);
+      .groupInvitation(id, true)
+      .then((preview) => {
+        if (active && isCurrent())
+          setLoaded({ group: id, account: identity.publicKey, preview });
       })
-      .catch(() => {
-        if (active) setInvitation({ name: "", members: [] });
-      });
+      .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, identity.publicKey, isCurrent]);
   const inviter = invitation?.inviter;
   const permission = inviter ? privacy.messagePermission(inviter) : undefined;
   const allowed = permission === "allow" || permission === "request";
@@ -2167,21 +2499,37 @@ function MarmotInvitation({
       ? (contactByKey(db, inviter).get()?.name ?? toNpub(inviter))
       : null;
   const participantNames = invitation?.members
-    .filter((member) => !member.self && !privacy.isBlocked(member.id))
+    .filter((member) => !privacy.isBlocked(member.id))
     .slice(0, 4)
     .map((member) => member.name || member.npub.slice(0, 15) + "…")
     .join(", ");
-  function respond(accept: boolean) {
+  function respond(accept: boolean, block = false) {
     if (busy) return;
     const current = inviter ? privacy.messagePermission(inviter) : undefined;
     if (accept && current !== "allow" && current !== "request") return;
     setBusy(true);
-    void marmot
-      .respondToInvitation(id, accept)
-      .then(() => {
-        if (accept && direct && inviter) privacy.approveInvitation(inviter);
-        else if (!accept) router.back();
-      })
+    void (async () => {
+      if (!isCurrent() || lock.getState().locked) return;
+      if (block && inviter) {
+        await privacy.blocks.block(inviter);
+        if (!isCurrent() || lock.getState().locked) return;
+      }
+      if (accept) {
+        const latest = await marmot.groupInvitation(id);
+        if (!isCurrent() || lock.getState().locked || !inviter) return;
+        if (latest.inviter !== inviter) {
+          setLoaded(undefined);
+          Alert.alert(t("messages:marmot.inviteGone"));
+          return;
+        }
+        const permission = privacy.messagePermission(inviter);
+        if (permission !== "allow" && permission !== "request") return;
+      }
+      await marmot.respondToInvitation(id, accept);
+      if (!isCurrent()) return;
+      if (accept && direct && inviter) privacy.approveInvitation(inviter);
+      else if (!accept) router.back();
+    })()
       .catch((reason) => Alert.alert(translateError(reason)))
       .finally(() => setBusy(false));
   }
@@ -2189,20 +2537,22 @@ function MarmotInvitation({
     <View style={styles.invitation}>
       <Ink>
         {t(
-          permission === "blocked"
-            ? "messages:marmot.blocked"
-            : permission === "reject"
-              ? "messages:marmot.inviteFiltered"
-              : "messages:marmot.inviteRequired",
+          !privacy.blocks.ready()
+            ? "security:blockedUnavailable"
+            : permission === "blocked"
+              ? "messages:marmot.blocked"
+              : permission === "reject"
+                ? "messages:marmot.inviteFiltered"
+                : "messages:marmot.inviteRequired",
         )}
       </Ink>
       {allowed && invitation?.name && <Ink kind="title">{invitation.name}</Ink>}
       {name && (
         <Ink kind="caption">{t("messages:marmot.invitedBy", { name })}</Ink>
       )}
-      {allowed && !direct && invitation && invitation.members.length > 0 && (
+      {allowed && !direct && invitation && invitation.memberCount > 0 && (
         <Ink kind="caption">
-          {t("messages:marmot.members")} ({invitation.members.length})
+          {t("messages:marmot.members")} ({invitation.memberCount})
           {participantNames ? "\n" + participantNames : ""}
         </Ink>
       )}
@@ -2213,13 +2563,7 @@ function MarmotInvitation({
         {t("messages:marmot.decline")}
       </Action>
       {inviter && permission !== "blocked" && (
-        <Action
-          disabled={busy}
-          onPress={() => {
-            privacy.block(inviter);
-            respond(false);
-          }}
-        >
+        <Action disabled={busy} onPress={() => respond(false, true)}>
           {t("messages:marmot.blockInviter")}
         </Action>
       )}
@@ -2228,6 +2572,13 @@ function MarmotInvitation({
 }
 
 const styles = StyleSheet.create({
+  recipientConfirmation: {
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E5EBFF",
+  },
+  reactionCounts: { flexDirection: "row", flexWrap: "wrap", gap: space.xs },
+  reactionCount: { flexDirection: "row", alignItems: "center", gap: space.xs },
   uploadStatus: {
     flexDirection: "row",
     alignItems: "center",

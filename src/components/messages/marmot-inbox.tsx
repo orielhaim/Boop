@@ -8,7 +8,7 @@ import {
   type ChatListCellProps,
   type ChatListItem,
 } from "@kesha-antonov/react-native-chat";
-import { router } from "expo-router";
+import { router, useIsFocused } from "expo-router";
 import {
   useCallback,
   useDeferredValue,
@@ -22,9 +22,14 @@ import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
-import { usePerson } from "@/components/people/use-person";
+import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
+import {
+  hasMention,
+  quoteText,
+  type Content,
+} from "@/core/marmot/message-content";
 import { projectMentions } from "@/core/messaging/mentions";
 import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
@@ -33,7 +38,7 @@ import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
 import { useMarmotChatLists } from "./marmot-chat-lists";
 import { useMarmotWindow } from "./marmot-window";
-import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
 
 export function conversationRoute(
@@ -46,7 +51,12 @@ export function conversationRoute(
   };
 }
 
-type ChatRow = ChatListItem & { id: string; peer?: string; image?: string };
+type ChatRow = ChatListItem & {
+  id: string;
+  peer?: string;
+  avatarAsset?: MarmotChatRow["avatarAsset"];
+  previewContent?: Content | null;
+};
 
 function asChat(
   row: MarmotChatRow,
@@ -66,24 +76,26 @@ function asChat(
       !row.invited && row.kind === "direct"
         ? (row.peer ?? undefined)
         : undefined,
-    image:
-      row.invited || row.membership !== "member"
-        ? undefined
-        : (row.image ?? undefined),
+    avatarAsset:
+      row.kind === "group" && !row.invited && row.membership === "member"
+        ? row.avatarAsset
+        : undefined,
     isArchived: row.archived,
     isMuted: row.muted,
     isPinned: row.pinned,
     unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
     draft: row.invited ? undefined : (row.draft ?? undefined),
     emptyPreview,
+    previewContent:
+      preview === row.preview?.text ? row.preview?.content : undefined,
     lastMessage:
       row.invited || preview == null
         ? undefined
         : {
-            _id: row.previewId ?? row.id,
+            _id: row.preview?.id ?? row.id,
             text: preview,
             createdAt: row.updatedAt * 1_000,
-            user: { _id: row.previewSender ?? row.id },
+            user: { _id: row.preview?.sender ?? row.id },
           },
   };
 }
@@ -94,9 +106,17 @@ export function MarmotInbox({
   invitations?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity, privacy, chatPreferences, db } = useLocal();
+  const { identity, privacy, chatPreferences, conversations, db } = useLocal();
+  const focused = useIsFocused();
   const fabVisibility = useTabFabVisibility();
-  useSyncExternalStore(privacy.subscribe, privacy.revision);
+  const privacyRevision = useSyncExternalStore(
+    privacy.subscribe,
+    privacy.revision,
+  );
+  const cacheRevision = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.revision,
+  );
   const kit = useChatAppearance();
   const onScroll = useMinimizeOnScroll();
   const [archived, setArchived] = useState(false);
@@ -116,6 +136,27 @@ export function MarmotInbox({
       : archived
         ? archive
         : inbox;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expires = [
+      ...(snapshot?.rows ?? []),
+      ...(archive.snapshot?.rows ?? []),
+    ].flatMap(({ preview }) =>
+      preview?.expiresAt == null ? [] : [preview.expiresAt * 1000],
+    );
+    function update() {
+      const current = Date.now();
+      setNow(current);
+      const next = Math.min(
+        ...expires.filter((deadline) => deadline > current),
+      );
+      if (Number.isFinite(next))
+        timer = setTimeout(update, Math.min(next - current, 2_147_483_647));
+    }
+    update();
+    return () => clearTimeout(timer);
+  }, [snapshot?.rows, archive.snapshot?.rows]);
   const [inviters, setInviters] = useState<Record<string, string>>();
   const pendingIds = (invitations ? snapshot : pending.snapshot)?.rows
     .map((row) => row.id)
@@ -126,7 +167,7 @@ export function MarmotInbox({
     async function readInviters() {
       const entries = await Promise.allSettled(
         (pendingIds ?? "").split(",").map(async (group) => {
-          const details = await marmot.groupDetails(group);
+          const details = await marmot.groupInvitation(group);
           return [group, details.inviter ?? ""] as const;
         }),
       );
@@ -170,15 +211,18 @@ export function MarmotInbox({
     )
     .map((row) => {
       const preview =
-        (row.previewSender && privacy.isBlocked(row.previewSender)) ||
-        (row.previewId &&
-          chatPreferences.hidden(row.id).includes(row.previewId))
+        (row.preview?.sender && privacy.isBlocked(row.preview?.sender)) ||
+        (row.preview?.id &&
+          chatPreferences.hidden(row.id).includes(row.preview?.id))
           ? undefined
-          : row.previewKind === 24881
-            ? t("messages:lockedMessage")
-            : row.previewKind === 24883
-              ? t("messages:marmot.locationPreview")
-              : (row.preview ?? undefined);
+          : row.preview?.expiresAt != null &&
+              row.preview.expiresAt * 1000 <= now
+            ? undefined
+            : row.preview?.kind === 24881
+              ? t("messages:lockedMessage")
+              : row.preview?.kind === 24883
+                ? t("messages:marmot.locationPreview")
+                : (row.preview?.text ?? undefined);
       if (row.invited) {
         const inviter = inviters?.[row.id];
         if (inviter) {
@@ -197,10 +241,7 @@ export function MarmotInbox({
         !row.invited &&
         row.membership === "member" &&
         row.kind !== "unknown" &&
-        row.previewId == null &&
-        row.previewKind == null &&
-        row.previewSender == null &&
-        row.preview == null
+        row.previewSelection === "empty"
           ? t("messages:sayHello")
           : undefined;
       return asChat(row, fallback, invitationTitle, preview, emptyPreview);
@@ -215,6 +256,53 @@ export function MarmotInbox({
       Alert.alert(t("messages:updateConversationsError")),
     );
   }
+
+  const [visibleRows, setVisibleRows] = useState(new Set<string>());
+  const onViewableItemsChanged = useCallback(
+    ({
+      viewableItems,
+    }: {
+      viewableItems: { item: ChatRow; isViewable: boolean }[];
+    }) => {
+      const next = new Set(
+        viewableItems
+          .filter(({ isViewable }) => isViewable)
+          .map(({ item }) => item.id),
+      );
+      setVisibleRows((previous) =>
+        next.size === previous.size && [...next].every((id) => previous.has(id))
+          ? previous
+          : next,
+      );
+    },
+    [],
+  );
+  const canPrepare = focused && !invitations;
+  useEffect(() => {
+    if (!canPrepare) return;
+    conversations.setBrowsing(true);
+    return () => conversations.setBrowsing(false);
+  }, [canPrepare, conversations]);
+  useEffect(() => {
+    if (!canPrepare || !snapshot) return;
+    conversations.candidates(
+      snapshot.rows.filter(
+        (row) =>
+          !row.invited &&
+          row.membership === "member" &&
+          (!row.peer || !privacy.isBlocked(row.peer)),
+      ),
+      visibleRows,
+    );
+  }, [
+    cacheRevision,
+    canPrepare,
+    conversations,
+    privacy,
+    privacyRevision,
+    snapshot,
+    visibleRows,
+  ]);
 
   return (
     <Screen
@@ -240,7 +328,9 @@ export function MarmotInbox({
         filterChat={() => true}
         onSearchChange={setSearch}
         dateFormat={kit.locale === "he" ? "D.M.YY" : undefined}
-        renderChat={(props) => <MarmotChatCell {...props} />}
+        renderChat={(props) => (
+          <MarmotChatCell {...props} visible={visibleRows.has(props.chat.id)} />
+        )}
         renderEmpty={(searching) =>
           !snapshot ? (
             error ? (
@@ -279,7 +369,10 @@ export function MarmotInbox({
         }
         isArchiveOpen={archived}
         onArchiveOpenChange={setArchived}
-        onPressChat={(row) => router.push(conversationRoute(row.id))}
+        onPressChat={(row) => {
+          conversations.noteNavigation(row.id);
+          router.push(conversationRoute(row.id));
+        }}
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")
         }
@@ -305,6 +398,7 @@ export function MarmotInbox({
                 update(selection, (id) => marmot.setArchived(id, value))
         }
         listProps={{
+          onViewableItemsChanged,
           contentContainerStyle: invitations ? undefined : styles.listWithFab,
           onScroll: invitations ? undefined : onScroll,
           onEndReached: page,
@@ -387,15 +481,24 @@ function ChatSyncNotice() {
   ) : null;
 }
 
-function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
-  const { name, photo: avatar } = usePerson(props.chat.peer ?? "");
-  const groupAvatar = useMarmotGroupAvatar(props.chat.id, props.chat.image);
-  const { draft, lastMessage } = props.chat;
+function MarmotChatCell({
+  visible,
+  ...props
+}: ChatListCellProps<ChatRow> & { visible: boolean }) {
+  const { name, photo: avatar } = usePresentedPerson(
+    props.chat.peer ?? "",
+    props.chat.title,
+    visible,
+  );
+  const groupAvatar = usePreparedGroupAvatar(props.chat.avatarAsset, visible);
+  const { draft, lastMessage, previewContent } = props.chat;
   const mentions = /(?:nostr:|@)npub1/i;
   const { members } = useMentionMembers(
     props.chat.id,
-    props.chat.kind === "group" &&
-      (mentions.test(draft ?? "") || mentions.test(lastMessage?.text ?? "")),
+    visible &&
+      props.chat.kind === "group" &&
+      (mentions.test(draft ?? "") ||
+        Boolean(previewContent && hasMention(previewContent))),
   );
   const names = useMemo(
     () => new Map(members?.map((member) => [member.npub, member.label])),
@@ -411,7 +514,9 @@ function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
         draft: draft && projectMentions(draft, names).text,
         lastMessage: lastMessage && {
           ...lastMessage,
-          text: projectMentions(lastMessage.text, names).text,
+          text: previewContent
+            ? quoteText(previewContent, lastMessage.text, names)
+            : lastMessage.text,
         },
       }}
     />

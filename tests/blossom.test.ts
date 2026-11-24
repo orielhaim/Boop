@@ -1,21 +1,12 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import {
-  finalizeEvent,
-  generateSecretKey,
-  getPublicKey,
-  verifyEvent,
-} from "nostr-tools";
+import { generateSecretKey, verifyEvent } from "nostr-tools";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createProfileEditor } from "../src/core/avatars/editor";
-import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
+import { type AvatarDisk } from "../src/core/avatars/service";
 import { initializeTestDatabase } from "./db-fixture";
-import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
 import {
   type BlossomHttp,
@@ -23,7 +14,6 @@ import {
 } from "../src/core/media/blossom";
 import { createMediaSettings } from "../src/core/media/servers";
 import { createMediaUploads } from "../src/core/media/uploads";
-import { updateProfileFields } from "../src/core/avatars/protocol";
 
 const origin = "https://blossom.example.com";
 const signer = new NDKPrivateKeySigner(generateSecretKey());
@@ -49,11 +39,8 @@ const response = (overrides = {}) =>
     { status: 201 },
   );
 
-test("file-backed Blossom uses a raw signed PUT and verifies the returned descriptor", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "boop-blossom-"));
-  const filename = join(directory, "ciphertext.bin");
+test("Blossom checks permission before a raw signed PUT and verifies the returned descriptor", async () => {
   const bytes = Uint8Array.from({ length: 64 * 1024 + 16 }, (_, i) => i % 251);
-  writeFileSync(filename, bytes);
   const ciphertextHash = digest(bytes);
   const blobUrl = `${origin}/${ciphertextHash}`;
   const methods: string[] = [];
@@ -97,44 +84,26 @@ test("file-backed Blossom uses a raw signed PUT and verifies the returned descri
   });
   try {
     const endpoint = new URL("/upload", server.url);
-    const progress: unknown[] = [];
     const client = createBlossomClient(signer, {
       sha256,
-      request: (_url, { method, headers, signal }) =>
-        fetch(endpoint, { method, headers, signal }),
-      async putFile({ url, uri, headers, signal, progress }) {
-        expect(url).toBe(`${origin}/upload`);
-        expect(uri).toBe(filename);
-        progress?.(32768, bytes.length);
-        const response = await fetch(endpoint, {
-          method: "PUT",
-          headers,
-          signal,
-          body: Bun.file(uri),
-        });
-        return { status: response.status, body: await response.text() };
-      },
+      request: (_url, { method, headers, signal, body }) =>
+        fetch(endpoint, { method, headers, signal, body }),
     });
     await expect(
       client.put(
         origin,
         {
-          uri: filename,
+          bytes,
           size: bytes.length,
           hash: ciphertextHash,
           mime: "application/octet-stream",
         },
         new AbortController().signal,
-        {
-          progress: (state) => progress.push(state),
-        },
       ),
     ).resolves.toBe(blobUrl);
     expect(methods).toEqual(["HEAD", "PUT"]);
-    expect(progress).toEqual(["checking", "uploading", 49, "validating"]);
   } finally {
     await server.stop(true);
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -193,6 +162,56 @@ test("upload signs the exact host and hash, then reads the blob back without cre
   );
   expect(result).toBe(url);
   expect(paths).toEqual([`${origin}/upload`, url]);
+});
+
+test("a separate profile delivery host requires a checked read-back", async () => {
+  const delivery = `https://images.example.net/${hash}.jpg`;
+  const verified: string[][] = [];
+  const signal = new AbortController().signal;
+  const http: BlossomHttp = {
+    sha256,
+    async request(path, options) {
+      expect(path).toBe(`${origin}/upload`);
+      expect(options.method).toBe("PUT");
+      return response({ url: delivery });
+    },
+  };
+  await expect(
+    putAvatar(signer, origin, photo, signal, http),
+  ).rejects.toHaveProperty("code", "descriptor");
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      ...http,
+      async verifyProfileBlob(path, expectedHash, signal) {
+        expect(signal.aborted).toBe(false);
+        verified.push([path, expectedHash]);
+      },
+    }),
+  ).resolves.toBe(delivery);
+  expect(verified).toEqual([[delivery, hash]]);
+
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      ...http,
+      async verifyProfileBlob() {
+        throw new Error("Native hash verification failed");
+      },
+    }),
+  ).rejects.toThrow();
+
+  let unsafeReadback = false;
+  await expect(
+    putAvatar(signer, origin, photo, signal, {
+      sha256,
+      async request() {
+        return response({ url: `https://192.168.0.1/${hash}.jpg` });
+      },
+      async verifyProfileBlob() {
+        unsafeReadback = true;
+      },
+    }),
+  ).rejects.toHaveProperty("code", "descriptor");
+  expect(unsafeReadback).toBe(false);
 });
 
 test("descriptor mismatch does not trigger a GET; a corrupt read-back cannot be published", async () => {
@@ -267,33 +286,10 @@ test("timeout, offline, authentication and explicit cancellation stay distinct",
   ).rejects.toHaveProperty("code", "cancelled");
 });
 
-test("profile edits preserve unrelated public metadata and remove picture explicitly", () => {
-  const fields = {
-    name: "relay name",
-    display_name: "Original",
-    picture: url,
-    about: "Example",
-    custom: { color: "blue" },
-  };
-  expect(updateProfileFields(fields, { displayName: "New" })).toEqual({
-    ...fields,
-    display_name: "New",
-  });
-  expect(updateProfileFields(fields, { picture: null })).toEqual({
-    name: "relay name",
-    display_name: "Original",
-    about: "Example",
-    custom: { color: "blue" },
-  });
-});
-
 test("confirmed photos survive relay refusal and retry without a second upload", async () => {
   using sqlite = new Database(":memory:");
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
-  const secret = generateSecretKey();
-  const owner = getPublicKey(secret);
-  setPreference(db, "identity.publicKey", owner);
   const local = new Set<string>();
   const disk: AvatarDisk = {
     newId: randomUUID,
@@ -304,67 +300,20 @@ test("confirmed photos survive relay refusal and retry without a second upload",
       local.add(name);
     },
     removeCached: () => {},
+    commitCached: () => {},
+    authored: () => undefined,
+    keepAuthored: () => {},
     removeLocal: (name) => {
       local.delete(name);
     },
-    sweep: () => {},
+    sweepLocal: () => {},
+    pruneCache: () => {},
     clearCache: () => {},
   };
-  const sign = (content: string, created_at: number) =>
-    finalizeEvent({ kind: 0, tags: [], content, created_at }, secret);
-  const t = Math.floor(Date.now() / 1000);
-  let published = sign(
-    JSON.stringify({
-      picture: "https://example.com/original.jpg",
-      name: "Original",
-      about: "Keep this",
-    }),
-    t - 1,
-  );
   let accepts = false;
-  let lookupAvailable = false;
   let publishAttempts = 0;
   let beforePublish: (() => Promise<void>) | undefined;
-  const relays = {
-    watchProfiles(
-      _keys: string[],
-      event: (input: unknown, author: string) => void,
-      eose: () => void,
-    ) {
-      return this.watchOwnProfile(event, eose);
-    },
-    watchOwnProfile(
-      event: (input: unknown, author: string) => void,
-      eose: (allReplied: boolean) => void,
-    ) {
-      if (!lookupAvailable) return null;
-      queueMicrotask(() => {
-        event(published, owner);
-        eose(true);
-      });
-      return () => {};
-    },
-    async publishProfile(content: string, createdAt: number) {
-      publishAttempts++;
-      await beforePublish?.();
-      if (!accepts) return null;
-      published = sign(content, createdAt);
-      return published;
-    },
-  };
-  const avatars = createAvatars(
-    db,
-    owner,
-    {
-      isBlocked: () => false,
-      isContact: () => false,
-      photoPolicy: () => "contacts",
-    },
-    relays,
-    disk,
-    null,
-  );
-  avatars.ingest(published, owner);
+  const updates: Array<Record<string, string>> = [];
   const attempts: string[] = [];
   const backup = "https://backup.example.com";
   const prefs = new Map<string, string>();
@@ -405,11 +354,17 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   );
   const editor = createProfileEditor(
     db,
-    owner,
-    avatars,
     disk,
     (_file, signal) => uploads.upload("profile", photo, { signal }),
-    relays,
+    async (edits) => {
+      publishAttempts++;
+      await beforePublish?.();
+      if (!accepts) throw new Error("Relay refused update");
+      updates.push(edits);
+    },
+    () => {},
+    () => true,
+    async () => true,
   );
   const empty = editor.getSnapshot();
   expect(empty.draft).toBeNull();
@@ -426,30 +381,18 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   expect(await editor.publish()).toBe("relays");
   expect(publishAttempts).toBe(1);
   expect(attempts).toEqual([origin, backup]);
-  expect(avatars.profile(owner)?.picture).toBe(
-    "https://example.com/original.jpg",
-  );
+  expect(updates).toEqual([]);
   expect(editor.preview()).toBe(draft);
   accepts = true;
   expect(await editor.publish()).toBe("mirror");
   expect(attempts).toEqual([origin, backup]);
   expect(editor.draft()).toBeNull();
-  expect(avatars.resolve(owner)).toBe(draft);
-  expect(avatars.profile(owner)?.fields).toEqual({
-    name: "Original",
-    about: "Keep this",
-    picture: url,
-  });
+  expect(updates).toEqual([{ picture: url }]);
   editor.removeImage("photo");
   expect(await editor.publish()).toBe("published");
-  expect(avatars.profile(owner)?.fields).toEqual({
-    name: "Original",
-    about: "Keep this",
-  });
-  expect(avatars.resolve(owner)).toBeUndefined();
+  expect(updates.at(-1)).toEqual({ picture: "" });
   expect(local.size).toBe(0);
   expect(observed.at(-1)).toMatchObject({ draft: null, stage: "idle" });
-  lookupAvailable = true;
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   beforePublish = () => {
@@ -465,7 +408,7 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   expect(editor.getSnapshot().draft?.name).toBe("Latest edit");
   beforePublish = undefined;
   expect(await editor.publish()).toBe("published");
-  expect(avatars.profile(owner)?.name).toBe("Latest edit");
+  expect(updates.at(-1)).toEqual({ display_name: "Latest edit" });
   editor.editFields({ name: "Private draft" });
   expect(observed.at(-1)?.draft?.name).toBe("Private draft");
   editor.discard();

@@ -8,6 +8,7 @@ import NDK, {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk";
 import { callSignalKind, inviteLifetime } from "../calling/signals";
+import { serverListKind } from "../media/servers";
 import {
   unsignedRumor,
   giftWrapKind,
@@ -27,9 +28,8 @@ export function createNostrRelays(signer: NDKSigner) {
     enableOutboxModel: false,
     autoConnectUserRelays: false,
   });
-  const configured = new Set<string>();
-  const authenticate = new Set<string>();
-  const known = new Map<string, NDKRelay>();
+  const configured = new Map<string, boolean>();
+  let retiredHosts = new Set<string>();
   const publishing = new Map<NDKRelay, number>();
   const discoveryRequests = new Set<() => void>();
   const connecting = new Map<
@@ -43,21 +43,15 @@ export function createNostrRelays(signer: NDKSigner) {
   // NDK 3.0.3 handles a relay rejecting AUTH on its boolean policy path.
   // Its signed-event policy path leaves the same rejection unhandled.
   const auth: NDKAuthPolicy = async (relay) =>
-    authenticate.has(relay.url) ? true : undefined;
+    configured.get(relay.url) ? true : undefined;
 
   function getRelay(url: string) {
-    let relay = ndk.pool.relays.get(url) ?? known.get(url);
+    let relay = ndk.pool.relays.get(url);
     if (!relay) {
       relay = new NDKRelay(url, auth, ndk);
-      known.set(url, relay);
+      ndk.pool.addRelay(relay, false);
     }
     return relay;
-  }
-
-  function disconnect(relay: NDKRelay) {
-    connecting.get(relay)?.cancel();
-    relay.connectivity.resetReconnectionState();
-    relay.disconnect();
   }
 
   function connect(relay: NDKRelay) {
@@ -89,30 +83,37 @@ export function createNostrRelays(signer: NDKSigner) {
     relay.on("disconnect", cancel);
     relay.on("delayed-connect", cancel);
     // NDK connect resolves after creating the socket, before its open event.
-    void relay.connect(timeout, false).catch(cancel);
+    void relay.connect(timeout, configured.has(relay.url)).catch(cancel);
     return result;
   }
 
   function addConfigured(url: string, inbox: boolean) {
     const relay = getRelay(url);
     if (!configured.has(relay.url)) callInboxes.clear();
-    configured.add(relay.url);
-    if (inbox) authenticate.add(relay.url);
-    ndk.explicitRelayUrls ??= [];
-    if (!ndk.explicitRelayUrls.includes(relay.url))
-      ndk.explicitRelayUrls.push(relay.url);
-    ndk.pool.addRelay(relay, false);
+    configured.set(relay.url, inbox);
     return relay;
   }
 
   function unconfigure(relay: NDKRelay) {
     callInboxes.clear();
     configured.delete(relay.url);
-    authenticate.delete(relay.url);
-    disconnect(relay);
-    // NDK 3.0.3 leaves its connect listeners attached after removeRelay.
-    // Keep the reusable relay registered. Boop controls its connection and
-    // passes an explicit set of enabled relays to each subscription.
+    removeRelay(relay);
+  }
+
+  function removeRelay(relay: NDKRelay) {
+    connecting.get(relay)?.cancel();
+    relay.removeAllListeners();
+    ndk.pool.removeRelay(relay.url);
+  }
+
+  function permitted(url: string) {
+    try {
+      return !retiredHosts.has(
+        new URL(url).hostname.toLowerCase().replace(/\.$/, ""),
+      );
+    } catch {
+      return false;
+    }
   }
 
   function subscription(
@@ -139,84 +140,97 @@ export function createNostrRelays(signer: NDKSigner) {
 
   function watchInbox(
     relay: NDKRelay,
-    since: number | undefined,
     onEvent: (id: string, event: unknown) => void,
-    onEose: () => void,
-    limit?: number,
   ) {
     return subscription(
       [relay],
-      { kinds: [giftWrapKind], "#p": [signer.userSync.pubkey], since, limit },
+      {
+        kinds: [giftWrapKind],
+        "#p": [signer.userSync.pubkey],
+        // Gift-wrap timestamps are randomized. Check a bounded replay window
+        // after authentication or reconnect, then enforce expiry on the rumor.
+        since: Math.floor(Date.now() / 1_000) - 2 * 24 * 60 * 60,
+        limit: 32,
+      },
       (event) => onEvent(event.id, event.rawEvent()),
-      onEose,
-      limit !== undefined && limit > 0,
+      () => undefined,
     );
   }
 
-  function lookupLists(
+  function query(
+    relays: NDKRelay[],
+    filter: NDKFilter,
+    onEvent: (event: NDKEvent) => boolean,
+    signal?: AbortSignal,
+  ) {
+    if (!relays.length || signal?.aborted) return Promise.resolve("cancelled");
+    return new Promise<"complete" | "matched" | "timeout" | "cancelled">(
+      (resolve) => {
+        let stop: (() => void) | undefined;
+        const deadline = setTimeout(() => finish("timeout"), timeout);
+        function cancel() {
+          finish("cancelled");
+        }
+        function finish(result: Parameters<typeof resolve>[0]) {
+          if (!discoveryRequests.delete(cancel)) return;
+          clearTimeout(deadline);
+          signal?.removeEventListener("abort", cancel);
+          stop?.();
+          resolve(result);
+        }
+        discoveryRequests.add(cancel);
+        signal?.addEventListener("abort", cancel, { once: true });
+        stop = subscription(
+          relays,
+          filter,
+          (event) => {
+            if (discoveryRequests.has(cancel) && onEvent(event))
+              finish("matched");
+          },
+          () => finish("complete"),
+          true,
+        );
+      },
+    );
+  }
+
+  async function lookupLists(
     peerKey: string,
     discovery: NDKRelay[],
     kinds: number[] = [inboxListKind, 10002],
   ) {
     type ListEvent = NonNullable<ReturnType<typeof verifiedEvent>>;
-    const empty: {
-      inbox: ListEvent | null;
-      general: ListEvent | null;
-      complete: boolean;
-    } = { inbox: null, general: null, complete: false };
-    if (discovery.length === 0) return Promise.resolve(empty);
-    return new Promise<{
-      inbox: ListEvent | null;
-      general: ListEvent | null;
-      complete: boolean;
-    }>((resolve) => {
-      let inbox: ListEvent | null = null;
-      let general: ListEvent | null = null;
-      let stop: (() => void) | undefined;
-      const deadline = setTimeout(() => finish(false), timeout);
-      function cancel() {
-        finish(false, true);
-      }
-      function finish(complete: boolean, cancelled = false) {
-        if (!discoveryRequests.delete(cancel)) return;
-        clearTimeout(deadline);
-        stop?.();
-        resolve(cancelled ? empty : { inbox, general, complete });
-      }
-      discoveryRequests.add(cancel);
-      stop = subscription(
-        discovery,
-        { kinds, authors: [peerKey], limit: 8 },
-        (event) => {
-          const candidate = verifiedEvent(event.rawEvent());
-          if (
-            !candidate ||
-            !kinds.includes(candidate.kind) ||
-            candidate.pubkey !== peerKey ||
-            candidate.created_at > Date.now() / 1_000 + 60
-          )
-            return;
-          const latest = candidate.kind === inboxListKind ? inbox : general;
-          if (newer(candidate, latest)) {
-            if (candidate.kind === inboxListKind) inbox = candidate;
-            else general = candidate;
-          }
-        },
-        () => finish(true),
-        true,
-      );
-    });
-  }
-
-  function newer(
-    candidate: NonNullable<ReturnType<typeof verifiedEvent>>,
-    latest: ReturnType<typeof verifiedEvent>,
-  ) {
-    return (
-      !latest ||
-      candidate.created_at > latest.created_at ||
-      (candidate.created_at === latest.created_at && candidate.id < latest.id)
+    const latest = new Map<number, ListEvent>();
+    const outcome = await query(
+      discovery,
+      { kinds, authors: [peerKey], limit: 8 },
+      (event) => {
+        const candidate = verifiedEvent(event.rawEvent());
+        if (
+          !candidate ||
+          !kinds.includes(candidate.kind) ||
+          candidate.pubkey !== peerKey ||
+          candidate.created_at > Date.now() / 1_000 + 60
+        )
+          return false;
+        const previous = latest.get(candidate.kind);
+        if (
+          !previous ||
+          candidate.created_at > previous.created_at ||
+          (candidate.created_at === previous.created_at &&
+            candidate.id < previous.id)
+        )
+          latest.set(candidate.kind, candidate);
+        return false;
+      },
     );
+    if (outcome === "cancelled") latest.clear();
+    return {
+      inbox: latest.get(inboxListKind) ?? null,
+      general:
+        latest.get(kinds.find((kind) => kind !== inboxListKind) ?? 0) ?? null,
+      complete: outcome === "complete",
+    };
   }
 
   function safeTargets(tags: string[][], kind: "inbox" | "author") {
@@ -230,7 +244,10 @@ export function createNostrRelays(signer: NDKSigner) {
           : [],
       ),
     )
-      .filter((url) => configured.has(url) || isPublicRelayAddress(url))
+      .filter(
+        (url) =>
+          permitted(url) && (configured.has(url) || isPublicRelayAddress(url)),
+      )
       .slice(0, 3);
   }
 
@@ -305,8 +322,7 @@ export function createNostrRelays(signer: NDKSigner) {
         else {
           publishing.delete(relay);
           if (!configured.has(relay.url)) {
-            disconnect(relay);
-            known.delete(relay.url);
+            if (ndk.pool.relays.get(relay.url) === relay) removeRelay(relay);
           }
         }
       }
@@ -318,7 +334,7 @@ export function createNostrRelays(signer: NDKSigner) {
     relayUrls: readonly string[],
     active: () => boolean,
   ) {
-    const targets = relayUrls.map(getRelay);
+    const targets = relayUrls.filter(permitted).map(getRelay);
     if (!targets.length) return false;
     return new Promise<boolean>((resolve) => {
       let remaining = targets.length;
@@ -340,27 +356,6 @@ export function createNostrRelays(signer: NDKSigner) {
       }
     });
   }
-  async function advertise(
-    relays: NDKRelay[],
-    inbox: readonly string[],
-    createdAt: number,
-    active: () => boolean,
-  ) {
-    const event = new NDKEvent(undefined, {
-      kind: inboxListKind,
-      created_at: createdAt,
-      tags: inbox.map((url) => ["relay", url]),
-    });
-    await event.sign(signer);
-    if (!active()) return false;
-    const results = await Promise.allSettled(
-      relays.map((relay) => connected(relay) && relay.publish(event, timeout)),
-    );
-    return results.some(
-      (result) => result.status === "fulfilled" && result.value,
-    );
-  }
-
   async function verifyInbox(relay: NDKRelay, active: () => boolean) {
     if (!active() || !connected(relay)) return false;
     const publicKey = signer.userSync.pubkey;
@@ -381,37 +376,21 @@ export function createNostrRelays(signer: NDKSigner) {
     );
     if (!active() || !envelope.id || !(await relay.publish(envelope, timeout)))
       return false;
-    return new Promise<boolean>((resolve) => {
-      let stop: (() => void) | undefined;
-      const deadline = setTimeout(() => finish(false), timeout);
-      function cancel() {
-        finish(false);
-      }
-      function finish(valid: boolean) {
-        if (!discoveryRequests.delete(cancel)) return;
-        clearTimeout(deadline);
-        stop?.();
-        resolve(valid);
-      }
-      discoveryRequests.add(cancel);
-      stop = subscription(
+    return (
+      (await query(
         [relay],
         { kinds: [giftWrapKind], ids: [envelope.id], "#p": [publicKey] },
         (event) =>
-          finish(
-            active() && verifiedEvent(event.rawEvent())?.id === envelope.id,
-          ),
-        () => finish(false),
-        true,
-      );
-    });
+          active() && verifiedEvent(event.rawEvent())?.id === envelope.id,
+      )) === "matched"
+    );
   }
 
   function closePeerRelays() {
     callInboxes.clear();
     for (const cancel of discoveryRequests) cancel();
-    for (const relay of known.values()) {
-      if (!configured.has(relay.url)) disconnect(relay);
+    for (const relay of ndk.pool.relays.values()) {
+      if (!configured.has(relay.url)) removeRelay(relay);
     }
   }
 
@@ -420,81 +399,51 @@ export function createNostrRelays(signer: NDKSigner) {
     unconfigure,
     connect,
     connected,
-    watchInbox,
-    watchProfiles: (
-      relays: NDKRelay[],
-      authors: string[],
-      onEvent: (event: unknown, author: string) => void,
-      onEose: () => void,
-    ) =>
-      subscription(
-        relays,
-        { kinds: [0], authors, limit: authors.length * 2 },
-        (event) => onEvent(event.rawEvent(), event.pubkey),
-        onEose,
-      ),
-    searchProfiles(
-      targets: NDKRelay[],
-      query: string,
-      onEvent: (event: unknown, author: string) => void,
-      onEose: () => void,
-    ) {
-      return subscription(
-        targets,
-        { kinds: [0], search: query, limit: 24 },
-        (event) => onEvent(event.rawEvent(), event.pubkey),
-        onEose,
-        true,
-      );
+    status: (relay: NDKRelay) =>
+      connected(relay)
+        ? ("connected" as const)
+        : relay.status === NDKRelayStatus.CONNECTING ||
+            relay.status === NDKRelayStatus.RECONNECTING
+          ? ("connecting" as const)
+          : ("offline" as const),
+    connectConfigured(relay: NDKRelay) {
+      void relay.connect(timeout).catch(() => undefined);
     },
-    async lookupProfileHints(
-      author: string,
-      hints: string[],
-      onEvent: (event: unknown, author: string) => void,
+    reconnectConfigured(relay: NDKRelay) {
+      if (connected(relay)) return;
+      relay.connectivity.resetReconnectionState();
+      void relay.connect(timeout).catch(() => undefined);
+    },
+    watchInbox,
+    async discoverProfileKeys(
+      targets: NDKRelay[],
+      phrase: string,
+      receive: (key: string) => void,
       signal: AbortSignal,
     ) {
-      const targets = secureRelays(hints)
-        .filter(isPublicRelayAddress)
-        .slice(0, 3)
-        .map(getRelay);
-      await withRelays(targets, async () => {
-        await Promise.all(targets.map(connect));
-        const ready = targets.filter(connected);
-        if (!ready.length || signal.aborted) return;
-        await new Promise<void>((resolve) => {
-          let stop: (() => void) | undefined;
-          const timer = setTimeout(finish, timeout);
-          function finish() {
-            clearTimeout(timer);
-            signal.removeEventListener("abort", finish);
-            stop?.();
-            resolve();
-          }
-          signal.addEventListener("abort", finish, { once: true });
-          stop = subscription(
-            ready,
-            { kinds: [0], authors: [author], limit: 2 },
-            (event) => {
-              if (!signal.aborted && event.pubkey === author)
-                onEvent(event.rawEvent(), author);
-            },
-            finish,
-            true,
-          );
-        });
-      });
+      const keys = new Set<string>();
+      await query(
+        targets,
+        { kinds: [0], search: phrase, limit: 24 },
+        (raw) => {
+          const event = verifiedEvent(raw.rawEvent());
+          if (event?.kind !== 0 || keys.has(event.pubkey)) return false;
+          keys.add(event.pubkey);
+          receive(event.pubkey);
+          return keys.size === 24;
+        },
+        signal,
+      );
     },
-    async publishReplaceable(
-      kind: number,
-      content: string,
+    async publishServerList(
       tags: string[][],
       createdAt: number,
       relays: readonly string[],
       active: () => boolean,
     ) {
       const event = new NDKEvent(undefined, {
-        kind,
-        content,
+        kind: serverListKind,
+        content: "",
         created_at: createdAt,
         tags,
       });
@@ -505,11 +454,23 @@ export function createNostrRelays(signer: NDKSigner) {
     findCallInbox,
     lookupLists,
     safeTargets,
-    verifyInbox,
+    setRetiredHosts(hosts: readonly string[]) {
+      retiredHosts = new Set(hosts);
+    },
+    permitted,
+    async verifyInboxUrl(url: string, active: () => boolean) {
+      const relay = ndk.pool.relays.get(url);
+      return Boolean(
+        relay &&
+        configured.get(url) &&
+        active() &&
+        (await connect(relay)) &&
+        (await verifyInbox(relay, active)),
+      );
+    },
     wrap: (rumor: UnsignedEvent, recipient: string, expiresAt?: number) =>
       wrapRumor(ndk, rumor, recipient, signer, expiresAt),
     publish,
-    advertise,
     closePeerRelays,
   };
 }

@@ -1,5 +1,6 @@
 import { useIsFocused } from "expo-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { marmotErrorCode } from "@/core/marmot/errors";
 import type { MarmotWindow } from "@/core/marmot/native";
 import { useLocal } from "@/services/local-context";
 
@@ -7,15 +8,40 @@ const unsubscribe = () => {};
 const subscribeEmpty = () => unsubscribe;
 const empty = () => null;
 
-export function marmotErrorCode(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error &&
-    "code" in error &&
-    typeof error.code === "string"
-  )
-    return error.code;
-  return "NativeFailure";
+export function useConversationWindow(
+  group: string,
+  target: string | undefined,
+  active: boolean,
+) {
+  const { conversations, marmotSession } = useLocal();
+  const ready = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.ready,
+  );
+  const revision = useSyncExternalStore(
+    conversations.subscribe,
+    conversations.revision,
+  );
+  const view = useSyncExternalStore(conversations.subscribe, () =>
+    conversations.get(group, target),
+  );
+  const status = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.status,
+  );
+  useEffect(() => {
+    if (active && ready) return conversations.acquire(group, target);
+  }, [active, conversations, group, ready, revision, target]);
+
+  return {
+    snapshot: view?.snapshot,
+    window: view?.window,
+    error: view?.error ?? (status === "failed" ? "AccountClosed" : undefined),
+    retry() {
+      if (status === "failed") void marmotSession.retry();
+      else conversations.retry(group, target);
+    },
+  };
 }
 
 export function useMarmotWindow<Snapshot, Direction>(
@@ -34,10 +60,6 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
   const accountRevision = useSyncExternalStore(
     marmotSession.subscribe,
     marmotSession.revision,
-  );
-  const accountStatus = useSyncExternalStore(
-    marmotSession.subscribe,
-    marmotSession.status,
   );
   const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
   const [retry, setRetry] = useState(0);
@@ -63,13 +85,7 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
   );
 
   useEffect(() => {
-    if (
-      !enabled ||
-      locked ||
-      accountStatus === "pending" ||
-      accountStatus === "recovering"
-    )
-      return;
+    if (!enabled || locked || marmotSession.status() === "pending") return;
     let cancelled = false;
     let active: MarmotWindow<Snapshot, Direction> | undefined;
     const isCurrent = () =>
@@ -113,16 +129,7 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
         });
       }
     };
-  }, [
-    accountRevision,
-    accountStatus,
-    enabled,
-    locked,
-    lock,
-    marmotSession,
-    open,
-    retry,
-  ]);
+  }, [accountRevision, enabled, locked, lock, marmotSession, open, retry]);
 
   return {
     window,

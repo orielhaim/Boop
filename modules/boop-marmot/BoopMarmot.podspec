@@ -1,7 +1,10 @@
-sdk = 'sdk/marmotkit-ios-0.18.0-boop'
+require 'digest'
+
+revision = Digest::SHA256.file(File.join(__dir__, 'mdk-0.19.0.patch')).hexdigest[0, 12]
+sdk = "sdk/marmotkit-ios-0.19.0-boop-#{revision}"
 root = File.expand_path('../..', __dir__)
 Dir.chdir(root) do
-  raise 'Unable to prepare MarmotKit 0.18.0 for iOS' unless system('bun', 'scripts/fetch-marmotkit.ts', 'ios')
+  raise 'Unable to prepare MarmotKit 0.19.0 for iOS' unless system('bun', 'scripts/fetch-marmotkit.ts', 'ios')
 end
 
 Pod::Spec.new do |s|

@@ -1,7 +1,7 @@
 import { type EventSubscription, requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 import { z } from "zod";
-import { createStore } from "zustand/vanilla";
+import type { StoreApi } from "zustand/vanilla";
 import { i18n } from "@/i18n";
 import {
   type AudioRoute,
@@ -128,13 +128,13 @@ type Controller = ReturnType<typeof createCallController>;
 
 export function attachSystemPresentation(
   calling: Controller,
+  nativeOpen: StoreApi<{ id: string | null }>,
   privacy: {
     privateMode(): boolean;
     subscribe(listener: () => void): () => void;
   },
 ) {
-  const nativeOpen = createStore<{ id: string | null }>(() => ({ id: null }));
-  if (!native) return nativeOpen;
+  if (!native) return;
   const system = native;
   let previous:
     | {
@@ -188,14 +188,19 @@ export function attachSystemPresentation(
         .catch(() => undefined);
     }
   };
-  calling.store.subscribe(sync);
-  privacy.subscribe(sync);
-  system.addListener("onCallEvent", (payload) => {
+  const unwatchCall = calling.store.subscribe(sync);
+  const unwatchPrivacy = privacy.subscribe(sync);
+  const events = system.addListener("onCallEvent", (payload) => {
     const event = systemCallCommand(calling.store.getState().call, payload);
     if (event?.kind === "end") calling.end();
     if (event?.kind === "failure") calling.systemInterrupted(event.callId);
     if (event?.kind === "open" || event?.kind === "pip-close")
       nativeOpen.setState({ id: event.callId });
   });
-  return nativeOpen;
+  sync();
+  return () => {
+    events.remove();
+    unwatchCall();
+    unwatchPrivacy();
+  };
 }

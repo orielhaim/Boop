@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
-const version = "0.18.0";
-const source = "34646a577807f2b112ee031f3c164ec58aa18b64";
+const version = "0.19.0";
+const source = "3fce95465cdea1edc8456dbd1c6691d1c8dc1f2e";
 const moduleRoot = resolve(import.meta.dir, "../modules/boop-marmot");
 const sdk = join(moduleRoot, "sdk");
 const patch = join(moduleRoot, `mdk-${version}.patch`);
 const revision = createHash("sha256")
   .update(await readFile(patch))
   .digest("hex");
+const provenance = `${source}\n${revision}\n`;
 const platform = process.argv[2];
 if (platform !== "android" && platform !== "ios")
   throw new Error(
@@ -32,7 +33,10 @@ if (abis.some((abi) => !androidTargets.has(abi)))
   throw new Error("Unknown Android ABI");
 
 const tree = join(sdk, `mdk-${source.slice(0, 12)}-${revision.slice(0, 12)}`);
-const dest = join(sdk, `marmotkit-${platform}-${version}-boop`);
+const dest = join(
+  sdk,
+  `marmotkit-${platform}-${version}-boop-${revision.slice(0, 12)}`,
+);
 const stamp = join(dest, "source.txt");
 const abiStamp = (abi: string) => join(dest, `source-${abi}.txt`);
 const abiLibrary = (abi: string) =>
@@ -41,7 +45,7 @@ async function exists(path: string) {
   return Bun.file(path).exists();
 }
 async function matches(path: string) {
-  return (await exists(path)) && (await readFile(path, "utf8")) === revision;
+  return (await exists(path)) && (await readFile(path, "utf8")) === provenance;
 }
 async function built() {
   if (!(await matches(stamp))) return false;
@@ -88,7 +92,8 @@ if (platform === "ios" && process.platform !== "darwin")
   throw new Error("MarmotKit for iOS requires macOS and Xcode");
 
 await mkdir(tree, { recursive: true });
-if (!(await exists(join(tree, ".boop-source")))) {
+const sourceStamp = join(tree, ".boop-source");
+if (!(await matches(sourceStamp))) {
   run(["git", "init", "--quiet"], tree);
   run(
     [
@@ -118,7 +123,7 @@ if (!(await exists(join(tree, ".boop-source")))) {
     tree,
   );
   run(["git", "apply", patch], tree);
-  await writeFile(join(tree, ".boop-source"), revision);
+  await writeFile(sourceStamp, provenance);
 }
 const crate = join(tree, "crates", "marmot-uniffi");
 const bash = Bun.which("bash");
@@ -135,14 +140,17 @@ if (!odin)
     [bash ?? "bash", "scripts/install-odin.sh", join(sdk, "odin-dev-2026-10")],
     tree,
   );
+const targetDir =
+  isWindows && process.env.CARGO_TARGET_DIR
+    ? resolve(process.env.CARGO_TARGET_DIR)
+    : join(tree, "target");
 const env = {
   ...process.env,
   ODIN: odin || provisionedOdin,
   // Upstream places its outputs under the checkout's target directory.
-  CARGO_TARGET_DIR: "target",
+  CARGO_TARGET_DIR: targetDir,
 };
 await mkdir(dest, { recursive: true });
-
 if (platform === "ios") {
   run(["bash", "crates/marmot-uniffi/xcframework.sh"], tree, env);
   for (const name of [
@@ -189,10 +197,18 @@ if (platform === "ios") {
   const clang = `${toolchain}/bin/clang.exe`;
   if (!(await exists(clang)))
     throw new Error("Android NDK Windows clang is missing");
-  if (!Bun.which("make") || !Bun.which("perl"))
+  const make = Bun.which("make");
+  const perl = Bun.which("perl");
+  if (!make || !perl)
     throw new Error(
-      "Add MSYS2 make and perl to PATH for the Android SQLCipher build",
+      "Add native Windows Perl and MSYS2 make to PATH for the Android SQLCipher build",
     );
+  // Host OpenSSL needs native Perl. The Android build uses MSYS2 make and
+  // prefers the Perl from the same installation.
+  const msysPerl = join(dirname(make), "perl.exe");
+  const androidPerl =
+    process.env.OPENSSL_SRC_PERL ??
+    ((await exists(msysPerl)) ? msysPerl : perl);
   const kotlin = join(dest, "kotlin");
   run(
     [
@@ -210,10 +226,10 @@ if (platform === "ios") {
   );
   run(
     [
-      join(tree, "target", "release", "uniffi-bindgen.exe"),
+      join(targetDir, "release", "uniffi-bindgen.exe"),
       "generate",
       "--library",
-      join(tree, "target", "release", "marmot_uniffi.dll"),
+      join(targetDir, "release", "marmot_uniffi.dll"),
       "--language",
       "kotlin",
       "--config",
@@ -262,6 +278,7 @@ if (platform === "ios") {
         ANDROID_NDK_HOME: ndk,
         ANDROID_NDK_ROOT: ndk,
         ODIN_ANDROID_NDK_TOOLCHAIN: toolchain,
+        OPENSSL_SRC_PERL: androidPerl,
         [`CARGO_TARGET_${cargoKey}_LINKER`]: clang,
         [`CARGO_TARGET_${cargoKey}_RUSTFLAGS`]: `-C link-arg=--target=${clangTarget}`,
         [`CC_${targetKey}`]: clang,
@@ -274,7 +291,7 @@ if (platform === "ios") {
     const jni = join(dest, "jniLibs", abi);
     await mkdir(jni, { recursive: true });
     await cp(
-      join(tree, "target", target, "release", "libmarmot_uniffi.so"),
+      join(targetDir, target, "release", "libmarmot_uniffi.so"),
       join(jni, "libmarmot_uniffi.so"),
     );
   }
@@ -282,7 +299,7 @@ if (platform === "ios") {
 for (const abi of abis) {
   if (!(await exists(abiLibrary(abi))))
     throw new Error(`MarmotKit build did not produce ${abi}`);
-  await writeFile(abiStamp(abi), revision);
+  await writeFile(abiStamp(abi), provenance);
 }
-await writeFile(stamp, revision);
+await writeFile(stamp, provenance);
 console.info(dest);

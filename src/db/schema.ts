@@ -62,14 +62,6 @@ export const callHistory = sqliteTable(
   (table) => [index("call_history_recent").on(table.startedAt)],
 );
 
-export const relaySettings = sqliteTable("relay_settings", {
-  url: text().primaryKey().notNull(),
-  enabled: integer({ mode: "boolean" }).notNull().default(true),
-  general: integer({ mode: "boolean" }).notNull().default(true),
-  inbox: integer({ mode: "boolean" }).notNull().default(true),
-  discovery: integer({ mode: "boolean" }).notNull().default(false),
-});
-
 export const settings = sqliteTable("settings", {
   key: text().primaryKey().notNull(),
   value: text().notNull(),
@@ -89,27 +81,8 @@ export const speechJobs = sqliteTable(
 
 export const peerPermissions = sqliteTable("peer_permissions", {
   publicKey: text("public_key").primaryKey().notNull(),
-  blockedAt: integer("blocked_at"),
   initiated: integer({ mode: "boolean" }).notNull().default(false),
   approved: integer({ mode: "boolean" }).notNull().default(false),
-});
-
-export const nostrProfiles = sqliteTable("nostr_profiles", {
-  publicKey: text("public_key").primaryKey().notNull(),
-  eventId: text("event_id").notNull(),
-  createdAt: integer("created_at").notNull(),
-  fields: text({ mode: "json" }).$type<Record<string, unknown>>().notNull(),
-  picture: text(),
-  name: text(),
-});
-
-export const avatarCache = sqliteTable("avatar_cache", {
-  publicKey: text("public_key").primaryKey().notNull(),
-  sourceUrl: text("source_url").notNull(),
-  filename: text().notNull(),
-  size: integer().notNull(),
-  fetchedAt: integer("fetched_at").notNull(),
-  accessedAt: integer("accessed_at").notNull(),
 });
 
 export const downloads = sqliteTable(

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sourceSchema as voiceSourceSchema } from "../speech/types";
 
-export const targetSchema = z.tuple([
+const targetSchema = z.tuple([
   z.string(),
   z.string(),
   z.string(),

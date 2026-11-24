@@ -10,6 +10,7 @@ import { useNavigationMotion } from "@/components/navigation/motion";
 import { ProfilePhotoControls } from "@/components/people/profile-photo-controls";
 import { Easing } from "react-native-reanimated";
 import { useTheme } from "@/theme";
+import { marmotChatScene } from "@/core/marmot/conversation-route";
 import { useChatsEnabled } from "@/services/local-context";
 
 const audioPlayerOptions: BlankStackNavigationOptions = {
@@ -31,7 +32,7 @@ const audioPlayerOptions: BlankStackNavigationOptions = {
   },
 };
 
-export const unstable_settings = { initialRouteName: "(tabs)" };
+export const unstable_settings = { anchor: "(tabs)" };
 
 export default function MessengerLayout() {
   const chats = useChatsEnabled();
@@ -80,6 +81,9 @@ export default function MessengerLayout() {
                 return { ...push, gestureEnabled: false };
               if (params && "key" in params && params.key === "new-group")
                 return { ...push, gestureEnabled: false };
+              // Hidden BlankStack scenes disconnect effects, including the live chat window.
+              if (marmotChatScene(route)?.kind === "conversation")
+                return { ...push, inactiveBehavior: "keep" };
               return push;
             }}
           />

@@ -1,179 +1,121 @@
-import type { MarmotReadiness, MarmotRelays } from "./native";
+import { createStore } from "zustand/vanilla";
+import { marmotErrorCode } from "./errors";
+import { sameRelays } from "../nostr/config";
+import type { MarmotReadiness } from "./native";
 
-const sessionRetryDelays = [1000, 4000, 15000];
-const permanentFailures = new Set([
+type Configuration = {
+  discovery: readonly string[];
+  mediaOrigin: string | null;
+};
+type State =
+  { status: "pending" | "ready" } | { status: "failed"; cause: unknown };
+const terminal = new Set([
   "IdentityMismatch",
   "AccountSignedOut",
-  "InvalidSecretKey",
   "SecretNotFound",
-  "DuplicateIdentity",
-  "MissingDefaultRelays",
 ]);
-
-function errorCode(error: unknown) {
-  return typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-    ? error.code
-    : "NativeFailure";
-}
-
-type Configuration = { relays: MarmotRelays; mediaOrigin: string | null };
-
-function sameConfiguration(a: Configuration | null, b: Configuration | null) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
 
 export function createMarmotSession({
   open,
   close,
   beforeClose,
-  retryDelays = sessionRetryDelays,
 }: {
   open: (
-    relays: MarmotRelays,
+    discovery: readonly string[],
     mediaOrigin: string | null,
   ) => Promise<MarmotReadiness>;
-  close: () => Promise<void>;
+  close: (pauseMessaging: boolean) => Promise<void>;
   beforeClose: () => Promise<void> | undefined;
-  retryDelays?: readonly number[];
 }) {
   let desired: Configuration | null = null;
   let active: Configuration | null = null;
+  const { getState, setState, subscribe } = createStore<{
+    state: State;
+    revision: number;
+  }>(() => ({
+    state: { status: "pending" },
+    revision: 0,
+  }));
   let transition = Promise.resolve();
-  let failure: { cause: unknown; code: string } | undefined;
-  let revision = 0;
-  let retries = 0;
-  let retryEnabled = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const listeners = new Set<() => void>();
+  let transitioning = false;
 
-  function changed() {
-    revision++;
-    for (const listener of listeners) listener();
+  function publish(state: State) {
+    setState({ state, revision: getState().revision + 1 });
   }
 
-  function cancelRecovery() {
-    clearTimeout(timer);
-    timer = undefined;
-  }
-
-  function recovering() {
-    return (
-      failure &&
-      desired &&
-      retries < retryDelays.length &&
-      !permanentFailures.has(failure.code)
-    );
-  }
-
-  function scheduleRecovery() {
-    const delay = retryDelays[retries];
-    if (!retryEnabled || timer || !recovering() || delay === undefined) return;
-    timer = setTimeout(() => {
-      timer = undefined;
-      void reconcile(true);
-    }, delay);
-  }
-
-  function reconcile(recovery = false) {
+  function reconcile(pauseMessaging = false) {
+    const next = desired;
     transition = transition.then(async () => {
-      if (recovery && (!retryEnabled || !recovering())) return;
-      const next = desired;
-      if (!failure && sameConfiguration(next, active)) return;
-      cancelRecovery();
+      if (next !== desired) return;
       try {
-        if (active) {
-          await beforeClose();
-          await close();
+        if ((active && active !== next) || pauseMessaging) {
+          if (active) await beforeClose();
+          await close(pauseMessaging);
           active = null;
         }
-        if (next) {
-          await open(next.relays, next.mediaOrigin);
+        if (next !== desired) return;
+        if (next && active !== next) {
+          await open(next.discovery, next.mediaOrigin);
           active = next;
         }
-        failure = undefined;
-        retries = 0;
+        if (next === desired) {
+          transitioning = false;
+          publish({ status: active ? "ready" : "pending" });
+        }
       } catch (cause) {
-        if (recovery) retries++;
-        failure = { cause, code: errorCode(cause) };
-        if (typeof __DEV__ !== "undefined" && __DEV__)
-          console.info("[marmot] account startup", { code: failure.code });
-      } finally {
-        scheduleRecovery();
-        changed();
+        if (next === desired) {
+          transitioning = false;
+          publish({ status: "failed", cause });
+        }
       }
     });
+    transitioning = true;
+    publish({ status: "pending" });
     return transition;
   }
 
   return {
-    start(
-      { general, inbox, discovery }: MarmotRelays,
-      mediaOrigin: string | null,
-    ) {
-      const next = { relays: { general, inbox, discovery }, mediaOrigin };
-      if (sameConfiguration(next, desired)) {
-        if (!failure || timer || permanentFailures.has(failure.code))
-          return transition;
-      } else {
-        cancelRecovery();
-        retries = 0;
-      }
+    start(discovery: readonly string[], mediaOrigin: string | null) {
+      if (
+        desired?.mediaOrigin === mediaOrigin &&
+        sameRelays(discovery, desired.discovery)
+      )
+        return transition;
+      const next = { discovery, mediaOrigin };
       desired = next;
       return reconcile();
     },
-    async stop() {
-      desired = null;
-      cancelRecovery();
-      await reconcile();
-      if (failure) throw failure.cause;
-    },
-    setRetryEnabled(enabled: boolean) {
-      if (retryEnabled === enabled) return;
-      retryEnabled = enabled;
-      if (enabled) scheduleRecovery();
-      else cancelRecovery();
-    },
-    reconnected() {
-      if (
-        !retryEnabled ||
-        !desired ||
-        !failure ||
-        permanentFailures.has(failure.code)
-      )
-        return;
-      cancelRecovery();
-      retries = 0;
-      void reconcile();
+    async stop(pauseMessaging = false) {
+      if (desired || active || pauseMessaging) {
+        desired = null;
+        await reconcile(pauseMessaging);
+      } else await transition;
+      const { state } = getState();
+      if (state.status === "failed") throw state.cause;
     },
     retry() {
-      cancelRecovery();
-      retries = 0;
-      return reconcile();
+      if (desired && getState().state.status === "failed") return reconcile();
+      return transition;
     },
-    status: () =>
-      failure
-        ? recovering()
-          ? "recovering"
-          : "failed"
-        : active
-          ? "ready"
-          : "pending",
-    revision: () => revision,
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+    reconnected() {
+      const { state } = getState();
+      if (
+        desired &&
+        state.status === "failed" &&
+        !terminal.has(marmotErrorCode(state.cause))
+      )
+        void reconcile();
     },
+    status: () => getState().state.status,
+    transitioning: () => transitioning,
+    revision: () => getState().revision,
+    subscribe,
     async ready() {
-      // An initial child effect can precede the protected session's connect effect.
       await Promise.resolve();
       await transition;
-      if (failure) throw failure.cause;
-      if (!active) throw new Error("AccountClosed");
+      const { state } = getState();
+      if (state.status === "failed") throw state.cause;
+      if (state.status !== "ready") throw new Error("AccountClosed");
     },
   };
 }

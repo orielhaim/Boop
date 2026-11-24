@@ -11,48 +11,268 @@ import java.net.URI
 import java.net.HttpURLConnection
 import java.util.UUID
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
-  private val hostSecret = "1".padStart(64, '0')
 
-  @Test fun freshHostIdentityOpensChatsWithoutAReachableRelay() = runBlocking {
+  @Test fun generatedIdentityKeepsItsProfileAndNativeSignerAcrossRestart() = runBlocking {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
-    MarmotAndroid.initialize(context)
+    BoopMarmotModule.initializeBindings(context)
     val directory = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
     val relays = listOf("ws://127.0.0.1:1")
-    val store = MemorySecretStore()
-    val key = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    var key: String? = null
     try {
       repeat(2) { attempt ->
         val kit = Marmot.newWithConfiguration(directory.canonicalPath, relays, MarmotOptions(
           relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
-          secretStore = store,
-          deployment = marmotDeploymentNeutral(),
+          deployment = marmotDeploymentNeutral().copy(keychainService = "app.boop.test.${directory.name}"),
         ))
         try {
           kit.start()
           if (attempt == 0) {
-            val account = withTimeout(10_000) { kit.createHostIdentity(hostSecret, relays, relays, relays) }
-            assertEquals(key, account.accountIdHex)
+            val profile = UserProfileMetadataFfi("Offline fixture", "Offline fixture", null, null, null, null, null)
+            val result = withTimeout(10_000) { kit.createIdentityWithInitialProfile(profile, relays, relays, relays) }
+            key = result.account.accountIdHex
+            assertEquals("Offline fixture", result.profile.name)
           }
-          assertEquals(key, kit.listAccounts().single().accountIdHex)
-          val filter = listOf(ChatListFilterNodeFfi.Not(1u), ChatListFilterNodeFfi.Condition(ChatListConditionFfi.PENDING_INVITE))
-          val handle = kit.openChatListQueryWindow(key, ChatListViewQueryFfi(ChatListViewFfi.CHATS, filter), 40u)
-          try {
-            assertEquals(emptyList<Any>(), checkNotNull(handle.snapshot()).rows)
-          } finally { handle.close() }
+          val account = checkNotNull(key)
+          assertEquals(account, kit.listAccounts().single().accountIdHex)
+          assertEquals("Offline fixture", kit.userProfile(account)?.name)
+          val event = JSONObject().put("pubkey", account).put("created_at", 1).put("kind", 1)
+            .put("tags", org.json.JSONArray()).put("content", "native signer")
+          assertEquals(128, kit.signNostrEvent(account, event.toString()).length)
+          val encrypted = kit.nostrCipher(account, account, "account payload", true, true)
+          assertEquals("account payload", kit.nostrCipher(account, account, encrypted, true, false))
+          val other = kit.prepareIdentityImport("1".padStart(64, '0'), "")
+          other.use {
+            event.put("pubkey", it.publicKey())
+            assertTrue(runCatching { kit.signNostrEvent(account, event.toString()) }.isFailure)
+          }
+          if (attempt == 1) {
+            kit.removeAccount(account)
+            assertTrue(kit.listAccounts().isEmpty())
+            assertTrue(runCatching { kit.revealNsec(account) }.isFailure)
+          }
         } finally {
           try { kit.shutdownAndClose() } finally { kit.close() }
         }
       }
     } finally { directory.deleteRecursively() }
+  }
+
+  @Test fun rawAndEncryptedImportsKeepOneOfflineCheckpoint() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    BoopMarmotModule.initializeBindings(context)
+    val directory = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val relays = listOf("ws://127.0.0.1:1")
+    val raw = "3501454135014541350145413501453fefb02227e449e57cf4d3a3ce05378683"
+    val vector = "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p"
+    val configuration = MarmotOptions(
+      relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
+      deployment = marmotDeploymentNeutral().copy(keychainService = "app.boop.test.${directory.name}"),
+    )
+    var imported: String? = null
+    try {
+      repeat(2) { attempt ->
+        val kit = Marmot.newWithConfiguration(directory.canonicalPath, relays, configuration)
+        try {
+          kit.start()
+          if (attempt == 0) {
+            val publicKey = kit.prepareIdentityImport(raw, "").use { it.publicKey() }
+            assertTrue(runCatching { kit.prepareIdentityImport(vector, "incorrect").close() }.isFailure)
+            kit.prepareIdentityImport(vector, "nostr").use { prepared ->
+              assertEquals(publicKey, prepared.publicKey())
+              assertTrue(kit.listAccounts().isEmpty())
+              val snapshot = kit.beginPreparedOnboarding(prepared, OnboardingOptionsFfi(relays, relays, relays))
+              assertFalse(snapshot.ready)
+              imported = snapshot.accountIdHex
+            }
+          }
+          val key = checkNotNull(imported)
+          assertEquals(key, kit.listAccounts().single().accountIdHex)
+          assertFalse(checkNotNull(kit.onboardingSnapshot(key)).ready)
+          if (attempt == 1) {
+            kit.cancelOnboarding(key)
+            assertTrue(kit.listAccounts().single().signedOut)
+            kit.removeAccount(key)
+            assertTrue(kit.listAccounts().isEmpty())
+          }
+        } finally {
+          try { kit.shutdownAndClose() } finally { kit.close() }
+        }
+      }
+    } finally { directory.deleteRecursively() }
+  }
+
+  @Test fun sparseProfileEditsUseAccountRelaysAndSurviveReopen() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val relay = InstrumentationRegistry.getArguments().getString("relay")
+      ?: error("Pass the fixture WebSocket URL as the relay instrumentation argument")
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val owner = Client(File(root, "owner"), relay, null)
+    val reader = Client(File(root, "reader"), relay, null)
+    try {
+      owner.start()
+      await("profile account ready") {
+        owner.kit.accountSetupReadiness(owner.key) == AccountSetupReadinessFfi.NETWORK_READY
+      }
+      val picture = "https://photos.example.com/avatar.jpg"
+      owner.kit.publishUserProfileUsingAccountRelays(owner.key, UserProfileMetadataFfi(
+        "original-handle", "Original", "Biography", picture, "https://photos.example.com/banner.jpg",
+        "name@example.com", "wallet@example.com",
+      ))
+      val update = owner.kit.updateUserProfileUsingAccountRelays(owner.key, mapOf(
+        "display_name" to "Updated", "banner" to "", "website" to "https://example.com/"
+      ))
+      assertEquals("original-handle", update.name)
+      assertEquals("Updated", update.displayName)
+      assertEquals("Biography", update.about)
+      assertEquals(picture, update.picture)
+      assertNull(update.banner)
+      assertEquals("name@example.com", update.nip05)
+      assertEquals("wallet@example.com", update.lud16)
+
+      reader.start()
+      assertNotEquals(owner.key, reader.key)
+      reader.kit.refreshProfile(owner.key, listOf(relay))
+      var projection = reader.kit.cachedIdentityProjections(listOf(owner.key)).single()
+      assertEquals("Updated", projection.resolvedName)
+      assertEquals("https://example.com/", projection.website)
+      assertEquals(picture, projection.profile?.picture)
+      reader.close()
+      reader.start()
+      projection = reader.kit.cachedIdentityProjections(listOf(owner.key)).single()
+      assertEquals("Updated", projection.resolvedName)
+      assertEquals("https://example.com/", projection.website)
+    } finally {
+      try {
+        reader.close()
+      } finally {
+        owner.close()
+        root.deleteRecursively()
+      }
+    }
+  }
+
+  @Test fun relayListEditsKeepAnOpenConversationAndLivenessSubscription() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    val second = checkNotNull(InstrumentationRegistry.getArguments().getString("secondRelay"))
+    val root = File(instrumentation.targetContext.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    BoopMarmotModule.initializeBindings(instrumentation.targetContext)
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    try {
+      alice.start()
+      bob.start()
+      for (client in listOf(alice, bob)) {
+        await("initial relay lists and KeyPackage") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY &&
+            client.kit.accountRelayLists(client.key).complete
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      bob.kit.subscribeRelayLiveness(bob.key).use { connection ->
+        assertTrue(connection.snapshot().any { it.url.trimEnd('/') == relay.trimEnd('/') })
+        bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.LATEST, null, 5u, 15_000u).use { window ->
+          assertNotNull(window.snapshot())
+          val inbox = bob.kit.setAccountInboxRelays(bob.key, listOf(second), listOf(relay))
+          assertEquals(listOf(second.trimEnd('/')), inbox.inbox.relays.map { it.trimEnd('/') })
+          val nip65 = bob.kit.setAccountNip65Relays(bob.key, listOf(relay, second), listOf(relay, second))
+          assertEquals(setOf(relay.trimEnd('/'), second.trimEnd('/')), nip65.nip65.relays.map { it.trimEnd('/') }.toSet())
+          withTimeout(20_000) {
+            while (checkNotNull(connection.next()).none { it.url.trimEnd('/') == second.trimEnd('/') }) { }
+          }
+          bob.kit.reconnectRelay(bob.key, second)
+          bob.kit.notifyConnectivityRestored()
+          val message = "received through an existing conversation after relay edits"
+          alice.kit.sendTextWithClientToken(alice.key, direct, message, "while-editing-relays")
+          withTimeout(25_000) {
+            while (checkNotNull(window.next()).messages.none { it.timeline.plaintext == message }) { }
+          }
+          window.cancel()
+        }
+        connection.cancel()
+        assertNull(connection.next())
+      }
+    } finally {
+      try { alice.close() } finally {
+        bob.close()
+        root.deleteRecursively()
+      }
+    }
+  }
+
+  @Test fun blockListPersistsWithoutMessagingAndUpdatesOpenWindows() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    val root = File(instrumentation.targetContext.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    BoopMarmotModule.initializeBindings(instrumentation.targetContext)
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    try {
+      alice.start()
+      bob.start()
+      for (client in listOf(alice, bob)) {
+        await("initial account declarations") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      val text = "message received before blocking"
+      alice.kit.sendTextWithClientToken(alice.key, direct, text, "before-block")
+      bob.receives(direct, alice.key, text)
+      bob.kit.subscribeBlockedUsers(bob.key).use { blocks ->
+        val initial = checkNotNull(blocks.snapshot())
+        assertTrue(initial.users.isEmpty())
+        bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.LATEST, null, 5u, 15_000u).use { window ->
+          assertTrue(checkNotNull(window.snapshot()).messages.any { it.timeline.plaintext == text })
+          coroutineScope {
+            val a = async { bob.kit.blockUser(bob.key, alice.key) }
+            val b = async { bob.kit.blockUser(bob.key, alice.key) }
+            a.await()
+            b.await()
+          }
+          val updated = withTimeout(15_000) { checkNotNull(blocks.next()) }
+          assertTrue(updated.revision > initial.revision)
+          assertEquals(alice.key, updated.users.single().publicKey)
+          assertTrue(updated.users.single().isPrivate)
+          assertTrue(alice.kit.getBlockedUsers(alice.key).isEmpty())
+          withTimeout(15_000) {
+            while (checkNotNull(window.next()).messages.any { it.timeline.plaintext == text }) { }
+          }
+          window.cancel()
+        }
+        val receiver = launch { blocks.next() }
+        yield()
+        withTimeout(5_000) { receiver.cancelAndJoin() }
+      }
+      bob.close()
+      bob.start(messaging = false)
+      bob.kit.subscribeBlockedUsers(bob.key).use { blocks ->
+        assertEquals(alice.key, checkNotNull(blocks.snapshot()).users.single().publicKey)
+        assertTrue(bob.kit.isUserBlocked(bob.key, alice.key))
+        bob.kit.unblockUser(bob.key, alice.key)
+        assertTrue(withTimeout(15_000) { checkNotNull(blocks.next()) }.users.isEmpty())
+      }
+    } finally {
+      try { alice.close() } finally {
+        bob.close()
+        root.deleteRecursively()
+      }
+    }
   }
 
   @Test fun directAndGroupUseIndependentDurableAccounts() = runBlocking {
@@ -63,14 +283,14 @@ class MarmotRelayTest {
     val blossom = InstrumentationRegistry.getArguments().getString("blossom")
     val fixture = URI(relay)
     Socket().use { it.connect(InetSocketAddress(fixture.host, fixture.port), 4_000) }
-    MarmotAndroid.initialize(context)
+    BoopMarmotModule.initializeBindings(context)
     val root = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
     try {
       val alice = Client(File(root, "alice"), relay, blossom)
       val bob = Client(File(root, "bob"), relay, blossom)
       val carol = Client(File(root, "carol"), relay, blossom)
       try {
-        alice.start(hostSecret, generated = true)
+        alice.start()
         bob.start()
         carol.start()
         for (client in listOf(alice, bob, carol)) {
@@ -85,8 +305,13 @@ class MarmotRelayTest {
 
         val available = alice.kit.prewarmGroupMemberKeyPackages(alice.key, listOf(bob.key))
         assertEquals(1uL, available.uniqueMembers)
-        val direct = alice.kit.startDirectConversation(alice.key, bob.key)
-        assertEquals(direct, alice.kit.startDirectConversation(alice.key, bob.key))
+        val direct = coroutineScope {
+          assertNull(alice.kit.existingDirectConversation(alice.key, bob.key))
+          val first = async { alice.kit.startDirectConversation(alice.key, bob.key) }
+          val second = async { alice.kit.startDirectConversation(alice.key, bob.key) }
+          first.await().also { assertEquals(it, second.await()) }
+        }
+        assertEquals(direct, alice.kit.existingDirectConversation(alice.key, bob.key)?.groupIdHex)
         bob.accept(direct)
         val first = alice.kit.sendTextWithClientToken(alice.key, direct, "hello from Alice", "first-direct-message")
         bob.receives(direct, alice.key, "hello from Alice")
@@ -108,7 +333,7 @@ class MarmotRelayTest {
         }
         assertEquals(EncryptedMediaVersionFfi.V2, alice.kit.groupDetails(alice.key, direct).group.encryptedMedia.version)
         verifyWindowDelta(alice, bob, direct)
-        if (blossom != null) mediaRoundTrip(alice, bob, direct, blossom)
+        if (blossom != null) mediaRoundTrip(alice, bob, direct, blossom, first.messageIdHex)
 
         alice.close()
         bob.close()
@@ -130,10 +355,18 @@ class MarmotRelayTest {
           throw AssertionError("Restart sender ${sender.lifecycleState} epoch ${sender.epoch}; recipient ${recipient.lifecycleState} epoch ${recipient.epoch}; send status $status", error)
         }
 
-        val group = alice.kit.createGroupDetailed(alice.key, "Fixture group", listOf(bob.key, carol.key), "Integration fixture")
-          .created?.groupIdHex ?: error("Group creation failed")
+        val created = checkNotNull(alice.kit.createGroupWithInitialImageDetailed(
+          alice.key, "Fixture group", listOf(bob.key, carol.key), "Integration fixture", null,
+        ).created)
+        val group = created.groupIdHex
+        assertTrue(created.chatListRow.conversationCreatedAt > 0uL)
         bob.accept(group)
         carol.accept(group)
+        for (client in listOf(alice, bob, carol)) {
+          assertFalse(client.kit.timelineMessages(client.key, latestTimeline(group)).messages.any {
+            it.groupSystem?.systemType == "group_renamed"
+          })
+        }
         assertEquals("encrypted-media-v2", alice.kit.groupDetails(alice.key, group).group.encryptedMedia.mediaFormat)
         alice.kit.sendTextWithClientToken(alice.key, group, "hello group", "first-group-message")
         bob.receives(group, alice.key, "hello group")
@@ -178,6 +411,11 @@ class MarmotRelayTest {
 
         alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
         await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
+        await("authenticated rename after creation") {
+          bob.kit.timelineMessages(bob.key, latestTimeline(group)).messages.any {
+            it.groupSystem?.systemType == "group_renamed"
+          }
+        }
         alice.kit.promoteAdmin(alice.key, group, bob.key)
         await("canonical admin promotion") { bob.kit.groupManagementState(bob.key, group).isSelfAdmin }
         concurrentProfileUpdates(alice, bob, group)
@@ -225,6 +463,14 @@ class MarmotRelayTest {
           bob.kit.chatList(bob.key, false).none { it.groupIdHex == declined && it.pendingConfirmation }
         }
 
+        val threadText = "Thread reply fixture"
+        alice.kit.sendThreadMessage(alice.key, group, target, threadText, emptyList(), emptyList())
+        bob.receives(group, alice.key, threadText)
+        val thread = bob.kit.timelineMessages(bob.key, latestTimeline(group, threadText)).messages.single()
+        assertEquals(target, thread.replyToMessageIdHex)
+        assertEquals(target, thread.thread?.rootMessageIdHex)
+        assertEquals(target, thread.thread?.parentMessageIdHex)
+
         bob.kit.leaveGroup(bob.key, group)
         await("authenticated leave") {
           alice.kit.groupDetails(alice.key, group).members.none { it.memberIdHex == bob.key }
@@ -244,11 +490,24 @@ class MarmotRelayTest {
   }
 
   private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
+    val seed = "unread prefetch fixture"
+    sender.kit.sendTextWithClientToken(sender.key, group, seed, "unread-prefetch-fixture")
+    recipient.receives(group, sender.key, seed)
+    await("projected unread marker before speculative open") {
+      recipient.kit.chatListRow(recipient.key, group)?.firstUnreadMessageIdHex != null
+    }
+    val before = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+    assertNotNull(before.firstUnreadMessageIdHex)
     val handle = recipient.kit.openConversationWindow(recipient.key, group, ConversationOpenModeFfi.LATEST, null, 3u, 15_000u)
     val window = ConversationWindow(handle)
     try {
       val initial = checkNotNull(window.initial())
       assertEquals(sender.key, initial["peer"])
+      assertEquals(true, initial["atTail"])
+      assertEquals(before.firstUnreadMessageIdHex, initial["firstUnread"])
+      val afterOpen = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+      assertEquals(before.lastReadMessageIdHex, afterOpen.lastReadMessageIdHex)
+      assertEquals(before.unreadCount, afterOpen.unreadCount)
       val initialRows = initial["messages"] as List<*>
       assertEquals(3, initialRows.size)
       val body = "new message for the bounded window"
@@ -261,6 +520,10 @@ class MarmotRelayTest {
         projected
       }
       assertEquals(3, (next["messages"] as List<*>).size)
+      assertNotNull(next["firstUnread"])
+      val afterArrival = checkNotNull(recipient.kit.chatListRow(recipient.key, group))
+      assertEquals(before.lastReadMessageIdHex, afterArrival.lastReadMessageIdHex)
+      assertEquals(before.unreadCount + 1uL, afterArrival.unreadCount)
       val delta = checkNotNull(windowDelta(initial, next))
       assertEquals(listOf(body), (delta["changed"] as List<*>).filterIsInstance<Map<*, *>>().map { it["text"] })
       assertEquals(3, (delta["order"] as List<*>).size)
@@ -312,13 +575,57 @@ class MarmotRelayTest {
       await("late invitee KeyPackage publication") {
         invitee.kit.accountSetupReadiness(invitee.key) == AccountSetupReadinessFfi.NETWORK_READY
       }
-      val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
-      val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
-      assertEquals(MemberResolutionStatusFfi.SELECTED, outcome.status)
-      invitee.accept(group)
-      val message = "hello after joining the group"
-      admin.kit.sendTextWithClientToken(admin.key, group, message, "late-member-message")
-      invitee.receives(group, admin.key, message)
+      val kit = admin.kit
+      val account = admin.key
+      // Warm both read paths before sampling the local worker and projection cost.
+      groupDocument(kit, account, group)
+      rosterDocument(kit, account, group)
+      val rosterTimes = mutableListOf<Long>()
+      val priorTimes = mutableListOf<Long>()
+      repeat(15) {
+        val before = System.nanoTime()
+        groupDocument(kit, account, group)
+        groupDiagnostics(kit, account, group)
+        kit.groupCommitDelivery(account, group)
+        priorTimes += System.nanoTime() - before
+        val after = System.nanoTime()
+        rosterDocument(kit, account, group)
+        rosterTimes += System.nanoTime() - after
+      }
+      android.util.Log.i("BoopGroupProjection", "previous five reads: ${priorTimes.sorted()[7] / 1000} us; roster read: ${rosterTimes.sorted()[7] / 1000} us (median, n=15)")
+      val read = suspend { rosterDocument(admin.kit, admin.key, group) }
+      val state = GroupStateWindow("group-test", admin.kit.subscribeGroupState(admin.key, group), read(), "groupRoster", read)
+      fun roster(snapshot: Document): Set<Any?> {
+        val details = snapshot["details"] as Map<*, *>
+        return (details["members"] as List<*>).filterIsInstance<Map<*, *>>().map { it["id"] }.toSet()
+      }
+      val initial = checkNotNull(state.initial())
+      assertEquals("0", initial["sequence"])
+      assertFalse(roster(initial).contains(invitee.key))
+      val initialRevision = ((initial["details"] as Map<*, *>)["revision"] as String).toULong()
+      try {
+        val result = admin.kit.inviteMembersDetailed(admin.key, group, listOf(invitee.key))
+        val outcome = result.invite.memberOutcomes.single { it.accountIdHex == invitee.key }
+        assertEquals(MemberResolutionStatusFfi.SELECTED, outcome.status)
+        invitee.accept(group)
+        val message = "hello after joining the group"
+        admin.kit.sendTextWithClientToken(admin.key, group, message, "late-member-message")
+        invitee.receives(group, admin.key, message)
+        withTimeout(15_000) {
+          while (true) {
+            val next = checkNotNull(state.next())
+            assertEquals("group-test", next["generation"])
+            if (roster(next).contains(invitee.key)) {
+              assertTrue(((next["details"] as Map<*, *>)["revision"] as String).toULong() > initialRevision)
+              val settings = groupDocument(admin.kit, admin.key, group)
+              val member = (settings["members"] as List<*>).filterIsInstance<Map<*, *>>().single { it["id"] == invitee.key }
+              assertEquals(true, member["canRemove"])
+              assertEquals(false, member["admin"])
+              break
+            }
+          }
+        }
+      } finally { state.stop() }
     } finally {
       invitee.close()
     }
@@ -372,7 +679,7 @@ class MarmotRelayTest {
     }
   }
 
-  private suspend fun mediaRoundTrip(sender: Client, recipient: Client, group: String, blossom: String) {
+  private suspend fun mediaRoundTrip(sender: Client, recipient: Client, group: String, blossom: String, directReply: String) {
     val fixture = URI(blossom).let { it.scheme == "http" && it.host == "127.0.0.1" }
     fun fixtureCall(path: String, method: String = "GET"): Int {
       val connection = URI("$blossom/_fixture/$path").toURL().openConnection() as HttpURLConnection
@@ -393,7 +700,10 @@ class MarmotRelayTest {
     val caption = "Encrypted document fixture"
     val request = MediaFileUploadRequestFfi(
       listOf(MediaFileUploadAttachmentRequestFfi(path.canonicalPath, path.length().toULong(), path.name, "text/plain", null, null)),
-      caption, true, blossom, listOf(mediaMetadata(0, path.length().toULong(), null, emptyList(), "file")),
+      caption, true, blossom, listOf(
+        mediaMetadata(0, path.length().toULong(), null, emptyList(), "file"),
+        listOf("e", directReply, "", "reply"),
+      ),
     )
     val sent = MediaFileTransferControlFfi().use {
       sender.kit.uploadMediaFilesWithClientToken(sender.key, group, request, it, "fixture-media")
@@ -402,6 +712,7 @@ class MarmotRelayTest {
     recipient.receives(group, sender.key, caption)
     val row = recipient.kit.timelineMessages(recipient.key, TimelineMessageQueryFfi(group, caption, null, null, null,
       cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 30u)).messages.single()
+    assertEquals(directReply, row.replyToMessageIdHex)
     val attachment = row.media.single() as MediaAttachmentOutcomeFfi.Accepted
     assertEquals(listOf("boop-media", "0", payload.size.toString(), "", "", "file"),
       row.tags.single { it.values.first() == "boop-media" }.values)
@@ -494,7 +805,7 @@ class MarmotRelayTest {
     val waveform = listOf(0.0, 15.0 / 31, 1.0)
     val selected = sender.kit.selectedMessageDraft(sender.key, group)
     val updated = try {
-      sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Resumed upload", row.messageIdHex, emptyList())
+      sender.kit.saveMessageDraftInputsIfRevision(sender.key, selected.revision, "Staging upload", row.messageIdHex, emptyList())
     } finally { selected.destroy() }
     try {
       MediaFileTransferControlFfi().use { control ->
@@ -502,9 +813,28 @@ class MarmotRelayTest {
           MessageDraftAttachmentFileRequestFfi(draftIds[0], voice.canonicalPath, voice.length().toULong(),
             voice.name, "audio/mp4", null, null, duration, waveform), control)
         try {
-          sender.kit.stageMessageDraftAttachmentFile(sender.key, first.revision,
-            MessageDraftAttachmentFileRequestFfi(draftIds[1], video.canonicalPath, video.length().toULong(),
-              video.name, "video/mp4", "720x720", null, 5.0, emptyList()), control).destroy()
+          val staleSave = runCatching {
+            sender.kit.saveMessageDraftInputsIfRevision(sender.key, updated.revision, "Stale", null, emptyList()).destroy()
+          }
+          assertTrue(staleSave.exceptionOrNull() is MarmotKitException.MessageDraftRevisionConflict)
+          val edited = sender.kit.saveMessageDraftInputsIfRevision(sender.key, first.revision, "Resumed upload", row.messageIdHex, emptyList())
+          try {
+            assertEquals(draftIds.take(1), edited.draft?.mediaAttachments?.map { it.id })
+            val staged = sender.kit.stageMessageDraftAttachmentFile(sender.key, edited.revision,
+              MessageDraftAttachmentFileRequestFfi(draftIds[1], video.canonicalPath, video.length().toULong(),
+                video.name, "video/mp4", "720x720", null, 5.0, emptyList()), control)
+            try {
+              val disposable = sender.kit.stageMessageDraftAttachmentFile(sender.key, staged.revision,
+                MessageDraftAttachmentFileRequestFfi("remove-me", path.canonicalPath, path.length().toULong(),
+                  path.name, "text/plain", null, null, null, emptyList()), control)
+              try {
+                val removed = sender.kit.saveMessageDraftInputsIfRevision(sender.key, disposable.revision,
+                  "Resumed upload", row.messageIdHex, listOf(MessageDraftAttachmentInputFfi.Removed("remove-me")))
+                try { assertEquals(draftIds, removed.draft?.mediaAttachments?.map { it.id }) }
+                finally { removed.destroy() }
+              } finally { disposable.destroy() }
+            } finally { staged.destroy() }
+          } finally { edited.destroy() }
         } finally { first.destroy() }
       }
     } finally { updated.destroy() }
@@ -530,7 +860,15 @@ class MarmotRelayTest {
       val tags = files.mapIndexed { index, file ->
         mediaMetadata(index, file.plaintextSize, file.durationSeconds, file.waveformSamples, file.id.substringAfterLast(":"))
       }
-      sender.kit.sendTaggedMessageDraftWithClientToken(sender.key, resumed.revision, prepared.attachments.map { it.reference }, tags, draftToken)
+      val references = prepared.attachments.map { it.reference }
+      val first = sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags, draftToken)
+      val retry = sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags, draftToken)
+      assertEquals(first.messageIdHex, retry.messageIdHex)
+      assertEquals(draftToken, retry.clientToken)
+      assertTrue(runCatching {
+        sender.kit.sendMessageDraftWithClientToken(sender.key, resumed.revision, references, tags.reversed(), draftToken)
+      }.isFailure)
+      first
     } finally { resumed.destroy() }
     assertNotNull(sender.kit.localSendStatus(sender.key, group, draftToken))
     val consumed = sender.kit.selectedMessageDraft(sender.key, group)
@@ -555,10 +893,19 @@ class MarmotRelayTest {
       val messages = checkNotNull(anchored.initial())["messages"] as List<*>
       val message = messages.filterIsInstance<Map<*, *>>().single { it["id"] == accepted.messageIdHex }
       val attachments = (message["attachments"] as List<*>).filterIsInstance<Map<*, *>>()
-      assertEquals(true, attachments[0]["voice"])
-      assertEquals(3.5, attachments[0]["duration"])
-      assertEquals(listOf(0, 15, 31), attachments[0]["waveform"])
-      assertEquals(true, attachments[1]["round"])
+      assertEquals(listOf("accepted", "accepted"), attachments.map { it["outcome"] })
+      assertEquals(listOf(0.0, 1.0), attachments.map { it["index"] })
+      assertEquals(listOf("13", "3.5", "0,15,31", "voice"), attachments[0]["metadata"])
+      assertEquals(listOf("13", "5.0", "", "round"), attachments[1]["metadata"])
+      val content = checkNotNull(message["content"] as? Document)
+      assertEquals(
+        listOf(mapOf("kind" to "paragraph", "children" to listOf(mapOf("kind" to "text", "text" to "Resumed upload")))),
+        content["blocks"],
+      )
+      assertEquals(row.messageIdHex, (message["replyPreview"] as? Map<*, *>)?.get("id"))
+      assertEquals(false, message["recipientConfirmed"])
+      assertNotNull(persisted.sourceMessageIdHex)
+      assertEquals(persisted.sourceMessageIdHex, message["sourceId"])
     } finally { anchored.stop() }
   }
 
@@ -573,7 +920,7 @@ class MarmotRelayTest {
     lateinit var key: String
       private set
 
-    suspend fun start(identity: String? = null, generated: Boolean = false) {
+    suspend fun start(identity: String? = null, messaging: Boolean = true) {
       val opened = Marmot.newWithConfiguration(
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
@@ -589,12 +936,11 @@ class MarmotRelayTest {
         ),
       )
       running = opened
-      opened.start()
+      if (messaging) opened.start()
       if (!::key.isInitialized) {
         val relays = listOf(relay)
         key = when {
           identity == null -> opened.createIdentityWithProfile(relays, relays, relays).account.accountIdHex
-          generated -> opened.createHostIdentity(identity, relays, relays, relays).accountIdHex
           else -> opened.login(identity, relays, relays, relays).accountIdHex
         }
       } else {

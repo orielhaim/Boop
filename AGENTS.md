@@ -1,6 +1,7 @@
 # Working on Boop
 
 - Run `bun install --frozen-lockfile`, `bun fmt .`, `bun run lint`, `bun run typecheck`, and `bun test`.
+- Skip iOS build and runtime validation. No iOS host or device is connected. Skip host discovery and connection attempts for iOS.
 - Read the installed Expo major version in `package.json`. Check the [matching SDK reference](https://docs.expo.dev/versions/v58.0.0/) and [Expo documentation index](https://docs.expo.dev/llms.txt) before changing Expo or React Native APIs. Use `bunx expo install` for Expo packages.
 - Use Expo Router for routes in `src/app`. Put shared UI in `src/components`. Configure generated native projects in `app.json` and `plugins`. Use a development build for native modules.
 - Use `src/services/local.ts` as the composition root for the protected session. It owns the Marmot account lifecycle separately from the relay and call-signaling lifecycle. Keep Boop-specific durable state in `src/db`.
@@ -8,14 +9,15 @@
 - Use the installed Chat Kit APIs for chat presentation. Read membership, delivery, and message history through MarmotKit windows using opaque group and message IDs. Use MDK client tokens for durable local sends.
 - Verify the NIP-59 Seal before testing the blocked caller. Recheck authorization at dispatch. Keep saved contacts, invitation approvals, successful local initiation, and video consent independent.
 - Keep Chats at the tab root, alongside People and Profile. Open Settings from Profile and use the shared person route from chat headers, group rosters, and discovery.
-- Boot without a key or SQLite pin into Welcome. Only explicit Create Account or Sign In can install a first identity. Save the initial public draft before persisting the key and wait for Marmot startup before automatic publication.
+- Open Welcome when MarmotKit has no account. Use MDK’s generated-account API for the initial profile and its checkpointed onboarding for imported keys. Boop stores a public account selection and keeps separate SQLite databases for account data.
 - Verify signed kind 0 profiles in the shared profile cache. Keep local nicknames, saves, favorites, and avatar overrides in contact preferences. Use the checked native network path for NIP-05, photos, and banners.
-- Keep private keys in SecureStore. Encrypt exports with NIP-49. Verify a staged replacement before switching the SQLite pin and clearing identity-owned state. Fail closed on a key mismatch.
+- Use MDK’s platform keyring for identity credentials and its native signer for Nostr. Keep import secrets native after review and authenticate raw export. Use independent device-only storage keys for downloads and transcription. Remove the previous account after the replacement is ready.
 - Gate microphone access on the authenticated call connection and bind identity proof to its DTLS fingerprints. Reuse one audio lease and capture per call. Send conference video only to viewers who explicitly opted in.
 - Use MarmotKit for encrypted attachment drafts, transfer, verification, and retention. Keep attachment metadata in the original encrypted event. Feed Chat Kit verified local leases and authenticated preview metadata. Use `src/core/media` for Blossom settings, preflight, optional ciphertext mirroring, profile media, and link previews.
 - A received attachment may fetch only when the user taps Download on a live accepted message. Apply the avatar policy separately. On Demand link previews need a tap. Automatic previews and translation are limited to eligible visible messages in a focused, foreground, unlocked chat.
 - Process voice transcription through the protected account's speech queue. Open only retained, verified Marmot audio leases. Require on-device recognition and keep transcript text and timings in the encrypted Boop cache.
 - Check Open Later against the loaded conversation window on open and paging. Store verified plaintext in the active account's SQLite cache. Keep decryption off the background schedule.
 - Use typed i18next resources in English and Hebrew for app-owned copy. Check LTR and RTL. Keep original message bytes and local-only derived text separate.
+- Keep Fumadocs as the website’s content framework and Drizzle Kit as the SQLite migration workflow. Keep their configuration and generated migrations when cleaning up the codebase.
 - Use the current SQLite baseline on a fresh database. See [Development](DEVELOPMENT.md) for explicit reset and verification commands.
-- Use Luna as a sub-agent for exploration.
+- Use Luna sub-agents when independent exploration, implementation, or review helps. Use multiple agents in parallel or in successive passes at any stage of a task. Give each agent a distinct scope and verify their findings and changes before integrating them.

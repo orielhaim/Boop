@@ -100,14 +100,21 @@ test("i18next starts with bundled English fallback and Hebrew controls direction
     "ביטול נעילה",
   );
   expect<string>(
-    i18n.t("selected", { ns: "connections", lng: "he", count: 2 }),
-  ).toBe("שני ממסרים נבחרו");
+    i18n.t("connectionCount", {
+      ns: "connections",
+      lng: "he",
+      connected: 2,
+      total: 3,
+    }),
+  ).toBe("2 מתוך 3 מחוברים");
   expect<string>(
-    i18n.t("selected", { ns: "connections", lng: "en", count: 1 }),
-  ).toBe("1 selected");
-  expect<string>(
-    i18n.t("selected", { ns: "connections", lng: "he", count: 5 }),
-  ).toBe("5 ממסרים נבחרו");
+    i18n.t("connectionCount", {
+      ns: "connections",
+      lng: "en",
+      connected: 1,
+      total: 2,
+    }),
+  ).toBe("1 of 2 connected");
   expect<string>(i18n.t("close", { lng: "fr" })).toBe("Close");
   const chat = i18n.getFixedT("he", "chatKit")("labels", {
     returnObjects: true,

@@ -1,3 +1,4 @@
+import { randomUUID } from "expo-crypto";
 import { getDocumentAsync } from "expo-document-picker";
 import { File } from "expo-file-system";
 import * as ScreenCapture from "expo-screen-capture";
@@ -36,10 +37,12 @@ import { openingMotion, openingPalette } from "@/components/opening/brand";
 import { OpeningButton, OpeningField } from "@/components/opening/controls";
 import { useOpeningForeground } from "@/components/opening/curtain";
 import { OpeningScene } from "@/components/opening/scene";
+import { AccountSetup } from "@/components/account-setup";
 import { LockScreen } from "@/components/settings/lock-screen";
 import { Icon } from "@/components/ui/kit";
-import { createOrImportIdentity } from "@/core/identity";
-import { backupKind, readBackup } from "@/core/identity/backup";
+import { backupKind, createOrImportIdentity } from "@/core/identity";
+import { toNpub } from "@/core/identity/keys";
+import { marmotAccounts } from "@/core/marmot/native";
 import { preference, setPreference } from "@/db/queries";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { finishOnboarding, type initializeLocal } from "@/services/local";
@@ -69,6 +72,7 @@ export function Onboarding(props: {
   onComplete: () => void;
 }) {
   const { lock } = props.data;
+  const [reenter, setReenter] = useState(false);
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   useEffect(() => {
     const update = (next: typeof AppState.currentState) =>
@@ -79,6 +83,21 @@ export function Onboarding(props: {
   }, [lock]);
   if (!state.hasOpened || (state.enabled && (!state.active || state.locked)))
     return <LockScreen lock={lock} state={state} />;
+  if (props.data.account && !reenter && !props.initializing) {
+    return (
+      <AccountSetup
+        account={props.data.account}
+        initial={props.data.setup}
+        previousAccount={props.data.previousAccount}
+        db={props.data.db}
+        complete={() => {
+          finishOnboarding(props.data.db);
+          props.onComplete();
+        }}
+        reenter={() => setReenter(true)}
+      />
+    );
+  }
   return <WelcomeForm {...props} />;
 }
 
@@ -98,7 +117,7 @@ function WelcomeForm({
   const insets = useSafeAreaInsets();
   const sidePadding = 24 + Math.max(insets.left, insets.right);
   const active = useOpeningForeground();
-  const [mode, setMode] = useState<Mode>("welcome");
+  const [mode, setMode] = useState<Mode>(data.account ? "signIn" : "welcome");
   const [skip, setSkip] = useState(false);
   const [introduced, setIntroduced] = useState(false);
   const [first] = useState(
@@ -108,7 +127,11 @@ function WelcomeForm({
   const [about, setAbout] = useState("");
   const [input, setInput] = useState("");
   const [password, setPassword] = useState("");
-  const [candidate, setCandidate] = useState<ReturnType<typeof readBackup>>();
+  const [candidate, setCandidate] = useState<{
+    token: string;
+    publicKey: string;
+  }>();
+  const importToken = useRef<string>(undefined);
   const [notice, setNotice] = useState<
     "saveFailed" | "invalidKey" | "invalidFile" | "protection"
   >();
@@ -221,11 +244,21 @@ function WelcomeForm({
         setInput("");
         setPassword("");
         setCandidate(undefined);
+        if (importToken.current)
+          void marmotAccounts
+            .discardImport(importToken.current)
+            .catch(() => undefined);
+        importToken.current = undefined;
       }
     });
     return () => {
       live = false;
       pickerGeneration.current += 1;
+      if (importToken.current)
+        void marmotAccounts
+          .discardImport(importToken.current)
+          .catch(() => undefined);
+      importToken.current = undefined;
       state.remove();
       protectionTurn = applied
         .then(async () => {
@@ -242,6 +275,8 @@ function WelcomeForm({
     Keyboard.dismiss();
     setNotice(undefined);
     if (candidate) {
+      void marmotAccounts.discardImport(candidate.token).catch(() => undefined);
+      importToken.current = undefined;
       setCandidate(undefined);
       return;
     }
@@ -284,7 +319,7 @@ function WelcomeForm({
     setBusy(true);
     setNotice(undefined);
     try {
-      await createOrImportIdentity(data.db, details);
+      await createOrImportIdentity(data.db, details, data.relays);
       advance();
     } catch {
       setNotice("saveFailed");
@@ -294,17 +329,27 @@ function WelcomeForm({
     }
   }
 
-  function review() {
-    if (!protectedWindow || !canUseIdentity()) return;
+  async function review() {
+    if (!protectedWindow || !canUseIdentity() || working.current) return;
+    working.current = true;
     Keyboard.dismiss();
+    const token = randomUUID();
+    importToken.current = token;
+    setInput("");
     setPassword("");
+    setNotice(undefined);
     try {
-      const imported = readBackup(input, password);
-      setInput("");
-      setNotice(undefined);
-      setCandidate(imported);
+      const publicKey = await marmotAccounts.prepareImport(
+        token,
+        input,
+        password,
+      );
+      if (importToken.current === token && canUseIdentity())
+        setCandidate({ token, publicKey });
     } catch {
-      setNotice("invalidKey");
+      if (importToken.current === token) setNotice("invalidKey");
+    } finally {
+      working.current = false;
     }
   }
 
@@ -581,7 +626,7 @@ function WelcomeForm({
                         selectable
                         style={[styles.address, { color: palette.ink }]}
                       >
-                        {candidate.identity.npub}
+                        {toNpub(candidate.publicKey)}
                       </Text>
                     </View>
                   ) : showSecrets ? (
@@ -648,7 +693,9 @@ function WelcomeForm({
                       primary
                       label={t("messenger:confirmImport")}
                       icon="check"
-                      onPress={() => void install({ secret: candidate.secret })}
+                      onPress={() =>
+                        void install({ importToken: candidate.token })
+                      }
                     />
                   ) : showSecrets ? (
                     <>
@@ -656,7 +703,7 @@ function WelcomeForm({
                         primary
                         label={t("messenger:reviewIdentity")}
                         disabled={picking || !input.trim()}
-                        onPress={review}
+                        onPress={() => void review()}
                       />
                       <OpeningButton
                         label={t("messenger:importFile")}

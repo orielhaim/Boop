@@ -184,6 +184,23 @@ test("voice playback and pause stay synchronized across originating and unrelate
   expect(events).toContain("release:Voice note");
 });
 
+test("changing voice speed publishes one coherent player state and leaves old snapshots intact", async () => {
+  const { audio, events } = fixture();
+  await audio.play(voice);
+  const before = audio.store.getState();
+  const updates: [number, number][] = [];
+  const stop = audio.store.subscribe(({ preferences, speed }) =>
+    updates.push([preferences.voiceSpeed, speed]),
+  );
+  audio.preferences({ voiceSpeed: 1.5 });
+  stop();
+  expect(updates).toEqual([[1.5, 1.5]]);
+  expect(before.preferences.voiceSpeed).toBe(1.2);
+  expect(before.speed).toBe(1.2);
+  expect(events.slice(-2)).toEqual(["saved-rate:1.5", "rate:1.5"]);
+  await audio.close();
+});
+
 test("rapid repeated taps share one request and switching voice notes releases the old lease", async () => {
   const { audio, events } = fixture();
   await Promise.all([audio.play(voice), audio.play(voice), audio.play(voice)]);

@@ -8,6 +8,7 @@ import {
   previewPolicy,
   type LinkPreviewPolicy,
 } from "../src/core/messaging/link-previews";
+import { createBlockedUsers } from "../src/core/marmot/blocked-users";
 import { createPrivacy } from "../src/core/privacy";
 import { createMarmotViewport } from "../src/core/marmot/viewport";
 import { openLinkPreviewCache } from "../src/db/link-previews";
@@ -130,9 +131,18 @@ test("Off and untouched On Demand dispatch zero HTTP requests and an explicit lo
 test("Always only loads visible accepted messages and rechecks block and lock state", async () => {
   using sqlite = new Database(":memory:");
   const db = database(sqlite);
-  const privacy = createPrivacy(db, own);
   const blocked = "3".repeat(64);
-  privacy.block(blocked);
+  const blocks = createBlockedUsers(own, {
+    observe(_owner, receive) {
+      receive({ revision: "1", keys: [blocked] });
+      return () => {};
+    },
+    async set() {
+      throw new Error("Unexpected block mutation");
+    },
+  });
+  blocks.start();
+  const privacy = createPrivacy(db, blocks);
   let unlocked = false;
   const viewport = createMarmotViewport(own, () => unlocked, privacy.isBlocked);
   const row = (id: string, text: string, sender = peer, eventKind = 9) => ({

@@ -2,6 +2,7 @@ const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 
 const config = getDefaultConfig(__dirname);
+config.resolver.sourceExts.push("sql");
 
 // Keep generated native projects, local exports and the website out of Metro.
 const unusedTrees = [

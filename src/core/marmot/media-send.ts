@@ -1,3 +1,4 @@
+import { marmotErrorCode } from "./errors";
 import type { MarmotConversation, MarmotUpload } from "./native";
 
 // Expo's native string maps cannot represent undefined values.
@@ -105,13 +106,7 @@ export async function sendOnAttachmentServers<Result>({
     try {
       return await send(origin);
     } catch (reason) {
-      if (
-        typeof reason !== "object" ||
-        !reason ||
-        !("code" in reason) ||
-        reason.code !== "UploadEndpointFailed"
-      )
-        throw reason;
+      if (marmotErrorCode(reason) !== "UploadEndpointFailed") throw reason;
       last = reason;
     }
   }

@@ -22,7 +22,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function MediaServers() {
   const { t } = useTranslation(namespaces);
-  const { mediaSdk, publicMetadata } = useLocal();
+  const { mediaSdk, blossomLists } = useLocal();
   useSyncExternalStore(mediaSdk.subscribe, mediaSdk.revision);
   const config = mediaSdk.snapshot();
   const [url, setUrl] = useState("");
@@ -117,7 +117,7 @@ export default function MediaServers() {
     setNotice("");
     setBusy(true);
     try {
-      const origins = await publicMetadata.discoverBlossomServers();
+      const origins = await blossomLists.discoverBlossomServers();
       setPublished(origins);
       if (!origins.length) setNotice(t("settings:mediaNoPublished"));
     } catch {
@@ -178,7 +178,7 @@ ${origins.join("\n")}`,
           text: t("settings:mediaPublish"),
           onPress: () => {
             setBusy(true);
-            void publicMetadata
+            void blossomLists
               .publishBlossomServers(origins)
               .then((ok) => {
                 setNotice(

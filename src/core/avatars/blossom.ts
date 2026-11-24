@@ -3,8 +3,6 @@ import type { MediaSdk } from "../media";
 import { BlossomError } from "../media/blossom";
 import { maxAvatarBytes, sanitizeAvatarJpeg } from "./jpeg";
 
-export { BlossomError } from "../media/blossom";
-
 export async function uploadAvatar(
   media: MediaSdk,
   file: File,
@@ -20,6 +18,5 @@ export async function uploadAvatar(
   } catch {
     throw new BlossomError("format");
   }
-  if (clean.length !== bytes.length) throw new BlossomError("format");
   return media.upload("profile", clean, { signal });
 }

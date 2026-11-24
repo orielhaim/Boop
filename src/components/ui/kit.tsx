@@ -1,6 +1,5 @@
 import { useAvatar } from "@/core/avatars/use-avatar";
 import * as Haptics from "expo-haptics";
-import { LinearGradient } from "expo-linear-gradient";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -24,7 +23,6 @@ import {
   GlassAvatar,
   type GlassAvatarSize,
 } from "@/components/glassyui/glass-avatar";
-import { GlassBackdrop } from "@/components/glassyui/glass-backdrop";
 import {
   GlassButton,
   type GlassButtonProps,
@@ -33,7 +31,6 @@ import {
   GlassInput,
   type GlassInputProps,
 } from "@/components/glassyui/glass-input";
-import { GlassPanel } from "@/components/glassyui/glass-panel";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { useAppPreferences } from "@/stores/preferences";
@@ -263,23 +260,6 @@ export function Action({ onPress, ...props }: GlassButtonProps) {
   );
 }
 
-export function Header({
-  title,
-  children,
-}: {
-  title: string;
-  children?: ReactNode;
-}) {
-  return (
-    <View style={styles.header}>
-      <Ink kind="title" accessibilityRole="header" style={styles.headerTitle}>
-        {title}
-      </Ink>
-      <View style={styles.actions}>{children}</View>
-    </View>
-  );
-}
-
 export function Section({ children }: { children: ReactNode }) {
   return (
     <Ink kind="heading" accessibilityRole="header" style={styles.section}>
@@ -346,29 +326,6 @@ export function Screen({
         children
       )}
     </ScreenInsets>
-  );
-}
-
-export function Hero({ children }: { children: ReactNode }) {
-  const { colors, reduceTransparency } = useTheme();
-  return (
-    <GlassBackdrop
-      style={styles.hero}
-      backdrop={
-        reduceTransparency ? undefined : (
-          <LinearGradient
-            colors={[colors.heroStart, colors.heroEnd]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-        )
-      }
-    >
-      <GlassPanel style={[styles.heroPanel, { borderColor: colors.line }]}>
-        {children}
-      </GlassPanel>
-    </GlassBackdrop>
   );
 }
 
@@ -574,18 +531,7 @@ const styles = StyleSheet.create({
     paddingTop: space.sm,
     gap: space.md,
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: space.sm,
-    minHeight: 58,
-  },
-  headerTitle: { flexShrink: 1 },
-  actions: { flexDirection: "row", gap: space.sm },
   section: { marginTop: space.sm },
-  hero: { borderRadius: radius.card, overflow: "hidden" },
-  heroPanel: { padding: space.xl, gap: space.sm, borderRadius: radius.card },
   card: {
     borderRadius: radius.card,
     borderWidth: StyleSheet.hairlineWidth,

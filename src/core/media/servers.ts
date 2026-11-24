@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { blossomServer, defaultBlossomServer } from "./blossom";
+import { blossomServer } from "./blossom";
 
 export const mediaRoles = ["profile", "attachment"] as const;
 export type MediaRole = (typeof mediaRoles)[number];
@@ -36,7 +36,7 @@ function defaultEntry(origin: string, role: MediaRole): MediaServer {
 export function recommendedMediaServers(): MediaConfiguration {
   return {
     servers: [
-      defaultEntry(defaultBlossomServer, "profile"),
+      defaultEntry("https://blossom.jumble.social", "profile"),
       defaultEntry(privateDefault, "attachment"),
     ],
     mirror: false,

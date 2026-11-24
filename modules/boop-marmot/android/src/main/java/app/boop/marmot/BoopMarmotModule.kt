@@ -1,12 +1,12 @@
 package app.boop.marmot
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
-import android.util.AtomicFile
 import android.util.Size
 import android.os.SystemClock
 import android.util.Log
@@ -19,68 +19,325 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
-import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val ATTACHMENT_STALL_TIMEOUT_MS = 180_000L
 private const val ATTACHMENT_CANCEL_TIMEOUT_MS = 10_000L
 
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
+  private val shutdownTurn = Mutex()
+  private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private data class Observation(val ticket: CompletableJob, val accountScoped: Boolean)
+  private val observations = ConcurrentHashMap<String, Observation>()
+  private val directoryWork = ConcurrentHashMap<Job, Boolean>()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
+  private var signerAccount: String? = null
+  private var marmotRuntime: Marmot? = null
+  private var identityImport: Pair<String, PreparedIdentityImport>? = null
+  private var runtimeConfiguration: RuntimeConfiguration? = null
+  private var runtimeStarted = false
   private var closingAccount = false
   private val attachmentAdmissions = ConcurrentHashMap<String, AtomicBoolean>()
   private val attachmentControls = ConcurrentHashMap<String, AttachmentTransferControl>()
   @Volatile private var downloadsForeground = true
+  private val foregroundGeneration = AtomicLong()
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress")
-    OnActivityEntersForeground { downloadsForeground = true }
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
+    OnActivityEntersForeground {
+      foregroundGeneration.incrementAndGet()
+      downloadsForeground = true
+    }
     OnActivityEntersBackground {
       downloadsForeground = false
+      observations.forEach { (id, observation) ->
+        if (!observation.accountScoped && observations.remove(id, observation)) observation.ticket.cancel()
+      }
+      directoryWork.forEach { (job, foreground) -> if (foreground) job.cancel() }
+      foregroundGeneration.incrementAndGet()
       attachmentAdmissions.values.forEach { it.set(true) }
       val controls = attachmentControls.values.toList()
-      observer.launch { controls.forEach { runCatching { it.cancel() } } }
+      observer.launch {
+        lifecycle.withLock { discardImport() }
+        controls.forEach { runCatching { it.cancel() } }
+      }
     }
 
-    AsyncFunction("openAccount") Coroutine { key: String, secret: String, nsec: String, general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?, generated: Boolean ->
+    AsyncFunction("listAccounts") Coroutine { general: List<String>, discovery: List<String>, mediaOrigin: String? ->
+      withRuntime(general, discovery, mediaOrigin, start = false) { kit ->
+        kit.listAccounts().filter { it.localSigning }.map {
+          mapOf("key" to it.accountIdHex, "signedOut" to it.signedOut, "unlinked" to it.unlinked,
+            "readiness" to if (kit.onboardingRecoveryRequired(it.accountIdHex)) "recovery_required" else kit.accountSetupReadiness(it.accountIdHex).name.lowercase())
+        }
+      }
+    }
+    AsyncFunction("prepareIdentityImport") Coroutine { token: String, input: String, password: String ->
       lifecycle.withLock {
-        if (closingAccount) throw problem("AccountBusy")
         protocol {
-          val current = session
-          if (current != null) {
-            if (current.account != key) throw problem("IdentityMismatch")
-            current.readiness()
-          } else {
-            val context = appContext.reactContext ?: throw problem("ContextUnavailable")
-            val (opened, readiness) = open(context, key, secret, nsec, general, inbox, discovery, mediaOrigin, generated)
-            session = opened
-            readiness
+          if (!downloadsForeground || closingAccount) throw problem("AccountClosed")
+          discardImport()
+          val generation = foregroundGeneration.get()
+          val kit = marmotRuntime ?: throw problem("AccountClosed")
+          val prepared = kit.prepareIdentityImport(input, password)
+          if (!downloadsForeground || generation != foregroundGeneration.get()) {
+            prepared.close()
+            throw problem("AccountClosed")
+          }
+          identityImport = token to prepared
+          prepared.publicKey()
+        }
+      }
+    }
+    AsyncFunction("discardIdentityImport") Coroutine { token: String ->
+      lifecycle.withLock { if (identityImport?.first == token) discardImport() }
+    }
+    AsyncFunction("installAccount") Coroutine { token: String?, name: String?, about: String?, general: List<String>, inbox: List<String>, discovery: List<String> ->
+      withRuntime(general, discovery, null, reconfigure = false) { kit ->
+        if (!downloadsForeground) throw problem("AccountClosed")
+        if (token != null) {
+          val prepared = identityImport?.takeIf { it.first == token }?.second ?: throw problem("IdentityImportExpired")
+          identityImport = null
+          try {
+            kit.beginPreparedOnboarding(prepared, OnboardingOptionsFfi(general, discovery, inbox)).accountIdHex
+          } finally { prepared.close() }
+        } else {
+          val profile = UserProfileMetadataFfi(name, name, about, null, null, null, null)
+          kit.createIdentityWithInitialProfile(profile, general, general, inbox).account.accountIdHex
+        }
+      }
+    }
+    AsyncFunction("accountOnboarding") Coroutine { key: String, action: String, step: String?, revision: String?, epoch: String? ->
+      lifecycle.withLock {
+        protocol {
+          val kit = marmotRuntime ?: throw problem("AccountClosed")
+          if (action != "read") startRuntime(kit)
+          val selectedStep = { OnboardingStepFfi.valueOf(step?.uppercase() ?: throw problem("InvalidOnboardingStep")) }
+          val snapshot = when (action) {
+            "read" -> kit.onboardingSnapshot(key)
+            "run" -> kit.runOnboarding(key)
+            "retry" -> kit.retryOnboardingStep(key, selectedStep())
+            "skip" -> kit.continueOnboardingWithout(key, selectedStep())
+            "propose" -> kit.proposeOnboardingRecommendedRelays(key, selectedStep())
+            "approve" -> {
+              val displayed = revision?.toULongOrNull() ?: throw problem("InvalidOnboardingRevision")
+              if (epoch == null) kit.approveOnboardingRepair(key, displayed)
+              else kit.approveOnboardingRepairInEpoch(key, displayed, epoch)
+            }
+            "acknowledge" -> {
+              val displayed = revision?.toULongOrNull() ?: throw problem("InvalidOnboardingRevision")
+              if (epoch == null) kit.acknowledgeOnboardingSingleDevice(key, displayed)
+              else kit.acknowledgeOnboardingSingleDeviceInEpoch(key, displayed, epoch)
+            }
+            "cancelRepair" -> kit.cancelOnboardingRepair(key)
+            "recover" -> { kit.recoverOnboarding(key, true); null }
+            "cancel" -> { kit.cancelOnboarding(key); null }
+            else -> throw problem("InvalidOnboardingAction")
+          }
+          snapshot?.let {
+            mapOf("ready" to it.ready, "revision" to it.revision.toString(), "epoch" to it.recoveryEpoch,
+              "proposal" to it.proposal?.let { proposal ->
+                mapOf("read" to proposal.readRelays, "write" to proposal.writeRelays,
+                  "inconclusive" to proposal.inconclusive)
+              },
+              "deviceNotice" to it.singleDeviceNotice?.let { notice ->
+                mapOf("discovery" to notice.discovery.name.lowercase(), "complete" to notice.discoveryComplete)
+              },
+              "steps" to it.steps.map { row ->
+                mapOf("step" to row.step.name.lowercase(), "status" to row.status.name.lowercase(),
+                  "actions" to row.actions.map { action -> action.name.lowercase() })
+              })
           }
         }
       }
     }
-
-    AsyncFunction("closeAccount").Coroutine<Unit> { shutdown() }
-    AsyncFunction("catchUp").Coroutine<Unit> { withSession { it.kit.catchUpAccounts() } }
-    AsyncFunction("diagnostics").Coroutine<Document> {
-      withSession {
-        val relays = it.kit.relayHealth()
-        val keys = it.kit.keyPackageMaintenanceStatus(it.account)
-        mapOf("account" to it.account, "readiness" to it.readiness(),
-          "relays" to relays.totalRelays.toInt(), "connected" to relays.connected.toInt(),
-          "keyPackages" to it.kit.localAccountKeyPackages(it.account).size,
-          "keyPhase" to keys?.phase?.name?.lowercase(), "published" to keys?.acceptedFanoutTargets?.toInt(),
-          "refreshOverdue" to it.kit.keyPackageRefreshOverdue(it.account))
+    AsyncFunction("selectSigner") Coroutine { key: String ->
+      lifecycle.withLock {
+        protocol {
+          val kit = marmotRuntime ?: throw problem("AccountClosed")
+          if (closingAccount || signerAccount?.let { it != key } == true)
+            throw problem("AccountBusy")
+          if (kit.listAccounts().none { it.accountIdHex == key && it.localSigning && !it.signedOut && !it.unlinked })
+            throw problem("AccountSignedOut")
+          kit.localAccountKeyPackages(key)
+          val profile = kit.userProfile(key)
+          signerAccount = key
+          mapOf("name" to (profile?.displayName ?: profile?.name), "about" to profile?.about)
+        }
       }
     }
-    AsyncFunction("rotateKeys").Coroutine<Unit> {
-      withSession { it.kit.rotateKeyPackage(it.account); Unit }
+    AsyncFunction("readProfiles") Coroutine { owner: String, keys: List<String> ->
+      withSigner(owner) { kit ->
+        kit.cachedIdentityProjections(keys).mapNotNull { item ->
+          val key = item.accountIdHex ?: return@mapNotNull null
+          val profile = item.profile ?: return@mapNotNull null
+          profileDocument(key, profile, item.website, item.bot)
+        }
+      }
+    }
+    AsyncFunction("refreshPublicProfile") Coroutine { owner: String, key: String, relays: List<String> ->
+      withDirectory(owner) { kit -> kit.refreshProfile(key, relays); Unit }
+    }
+    AsyncFunction("updatePublicProfile") Coroutine { owner: String, fields: Map<String, String> ->
+      withDirectory(owner) { kit -> kit.updateUserProfileUsingAccountRelays(owner, fields); Unit }
+    }
+    AsyncFunction("normalizeDirectoryIdentity") Coroutine { owner: String, reference: String ->
+      withSigner(owner) { it.accountIdHex(reference) }
+    }
+    AsyncFunction("cachedDirectorySearch") Coroutine { owner: String, query: String ->
+      withSigner(owner) { kit -> kit.searchCachedUsers(owner, query, 48u).map { searchResultDocument(it) } }
+    }
+    Function("prepareObservation") { id: String, accountScoped: Boolean ->
+      if (observations.size >= 8) throw problem("SearchInProgress")
+      observations.putIfAbsent(id, Observation(Job(), accountScoped)) == null
+    }
+    AsyncFunction("searchDirectory") Coroutine { owner: String, id: String, query: String ->
+      withObservation(owner, id) { kit ->
+        kit.searchUsers(owner, query, 0u, 2u).use { search ->
+          while (true) {
+            val update = search.nextUpdate() ?: break
+            currentCoroutineContext().ensureActive()
+            if (update.trigger is SearchUpdateTriggerFfi.Error) continue
+            val rows = (update.newResults + update.updatedResults).take(48).map { searchResultDocument(it) }
+            if (rows.isNotEmpty()) sendEvent("directorySearchResults", mapOf("id" to id, "rows" to rows))
+          }
+        }
+      }
+    }
+    Function("cancelObservation") { id: String -> observations.remove(id)?.ticket?.cancel(); Unit }
+    AsyncFunction("requestAvatarAssets") Coroutine { targets: List<String> ->
+      withSession { active ->
+        active.kit.requestAvatarAssets(active.account, targets).map { it.document() }
+      }
+    }
+    AsyncFunction("readAvatarAssets") Coroutine { references: List<String> ->
+      withSession { active ->
+        active.kit.readAvatarAssets(active.account, references, 4uL * 1024uL * 1024uL).map { asset ->
+          val mime = asset.mediaType
+          val uri = if (asset.bytes.isNotEmpty() && mime != null && mime in setOf("image/jpeg", "image/png", "image/webp", "image/gif")) {
+            val data = android.util.Base64.encodeToString(asset.bytes, android.util.Base64.NO_WRAP)
+            "data:$mime;base64,$data"
+          } else null
+          mapOf("reference" to asset.reference, "revision" to asset.contentRevision.toString(),
+            "availability" to asset.availability.name.lowercase(), "deferred" to asset.deferred, "uri" to uri)
+        }
+      }
+    }
+    AsyncFunction("clearMarmotAvatarCache") Coroutine { owner: String ->
+      withDirectory(owner) { it.clearAvatarCache(owner) }
+    }
+    AsyncFunction("accountNetworkReady") Coroutine { key: String ->
+      withSigner(key) { it.accountSetupReadiness(key) == AccountSetupReadinessFfi.NETWORK_READY }
+    }
+    AsyncFunction("removeAccount") Coroutine { key: String ->
+      lifecycle.withLock {
+        protocol {
+          if (closingAccount || signerAccount == key || session?.account == key) throw problem("AccountBusy")
+          (marmotRuntime ?: throw problem("AccountClosed")).removeAccount(key)
+        }
+      }
+    }
+    AsyncFunction("signOutAccount") Coroutine { key: String ->
+      lifecycle.withLock {
+        protocol {
+          if (session?.account == key || closingAccount) throw problem("AccountBusy")
+          (marmotRuntime ?: throw problem("AccountClosed")).signOut(key, false)
+          Unit
+        }
+      }
+    }
+    AsyncFunction("resumeAccountSetup").Coroutine<Unit> {
+      lifecycle.withLock { protocol { startRuntime(marmotRuntime ?: throw problem("AccountClosed")) } }
+    }
+    AsyncFunction("signInAccount") Coroutine { key: String ->
+      lifecycle.withLock { protocol { (marmotRuntime ?: throw problem("AccountClosed")).signInAccount(key); Unit } }
+    }
+    AsyncFunction("openAccount") Coroutine { key: String, general: List<String>, discovery: List<String>, mediaOrigin: String? ->
+      withRuntime(general, discovery, mediaOrigin) { kit ->
+        if (signerAccount != key) throw problem("IdentityMismatch")
+        val known = kit.listAccounts().singleOrNull { it.accountIdHex == key && it.localSigning }
+          ?: throw problem("IdentityMismatch")
+        if (known.unlinked || known.signedOut) throw problem("AccountSignedOut")
+        val current = session
+        if (current != null && current.account != key) throw problem("IdentityMismatch")
+        val opened = current ?: Session(key, kit)
+        val readiness = opened.readiness()
+        session = opened
+        readiness
+      }
+    }
+    AsyncFunction("signNostrEvent") Coroutine { key: String, event: String ->
+      withSigner(key) { it.signNostrEvent(key, event) }
+    }
+    AsyncFunction("nostrCipher") Coroutine { key: String, peer: String, value: String, nip44: Boolean, encrypt: Boolean ->
+      withSigner(key) { it.nostrCipher(key, peer, value, nip44, encrypt) }
+    }
+    AsyncFunction("exportIdentity") Coroutine { key: String, password: String? ->
+      withSigner(key) { kit ->
+        if (password == null) kit.revealNsec(key) else kit.exportEncryptedSecretKey(key, password)
+      }
+    }
+    AsyncFunction("closeAccount") Coroutine { pauseMessaging: Boolean -> shutdown(pauseMessaging = pauseMessaging) }
+    AsyncFunction("shutdownRuntime").Coroutine<Unit> { shutdown(closeRuntime = true) }
+    AsyncFunction("catchUp").Coroutine<Unit> { withSession { it.kit.catchUpAccounts() } }
+    AsyncFunction("notifyConnectivityRestored").Coroutine<Unit> {
+      withSession { it.kit.notifyConnectivityRestored() }
+    }
+    AsyncFunction("accountRelayLists") Coroutine { key: String ->
+      withSigner(key) { kit ->
+        val lists = kit.accountRelayLists(key)
+        val general = kit.accountNip65Relays(key)
+        val inbox = lists.inbox.relays
+        val allowed = kit.classifyRelayEndpoints((general + inbox).distinct())
+          .filter { it.policy == RelayEndpointPolicyFfi.ALLOWED }.map { it.endpoint }
+        mapOf("general" to general, "write" to lists.nip65.relays, "inbox" to inbox,
+          "bootstrap" to lists.bootstrapRelays, "allowed" to allowed,
+          "retiredHosts" to kit.retiredRelayHosts())
+      }
+    }
+    AsyncFunction("refreshAccountRelayLists") Coroutine { key: String, urls: List<String> ->
+      withDirectory(key) { kit -> kit.refreshUserRelayLists(key, urls); Unit }
+    }
+    AsyncFunction("classifyRelays") Coroutine { key: String, urls: List<String> ->
+      withSigner(key) { kit ->
+        kit.classifyRelayEndpoints(urls).map { it.policy.name.lowercase() }
+      }
+    }
+    AsyncFunction("setAccountRelays") Coroutine { key: String, inbox: Boolean, urls: List<String>, bootstrap: List<String> ->
+      withDirectory(key) { kit ->
+        if (inbox) kit.setAccountInboxRelays(key, urls, bootstrap)
+        else kit.setAccountNip65Relays(key, urls, bootstrap)
+        Unit
+      }
+    }
+    AsyncFunction("reconnectMarmotRelay") Coroutine { url: String ->
+      withSession { it.kit.reconnectRelay(it.account, url); Unit }
+    }
+    AsyncFunction("watchRelayLiveness") Coroutine { key: String, id: String ->
+      withObservation(key, id) { kit ->
+        kit.subscribeRelayLiveness(key).use { stream ->
+          fun emit(rows: List<RelayLivenessFfi>) {
+            sendEvent("relayLiveness", mapOf("id" to id, "rows" to rows.map {
+              mapOf("url" to it.url, "status" to it.status.name.lowercase(),
+                "lastError" to it.lastError, "lastAttempt" to it.lastAttemptUnix?.toDouble())
+            }))
+          }
+          try {
+            emit(stream.snapshot())
+            while (true) {
+              val rows = stream.next() ?: break
+              currentCoroutineContext().ensureActive()
+              emit(rows)
+            }
+          } finally { stream.cancel() }
+        }
+      }
     }
     AsyncFunction("backupState").Coroutine<Document> {
       withSession {
@@ -142,21 +399,56 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    AsyncFunction("openGroupState") Coroutine { id: String, group: String ->
-      lifecycle.withLock {
-        protocol {
-          val active = requireSession()
-          install(id, GroupStateWindow(id, active.kit.subscribeGroupState(active.account, group)))
+    AsyncFunction("openGroupState") Coroutine { id: String, group: String, roster: Boolean ->
+      withSession { active ->
+        val handle = active.kit.subscribeGroupState(active.account, group)
+        val read: suspend () -> Document = {
+          if (roster) rosterDocument(active.kit, active.account, group)
+          else groupDocument(active.kit, active.account, group)
+        }
+        val details = try { read() } catch (error: Throwable) { handle.close(); throw error }
+        lifecycle.withLock {
+          if (session !== active || active.closing) {
+            handle.close()
+            throw problem("AccountClosed")
+          }
+          install(id, GroupStateWindow(id, handle, details, if (roster) "groupRoster" else "groupState", read))
         }
       }
     }
-    AsyncFunction("openConversation") Coroutine { id: String, group: String, target: String? ->
-      lifecycle.withLock {
-        protocol {
-          val active = requireSession()
-          val mode = if (target == null) ConversationOpenModeFfi.AUTOMATIC else ConversationOpenModeFfi.MESSAGE
-          val handle = active.kit.openConversationWindow(active.account, group, mode, target, 40u, 0u)
-          install(id, ConversationWindow(handle))
+    AsyncFunction("openConversation") Coroutine { id: String, group: String, target: String?, speculative: Boolean ->
+      withSession { active ->
+        val started = SystemClock.elapsedRealtime()
+        val mode = when {
+          target != null -> ConversationOpenModeFfi.MESSAGE
+          speculative -> ConversationOpenModeFfi.LATEST
+          else -> ConversationOpenModeFfi.AUTOMATIC
+        }
+        val rows = if (speculative) 56u else if (target != null) 40u else 100u
+        val timeoutMs = if (speculative) 1_500u else 0u
+        val handle = active.kit.openConversationWindow(
+          active.account, group, mode, target, rows, timeoutMs,
+        )
+        try {
+          val snapshot = lifecycle.withLock {
+            if (session !== active || active.closing) {
+              val window = ConversationWindow(handle)
+              window.stop()
+              throw problem("AccountClosed")
+            }
+            install(id, ConversationWindow(handle))
+          }
+          if (isDebuggable()) Log.i(
+            "BoopMarmot",
+            "conversation_open elapsedMs=${SystemClock.elapsedRealtime() - started} speculative=$speculative rows=$rows ok=true",
+          )
+          snapshot
+        } catch (error: Throwable) {
+          if (isDebuggable()) Log.i(
+            "BoopMarmot",
+            "conversation_open elapsedMs=${SystemClock.elapsedRealtime() - started} speculative=$speculative rows=$rows ok=false",
+          )
+          throw error
         }
       }
     }
@@ -175,13 +467,12 @@ class BoopMarmotModule : Module() {
         val window = windows[id] ?: throw problem("WindowClosed")
         if (window.job == null) window.job = observer.launch {
           try {
-            var previous: Document? = null
             while (isActive) {
               val value = window.next() ?: break
-              val delta = previous?.let { windowDelta(it, value) }
+              val delta = windowDelta(window.latest, value)
+              window.latest = value
               sendEvent("windowChanged", if (delta == null) mapOf("id" to id, "snapshot" to value)
                 else mapOf("id" to id, "delta" to delta))
-              previous = value
             }
             sendEvent("windowClosed", mapOf("id" to id, "code" to "WindowClosed"))
           } catch (e: CancellationException) {
@@ -196,7 +487,7 @@ class BoopMarmotModule : Module() {
       lifecycle.withLock { windows.remove(id)?.stop() }
     }
     AsyncFunction("windowSnapshot") Coroutine { id: String ->
-      withWindow(id) { it.initial() ?: throw problem("WindowClosed") }
+      withWindow(id) { it.latest }
     }
     AsyncFunction("pageWindow") Coroutine { id: String, generation: String, sequence: String, direction: String ->
       withWindow(id) { it.page(generation, sequence.toULong(), direction) }
@@ -213,14 +504,15 @@ class BoopMarmotModule : Module() {
     AsyncFunction("startDirect") Coroutine { peer: String ->
       withSession { it.kit.startDirectConversation(it.account, peer) }
     }
-    AsyncFunction("checkInvitee") Coroutine { peer: String ->
-      withSession { it.kit.prewarmGroupMemberKeyPackages(it.account, listOf(peer)); Unit }
+    AsyncFunction("prewarmInvitees") Coroutine { members: List<String> ->
+      withSession { it.kit.prewarmGroupMemberKeyPackages(it.account, members); Unit }
     }
     AsyncFunction("createGroup") Coroutine { name: String, description: String?, members: List<String>, image: String? ->
       withSession {
         val initial = image?.let { path -> InitialGroupImageFfi(groupImageInput(path), "image/jpeg", null, null, null) }
         val result = it.kit.createGroupWithInitialImageDetailed(it.account, name, members, description, initial)
-        mapOf("groupId" to result.created?.groupIdHex, "members" to result.memberOutcomes.map { member ->
+        mapOf("groupId" to result.created?.groupIdHex,
+          "createdAt" to result.created?.chatListRow?.conversationCreatedAt?.toDouble(), "members" to result.memberOutcomes.map { member ->
           mapOf("account" to member.accountIdHex, "status" to member.status.name.lowercase(), "devices" to member.selectedDeviceCount.toInt())
         })
       }
@@ -232,116 +524,115 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    AsyncFunction("groupDetails") Coroutine { group: String ->
-      withSession {
+    AsyncFunction("groupDiagnostics") Coroutine { group: String ->
+      withSession { groupDiagnostics(it.kit, it.account, group) }
+    }
+    AsyncFunction("groupAccess") Coroutine { group: String, includeMembers: Boolean ->
+      withSession<Document> {
         val details = it.kit.groupDetails(it.account, group)
-        val policy = it.kit.groupManagementState(it.account, group)
-        val pending = it.kit.groupPendingCommit(it.account, group)
-        val delivery = it.kit.groupCommitDelivery(it.account, group)
-        val recovery = it.kit.groupRecoveryStatus(it.account, group)
-        val chat = it.kit.chatListRow(it.account, group)
-        val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
+        val row = if (includeMembers) it.kit.chatListRow(it.account, group) else null
         mapOf(
-          "id" to group, "name" to details.group.name, "description" to details.group.description,
-          "inviter" to details.group.welcomerAccountIdHex, "relays" to details.group.relays,
-          "image" to details.group.imageHashHex, "epoch" to details.mlsState.epoch.toString(),
-          "mediaV2" to (details.group.encryptedMedia.version == EncryptedMediaVersionFfi.V2),
-          "mediaEndpoints" to details.group.encryptedMedia.defaultBlobEndpoints.map { endpoint -> endpoint.baseUrl },
-          "unrecoverable" to details.mlsState.unrecoverable,
-          "convergenceParked" to (details.mlsState.convergenceParked || recovery.automaticRecoveryFailed),
-          "historyIncomplete" to recovery.historyMayBeIncomplete,
-          "relayChangesOutstanding" to ((delivery?.owedRelayUrls?.size ?: 0) + (delivery?.refusedRelays?.size ?: 0)),
           "membership" to details.group.selfMembership.name.lowercase(),
           "pendingInvitation" to details.group.pendingConfirmation,
-          "kind" to chat?.conversationKind?.name?.lowercase(),
-          "pendingLeave" to details.group.leaveRequestPending, "leaveBlocked" to details.group.leaveBlocked,
-          "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
-          "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
-          "lifecycle" to policy.lifecycleState.name.lowercase(), "commit" to pending?.state?.name?.lowercase(),
-          "isAdmin" to policy.isSelfAdmin, "canInvite" to policy.canInvite, "canLeave" to policy.canLeave,
-          "canCancelLeave" to policy.canCancelLeave, "canDisband" to policy.canDisband,
-          "canEnableDisbanding" to policy.canEnableDisbanding,
-          "members" to details.members.map { member ->
-            val perms = actions[member.memberIdHex]
-            mapOf(
-              "id" to member.memberIdHex, "npub" to member.npub,
-              "name" to (member.displayName?.takeUnless { it == member.memberIdHex }
-                ?: it.kit.defaultProfilePseudonym(member.memberIdHex)),
-              "self" to member.isSelf, "admin" to member.isAdmin, "devices" to member.deviceCount.toInt(),
-              "canPromote" to (perms?.canPromote ?: false), "canRemove" to (perms?.canRemove ?: false),
-              "canDemote" to (perms?.canDemote ?: false),
-            )
-          },
+          "pendingLeave" to details.group.leaveRequestPending,
+          "unrecoverable" to details.mlsState.unrecoverable,
+          "disbanding" to details.mlsState.disbanding,
+          "lifecycle" to details.mlsState.lifecycleState.name.lowercase(),
+          "kind" to row?.conversationKind?.name?.lowercase(),
+          "members" to if (includeMembers) details.members.map { member -> member.memberIdHex } else emptyList(),
         )
       }
     }
+    AsyncFunction("groupInvitation") Coroutine { group: String, preview: Boolean ->
+      withSession<Document> {
+        val details = it.kit.groupDetails(it.account, group)
+        mapOf(
+          "inviter" to details.group.welcomerAccountIdHex.takeIf { _ -> details.group.pendingConfirmation },
+          "name" to details.group.name,
+          "memberCount" to details.members.size,
+          "members" to if (preview) details.members.asSequence().filterNot { member -> member.isSelf }.take(16).map { member ->
+            mapOf("id" to member.memberIdHex, "npub" to member.npub, "name" to member.displayName)
+          }.toList() else emptyList(),
+        )
+      }
+    }
+    AsyncFunction("groupMemberIds") Coroutine { groups: List<String> ->
+      withSession { it.kit.groupMemberIdsPage(it.account, groups).associate { row -> row.groupIdHex to row.memberIdsHex } }
+    }
     AsyncFunction("updateGroup") Coroutine { group: String, name: String?, description: String? ->
-      withSession { it.kit.updateGroupProfile(it.account, group, name, description); Unit }
+      withSession { it.kit.updateGroupProfile(it.account, group, name, description).acceptDisposition.name.lowercase() }
     }
     AsyncFunction("updateGroupImage") Coroutine { group: String, path: String? ->
       withSession {
-        if (path == null) it.kit.clearGroupImage(it.account, group)
+        val result = if (path == null) it.kit.clearGroupImage(it.account, group)
         else it.kit.updateGroupImage(it.account, group, groupImageInput(path), "image/jpeg")
-        Unit
+        result.acceptDisposition.name.lowercase()
       }
     }
     AsyncFunction("updateGroupMedia") Coroutine { group: String, origins: List<String> ->
       withSession {
         it.kit.replaceEncryptedMediaBlobEndpoints(it.account, group, origins.map { origin -> AppBlobEndpointFfi("blossom", origin) })
-        Unit
+          .acceptDisposition.name.lowercase()
       }
     }
-    AsyncFunction("groupImage") Coroutine { group: String, hash: String, fetch: Boolean ->
+    AsyncFunction("viewGroupImage") Coroutine { group: String, hash: String ->
       withSession {
-        if (!hash.matches(HEX)) throw problem("InvalidMedia")
-        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
         val details = it.kit.groupDetails(it.account, group).group
-        if (details.pendingConfirmation || details.selfMembership != SelfMembershipFfi.MEMBER || details.imageHashHex != hash) throw problem("MediaUnavailable")
-        val folder = File(context.cacheDir, "marmot-group-images/${it.account}")
-        folder.mkdirs()
-        val file = AtomicFile(File(folder, "$hash.jpg"))
-        if (!file.baseFile.isFile) {
-          if (!fetch) return@withSession null
-          val bytes = it.kit.downloadGroupBlossomImage(it.account, group)
-          val current = it.kit.groupDetails(it.account, group).group
-          if (bytes.isEmpty() || bytes.size > MAX_GROUP_IMAGE || current.selfMembership != SelfMembershipFfi.MEMBER ||
-            current.imageHashHex != hash) throw problem("MediaUnavailable")
-          val output = file.startWrite()
-          try { output.write(bytes); file.finishWrite(output) }
-          catch (error: Exception) { file.failWrite(output); throw error }
-        }
-        file.baseFile.canonicalPath
+        if (details.pendingConfirmation || details.selfMembership != SelfMembershipFfi.MEMBER ||
+          details.imageHashHex != hash) throw problem("MediaUnavailable")
+        val bytes = it.kit.downloadGroupBlossomImage(it.account, group)
+        val current = it.kit.groupDetails(it.account, group).group
+        if (bytes.isEmpty() || bytes.size > MAX_GROUP_IMAGE || current.pendingConfirmation ||
+          current.selfMembership != SelfMembershipFfi.MEMBER || current.imageHashHex != hash)
+          throw problem("MediaUnavailable")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val mime = bounds.outMimeType?.takeIf { it in setOf("image/jpeg", "image/png", "image/webp", "image/gif") }
+          ?: throw problem("InvalidMedia")
+        if (bounds.outWidth !in 1..4096 || bounds.outHeight !in 1..4096) throw problem("InvalidMedia")
+        val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        "data:$mime;base64,$encoded"
       }
     }
     AsyncFunction("inviteMembers") Coroutine { group: String, members: List<String> ->
       withSession { session ->
         val result = session.kit.inviteMembersDetailed(session.account, group, members)
-        result.invite.memberOutcomes.map {
-          mapOf("account" to it.accountIdHex, "status" to it.status.name.lowercase(), "devices" to it.selectedDeviceCount.toInt())
-        }
+        mapOf(
+          "disposition" to result.invite.summary?.acceptDisposition?.name?.lowercase(),
+          "members" to result.invite.memberOutcomes.map {
+            mapOf("account" to it.accountIdHex, "status" to it.status.name.lowercase(), "devices" to it.selectedDeviceCount.toLong())
+          },
+        )
       }
     }
     AsyncFunction("changeMember") Coroutine { group: String, member: String, action: String ->
       withSession {
-        when (action) {
+        val result = when (action) {
           "remove" -> it.kit.removeMembers(it.account, group, listOf(member))
           "promote" -> it.kit.promoteAdmin(it.account, group, member)
           "demote" -> it.kit.demoteAdmin(it.account, group, member)
+          "stepDown" -> it.kit.selfDemoteAdmin(it.account, group)
           else -> throw problem("InvalidGroupAction")
         }
-        Unit
+        result.acceptDisposition.name.lowercase()
       }
     }
     AsyncFunction("changeMembership") Coroutine { group: String, action: String ->
       withSession {
         when (action) {
-          "leave" -> it.kit.leaveGroup(it.account, group)
-          "cancelLeave" -> it.kit.cancelLeave(it.account, group)
-          "forget" -> it.kit.deleteGroupLocal(it.account, group)
-          "disband" -> it.kit.disbandGroup(it.account, group)
-          "enableDisbanding" -> it.kit.enableGroupDisbanding(it.account, group)
+          "leave" -> it.kit.leaveGroup(it.account, group).acceptDisposition.name.lowercase()
+          "cancelLeave" -> { it.kit.cancelLeave(it.account, group); null }
+          "deleteLocal" -> { it.kit.deleteGroupLocal(it.account, group); null }
+          "disband" -> { it.kit.disbandGroup(it.account, group); null }
+          "enableDisbanding" -> it.kit.enableGroupDisbanding(it.account, group).summary.acceptDisposition.name.lowercase()
           else -> throw problem("InvalidGroupAction")
         }
+      }
+    }
+    AsyncFunction("respondToRejoin") Coroutine { welcome: String, token: String? ->
+      withSession {
+        if (token == null) it.kit.declineGroupRejoin(it.account, welcome)
+        else it.kit.confirmGroupRejoin(it.account, welcome, token)
         Unit
       }
     }
@@ -353,13 +644,16 @@ class BoopMarmotModule : Module() {
       }
     }
     AsyncFunction("saveDraft") Coroutine { group: String, text: String, reply: String? ->
-      withSession {
-        val draft = it.kit.selectedMessageDraft(it.account, group)
-        try {
-          val retained = draft.draft?.mediaAttachments.orEmpty().map { item -> MessageDraftAttachmentInputFfi.Retained(item.id) }
-          if (text.isBlank() && retained.isEmpty()) it.kit.clearMessageDraftIfRevision(it.account, draft.revision).destroy()
-          else it.kit.saveMessageDraftInputsIfRevision(it.account, draft.revision, text, reply, retained).destroy()
-        } finally { draft.destroy() }
+      withSession { active ->
+        retryDraftEdit {
+          active.kit.selectedMessageDraft(active.account, group).use { selected ->
+            if (text.isBlank() && selected.draft?.mediaAttachments.orEmpty().isEmpty()) {
+              active.kit.clearMessageDraftIfRevision(active.account, selected.revision).destroy()
+            } else {
+              active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, text, reply, emptyList()).destroy()
+            }
+          }
+        }
       }
     }
     AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String? ->
@@ -373,15 +667,15 @@ class BoopMarmotModule : Module() {
     AsyncFunction("stageMediaDraft") Coroutine { group: String, files: List<Map<String, String>>, caption: String, token: String, reply: String? ->
       withSession { active ->
         val inputs = uploadInputs(files)
-        var draft = active.kit.selectedMessageDraft(active.account, group)
-        try {
-          if (draft.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
-          val updated = active.kit.saveMessageDraftInputsIfRevision(active.account, draft.revision, caption, reply, emptyList())
-          draft.destroy()
-          draft = updated
-          MediaFileTransferControlFfi().use { control ->
-            registerUpload(active, token, control)
+        MediaFileTransferControlFfi().use { control ->
+          registerUpload(active, token, control, draftGroup = group)
+          try {
+            var draft = active.kit.selectedMessageDraft(active.account, group)
             try {
+              if (draft.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
+              val updated = active.kit.saveMessageDraftInputsIfRevision(active.account, draft.revision, caption, reply, emptyList())
+              draft.destroy()
+              draft = updated
               sendEvent("attachmentProgress", mapOf("transfer" to token, "received" to 0.0, "state" to "preparing"))
               for ((index, input) in inputs.withIndex()) {
                 val file = files[index]
@@ -396,20 +690,30 @@ class BoopMarmotModule : Module() {
                 draft.destroy()
                 draft = next
               }
-            } finally {
-              synchronized(uploads) { uploads.remove(token) }
+            } finally { draft.destroy() }
+          } finally {
+            synchronized(uploads) {
+              uploads.remove(token)
+              draftStages.remove(group)
             }
           }
-        } finally { draft.destroy() }
+        }
       }
     }
     AsyncFunction("discardMediaDraft") Coroutine { group: String ->
       withSession { active ->
-        val selected = active.kit.selectedMessageDraft(active.account, group)
-        try {
-          val draft = selected.draft ?: return@withSession
-          active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, draft.content, draft.replyToMessageIdHex, emptyList()).destroy()
-        } finally { selected.destroy() }
+        if (synchronized(uploads) { group in draftStages }) throw problem("TransferInProgress")
+        var idsToRemove: Set<String>? = null
+        retryDraftEdit {
+          active.kit.selectedMessageDraft(active.account, group).use { selected ->
+            val draft = selected.draft ?: return@use
+            val ids = idsToRemove ?: draft.mediaAttachments.map { it.id }.toSet().also { idsToRemove = it }
+            val removed = draft.mediaAttachments.filter { it.id in ids }.map { MessageDraftAttachmentInputFfi.Removed(it.id) }
+            if (removed.isNotEmpty()) {
+              active.kit.saveMessageDraftInputsIfRevision(active.account, selected.revision, draft.content, draft.replyToMessageIdHex, removed).destroy()
+            }
+          }
+        }
       }
     }
     AsyncFunction("sendMedia") Coroutine { group: String, files: List<Map<String, String>>, caption: String?, token: String, server: String?, reply: String? ->
@@ -456,7 +760,7 @@ class BoopMarmotModule : Module() {
                   val metadata = draftFiles.mapIndexed { index, item ->
                     mediaMetadata(index, item.plaintextSize, item.durationSeconds, item.waveformSamples, item.id.substringAfterLast(":"))
                   }
-                  val accepted = active.kit.sendTaggedMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, metadata, token)
+                  val accepted = active.kit.sendMessageDraftWithClientToken(active.account, selected.revision, result.attachments.map { it.reference }, metadata, token)
                   accepted.messageIdHex to result
                 }
                 mapOf("id" to id, "blobs" to uploaded.attachments.mapNotNull { item ->
@@ -552,12 +856,6 @@ class BoopMarmotModule : Module() {
             throw error
           }
         } finally { thumbnail.recycle() }
-      }
-    }
-    AsyncFunction("attachmentStatus") Coroutine { group: String, id: String, source: String, index: Int ->
-      withSession {
-        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
-        it.kit.attachmentTransferSnapshot(it.account, group, listOf(target)).items.firstOrNull()?.state == AttachmentTransferStateFfi.READY
       }
     }
     AsyncFunction("retainedAttachmentBytes") Coroutine { group: String, id: String, source: String, index: Int ->
@@ -740,6 +1038,11 @@ class BoopMarmotModule : Module() {
         })
       }
     }
+    AsyncFunction("discardFailedSend") Coroutine { group: String, id: String ->
+      withSession {
+        it.kit.discardFailedSend(it.account, group, id).outcome.name.lowercase()
+      }
+    }
     AsyncFunction("deleteMessage") Coroutine { group: String, id: String ->
       withSession { it.kit.deleteMessage(it.account, group, id); Unit }
     }
@@ -760,9 +1063,6 @@ class BoopMarmotModule : Module() {
     AsyncFunction("markRead") Coroutine { group: String, id: String ->
       withSession { it.kit.markTimelineMessageRead(it.account, group, id); Unit }
     }
-    AsyncFunction("markUnread") Coroutine { group: String ->
-      withSession { it.kit.setChatManuallyUnread(it.account, group, true); Unit }
-    }
     AsyncFunction("setArchived") Coroutine { group: String, archived: Boolean ->
       withSession { it.kit.setGroupArchived(it.account, group, archived); Unit }
     }
@@ -776,10 +1076,28 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    AsyncFunction("setBlocked") Coroutine { key: String, blocked: Boolean ->
-      withSession {
-        if (blocked) it.kit.blockUser(it.account, key) else it.kit.unblockUser(it.account, key)
-        Unit
+    AsyncFunction("watchBlockedUsers") Coroutine { owner: String, id: String ->
+      withObservation(owner, id) { kit ->
+        kit.subscribeBlockedUsers(owner).use { stream ->
+          fun emit(snapshot: BlockListSnapshotFfi) {
+            sendEvent("blockedUsers", mapOf("id" to id, "rows" to snapshot.document()))
+          }
+          currentCoroutineContext().ensureActive()
+          emit(stream.snapshot() ?: throw problem("BlockListUnavailable"))
+          while (true) {
+            val snapshot = stream.next() ?: break
+            currentCoroutineContext().ensureActive()
+            emit(snapshot)
+          }
+        }
+      }
+    }
+    AsyncFunction("setBlocked") Coroutine { owner: String, key: String, blocked: Boolean ->
+      withDirectory(owner) { kit ->
+        if (blocked) kit.blockUser(owner, key) else kit.unblockUser(owner, key)
+        kit.subscribeBlockedUsers(owner).use { stream ->
+          (stream.snapshot() ?: throw problem("BlockListUnavailable")).document()
+        }
       }
     }
     AsyncFunction("retryConversation") Coroutine { group: String ->
@@ -831,7 +1149,7 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    OnDestroy { observer.launch { try { shutdown() } finally { observer.cancel() } } }
+    OnDestroy { observer.launch { try { shutdown(closeRuntime = true) } finally { observer.cancel() } } }
   }
 
   private fun dimensions(width: Int, height: Int): String? =
@@ -863,14 +1181,36 @@ class BoopMarmotModule : Module() {
       window.stop()
       throw problem("WindowClosed")
     }
+    window.latest = initial
     windows[id] = window
     return initial
   }
 
-  private suspend fun shutdown() = withContext(NonCancellable + Dispatchers.IO) {
+  private suspend fun shutdown(closeRuntime: Boolean = false, pauseMessaging: Boolean = false) = withContext(NonCancellable + Dispatchers.IO) {
+    shutdownTurn.withLock {
+      val work = lifecycle.withLock {
+        closingAccount = true
+        directoryWork.keys.toList()
+      }
+      observations.values.toList().also { observations.clear() }.forEach { it.ticket.cancel() }
+      work.forEach { it.cancel() }
+      try {
+        work.joinAll()
+        drain(pauseMessaging, closeRuntime)
+      } finally {
+        lifecycle.withLock { closingAccount = false }
+      }
+    }
+  }
+
+  private suspend fun drain(pauseMessaging: Boolean, closeRuntime: Boolean) {
     val closing = lifecycle.withLock {
-      val active = session ?: return@withLock null
-      closingAccount = true
+      if (closeRuntime) signerAccount = null
+      val active = session ?: run {
+        if (closeRuntime) stopRuntime()
+        else if (pauseMessaging) pauseRuntime()
+        return@withLock null
+      }
       session = null
       active.closing = true
       if (active.activeCalls == 0) active.callsDrained.complete(Unit)
@@ -880,7 +1220,7 @@ class BoopMarmotModule : Module() {
       val open = windows.toMap()
       windows.clear()
       Triple(active, open, transferControls)
-    } ?: return@withContext
+    } ?: return
     val (active, open, transferControls) = closing
     transferControls.forEach { runCatching { it.cancel() } }
     try {
@@ -890,31 +1230,48 @@ class BoopMarmotModule : Module() {
       }
     } finally {
       active.callsDrained.await()
-      try {
-        try { active.kit.shutdownAndClose() } finally { active.kit.close() }
-      } finally {
-        lifecycle.withLock { closingAccount = false }
+      lifecycle.withLock {
+        if (closeRuntime) stopRuntime()
+        else if (pauseMessaging) pauseRuntime()
       }
     }
   }
 
   private fun requireSession() = session ?: throw problem("AccountClosed")
+  private fun isDebuggable() =
+    ((appContext.reactContext?.applicationInfo?.flags ?: 0) and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
   private suspend fun <T> withSession(work: suspend (Session) -> T): T = protocol {
     val active = lifecycle.withLock {
       requireSession().also { it.activeCalls += 1 }
     }
     try { work(active) } finally {
-      lifecycle.withLock {
-        active.activeCalls -= 1
-        if (active.closing && active.activeCalls == 0) active.callsDrained.complete(Unit)
+      withContext(NonCancellable) {
+        lifecycle.withLock {
+          active.activeCalls -= 1
+          if (active.closing && active.activeCalls == 0) active.callsDrained.complete(Unit)
+        }
       }
     }
   }
-  private suspend fun registerUpload(active: Session, token: String, control: MediaFileTransferControlFfi) {
+  private inline fun retryDraftEdit(edit: () -> Unit) {
+    repeat(3) { attempt ->
+      try {
+        edit()
+        return
+      } catch (error: MarmotKitException.MessageDraftRevisionConflict) {
+        if (attempt == 2) throw error
+      }
+    }
+  }
+
+  private suspend fun registerUpload(
+    active: Session, token: String, control: MediaFileTransferControlFfi, draftGroup: String? = null,
+  ) {
     lifecycle.withLock {
       if (session !== active || active.closing) throw problem("AccountClosed")
       synchronized(uploads) {
-        if (uploads.containsKey(token)) throw problem("TransferInProgress")
+        if (uploads.containsKey(token) || (draftGroup != null && !draftStages.add(draftGroup))) throw problem("TransferInProgress")
         uploads[token] = control
       }
     }
@@ -932,43 +1289,131 @@ class BoopMarmotModule : Module() {
     fun readiness() = kit.accountSetupReadiness(account).name.lowercase()
   }
 
-  private suspend fun open(
-    context: Context, key: String, secret: String, nsec: String,
-    general: List<String>, inbox: List<String>, discovery: List<String>, mediaOrigin: String?, generated: Boolean,
-  ): Pair<Session, String> {
-    if (!key.matches(HEX) || !secret.matches(HEX)) throw problem("IdentityMismatch")
+  private data class RuntimeConfiguration(
+    val general: List<String>, val discovery: List<String>, val mediaOrigin: String?,
+  )
+
+  private fun discardImport() {
+    identityImport?.second?.close()
+    identityImport = null
+  }
+
+  private suspend fun stopRuntime() {
+    discardImport()
+    val kit = marmotRuntime ?: return
+    marmotRuntime = null
+    runtimeConfiguration = null
+    runtimeStarted = false
+    try { kit.shutdownAndClose() } finally { kit.close() }
+  }
+
+  private fun makeRuntime(configuration: RuntimeConfiguration): Marmot {
+    val context = appContext.reactContext ?: throw problem("ContextUnavailable")
     initializeBindings(context)
-    val root = File(context.noBackupFilesDir, "marmot/$key")
-    val store = AccountCredential(key, secret, File(root, "boop-credential"))
-    val directorySources = (general + discovery).distinct()
-    val kit = Marmot.newWithConfiguration(root.canonicalPath, directorySources, MarmotOptions(
-      clientName = "Boop", devicePlatform = "Android", secretStore = store,
-      attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
-      deployment = marmotDeploymentNeutral().copy(
-        discoveryIndexerRelays = discovery,
-        groupImageEndpoint = mediaOrigin,
-        newGroupMediaEndpoints = listOfNotNull(mediaOrigin),
+    val kit = Marmot.newWithConfiguration(
+      File(context.noBackupFilesDir, "marmot-accounts").canonicalPath,
+      (configuration.general + configuration.discovery).distinct(),
+      MarmotOptions(
+        clientName = "Boop", devicePlatform = "Android",
+        attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
+        acquirePublicAvatars = false,
+        deployment = marmotDeploymentNeutral().copy(
+          keychainService = "app.boop.accounts",
+          discoveryIndexerRelays = configuration.discovery,
+          groupImageEndpoint = configuration.mediaOrigin,
+          newGroupMediaEndpoints = listOfNotNull(configuration.mediaOrigin),
+        ),
       ),
-    ))
-    try {
-      val known = kit.listAccounts()
-      if (known.any { it.accountIdHex != key || it.label != key }) throw problem("IdentityMismatch")
-      if (known.any { it.unlinked || it.signedOut }) throw problem("AccountSignedOut")
-      kit.start()
-      if (known.isEmpty()) {
-        val account = if (generated) kit.createHostIdentity(nsec, general, discovery, inbox)
-          else kit.login(nsec, general, discovery, inbox)
-        if (account.accountIdHex != key || account.label != key) throw problem("IdentityMismatch")
+    )
+    runtimeConfiguration = configuration
+    marmotRuntime = kit
+    return kit
+  }
+
+  private suspend fun pauseRuntime() {
+    val configuration = runtimeConfiguration ?: return
+    if (!runtimeStarted) return
+    stopRuntime()
+    makeRuntime(configuration)
+  }
+
+  private suspend fun <T> withRuntime(
+    general: List<String>, discovery: List<String>, mediaOrigin: String?,
+    reconfigure: Boolean = true, start: Boolean = true,
+    work: suspend (Marmot) -> T,
+  ): T = lifecycle.withLock {
+    protocol {
+      if (closingAccount) throw problem("AccountBusy")
+      val configuration = RuntimeConfiguration(general, discovery, mediaOrigin)
+      val kit = if (marmotRuntime != null && (!reconfigure || runtimeConfiguration == configuration)) {
+        checkNotNull(marmotRuntime)
+      } else {
+        if (session != null) throw problem("AccountBusy")
+        stopRuntime()
+        makeRuntime(configuration)
       }
-      val opened = Session(key, kit)
-      return opened to opened.readiness()
+      if (start) startRuntime(kit)
+      work(kit)
+    }
+  }
+
+  private suspend fun startRuntime(kit: Marmot) {
+    if (runtimeStarted) return
+    try {
+      kit.start()
+      runtimeStarted = true
     } catch (error: Throwable) {
       withContext(NonCancellable) {
-        try { kit.shutdownAndClose() } catch (_: Exception) {} finally { kit.close() }
+        val configuration = runtimeConfiguration
+        runCatching { stopRuntime() }
+        if (signerAccount != null && configuration != null) runCatching { makeRuntime(configuration) }
       }
       throw error
     }
   }
+
+  private suspend fun withObservation(owner: String, id: String, work: suspend (Marmot) -> Unit) {
+    val observation = observations[id] ?: throw problem("AccountClosed")
+    val ticket = observation.ticket
+    val job = currentCoroutineContext().job
+    val cancellation = ticket.invokeOnCompletion { if (ticket.isCancelled) job.cancel() }
+    try {
+      withDirectory(owner, foreground = !observation.accountScoped, work = work)
+    } finally {
+      cancellation.dispose()
+      observations.remove(id, observation)
+      ticket.complete()
+    }
+  }
+
+  private suspend fun <T> withDirectory(owner: String, foreground: Boolean = true, work: suspend (Marmot) -> T): T = protocol {
+    val job = currentCoroutineContext().job
+    val kit = lifecycle.withLock {
+      if (closingAccount || (foreground && !downloadsForeground) || signerAccount != owner) throw problem("AccountClosed")
+      (marmotRuntime ?: throw problem("AccountClosed")).also { directoryWork[job] = foreground }
+    }
+    try { work(kit) } finally { directoryWork.remove(job) }
+  }
+
+  private suspend fun <T> withSigner(key: String, work: suspend (Marmot) -> T): T =
+    lifecycle.withLock {
+      protocol {
+        if (closingAccount || !downloadsForeground || signerAccount != key) throw problem("AccountClosed")
+        val kit = marmotRuntime ?: throw problem("AccountClosed")
+        work(kit)
+      }
+    }
+
+  private fun BlockListSnapshotFfi.document(): Document =
+    mapOf("revision" to revision.toString(), "keys" to users.map { it.publicKey })
+
+  private fun searchResultDocument(row: UserDirectorySearchResultFfi): Document =
+    mapOf("key" to row.accountIdHex, "profile" to row.profile?.let { profileDocument(row.accountIdHex, it, null, false) })
+
+  private fun profileDocument(key: String, profile: UserProfileMetadataFfi, website: String?, bot: Boolean): Document =
+    mapOf("key" to key, "name" to profile.name, "displayName" to profile.displayName,
+      "about" to profile.about, "picture" to profile.picture, "banner" to profile.banner,
+      "nip05" to profile.nip05, "lud16" to profile.lud16, "website" to website, "bot" to bot)
 
   private fun groupImageInput(path: String): ByteArray {
     val context = appContext.reactContext ?: throw problem("ContextUnavailable")
@@ -986,7 +1431,7 @@ class BoopMarmotModule : Module() {
     private val HEX = Regex("[a-f0-9]{64}")
     private const val MAX_GROUP_IMAGE = 4 * 1024 * 1024
     private var initialized = false
-    @Synchronized private fun initializeBindings(context: Context) {
+    @Synchronized internal fun initializeBindings(context: Context) {
       if (initialized) return
       MarmotAndroid.initialize(context)
       initialized = true
@@ -1013,50 +1458,9 @@ private class AttachmentTransferControl(
   }
 }
 
-private class AccountCredential(
-  private val account: String, private val secret: String, marker: File,
-) : SecretStore {
-  private val file = AtomicFile(marker)
-
-  @Synchronized override fun hasSecretForLabel(label: String) = label == account && registered()
-  @Synchronized override fun hasSecretForAccountId(accountIdHex: String) = accountIdHex == account && registered()
-
-  @Synchronized override fun writeSecret(label: String, accountIdHex: String, secretKeyHex: String) {
-    if (label != account || accountIdHex != account || secretKeyHex != secret) {
-      throw MarmotKitException.KeystoreUnavailable("Identity mismatch")
-    }
-    val stream = file.startWrite()
-    try {
-      stream.write(account.toByteArray(Charsets.US_ASCII))
-      file.finishWrite(stream)
-    } catch (error: Exception) {
-      file.failWrite(stream)
-      throw MarmotKitException.KeystoreUnavailable("Account credential registration failed")
-    }
-  }
-
-  @Synchronized override fun loadSecret(label: String, accountIdHex: String): String {
-    if (label != account || accountIdHex != account || !registered()) {
-      throw MarmotKitException.SecretNotFound("Account credential unavailable")
-    }
-    return secret
-  }
-
-  @Synchronized override fun removeSecret(label: String, accountIdHex: String) {
-    if (label == account && accountIdHex == account) file.delete()
-  }
-
-  private fun registered(): Boolean {
-    val stored = try { file.readFully() } catch (_: FileNotFoundException) { return false }
-    if (stored.toString(Charsets.US_ASCII) != account) {
-      throw MarmotKitException.KeystoreUnavailable("Identity mismatch")
-    }
-    return true
-  }
-}
-
 internal fun problem(code: String) = CodedException(code, code, null)
 internal fun errorCode(error: Exception) = when (error) {
+  is MarmotKitException.InvalidIdentity -> if (error.details == "identity backup exceeds the supported scrypt cost") "BackupCost" else "InvalidIdentity"
   is MarmotKitException.Runtime -> if (error.details == "device group refused: device_link_pending") "DeviceLinkPending" else "Runtime"
   is MarmotKitException -> error.javaClass.simpleName
   is CodedException -> error.code

@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
-import baseline from "../src/db/migrations/bundle";
+import { join } from "node:path";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
 export function initializeTestDatabase(sqlite: Database) {
   sqlite.exec("PRAGMA foreign_keys = ON");
-  sqlite.transaction(() => {
-    for (const migration of Object.values(baseline.migrations))
-      for (const statement of migration.split("--> statement-breakpoint"))
-        sqlite.exec(statement);
-  })();
+  migrate(drizzle(sqlite), {
+    migrationsFolder: join(import.meta.dir, "../src/db/migrations"),
+  });
 }

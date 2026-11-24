@@ -1,11 +1,10 @@
 import { z } from "zod";
 
-export const locationTag = "boop:location";
-export const sharedLocation = z.object({
+const sharedLocation = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
 });
-export type SharedLocation = z.infer<typeof sharedLocation>;
+type SharedLocation = z.infer<typeof sharedLocation>;
 
 export function locationText(location: SharedLocation) {
   return `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`;

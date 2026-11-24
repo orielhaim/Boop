@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const storageFileGroups = [
+const storageFileGroups = [
   "profileCache",
   "profileLocal",
   "linkPreviews",
