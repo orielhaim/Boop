@@ -25,22 +25,18 @@ import { StyleSheet, UnistylesRuntime } from "react-native-unistyles";
 import {
   cancelAnimation,
   Easing,
-  useDerivedValue,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
 import {
   AlphaType,
   Canvas,
-  Circle,
   ColorType,
   Group,
   Image,
-  Mask,
-  Rect,
-  RoundedRect,
   type SkImage,
   Skia,
+  usePathValue,
 } from "react-native-skia";
 import { scheduleOnRN } from "react-native-worklets";
 import { motion, type ThemeName } from "@/theme/tokens";
@@ -410,9 +406,15 @@ function ThemeReveal({
   // Start beyond the live capsule so the first palette change is visible
   // around the selector even before the radius advances.
   const initialRadius = liveArea ? liveArea.height * 0.85 : 0;
-  const radius = useDerivedValue(
-    () => initialRadius + (maxRadius - initialRadius) * progress.get(),
-  );
+  const opening = usePathValue((path) => {
+    "worklet";
+    const radius = initialRadius + (maxRadius - initialRadius) * progress.get();
+    path.addCircle(originX, originY, radius);
+    if (liveArea) {
+      const corner = liveArea.height / 2;
+      path.addRRect({ rect: liveArea, rx: corner, ry: corner });
+    }
+  });
 
   useLayoutEffect(() => {
     progress.set(0);
@@ -439,18 +441,7 @@ function ThemeReveal({
   }, [finish, progress, revealing]);
 
   return (
-    <Mask
-      mode="luminance"
-      mask={
-        <Group>
-          <Rect x={0} y={0} width={width} height={height} color="white" />
-          {liveArea && (
-            <RoundedRect {...liveArea} r={liveArea.height / 2} color="black" />
-          )}
-          <Circle cx={originX} cy={originY} r={radius} color="black" />
-        </Group>
-      }
-    >
+    <Group clip={opening} invertClip>
       <Image
         image={image}
         x={0}
@@ -459,7 +450,7 @@ function ThemeReveal({
         height={height}
         fit="fill"
       />
-    </Mask>
+    </Group>
   );
 }
 
