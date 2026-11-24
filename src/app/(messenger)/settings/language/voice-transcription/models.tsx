@@ -7,10 +7,10 @@ import { speechLocaleName } from "@/components/messages/voice-transcript";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { useLocal } from "@/services/local-context";
@@ -85,21 +85,21 @@ export default function SpeechModelsSettings() {
         </SettingsDescription>
       ) : null}
       {enabled && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             title={t("reload")}
             disabled={busy}
             onPress={() => run(load)}
           />
           {!request && (
-            <SettingsRow
+            <ListRow
               title={t("automatic")}
               selected={preferences.preferred === null}
               onPress={() => speech.setPreferences({ preferred: null })}
             />
           )}
           {models && (
-            <SettingsRow
+            <ListRow
               title={t("engine")}
               value={
                 {
@@ -111,19 +111,19 @@ export default function SpeechModelsSettings() {
             />
           )}
           {!!models?.limit && (
-            <SettingsRow
+            <ListRow
               title={t("reserved")}
               value={`${models.reserved.length} / ${models.limit}`}
             />
           )}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {enabled && loading && !models && !error && (
         <LoadingSkeleton label={t("common:opening")} />
       )}
       {enabled && models && locale && (
-        <SettingsGroup title={name(locale)}>
-          <SettingsRow
+        <ListGroup title={name(locale)}>
+          <ListRow
             title={t("checkModel")}
             value={
               progress !== undefined
@@ -136,7 +136,7 @@ export default function SpeechModelsSettings() {
             onPress={() => run(load)}
           />
           {request ? (
-            <SettingsRow
+            <ListRow
               title={t("choose")}
               disabled={busy}
               onPress={() =>
@@ -147,14 +147,14 @@ export default function SpeechModelsSettings() {
               }
             />
           ) : (
-            <SettingsRow
+            <ListRow
               title={t("selectPreferred")}
               selected={preferences.preferred === locale}
               onPress={() => speech.setPreferences({ preferred: locale })}
             />
           )}
           {!request && (
-            <SettingsToggle
+            <PreferenceToggle
               title={t("selectAdditional")}
               value={preferences.additional.includes(locale)}
               disabled={
@@ -171,7 +171,7 @@ export default function SpeechModelsSettings() {
             />
           )}
           {activeStatus === "supported" && (
-            <SettingsRow
+            <ListRow
               title={t("install")}
               disabled={busy}
               onPress={() =>
@@ -183,7 +183,7 @@ export default function SpeechModelsSettings() {
             />
           )}
           {!!models.limit && (reserved || activeStatus === "installed") && (
-            <SettingsRow
+            <ListRow
               title={t(reserved ? "release" : "reserve")}
               disabled={
                 busy || (!reserved && models.reserved.length >= models.limit)
@@ -197,7 +197,7 @@ export default function SpeechModelsSettings() {
               }
             />
           )}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {enabled && models && Platform.OS === "android" && (
         <SettingsDescription>{t("androidInstall")}</SettingsDescription>
@@ -214,9 +214,9 @@ export default function SpeechModelsSettings() {
                 );
           return (
             tags.length > 0 && (
-              <SettingsGroup title={t(group)} key={group}>
+              <ListGroup title={t(group)} key={group}>
                 {sort(tags).map((tag) => (
-                  <SettingsRow
+                  <ListRow
                     key={tag}
                     title={name(tag)}
                     value={tag}
@@ -225,7 +225,7 @@ export default function SpeechModelsSettings() {
                     onPress={() => select(tag)}
                   />
                 ))}
-              </SettingsGroup>
+              </ListGroup>
             )
           );
         })}

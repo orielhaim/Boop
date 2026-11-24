@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { AppState, StyleSheet, View } from "react-native";
+import { AppState, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   interpolate,

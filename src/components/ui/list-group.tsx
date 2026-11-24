@@ -1,31 +1,40 @@
 import { Children, type ComponentProps, type ReactNode } from "react";
-import { Pressable, StyleSheet, Switch, View } from "react-native";
-import { Card, Icon, Ink, Section, tapFeedback } from "@/components/ui/kit";
-import { space, useTheme } from "@/theme";
+import { Platform, Pressable, Switch, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
+import { Icon, Ink, Section, tapFeedback } from "@/components/ui/kit";
+import { useTheme } from "@/theme";
 
-export function SettingsGroup({
+type Dividers = "none" | "inset" | "full";
+
+export function ListGroup({
   title,
   children,
+  dividers = "inset",
 }: {
   title?: string;
   children: ReactNode;
+  dividers?: Dividers;
 }) {
-  const { colors } = useTheme();
   return (
     <View style={styles.group}>
       {title && <Section>{title}</Section>}
-      <Card style={styles.card}>
+      <View style={styles.card}>
         {Children.map(Children.toArray(children), (child, index) => (
           <>
-            {index > 0 && (
+            {index > 0 && dividers !== "none" && (
               <View
-                style={[styles.divider, { backgroundColor: colors.line }]}
+                style={[
+                  styles.divider,
+                  dividers === "inset"
+                    ? styles.insetDivider
+                    : styles.fullDivider,
+                ]}
               />
             )}
             {child}
           </>
         ))}
-      </Card>
+      </View>
     </View>
   );
 }
@@ -33,7 +42,7 @@ export function SettingsGroup({
 export function SettingsDescription({ children }: { children: ReactNode }) {
   return (
     <Ink
-      kind="caption"
+      kind="description"
       muted
       style={styles.description}
       accessibilityLiveRegion="polite"
@@ -43,12 +52,11 @@ export function SettingsDescription({ children }: { children: ReactNode }) {
   );
 }
 
-export function SettingsRow({
+export function ListRow({
   title,
   detail,
   value,
   icon,
-  accent,
   onPress,
   onTitlePress,
   selected,
@@ -57,12 +65,12 @@ export function SettingsRow({
   disabled = false,
   leading,
   trailing,
+  showChevron = true,
 }: {
   title: string;
   detail?: string;
   value?: string;
   icon?: ComponentProps<typeof Icon>["name"];
-  accent?: string;
   onPress?: () => void;
   onTitlePress?: () => void;
   selected?: boolean;
@@ -71,13 +79,14 @@ export function SettingsRow({
   disabled?: boolean;
   leading?: ReactNode;
   trailing?: ReactNode;
+  showChevron?: boolean;
 }) {
   const { colors } = useTheme();
   const label = (
     <>
-      <Ink kind="label">{title}</Ink>
+      <Ink kind="rowTitle">{title}</Ink>
       {detail && (
-        <Ink kind="caption" muted>
+        <Ink kind="description" muted numberOfLines={2}>
           {detail}
         </Ink>
       )}
@@ -87,13 +96,8 @@ export function SettingsRow({
     <>
       {leading ??
         (icon && (
-          <View
-            style={[
-              styles.icon,
-              { backgroundColor: accent ?? colors.outgoing },
-            ]}
-          >
-            <Icon name={icon} size={19} color="#fff" />
+          <View style={styles.icon}>
+            <Icon name={icon} size={19} />
           </View>
         ))}
       {onTitlePress ? (
@@ -111,7 +115,7 @@ export function SettingsRow({
         <View style={styles.label}>{label}</View>
       )}
       {value && (
-        <Ink kind="caption" muted style={styles.value}>
+        <Ink kind="control" muted style={styles.value}>
           {value}
         </Ink>
       )}
@@ -119,7 +123,7 @@ export function SettingsRow({
         <Icon name="check" size={18} />
       ) : (
         (trailing ??
-        (onPress && selected === undefined ? (
+        (onPress && showChevron && selected === undefined ? (
           <Icon name="next" size={17} color={colors.muted} />
         ) : null))
       )}
@@ -136,9 +140,9 @@ export function SettingsRow({
       }}
       style={({ pressed }) => [
         styles.row,
-        disabled && { opacity: 0.5 },
-        selected && { backgroundColor: colors.accentSoft },
-        pressed && { backgroundColor: colors.background },
+        disabled && styles.disabled,
+        selected && { backgroundColor: colors.selected },
+        pressed && !disabled && { backgroundColor: colors.pressed },
       ]}
     >
       {content}
@@ -148,7 +152,7 @@ export function SettingsRow({
   );
 }
 
-export function SettingsToggle({
+export function PreferenceToggle({
   title,
   detail,
   value,
@@ -167,7 +171,7 @@ export function SettingsToggle({
 }) {
   const { colors } = useTheme();
   return (
-    <SettingsRow
+    <ListRow
       title={title}
       detail={detail}
       icon={icon}
@@ -178,34 +182,52 @@ export function SettingsToggle({
           value={value}
           onValueChange={onChange}
           disabled={disabled}
-          trackColor={{ true: colors.accent }}
+          trackColor={{ false: colors.line, true: colors.accent }}
+          thumbColor={
+            Platform.OS === "android"
+              ? value
+                ? colors.onAccent
+                : colors.raised
+              : undefined
+          }
         />
       }
     />
   );
 }
 
-const styles = StyleSheet.create({
-  group: { gap: space.sm },
-  card: { overflow: "hidden", borderRadius: 14 },
-  divider: { height: StyleSheet.hairlineWidth, marginHorizontal: space.lg },
+const styles = StyleSheet.create((theme) => ({
+  group: { gap: theme.space.sm },
+  card: {
+    backgroundColor: theme.colors.grouped,
+    borderRadius: theme.radius.group,
+    overflow: "hidden",
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: theme.colors.line,
+  },
+  insetDivider: { marginHorizontal: theme.space.lg },
+  fullDivider: { marginHorizontal: 0 },
   row: {
-    minHeight: 52,
+    minHeight: 68,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.md,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
+    gap: theme.space.md,
+    paddingHorizontal: theme.space.lg,
+    paddingVertical: theme.space.sm,
   },
+  disabled: { opacity: 0.5 },
   icon: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
+    backgroundColor: theme.colors.selected,
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.control,
     alignItems: "center",
     justifyContent: "center",
   },
-  label: { flex: 1, gap: 3 },
+  label: { flex: 1, gap: theme.space.xs },
   titleTrigger: { minHeight: 44, justifyContent: "center" },
   value: { flexShrink: 1, maxWidth: "48%" },
-  description: { marginHorizontal: space.sm },
-});
+  description: { marginHorizontal: theme.space.sm },
+}));

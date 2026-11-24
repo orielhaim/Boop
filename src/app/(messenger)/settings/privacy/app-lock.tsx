@@ -3,9 +3,9 @@ import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { lockTimeouts } from "@/core/security/app-lock";
@@ -27,8 +27,8 @@ export default function AppLockSettings() {
 
   return (
     <Screen navigationHeader={<ScreenHeader title={t("security:appLock")} />}>
-      <SettingsGroup>
-        <SettingsToggle
+      <ListGroup>
+        <PreferenceToggle
           title={t("security:appLock")}
           detail={
             state.authenticating ? t("security:authenticating") : undefined
@@ -59,7 +59,7 @@ export default function AppLockSettings() {
             }}
           />
         )}
-      </SettingsGroup>
+      </ListGroup>
       {error || state.error ? (
         <SettingsDescription>
           {error || (state.error ? t(`security:${state.error}`) : null)}

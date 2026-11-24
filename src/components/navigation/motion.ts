@@ -12,17 +12,11 @@ import {
   profileMorphParam,
 } from "@/core/marmot/conversation-route";
 import { directionFor, resolveLanguage } from "@/i18n";
-import { useTheme } from "@/theme";
+import { motion, radius, useTheme } from "@/theme";
 
-export const travelSpring = {
-  stiffness: 370,
-  damping: 39,
-  mass: 0.9,
-  overshootClamping: true,
-};
-
-const travel = { open: travelSpring, close: travelSpring };
-const fade = { duration: 100, easing: Easing.out(Easing.quad) };
+const travel = { open: motion.travel, close: motion.travel };
+const fade = { duration: motion.quickFade, easing: Easing.out(Easing.quad) };
+const detailRadius = radius.card;
 
 const dissolve: ScreenStyleInterpolator = ({ current, focused }) => {
   "worklet";
@@ -103,7 +97,7 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
         const style = source?.link()
           ? source.navigation.zoom({
               target: "fullscreen",
-              borderRadius: media ? 0 : 24,
+              borderRadius: media ? 0 : detailRadius,
               backgroundScale: 0.97,
             })
           : media

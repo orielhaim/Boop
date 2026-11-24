@@ -1,12 +1,12 @@
 import { LinearGradient } from "expo-linear-gradient";
 import {
   Pressable,
-  StyleSheet,
   Text,
   TextInput,
   type TextInputProps,
   View,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -62,7 +62,7 @@ export function OpeningButton({
             backgroundColor: primary
               ? "#373DB8"
               : reduceTransparency
-                ? colors.surface
+                ? colors.raised
                 : theme === "dark"
                   ? "#242D4A"
                   : "#FFFFFFB8",
@@ -120,7 +120,7 @@ export function OpeningField({
           styles.inputShell,
           {
             borderColor: colors.line,
-            backgroundColor: colors.surface,
+            backgroundColor: colors.raised,
           },
         ]}
       >
@@ -132,7 +132,7 @@ export function OpeningField({
           {...input}
           accessibilityLabel={label}
           cursorColor={colors.accent}
-          selectionColor={colors.accentSoft}
+          selectionColor={colors.selected}
           onFocus={(event) => {
             changeFocus(1);
             input.onFocus?.(event);

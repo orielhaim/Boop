@@ -19,9 +19,9 @@ import {
   type LayoutRectangle,
   PixelRatio,
   Platform,
-  StyleSheet,
   View,
 } from "react-native";
+import { StyleSheet, UnistylesRuntime } from "react-native-unistyles";
 import {
   cancelAnimation,
   Easing,
@@ -32,37 +32,33 @@ import {
 import {
   AlphaType,
   Canvas,
-  Circle,
   ColorType,
   Group,
   Image,
-  Mask,
-  Rect,
-  RoundedRect,
   type SkImage,
+  type SkRRect,
   Skia,
 } from "react-native-skia";
 import { scheduleOnRN } from "react-native-worklets";
-import type { GlassyUiTheme } from "@/components/glassyui/lib/preferences";
+import { motion, type ThemeName } from "@/theme/tokens";
 import type { ThemeChoice } from "@/stores/preferences";
 
 type Size = { width: number; height: number };
 type CaptureView = ComponentRef<typeof View>;
-type Presentation = { theme: GlassyUiTheme; choice: ThemeChoice };
+type Presentation = { theme: ThemeName; choice: ThemeChoice };
 type Snapshot = {
   image: SkImage;
   release: () => void;
 };
 type Transition = Size &
   Pick<Snapshot, "image"> & {
-    target: GlassyUiTheme;
+    target: ThemeName;
     liveArea: LayoutRectangle | null;
     reveal: () => void;
     finish: () => void;
   };
 
 const captureTimeout = 300;
-const animationDuration = 600;
 let hardwareCaptureAvailable = true;
 
 const androidSnapshot = requireOptionalNativeModule<{
@@ -221,10 +217,10 @@ export function ThemeSwitcher({
   enabled,
   children,
 }: {
-  theme: GlassyUiTheme;
+  theme: ThemeName;
   choice: ThemeChoice;
   enabled: boolean;
-  children: (theme: GlassyUiTheme) => ReactNode;
+  children: (theme: ThemeName) => ReactNode;
 }) {
   const view = useRef<CaptureView>(null);
   const [liveControl, setLiveControl] = useState<CaptureView | null>(null);
@@ -260,6 +256,9 @@ export function ThemeSwitcher({
   }, [animated]);
 
   useLayoutEffect(() => {
+    if (UnistylesRuntime.themeName !== displayedTheme) {
+      UnistylesRuntime.setTheme(displayedTheme);
+    }
     committed.current = displayedTheme;
   }, [displayedTheme]);
 
@@ -408,9 +407,24 @@ function ThemeReveal({
   // Start beyond the live capsule so the first palette change is visible
   // around the selector even before the radius advances.
   const initialRadius = liveArea ? liveArea.height * 0.85 : 0;
-  const radius = useDerivedValue(
-    () => initialRadius + (maxRadius - initialRadius) * progress.get(),
-  );
+  const opening = useDerivedValue<SkRRect>(() => {
+    const radius = initialRadius + (maxRadius - initialRadius) * progress.get();
+    return {
+      rect: {
+        x: originX - radius,
+        y: originY - radius,
+        width: 2 * radius,
+        height: 2 * radius,
+      },
+      rx: radius,
+      ry: radius,
+    };
+  });
+  const selector = liveArea && {
+    rect: liveArea,
+    rx: liveArea.height / 2,
+    ry: liveArea.height / 2,
+  };
 
   useLayoutEffect(() => {
     progress.set(0);
@@ -427,7 +441,7 @@ function ThemeReveal({
     progress.set(
       withTiming(
         1,
-        { duration: animationDuration, easing: Easing.out(Easing.cubic) },
+        { duration: motion.themeReveal, easing: Easing.out(Easing.cubic) },
         (finished) => {
           if (finished) scheduleOnRN(finish);
         },
@@ -437,27 +451,18 @@ function ThemeReveal({
   }, [finish, progress, revealing]);
 
   return (
-    <Mask
-      mode="luminance"
-      mask={
-        <Group>
-          <Rect x={0} y={0} width={width} height={height} color="white" />
-          {liveArea && (
-            <RoundedRect {...liveArea} r={liveArea.height / 2} color="black" />
-          )}
-          <Circle cx={originX} cy={originY} r={radius} color="black" />
-        </Group>
-      }
-    >
-      <Image
-        image={image}
-        x={0}
-        y={0}
-        width={width}
-        height={height}
-        fit="fill"
-      />
-    </Mask>
+    <Group clip={selector ?? undefined} invertClip>
+      <Group clip={opening} invertClip>
+        <Image
+          image={image}
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          fit="fill"
+        />
+      </Group>
+    </Group>
   );
 }
 

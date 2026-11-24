@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { BackHandler, Pressable, StyleSheet, View } from "react-native";
+import { BackHandler, Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   interpolate,
   type SharedValue,

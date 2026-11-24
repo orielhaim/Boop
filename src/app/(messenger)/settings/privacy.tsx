@@ -4,14 +4,16 @@ import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Linking } from "react-native";
 import {
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+  SettingsDescription,
+} from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-policy-row";
 import { Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
+import { linkPreviewPolicies } from "@/core/messaging/link-previews";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 
@@ -45,8 +47,8 @@ export default function Privacy() {
 
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:privacy")} />}>
-      <SettingsGroup title={t("security:deviceAccess")}>
-        <SettingsToggle
+      <ListGroup title={t("security:deviceAccess")}>
+        <PreferenceToggle
           title={t("security:appLock")}
           detail={
             authenticating
@@ -61,31 +63,21 @@ export default function Privacy() {
           onTitlePress={() => router.push("/settings/privacy/app-lock")}
           onChange={(value) => void lock.change(value ? "enable" : "disable")}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:permissions")}
           icon="settings"
           onPress={() => router.push("/settings/privacy/permissions")}
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("security:callPrivacy")}>
-        <SettingsMenuRow
-          title={t("security:whoCanCall")}
-          value={selected.calls}
-          options={[
-            everyone,
-            contacts,
-            { value: "nobody", label: t("security:nobody") },
-          ]}
-          onChange={(value) => save(() => privacy.set("calls", value))}
+      </ListGroup>
+      <ListGroup>
+        <ListRow
+          title={t("security:incomingCalls")}
+          icon="phone"
+          onPress={() => router.push("/settings/privacy/incoming-calls")}
         />
-        <SettingsRow
-          title={t("security:incomingVideo")}
-          icon="camera"
-          onPress={() => router.push("/settings/privacy/incoming-video")}
-        />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsToggle
+      </ListGroup>
+      <ListGroup>
+        <PreferenceToggle
           title={t("common:chats")}
           detail={t("security:chatsHelp")}
           value={chatsEnabled}
@@ -102,7 +94,7 @@ export default function Privacy() {
           disabled={!chatsEnabled}
           onChange={(value) => save(() => privacy.set("messages", value))}
         />
-        <SettingsToggle
+        <PreferenceToggle
           title={t("security:messageRequests")}
           detail={t(
             strict ? "security:strictRequests" : "security:requestsHelp",
@@ -111,25 +103,48 @@ export default function Privacy() {
           value={selected.requests}
           onChange={(value) => save(() => privacy.set("requests", value))}
         />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
+      </ListGroup>
+      <ListGroup>
+        <SettingsMenuRow
           title={t("settings:linkPreviews")}
-          detail={t(`settings:linkPreview_${selected.linkPreviews}`)}
-          onPress={() => router.push("/settings/privacy/link-previews")}
+          value={selected.linkPreviews}
+          options={linkPreviewPolicies.map((value) => ({
+            value,
+            label: t(`settings:linkPreview_${value}`),
+          }))}
+          onChange={(value) => save(() => privacy.set("linkPreviews", value))}
         />
+      </ListGroup>
+      <SettingsDescription>
+        {t(`settings:linkPreviewHelp_${selected.linkPreviews}`)}{" "}
+        {t("settings:linkPreviewPrivacy")}
+      </SettingsDescription>
+      <ListGroup>
         <ProfilePhotoPolicyRow
           title={t("settings:profilePhotos")}
           value={selected.profilePhotos}
           onTitlePress={() => router.push("/settings/privacy/profile-photos")}
           onChange={(value) => save(() => privacy.set("profilePhotos", value))}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:blockedUsers")}
           icon="lock"
           onPress={() => router.push("/settings/privacy/blocked")}
         />
-        <SettingsRow
+        <PreferenceToggle
+          title={t("security:telemetry")}
+          detail={t("security:telemetryHelp")}
+          value={false}
+          onChange={(enabled) => {
+            if (enabled) {
+              Alert.alert(
+                t("security:telemetry"),
+                t("security:telemetryDeclined"),
+              );
+            }
+          }}
+        />
+        <ListRow
           title={t("security:privacyPolicy")}
           icon="info"
           onPress={() => {
@@ -138,7 +153,7 @@ export default function Privacy() {
             );
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

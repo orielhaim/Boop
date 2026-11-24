@@ -5,9 +5,9 @@ import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { useTranslationLanguages } from "@/components/settings/translation-languages";
 import { Action, Screen, Search } from "@/components/ui/kit";
 import {
@@ -63,9 +63,9 @@ export default function ExcludedLanguages() {
         </SettingsDescription>
       )}
       {!!choices?.length && (
-        <SettingsGroup>
+        <ListGroup>
           {choices.map(({ code, name }) => (
-            <SettingsRow
+            <ListRow
               key={code}
               title={name}
               selected={excludedSources.includes(languageCode(code))}
@@ -79,7 +79,7 @@ export default function ExcludedLanguages() {
               }}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       )}
     </Screen>
   );

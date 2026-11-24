@@ -35,10 +35,10 @@ import {
   Alert,
   Modal,
   Platform,
-  StyleSheet,
   View,
   useWindowDimensions,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Ink } from "@/components/ui/kit";
 import {
   attachmentKey,

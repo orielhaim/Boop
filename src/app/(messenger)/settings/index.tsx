@@ -1,15 +1,104 @@
 import { router } from "expo-router";
 import { useSyncExternalStore } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
+import {
+  CategoryIcon,
+  type SettingsCategory,
+} from "@/components/ui/category-icon";
 import { PersonAvatar } from "@/components/people/person-avatar";
 import { usePerson } from "@/components/people/use-person";
 import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
 import { Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import { radius, space, useTheme } from "@/theme";
+import { useTheme } from "@/theme";
+
+const categoryRows = [
+  {
+    category: "appearance",
+    titleKey: "settings:appearance",
+    detailKey: "settings:categoryAppearanceHelp",
+    route: "/settings/appearance",
+  },
+  {
+    category: "calls",
+    titleKey: "settings:calls",
+    detailKey: "settings:categoryCallsHelp",
+    route: "/settings/calls",
+  },
+  {
+    category: "audio",
+    titleKey: "audio:settings",
+    detailKey: "settings:categoryAudioHelp",
+    route: "/settings/playback",
+  },
+  {
+    category: "storage",
+    titleKey: "storage:title",
+    detailKey: "settings:categoryStorageHelp",
+    route: "/settings/storage",
+  },
+  {
+    category: "language",
+    titleKey: "settings:language",
+    detailKey: "settings:categoryLanguageHelp",
+    route: "/settings/language",
+  },
+  {
+    category: "identity",
+    titleKey: "settings:identity",
+    detailKey: "settings:categoryIdentityHelp",
+    route: "/settings/identity",
+  },
+  {
+    category: "privacy",
+    titleKey: "settings:privacy",
+    detailKey: "settings:categoryPrivacyHelp",
+    route: "/settings/privacy",
+  },
+  {
+    category: "connections",
+    titleKey: "settings:connections",
+    detailKey: "settings:categoryConnectionsHelp",
+    route: "/settings/connections",
+  },
+  {
+    category: "about",
+    titleKey: "settings:about",
+    detailKey: "settings:categoryAboutHelp",
+    route: "/settings/about",
+  },
+] as const satisfies readonly {
+  category: SettingsCategory;
+  titleKey: string;
+  detailKey: string;
+  route: Parameters<typeof router.push>[0];
+}[];
+
+function CategoryRow({
+  category,
+  title,
+  detail,
+  onPress,
+}: {
+  category: SettingsCategory;
+  title: string;
+  detail: string;
+  onPress: () => void;
+}) {
+  return (
+    <ListRow
+      title={title}
+      detail={detail}
+      leading={<CategoryIcon category={category} />}
+      onPress={onPress}
+      showChevron={false}
+    />
+  );
+}
 
 export default function Settings() {
   const { t } = useTranslation(namespaces);
@@ -30,9 +119,10 @@ export default function Settings() {
       : (photoPreview ?? publishedPhoto);
   const { colors } = useTheme();
   const edit = () => router.push("/settings/edit-profile");
+
   return (
     <Screen compact topInset>
-      <View style={styles.profileRow}>
+      <View style={styles.header}>
         <GlassBackButton
           onPress={() => {
             if (router.canGoBack()) router.back();
@@ -46,129 +136,80 @@ export default function Settings() {
             tapFeedback();
             edit();
           }}
-          style={({ pressed }) => [
-            styles.identity,
-            pressed && { opacity: 0.72 },
-          ]}
+          style={({ pressed }) => [styles.identity, pressed && styles.pressed]}
         >
-          <View style={styles.avatar}>
+          <View>
             <PersonAvatar
-              size="xl"
+              size="xxl"
               publicKey={identity.publicKey}
               name={displayName}
               photo={photo}
               hasName={Boolean(profile?.name || draft?.name)}
             />
-            <View
-              style={[
-                styles.edit,
-                {
-                  backgroundColor: colors.outgoing,
-                  borderColor: colors.background,
-                },
-              ]}
-            >
+            <View style={styles.editBadge}>
               <Icon name="edit" size={14} color={colors.outgoingInk} />
             </View>
           </View>
           <Ink
-            kind="heading"
+            kind={profile?.name || draft?.name ? "profileName" : "body"}
             numberOfLines={2}
-            style={[
-              styles.name,
-              !profile?.name && !draft?.name && styles.address,
-            ]}
+            style={styles.name}
           >
             {displayName}
           </Ink>
-          <Ink kind="caption" style={{ color: colors.accent }}>
+          <Ink kind="description" style={styles.editLabel}>
             {t("settings:editProfile")}
           </Ink>
         </Pressable>
       </View>
-      <SettingsGroup>
-        <SettingsRow
-          title={t("settings:appearance")}
-          icon="palette"
-          accent="#347E76"
-          onPress={() => router.push("/settings/appearance")}
-        />
-        <SettingsRow
-          title={t("settings:calls")}
-          icon="speaker"
-          accent="#B1486C"
-          onPress={() => router.push("/settings/calls")}
-        />
-        <SettingsRow
-          title={t("audio:settings")}
-          icon="audio"
-          onPress={() => router.push("/settings/playback")}
-        />
-        <SettingsRow
-          title={t("storage:title")}
-          icon="storage"
-          accent="#5263A6"
-          onPress={() => router.push("/settings/storage")}
-        />
-        <SettingsRow
-          title={t("settings:language")}
-          icon="language"
-          accent="#366F98"
-          onPress={() => router.push("/settings/language")}
-        />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
-          title={t("settings:identity")}
-          icon="key"
-          onPress={() => router.push("/settings/identity")}
-        />
-        <SettingsRow
-          title={t("settings:privacy")}
-          icon="lock"
-          accent="#267C65"
-          onPress={() => router.push("/settings/privacy")}
-        />
-        <SettingsRow
-          title={t("settings:connections")}
-          icon="connection"
-          accent="#176DAB"
-          onPress={() => router.push("/settings/connections")}
-        />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
-          title={t("settings:about")}
-          icon="info"
-          accent="#51617D"
-          onPress={() => router.push("/settings/about")}
-        />
-      </SettingsGroup>
+
+      {[
+        categoryRows.slice(0, 5),
+        categoryRows.slice(5, 8),
+        categoryRows.slice(8),
+      ].map((group) => (
+        <ListGroup key={group[0]?.category} dividers="none">
+          {group.map((row) => (
+            <CategoryRow
+              key={row.category}
+              category={row.category}
+              title={t(row.titleKey)}
+              detail={t(row.detailKey)}
+              onPress={() => router.push(row.route)}
+            />
+          ))}
+        </ListGroup>
+      ))}
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  profileRow: { flexDirection: "row", alignItems: "flex-start" },
+const styles = StyleSheet.create((theme) => ({
+  header: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
   identity: {
     flex: 1,
     marginEnd: backButtonSize,
     alignItems: "center",
-    paddingBottom: space.sm,
-    gap: space.sm,
+    gap: theme.space.sm,
+    paddingVertical: theme.space.sm,
   },
-  avatar: { marginBottom: space.xs },
-  edit: {
+  pressed: { opacity: 0.75 },
+  name: { textAlign: "center", marginTop: theme.space.xs },
+  editLabel: { color: theme.colors.accent },
+  editBadge: {
     position: "absolute",
-    bottom: -2,
-    end: -2,
-    width: 28,
-    height: 28,
-    borderRadius: radius.round,
-    borderWidth: 2,
+    bottom: 0,
+    end: 0,
+    width: 29,
+    height: 29,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: theme.radius.round,
+    backgroundColor: theme.colors.outgoing,
+    borderColor: theme.colors.background,
+    borderWidth: 2,
   },
-  name: { textAlign: "center", fontSize: 23 },
-  address: { fontSize: 16, letterSpacing: 0 },
-});
+}));

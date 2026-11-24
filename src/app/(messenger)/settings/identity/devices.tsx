@@ -7,10 +7,10 @@ import { GlassInput } from "@/components/glassyui/glass-input";
 import { marmotErrorCode } from "@/core/marmot/errors";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import {
   marmot,
@@ -101,9 +101,9 @@ export default function LinkedDevices() {
       ) : null}
       {snapshot && (
         <>
-          <SettingsGroup title={t("messages:marmot.devices")}>
+          <ListGroup title={t("messages:marmot.devices")}>
             {snapshot.devices.map((device) => (
-              <SettingsRow
+              <ListRow
                 key={device.slot}
                 icon="connection"
                 title={
@@ -138,7 +138,7 @@ export default function LinkedDevices() {
                 }
               />
             ))}
-          </SettingsGroup>
+          </ListGroup>
           {snapshot.progress
             .filter((entry) => entry.remaining > 0)
             .map((entry) => (
@@ -184,7 +184,7 @@ export default function LinkedDevices() {
             </Action>
           )}
           {snapshot.prompts.map((prompt) => (
-            <SettingsGroup key={prompt.id}>
+            <ListGroup key={prompt.id}>
               {prompt.code.length > 0 ? (
                 <>
                   <Ink>{t("messages:marmot.compareCode")}</Ink>
@@ -197,12 +197,12 @@ export default function LinkedDevices() {
                     onChangeText={setLabel}
                     maxLength={60}
                   />
-                  <SettingsToggle
+                  <PreferenceToggle
                     title={t("messages:marmot.addToChats")}
                     value={allChats}
                     onChange={setAllChats}
                   />
-                  <SettingsToggle
+                  <PreferenceToggle
                     title={t("messages:marmot.bringHistory")}
                     value={allChats && history}
                     disabled={!allChats}
@@ -225,7 +225,7 @@ export default function LinkedDevices() {
               >
                 {t("common:cancel")}
               </Action>
-            </SettingsGroup>
+            </ListGroup>
           ))}
         </>
       )}

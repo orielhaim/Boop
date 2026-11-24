@@ -6,10 +6,10 @@ import { Alert, Linking } from "react-native";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { TranslationAttribution } from "@/components/settings/translation-attribution";
 import { useTranslationLanguages } from "@/components/settings/translation-languages";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
@@ -59,8 +59,8 @@ export default function TranslationSettings() {
           {t("translation:privacy")}
         </Ink>
       </GlassPanel>
-      <SettingsGroup>
-        <SettingsToggle
+      <ListGroup>
+        <PreferenceToggle
           title={t("translation:automatic")}
           value={preferences.automatic}
           disabled={!target && !preferences.automatic}
@@ -73,7 +73,7 @@ export default function TranslationSettings() {
             }
           }}
         />
-        <SettingsRow
+        <ListRow
           title={t("translation:target")}
           value={target?.name ?? preferences.target}
           onPress={
@@ -82,14 +82,14 @@ export default function TranslationSettings() {
               : undefined
           }
         />
-        <SettingsRow
+        <ListRow
           title={t("translation:excluded")}
           value={new Intl.NumberFormat(i18n.resolvedLanguage).format(
             preferences.excludedSources.length,
           )}
           onPress={() => router.push("/settings/language/translation/excluded")}
         />
-        <SettingsRow
+        <ListRow
           title={t("translation:manageModels")}
           detail={
             target && downloaded && !downloaded.includes(target.code)
@@ -98,10 +98,10 @@ export default function TranslationSettings() {
           }
           onPress={() => router.push("/settings/language/translation/models")}
         />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow title={t("translation:clear")} onPress={clear} />
-      </SettingsGroup>
+      </ListGroup>
+      <ListGroup>
+        <ListRow title={t("translation:clear")} onPress={clear} />
+      </ListGroup>
       {error && (
         <>
           <SettingsDescription>{t(`translation:${error}`)}</SettingsDescription>

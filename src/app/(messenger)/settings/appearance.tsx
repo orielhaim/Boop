@@ -1,17 +1,15 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { Slider } from "@expo/ui/community/slider";
 import { LinearGradient } from "expo-linear-gradient";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   conversationMaterials,
   messagePresentation,
 } from "@/components/messages/appearance";
-import {
-  SettingsDescription,
-  SettingsGroup,
-} from "@/components/settings/group";
+import { SettingsDescription, ListGroup } from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ThemePreference } from "@/components/settings/theme-preference";
 import { Ink, Screen } from "@/components/ui/kit";
@@ -33,6 +31,10 @@ const controls = [
   { key: "textSize", label: "settings:messageTextSize" },
   { key: "rounding", label: "settings:messageRounding" },
 ] as const;
+
+const DesignLab = __DEV__
+  ? lazy(() => import("@/components/ui/design-lab"))
+  : null;
 
 export default function AppearanceSettings() {
   const { t, i18n } = useTranslation(namespaces);
@@ -62,7 +64,7 @@ export default function AppearanceSettings() {
       navigationHeader={<ScreenHeader title={t("settings:appearance")} />}
     >
       <ThemePreference />
-      <SettingsGroup>
+      <ListGroup>
         <SettingsMenuRow
           title={t("settings:favoritesDisplay")}
           value={favoritesDisplay}
@@ -84,13 +86,13 @@ export default function AppearanceSettings() {
             }
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
       {favoritesFailed && (
         <SettingsDescription>
           {t("settings:favoritesDisplaySaveError")}
         </SettingsDescription>
       )}
-      <SettingsGroup title={t("common:chats")}>
+      <ListGroup title={t("common:chats")}>
         {controls.map(({ key, label }) => {
           const { min, max, step } = chatPresentationControls[key];
           return (
@@ -110,14 +112,14 @@ export default function AppearanceSettings() {
                 step={step}
                 value={presentation[key]}
                 minimumTrackTintColor={colors.accent}
-                maximumTrackTintColor={colors.accentSoft}
+                maximumTrackTintColor={colors.selected}
                 thumbTintColor={colors.accent}
                 onValueChange={(value) => change(key, value)}
               />
             </View>
           );
         })}
-      </SettingsGroup>
+      </ListGroup>
       <LinearGradient
         colors={material.canvas}
         style={[styles.preview, { borderColor: material.rim }]}
@@ -147,6 +149,11 @@ export default function AppearanceSettings() {
         <SettingsDescription>
           {t("settings:chatAppearanceSaveError")}
         </SettingsDescription>
+      )}
+      {DesignLab && (
+        <Suspense fallback={null}>
+          <DesignLab />
+        </Suspense>
       )}
     </Screen>
   );

@@ -71,6 +71,13 @@ diff --git a/lib/Chat/useMessageActions.d.ts b/lib/Chat/useMessageActions.d.ts
 diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
 --- a/lib/ChatList/ChatListCell.js
 +++ b/lib/ChatList/ChatListCell.js
+@@ -265,5 +265,5 @@
+           selected: isSelected
+         }}>
+             <View style={styles.avatar}>
+-              <ChatListAvatar id={chat.id} title={chat.title} uri={chat.avatar} size={AVATAR_SIZE} isOnline={chat.isOnline} isSelected={isSelected} />
++              <ChatListAvatar id={chat.avatarIdentity ?? chat.id} title={chat.title} uri={chat.avatar} size={AVATAR_SIZE} isOnline={chat.isOnline} isSelected={isSelected} />
+             </View>
 @@ -322,7 +322,7 @@
                      }]} numberOfLines={1}>
                                  {preview.attachment ? <Text style={{
@@ -83,8 +90,12 @@ diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
 diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
 --- a/lib/ChatList/types.d.ts
 +++ b/lib/ChatList/types.d.ts
-@@ -20,6 +20,8 @@
+@@ -18,8 +18,12 @@
+     kind?: ChatListItemKind;
+     /** A photo URL; initials on a per-chat color otherwise. */
      avatar?: string;
++    /** Stable identity used by the avatar color, independent of the conversation id. */
++    avatarIdentity?: string;
      /** The newest message: its preview, time and (when it is yours) its sent / read checks. */
      lastMessage?: IMessage;
 +    /** A display-only preview shown when the chat has no message, draft or typing status. */
@@ -92,7 +103,7 @@ diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
      unreadCount?: number;
      isPinned?: boolean;
      isMuted?: boolean;
-@@ -90,6 +92,8 @@
+@@ -90,6 +94,8 @@
      onReorderPinnedChats?: (ids: TChat['id'][]) => void;
      /** Shows the round new-chat button. */
      onPressNewChat?: () => void;

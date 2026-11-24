@@ -1,28 +1,23 @@
 import { Image } from "expo-image";
-import type { ComponentRef } from "react";
 import {
+  type ComponentProps,
+  type ComponentRef,
   forwardRef,
   useCallback,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
-import {
-  Animated,
-  Easing,
-  StyleSheet,
-  Text,
-  View,
-  type ImageSourcePropType,
-  type ViewProps,
-} from "react-native";
+import { Text, View, type ViewProps } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
+import { avatarGradient, motion, type GlassTone } from "@/theme/tokens";
 import { useGlassTheme } from "./glass-provider";
 import { wrapPlainText } from "./lib/plain-text";
-import { GLASS_MOTION, type GlassTone } from "./lib/tokens";
 
 export type GlassAvatarSize = "xs" | "sm" | "md" | "lg" | "xl" | "xxl";
 
 export type GlassAvatarStatus = "online" | "away" | "busy" | "offline";
+type AvatarSource = ComponentProps<typeof Image>["source"];
 
 export type GlassAvatarProps = Omit<ViewProps, "children"> & {
   /** Describes the image. Defaults to `name`. */
@@ -30,11 +25,12 @@ export type GlassAvatarProps = Omit<ViewProps, "children"> & {
   animateArrival?: boolean;
   /** Shown when there is no image or it fails to load. Defaults to the initials of `name`. */
   fallback?: ReactNode;
-  /** Names the person. Its initials fill in for a missing image and pick the colour. */
+  /** The initials use the display name. The gradient uses the stable identity. */
   name?: string;
+  identityKey?: string;
   size?: GlassAvatarSize;
   /** A bundled image, as `require('./photo.jpg')` gives it. Use `src` for an address. */
-  source?: ImageSourcePropType;
+  source?: AvatarSource;
   /** The image's address. */
   src?: string;
   /** A presence dot on the corner. */
@@ -49,21 +45,6 @@ const SIZE = {
   xl: { diameter: 80, dot: 18 },
   xxl: { diameter: 96, dot: 20 },
 } as const;
-
-// Initials sit on one of these gradients, picked by the name so a person keeps their colour.
-const TONES = [
-  ["#2d6de9", "#1a4fc7"],
-  ["#b93f24", "#882c1a"],
-  ["#707075", "#56565b"],
-  ["#d0386f", "#a82458"],
-  ["#b9540f", "#9c4308"],
-  ["#1f8150", "#146c3c"],
-  ["#0e7d8b", "#0a6674"],
-  ["#747479", "#535359"],
-] as const;
-
-// A face without a name is plain gray.
-const NAMELESS = ["#747479", "#535359"] as const;
 
 // The face's hairline rim and the light along its top.
 const RIM = {
@@ -83,8 +64,6 @@ const STATUS_TONE = {
 // so a ring in the surface colour draws that gap instead.
 const GAP = 2;
 
-const EASE_OUT = Easing.bezier(0.32, 0.72, 0, 1);
-
 function initialsOf(name: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
 
@@ -97,92 +76,43 @@ function initialsOf(name: string) {
   return `${first}${last}`.toUpperCase();
 }
 
-// The same name always gets the same colour.
-function toneOf(name: string) {
-  let hash = 0;
-
-  for (const character of name)
-    hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0;
-
-  return TONES[hash % TONES.length];
-}
-
 type FaceProps = {
   animateArrival: boolean;
   fallback: ReactNode;
-  source: ImageSourcePropType | undefined;
+  source: AvatarSource;
   tone: readonly [string, string];
 };
 
-/** The image once it loads, over the fallback until then or for good if it fails. */
-const AnimatedImage = Animated.createAnimatedComponent(Image);
-
 function Face({ animateArrival, fallback, source, tone }: FaceProps) {
   const { preferences } = useGlassTheme();
-  const [status, setStatus] = useState<"loading" | "loaded" | "failed">(
-    "loading",
-  );
-  const [arrival] = useState(() => new Animated.Value(0));
-
-  const handleLoad = useCallback(() => {
-    setStatus("loaded");
-
-    if (!animateArrival || preferences.reduceMotion) {
-      arrival.setValue(1);
-
-      return;
-    }
-
-    Animated.timing(arrival, {
-      duration: 260,
-      easing: EASE_OUT,
-      toValue: 1,
-      useNativeDriver: GLASS_MOTION.nativeDriver,
-    }).start();
-  }, [animateArrival, arrival, preferences.reduceMotion]);
-
-  const handleError = useCallback(() => setStatus("failed"), []);
+  const [failed, setFailed] = useState(false);
+  const handleError = useCallback(() => setFailed(true), []);
 
   return (
     <>
-      {status === "loaded" ? null : (
-        <View
-          style={[
-            StyleSheet.absoluteFill,
-            styles.center,
-            {
-              backgroundColor: tone[0],
-              experimental_backgroundImage: `linear-gradient(145deg, ${tone[0]}, ${tone[1]})`,
-            },
-          ]}
-        >
-          {fallback}
-        </View>
-      )}
-      {source && status !== "failed" ? (
-        <AnimatedImage
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.center,
+          {
+            backgroundColor: tone[0],
+            experimental_backgroundImage: `linear-gradient(145deg, ${tone[0]}, ${tone[1]})`,
+          },
+        ]}
+      >
+        {fallback}
+      </View>
+      {source && !failed ? (
+        <Image
           accessible={false}
           onError={handleError}
-          onLoad={animateArrival ? handleLoad : undefined}
-          onDisplay={animateArrival ? undefined : handleLoad}
           cachePolicy="memory"
-          transition={!animateArrival || preferences.reduceMotion ? 0 : 160}
+          transition={
+            animateArrival && !preferences.reduceMotion ? motion.image : 0
+          }
           contentFit="cover"
           source={source}
-          style={[
-            StyleSheet.absoluteFill,
-            {
-              opacity: arrival,
-              transform: [
-                {
-                  scale: arrival.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [1.06, 1],
-                  }),
-                },
-              ],
-            },
-          ]}
+          style={StyleSheet.absoluteFill}
         />
       ) : null}
     </>
@@ -195,7 +125,19 @@ export const GlassAvatar = forwardRef<
   GlassAvatarProps
 >(
   (
-    { alt, animateArrival = true, fallback, name, size = "md", source, src, status, style, ...rest },
+    {
+      alt,
+      animateArrival = true,
+      fallback,
+      identityKey,
+      name,
+      size = "md",
+      source,
+      src,
+      status,
+      style,
+      ...rest
+    },
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
@@ -244,7 +186,7 @@ export const GlassAvatar = forwardRef<
             animateArrival={animateArrival}
             fallback={content}
             source={image}
-            tone={name ? toneOf(name) : NAMELESS}
+            tone={avatarGradient(identityKey)}
           />
           <View
             style={[

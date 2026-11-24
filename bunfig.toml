@@ -1,9 +1,5 @@
 [fmt]
-ignorePatterns = [
-  "src/components/glassyui/",
-  "src/db/migrations/",
-  "modules/boop-marmot/sdk/",
-]
+ignorePatterns = ["src/db/migrations/", "modules/boop-marmot/sdk/"]
 
 [test]
 root = "tests"

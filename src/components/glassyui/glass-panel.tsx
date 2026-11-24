@@ -2,7 +2,7 @@ import type { ComponentRef } from "react";
 import { forwardRef } from "react";
 import type { View } from "react-native";
 import { GlassSurface, type GlassSurfaceProps } from "./glass-surface";
-import { GLASS_RADIUS } from "./lib/tokens";
+import { radius } from "@/theme/tokens";
 
 type PanelVariant = "panel" | "card" | "pill";
 
@@ -15,10 +15,10 @@ export type GlassPanelProps = Omit<GlassSurfaceProps, "elevation"> & {
 
 // Shape and spacing come first, so a consumer's style always wins.
 const VARIANT_STYLE = {
-  panel: { borderRadius: GLASS_RADIUS.lg, padding: 24 },
-  card: { borderRadius: GLASS_RADIUS.md, padding: 20 },
+  panel: { borderRadius: radius.card, padding: 24 },
+  card: { borderRadius: radius.control, padding: 20 },
   pill: {
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     paddingHorizontal: 20,
     paddingVertical: 12,
   },

@@ -1,11 +1,6 @@
 import type { ComponentProps, ReactNode } from "react";
-import {
-  Pressable,
-  StyleSheet,
-  View,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { Pressable, View, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { radius, space, useTheme } from "@/theme";
 
@@ -86,7 +81,7 @@ export function CompactAction({
       style={({ pressed }) => [
         styles.action,
         {
-          backgroundColor: prominent ? colors.outgoing : colors.surface,
+          backgroundColor: prominent ? colors.outgoing : colors.raised,
           opacity: disabled ? 0.45 : pressed ? 0.72 : 1,
         },
         iconOnly && styles.iconOnly,

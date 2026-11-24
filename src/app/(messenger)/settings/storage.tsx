@@ -10,16 +10,16 @@ import {
   Alert,
   AppState,
   Pressable,
-  StyleSheet,
   View,
   useWindowDimensions,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { PieChart } from "react-native-gifted-charts";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import {
   Icon,
   IconButton,
@@ -110,7 +110,7 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
     <View
       style={[
         styles.breakdown,
-        { backgroundColor: colors.surface, borderColor: colors.line },
+        { backgroundColor: colors.raised, borderColor: colors.line },
       ]}
     >
       <View style={styles.chart}>
@@ -128,9 +128,9 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
               radius={size}
               innerRadius={size - 16}
               initialAngle={-Math.PI / 2}
-              backgroundColor={colors.surface}
-              innerCircleColor={colors.surface}
-              strokeColor={colors.surface}
+              backgroundColor={colors.raised}
+              innerCircleColor={colors.raised}
+              strokeColor={colors.raised}
               strokeWidth={data.length > 1 ? 1.75 : 0}
               data={data.length ? data : [{ value: 1, color: colors.line }]}
               centerLabelComponent={() => (
@@ -187,7 +187,7 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
                 onPress={value ? () => toggle(key) : undefined}
                 style={({ pressed }) => [
                   styles.legendRow,
-                  (active || pressed) && { backgroundColor: colors.accentSoft },
+                  (active || pressed) && { backgroundColor: colors.selected },
                 ]}
               >
                 <View
@@ -365,8 +365,8 @@ export default function StorageSettings() {
           {t("storage:measurementError")}
         </SettingsDescription>
       )}
-      <SettingsGroup title={t("storage:network")}>
-        <SettingsRow
+      <ListGroup title={t("storage:network")}>
+        <ListRow
           title={t("storage:connection")}
           value={t(`storage:${connection}`)}
         />
@@ -399,16 +399,16 @@ export default function StorageSettings() {
             })}
           </View>
         )}
-      </SettingsGroup>
+      </ListGroup>
       {snapshot && (
         <SettingsDescription>
           {t(details ? "storage:sinceBoot" : "storage:trafficUnavailable")}
         </SettingsDescription>
       )}
       {snapshot && (
-        <SettingsGroup title={t("storage:manage")}>
+        <ListGroup title={t("storage:manage")}>
           {clearable.map((key) => (
-            <SettingsRow
+            <ListRow
               key={key}
               title={t(`storage:clear_${key}`)}
               disabled={disabled}
@@ -417,15 +417,15 @@ export default function StorageSettings() {
               onPress={() => confirmClear(key)}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {chatsEnabled && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             title={t("downloads:title")}
             onPress={() => router.push("/downloads")}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {chatsEnabled && (
         <SpeechStorage showLink onChange={() => void refresh()} />

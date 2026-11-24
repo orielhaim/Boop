@@ -7,7 +7,8 @@ import {
 } from "expo-router";
 import { lazy, Suspense, useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useScreenAnimation } from "react-native-screen-transitions";
 import { useStore } from "zustand";
@@ -127,7 +128,7 @@ export function FullPlayer() {
             </GlassSurface>
           )}
           <GlassSurface
-            style={[styles.artwork, { backgroundColor: colors.accentSoft }]}
+            style={[styles.artwork, { backgroundColor: colors.selected }]}
             elevation="none"
             preset="subtle"
             onLayout={({ nativeEvent }) =>

@@ -6,11 +6,11 @@ import {
   AccessibilityInfo,
   Platform,
   Pressable,
-  StyleSheet,
   useWindowDimensions,
   View,
   type ViewProps,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   clamp,

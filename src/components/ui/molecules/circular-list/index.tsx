@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
+import { View, type LayoutChangeEvent } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useState } from "react";
 import Animated, {
   Extrapolation,

@@ -2,7 +2,7 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { useCalendars } from "expo-localization";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
 import {
   Card,

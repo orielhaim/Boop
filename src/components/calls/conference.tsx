@@ -1,7 +1,8 @@
 import { router } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   FadeIn,
   LinearTransition,
@@ -22,6 +23,7 @@ import {
 } from "@/core/calling/conference";
 import type { VideoState } from "@/core/calling/video";
 import { toNpub } from "@/core/identity/keys";
+import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { useMarmotWindow } from "@/components/messages/marmot-window";
 import { marmot } from "@/core/marmot/native";
 import { useDirectorySearch } from "@/core/profiles/use-directory-search";
@@ -382,6 +384,7 @@ export function ConferenceTiles({
   muted?: boolean;
 }) {
   const { t } = useTranslation("calls");
+  const { identity } = useLocal();
   const visible =
     mode === "grid"
       ? members.filter((member) => !!member.camera?.url)
@@ -460,7 +463,12 @@ export function ConferenceTiles({
     <View style={mode === "grid" ? styles.videoGrid : styles.audioGrid}>
       {mode === "audio" && (
         <View style={[styles.tile, styles.audio, styles.self]}>
-          <Avatar name={t("myCallTile")} size="lg" />
+          <GlassAvatar
+            name={t("myCallTile")}
+            identityKey={identity.publicKey}
+            size="lg"
+            importantForAccessibility="no"
+          />
           <Text style={styles.name}>{t("myCallTile")}</Text>
           <Text style={styles.secondary}>
             {t(muted ? "micMuted" : "inCall")}

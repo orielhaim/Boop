@@ -1,7 +1,8 @@
 import { router } from "expo-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,

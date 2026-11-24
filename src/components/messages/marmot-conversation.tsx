@@ -56,6 +56,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
+import {
+  GlassBackdropProvider,
+  GlassBackdropTarget,
+  useGlassBackdropTarget,
+} from "@/components/glassyui/lib/glass-backdrop";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { GlassBackButton } from "@/components/ui/back-button";
 import { LoadingStatus } from "@/components/ui/loading-status";
@@ -271,15 +276,26 @@ function localUpload(uri: string, name: string, type: string): MarmotUpload {
   return { path: decodeURIComponent(uri.slice(7)), name, type };
 }
 
-export function MarmotConversationScreen({
-  id,
-  initialPanel,
-  audioMessage,
-}: {
+type MarmotConversationScreenProps = {
   id: string;
   audioMessage?: string;
   initialPanel?: "search" | "media";
-}) {
+};
+
+export function MarmotConversationScreen(props: MarmotConversationScreenProps) {
+  return (
+    <GlassBackdropProvider>
+      <MarmotConversationContent {...props} />
+    </GlassBackdropProvider>
+  );
+}
+
+function MarmotConversationContent({
+  id,
+  initialPanel,
+  audioMessage,
+}: MarmotConversationScreenProps) {
+  const blurTarget = useGlassBackdropTarget();
   const { t } = useTranslation(namespaces);
   const navigation = useNavigation();
   const {
@@ -1566,6 +1582,7 @@ export function MarmotConversationScreen({
     <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
       <GlassBackButton
         elevation="none"
+        blurTarget={focused ? (blurTarget ?? undefined) : undefined}
         dimOnPress={false}
         style={styles.headerBack}
         onPress={
@@ -1593,6 +1610,7 @@ export function MarmotConversationScreen({
           <GlassSurface
             preset="control"
             elevation="none"
+            blurTarget={focused ? (blurTarget ?? undefined) : undefined}
             tint={material.panel}
             style={[styles.headerCapsule, styles.headerIdentity]}
           >
@@ -1624,6 +1642,7 @@ export function MarmotConversationScreen({
                   <GlassAvatar
                     size="md"
                     name={title}
+                    identityKey={peer ?? id}
                     src={peer ? avatar : groupAvatar}
                   />
                 </ProfileElement>
@@ -1647,6 +1666,7 @@ export function MarmotConversationScreen({
             <GlassSurface
               preset="control"
               elevation="none"
+              blurTarget={focused ? (blurTarget ?? undefined) : undefined}
               tint={material.panel}
               style={[styles.headerCapsule, styles.headerActions]}
             >
@@ -1706,25 +1726,27 @@ export function MarmotConversationScreen({
       edges={["top", "left", "right"]}
       style={[styles.screen, { backgroundColor: kit.colors.background }]}
     >
-      <LinearGradient
-        pointerEvents="none"
-        colors={material.canvas}
-        start={{ x: 0.15, y: 0 }}
-        end={{ x: 0.85, y: 1 }}
-        style={StyleSheet.absoluteFill}
-      />
-      {!kit.reducedTransparency && (
-        <BackgroundImage
-          accessible={false}
-          source={require("../../../assets/images/chat-contours.png")}
-          resizeMode="cover"
-          style={[
-            StyleSheet.absoluteFill,
-            styles.contours,
-            { tintColor: material.contours },
-          ]}
+      <GlassBackdropTarget style={StyleSheet.absoluteFill}>
+        <LinearGradient
+          pointerEvents="none"
+          colors={material.canvas}
+          start={{ x: 0.15, y: 0 }}
+          end={{ x: 0.85, y: 1 }}
+          style={StyleSheet.absoluteFill}
         />
-      )}
+        {!kit.reducedTransparency && (
+          <BackgroundImage
+            accessible={false}
+            source={require("../../../assets/images/chat-contours.png")}
+            resizeMode="cover"
+            style={[
+              StyleSheet.absoluteFill,
+              styles.contours,
+              { tintColor: material.contours },
+            ]}
+          />
+        )}
+      </GlassBackdropTarget>
       <View
         style={[styles.chrome, { transform: [{ translateY: chromeOffset }] }]}
       >

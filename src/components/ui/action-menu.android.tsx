@@ -31,7 +31,7 @@ export function ActionMenu({
           expanded={open}
           onDismissRequest={() => setOpen(false)}
           properties={popupProperties}
-          color={colors.surface}
+          color={colors.raised}
           cornerRadius={16}
         >
           <DropdownMenu.Trigger>
@@ -61,9 +61,9 @@ export function ActionMenu({
                     shapes={{ index, count: actions.length }}
                     colors={{
                       textColor: colors.text,
-                      containerColor: colors.surface,
+                      containerColor: colors.raised,
                       selectedTextColor: colors.text,
-                      selectedContainerColor: colors.accentSoft,
+                      selectedContainerColor: colors.selected,
                     }}
                     onClick={select}
                   >

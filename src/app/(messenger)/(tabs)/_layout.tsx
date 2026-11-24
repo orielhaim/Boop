@@ -4,7 +4,8 @@ import {
   type GlassTabItem,
   TabBarMinimizeProvider,
 } from "expo-glass-tabs";
-import { router, usePathname } from "expo-router";
+import { Image } from "expo-image";
+import { router, useIsFocused, usePathname } from "expo-router";
 import { TabList, TabTrigger, useTabsWithChildren } from "expo-router/ui";
 import { DirectionalTabs } from "@/components/navigation/directional-tabs";
 import { TabFabVisibility } from "@/components/navigation/tab-fab-visibility";
@@ -16,6 +17,7 @@ import { Icon, tapFeedback } from "@/components/ui/kit";
 import { MorphFab } from "@/components/ui/molecules/morph-fab";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
+import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
@@ -23,24 +25,37 @@ import {
 import { useAccountMarmotWindow } from "@/components/messages/marmot-window";
 import { marmot } from "@/core/marmot/native";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useChatsEnabled } from "@/services/local-context";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
 import { useTheme } from "@/theme";
+import { themes } from "@/theme/tokens";
+import {
+  GlassBackdropProvider,
+  GlassBackdropTarget,
+  useGlassBackdropTarget,
+} from "@/components/glassyui/lib/glass-backdrop";
 
 export default function TabLayout() {
   return (
     <TabBarMinimizeProvider>
-      <DockNavigator />
+      <GlassBackdropProvider>
+        <DockNavigator />
+      </GlassBackdropProvider>
     </TabBarMinimizeProvider>
   );
 }
 
 function DockNavigator() {
+  const blurTarget = useGlassBackdropTarget();
+  const focused = useIsFocused();
   const bottomOffset = useTabBarBottomOffset();
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const { t, i18n } = useTranslation(namespaces);
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
+  const { identity } = useLocal();
+  const photo = useAvatar(identity.publicKey, false);
+  const dockMaterial = themes[theme].glass.dock;
   const chatsEnabled = useChatsEnabled();
   const showIdentitySheet = useIdentitySheet();
   const [chatsVisible, setChatsVisible] = useState(true);
@@ -67,7 +82,12 @@ function DockNavigator() {
     label: t("common:chats"),
     renderIcon: ({ tint, size }) => (
       <View style={styles.icon}>
-        <Icon name="chat" size={size} color={tint} />
+        <Icon
+          name="chat"
+          size={size}
+          color={tint}
+          weight={tint === colors.accent ? "fill" : "regular"}
+        />
         {badge ? (
           <View style={[styles.badge, { backgroundColor: colors.danger }]}>
             <Text style={styles.badgeText}>{badge}</Text>
@@ -80,22 +100,46 @@ function DockNavigator() {
     name: "people",
     label: t("messenger:people"),
     renderIcon: ({ tint, size }) => (
-      <Icon name="people" size={size} color={tint} />
+      <Icon
+        name="people"
+        size={size}
+        color={tint}
+        weight={tint === colors.accent ? "fill" : "regular"}
+      />
     ),
   };
   const calls: GlassTabItem = {
     name: "calls",
     label: t("navigation:calls"),
     renderIcon: ({ tint, size }) => (
-      <Icon name="phone" size={size} color={tint} />
+      <Icon
+        name="phone"
+        size={size}
+        color={tint}
+        weight={tint === colors.accent ? "fill" : "regular"}
+      />
     ),
   };
   const profile: GlassTabItem = {
     name: "profile",
     label: t("navigation:profile"),
-    renderIcon: ({ tint, size }) => (
-      <Icon name="person" size={size} color={tint} />
-    ),
+    renderIcon: ({ tint, size }) =>
+      photo ? (
+        <Image
+          accessible={false}
+          source={{ uri: photo }}
+          contentFit="cover"
+          cachePolicy="memory"
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+        />
+      ) : (
+        <Icon
+          name="person"
+          size={size}
+          color={tint}
+          weight={tint === colors.accent ? "fill" : "regular"}
+        />
+      ),
   };
   const chatsTab = { item: messages, href: "/" } as const;
   const callsTab = { item: calls, href: "/calls" } as const;
@@ -114,6 +158,14 @@ function DockNavigator() {
   const dock = (
     <TabList asChild>
       <GlassTabBar
+        blurTarget={
+          focused && !reduceTransparency ? (blurTarget ?? undefined) : undefined
+        }
+        blurTint={
+          theme === "dark"
+            ? "systemUltraThinMaterialDark"
+            : "systemUltraThinMaterial"
+        }
         bottomOffset={bottomOffset}
         hidden={keyboardVisible}
         edgeFadeColor={colors.background}
@@ -127,13 +179,12 @@ function DockNavigator() {
         theme={{
           activeTint: colors.accent,
           inactiveTint: colors.muted,
-          highlight: colors.accentSoft,
+          highlight: colors.selected,
           glassTint: reduceTransparency
-            ? colors.surface
-            : theme === "dark"
-              ? "rgba(20, 29, 51, 0.58)"
-              : "rgba(243, 246, 252, 0.66)",
-          solidFallback: colors.surface,
+            ? dockMaterial.opaque
+            : dockMaterial.tint,
+          glassRim: dockMaterial.rim,
+          solidFallback: dockMaterial.opaque,
         }}
       >
         {ordered.map(({ item, href }, index) => (
@@ -164,12 +215,14 @@ function DockNavigator() {
           <TabFabVisibility.Provider
             value={{ setChatsVisible, setPeopleVisible }}
           >
-            <DirectionalTabs
-              active={active}
-              order={ordered.map(({ item }) => item.name)}
-              style={{ direction }}
-              reduceMotion={reduceMotion}
-            />
+            <GlassBackdropTarget>
+              <DirectionalTabs
+                active={active}
+                order={ordered.map(({ item }) => item.name)}
+                style={{ direction }}
+                reduceMotion={reduceMotion}
+              />
+            </GlassBackdropTarget>
           </TabFabVisibility.Provider>
           {showFab && (
             <ScreenInsets

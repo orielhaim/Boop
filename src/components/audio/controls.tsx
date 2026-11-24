@@ -1,12 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  StyleSheet,
-  View,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { Pressable, View, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useStore } from "zustand";
 import { ActionMenu } from "@/components/ui/action-menu";

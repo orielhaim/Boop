@@ -18,16 +18,16 @@ import {
   FlatList,
   Pressable,
   ScrollView,
-  StyleSheet,
   View,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { usePerson, usePresentedName } from "@/components/people/use-person";
 import { PersonAvatar } from "@/components/people/person-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { SaveButton } from "@/components/ui/save-button";
 import {
@@ -414,7 +414,7 @@ export function NewMarmotGroup() {
                 <View
                   style={[
                     groupSetupStyles.photoPlaceholder,
-                    { backgroundColor: colors.accentSoft },
+                    { backgroundColor: colors.selected },
                   ]}
                 >
                   <Icon name="photo" size={24} />
@@ -494,7 +494,7 @@ function GroupInviteeRow({
       }}
       style={({ pressed }) => [
         groupSetupStyles.person,
-        (selected || pressed) && { backgroundColor: colors.accentSoft },
+        (selected || pressed) && { backgroundColor: colors.selected },
       ]}
     >
       <PersonAvatar
@@ -776,6 +776,7 @@ export function MarmotGroupDetailsScreen({
     : details?.name || chatHeader?.title || t("messages:marmot.group");
   const avatar = (
     <GlassAvatar
+      identityKey={peer?.id ?? id}
       name={groupName}
       src={imageUri}
       size="xl"
@@ -824,7 +825,7 @@ export function MarmotGroupDetailsScreen({
                 style={[
                   styles.photoBadge,
                   {
-                    backgroundColor: colors.accentSoft,
+                    backgroundColor: colors.selected,
                     borderColor: colors.background,
                   },
                 ]}
@@ -885,9 +886,9 @@ export function MarmotGroupDetailsScreen({
     );
 
   const roster = (
-    <SettingsGroup title={t("messages:marmot.members")}>
+    <ListGroup title={t("messages:marmot.members")}>
       {editing && details.canInvite && (
-        <SettingsRow
+        <ListRow
           title={t("messages:marmot.invite")}
           icon="addPerson"
           expanded={showInvite}
@@ -974,7 +975,7 @@ export function MarmotGroupDetailsScreen({
                 kind="caption"
                 style={[
                   styles.role,
-                  { backgroundColor: colors.accentSoft, color: colors.accent },
+                  { backgroundColor: colors.selected, color: colors.accent },
                 ]}
               >
                 {t("messages:marmot.admin")}
@@ -1015,7 +1016,7 @@ export function MarmotGroupDetailsScreen({
           </View>
         );
       })}
-    </SettingsGroup>
+    </ListGroup>
   );
 
   const editMedia =
@@ -1028,7 +1029,7 @@ export function MarmotGroupDetailsScreen({
   const connections = (
     <>
       {details.relays.length > 0 && (
-        <SettingsRow
+        <ListRow
           title={t("messages:marmot.relayList")}
           icon="connection"
           value={String(details.relays.length)}
@@ -1047,7 +1048,7 @@ export function MarmotGroupDetailsScreen({
         <EndpointList urls={details.relays} />
       )}
       {(!editing || details.mediaV2) && (
-        <SettingsRow
+        <ListRow
           title={t("messages:marmot.groupMediaServers")}
           icon="storage"
           detail={
@@ -1263,7 +1264,7 @@ export function MarmotGroupDetailsScreen({
       {editing ? (
         <>
           {isGroup && (
-            <SettingsGroup>
+            <ListGroup>
               <View style={styles.profileFields}>
                 <View style={styles.editorIdentity}>
                   <EditableAvatar
@@ -1280,6 +1281,7 @@ export function MarmotGroupDetailsScreen({
                     }
                   >
                     <GlassAvatar
+                      identityKey={peer?.id ?? id}
                       name={editedName || groupName}
                       src={imageUri}
                       size="lg"
@@ -1320,12 +1322,12 @@ export function MarmotGroupDetailsScreen({
                   editable={!busy}
                 />
               </View>
-            </SettingsGroup>
+            </ListGroup>
           )}
           {notice}
           {isGroup && (
-            <SettingsGroup>
-              <SettingsRow
+            <ListGroup>
+              <ListRow
                 title={t("messages:marmot.manageMembers")}
                 icon="person"
                 value={String(details.members.length)}
@@ -1339,17 +1341,17 @@ export function MarmotGroupDetailsScreen({
                   />
                 }
               />
-            </SettingsGroup>
+            </ListGroup>
           )}
           {isGroup && showMembers && roster}
           {(details.relays.length > 0 || details.mediaV2) && (
-            <SettingsGroup title={t("messages:marmot.groupConnections")}>
+            <ListGroup title={t("messages:marmot.groupConnections")}>
               {connections}
-            </SettingsGroup>
+            </ListGroup>
           )}
           {details.canEnableDisbanding && (
-            <SettingsGroup title={t("messages:marmot.groupLifecycle")}>
-              <SettingsRow
+            <ListGroup title={t("messages:marmot.groupLifecycle")}>
+              <ListRow
                 title={t("messages:marmot.enableDisbanding")}
                 disabled={busy}
                 onPress={() =>
@@ -1358,7 +1360,7 @@ export function MarmotGroupDetailsScreen({
                   )
                 }
               />
-            </SettingsGroup>
+            </ListGroup>
           )}
           {details.canDisband && (
             <Action
@@ -1396,11 +1398,11 @@ export function MarmotGroupDetailsScreen({
             ))}
           {isGroup && roster}
           {notice}
-          <SettingsGroup
+          <ListGroup
             title={isGroup ? t("messages:marmot.groupInformation") : undefined}
           >
             {details.createdAt ? (
-              <SettingsRow
+              <ListRow
                 title={t("messages:marmot.createdAt", {
                   date: new Date(
                     details.createdAt * 1_000,
@@ -1409,11 +1411,11 @@ export function MarmotGroupDetailsScreen({
               />
             ) : null}
             {connections}
-          </SettingsGroup>
+          </ListGroup>
           {showActions && (
-            <SettingsGroup title={t("messages:marmot.conversationActions")}>
+            <ListGroup title={t("messages:marmot.conversationActions")}>
               {member && showMembershipActions && (
-                <SettingsRow
+                <ListRow
                   title={t(
                     details.archived
                       ? "messages:marmot.unarchiveConversation"
@@ -1430,7 +1432,7 @@ export function MarmotGroupDetailsScreen({
                 />
               )}
               {details.canCancelLeave && (
-                <SettingsRow
+                <ListRow
                   title={t("messages:marmot.cancelLeave")}
                   disabled={busy}
                   onPress={() =>
@@ -1441,7 +1443,7 @@ export function MarmotGroupDetailsScreen({
                 />
               )}
               {details.canLeave && showMembershipActions && (
-                <SettingsRow
+                <ListRow
                   title={t("messages:marmot.leave")}
                   disabled={busy}
                   onPress={() =>
@@ -1454,7 +1456,7 @@ export function MarmotGroupDetailsScreen({
                 />
               )}
               {canDeleteLocal && (
-                <SettingsRow
+                <ListRow
                   title={t("messages:marmot.forgetGroup")}
                   disabled={busy || details.disbanding}
                   onPress={() =>
@@ -1479,7 +1481,7 @@ export function MarmotGroupDetailsScreen({
                   }
                 />
               )}
-            </SettingsGroup>
+            </ListGroup>
           )}
         </>
       )}
@@ -1534,7 +1536,7 @@ function GroupProfileHeader({
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const surface = { backgroundColor: colors.accentSoft };
+  const surface = { backgroundColor: colors.selected };
   return (
     <View style={styles.profileHeader}>
       <View style={styles.profileAvatar}>

@@ -1,9 +1,10 @@
 import type { ComponentProps } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
-import { space, useTheme } from "@/theme";
-import { SettingsRow } from "./group";
+import { useTheme } from "@/theme";
+import { ListRow } from "@/components/ui/list-group";
 
 export function SettingsMenuRow<Value extends string | number>({
   title,
@@ -29,7 +30,7 @@ export function SettingsMenuRow<Value extends string | number>({
   const { colors } = useTheme();
   const label = options.find((option) => option.value === value)?.label;
   return (
-    <SettingsRow
+    <ListRow
       title={title}
       detail={detail}
       icon={icon}
@@ -71,14 +72,14 @@ export function SettingsMenuRow<Value extends string | number>({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = StyleSheet.create((theme) => ({
   menu: { maxWidth: "48%", flexShrink: 1 },
   trigger: {
     minHeight: 44,
     minWidth: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: space.xs,
+    gap: theme.space.xs,
   },
-  label: { flexShrink: 1 },
-});
+  label: { ...theme.type.control, flexShrink: 1 },
+}));

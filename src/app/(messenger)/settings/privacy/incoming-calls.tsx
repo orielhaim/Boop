@@ -4,15 +4,19 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { router } from "expo-router";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { Alert } from "react-native";
+import { SettingsMenuRow } from "@/components/settings/menu-row";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
+import { usePrivacy } from "@/components/ui/privacy-actions";
 import { contacts } from "@/db/schema";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 
-export default function ContactPreferences() {
+export default function IncomingCalls() {
   const { t } = useTranslation(namespaces);
   const { db } = useLocal();
+  const privacy = usePrivacy();
   const query = useMemo(
     () =>
       db
@@ -25,12 +29,30 @@ export default function ContactPreferences() {
   const { data } = useLiveQuery(query, [query]);
   return (
     <Screen
-      navigationHeader={<ScreenHeader title={t("security:incomingVideo")} />}
+      navigationHeader={<ScreenHeader title={t("security:incomingCalls")} />}
     >
-      <SettingsGroup title={t("security:autoAllowed")}>
+      <ListGroup>
+        <SettingsMenuRow
+          title={t("security:whoCanCall")}
+          value={privacy.preferences().calls}
+          options={[
+            { value: "everyone", label: t("security:everyone") },
+            { value: "contacts", label: t("security:contactsOnly") },
+            { value: "nobody", label: t("security:nobody") },
+          ]}
+          onChange={(value) => {
+            try {
+              privacy.set("calls", value);
+            } catch {
+              Alert.alert(t("security:privacyWriteFailed"));
+            }
+          }}
+        />
+      </ListGroup>
+      <ListGroup title={t("security:videoAllowlist")}>
         {data.length ? (
           data.map((contact) => (
-            <SettingsRow
+            <ListRow
               key={contact.publicKey}
               title={contact.name}
               icon="person"
@@ -43,9 +65,9 @@ export default function ContactPreferences() {
             />
           ))
         ) : (
-          <SettingsRow title={t("security:noApproved")} />
+          <ListRow title={t("security:noApproved")} />
         )}
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

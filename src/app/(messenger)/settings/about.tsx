@@ -3,7 +3,7 @@ import Constants from "expo-constants";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink, Screen, Section } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
@@ -19,20 +19,20 @@ export default function About() {
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:about")} />}>
       <BoopLogo size={56} />
-      <SettingsGroup title="Boop">
-        <SettingsRow
+      <ListGroup title="Boop">
+        <ListRow
           title={t("settings:version")}
           value={config?.version ?? t("common:unknown")}
           icon="info"
         />
-        <SettingsRow
+        <ListRow
           title={t("settings:build")}
           value={String(
             config?.ios?.buildNumber ?? config?.android?.versionCode ?? 1,
           )}
           icon="settings"
         />
-      </SettingsGroup>
+      </ListGroup>
 
       {__DEV__ ? (
         <>

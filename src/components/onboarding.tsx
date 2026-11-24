@@ -18,10 +18,10 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   FadeIn,
@@ -118,7 +118,6 @@ function WelcomeForm({
   const sidePadding = 24 + Math.max(insets.left, insets.right);
   const active = useOpeningForeground();
   const [mode, setMode] = useState<Mode>(data.account ? "signIn" : "welcome");
-  const [skip, setSkip] = useState(false);
   const [introduced, setIntroduced] = useState(false);
   const [first] = useState(
     () => !initializing && preference(data.db, introKey) !== "yes",
@@ -160,19 +159,15 @@ function WelcomeForm({
     if (!active || !measured || introduced || initializing) return;
     const duration = reduceMotion
       ? openingMotion.reduced
-      : skip
-        ? 240
-        : first
-          ? openingMotion.intro
-          : 720;
+      : first
+        ? openingMotion.intro
+        : 720;
     intro.set(
       withTiming(
         1,
         {
-          duration: skip
-            ? duration
-            : Math.max(90, duration * (1 - intro.get())),
-          easing: first && !skip ? openingMotion.cinema : openingMotion.glide,
+          duration: Math.max(90, duration * (1 - intro.get())),
+          easing: first ? openingMotion.cinema : openingMotion.glide,
         },
         (finished) => {
           if (finished) scheduleOnRN(setIntroduced, true);
@@ -180,16 +175,7 @@ function WelcomeForm({
       ),
     );
     return () => cancelAnimation(intro);
-  }, [
-    active,
-    first,
-    introduced,
-    initializing,
-    intro,
-    measured,
-    reduceMotion,
-    skip,
-  ]);
+  }, [active, first, introduced, initializing, intro, measured, reduceMotion]);
 
   useEffect(() => {
     if (!introduced || !first || initializing) return;
@@ -557,9 +543,7 @@ function WelcomeForm({
                 style={({ pressed }) => [
                   styles.back,
                   {
-                    backgroundColor: pressed
-                      ? colors.accentSoft
-                      : colors.surface,
+                    backgroundColor: pressed ? colors.selected : colors.raised,
                     borderColor: colors.line,
                   },
                 ]}
@@ -617,7 +601,7 @@ function WelcomeForm({
                         styles.addressPanel,
                         {
                           borderColor: colors.line,
-                          backgroundColor: colors.surface,
+                          backgroundColor: colors.raised,
                         },
                       ]}
                     >
@@ -719,17 +703,6 @@ function WelcomeForm({
           </Animated.ScrollView>
         </KeyboardAvoidingView>
       ) : null}
-      {first && !introduced && !skip && !reduceMotion && (
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setSkip(true)}
-          style={[styles.skip, { top: insets.top + 8 }]}
-        >
-          <Text style={[styles.label, { color: colors.muted }]}>
-            {t("messenger:skipIntro")}
-          </Text>
-        </Pressable>
-      )}
       {hold && (
         <Animated.View
           accessible
@@ -770,14 +743,6 @@ const styles = StyleSheet.create({
   },
   actions: { width: "100%", maxWidth: 440, alignSelf: "center", gap: 10 },
   welcomeActions: { marginTop: 10 },
-  skip: {
-    position: "absolute",
-    end: 16,
-    minHeight: 48,
-    paddingHorizontal: 12,
-    justifyContent: "center",
-  },
-  label: { fontSize: 14, fontWeight: "600" },
   formScroll: { flexGrow: 1 },
   formFrame: { flexGrow: 1, maxWidth: 440, width: "100%", alignSelf: "center" },
   back: {

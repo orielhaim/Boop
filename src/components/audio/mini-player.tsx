@@ -8,7 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { Pressable, useWindowDimensions, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -284,7 +285,7 @@ function MiniPlayer({
         </Pressable>
         {track.voice && <SpeedControl />}
         <IconButton
-          icon="hangup"
+          icon="close"
           label={t("stop")}
           onPress={audio.player.stop}
           tone="plain"

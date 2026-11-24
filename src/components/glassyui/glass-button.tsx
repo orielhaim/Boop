@@ -1,5 +1,5 @@
-import type { ComponentRef } from "react";
 import {
+  type ComponentRef,
   Children,
   forwardRef,
   isValidElement,
@@ -11,7 +11,6 @@ import {
   Animated,
   Easing,
   Pressable,
-  StyleSheet,
   Text,
   View,
   type GestureResponderEvent,
@@ -20,9 +19,11 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useGlassTheme } from "./glass-provider";
 import { GlassSurface } from "./glass-surface";
-import { GLASS_MOTION, GLASS_RADIUS } from "./lib/tokens";
+import { radius } from "@/theme/tokens";
+import { GLASS_MOTION } from "./lib/tokens";
 
 export type ButtonVariant = "primary" | "prominent" | "ghost" | "soft";
 
@@ -253,17 +254,22 @@ const styles = StyleSheet.create({
   body: {
     alignItems: "center",
     borderCurve: "continuous",
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     flexDirection: "row",
     justifyContent: "center",
     paddingVertical: 6,
   },
   clip: {
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     overflow: "hidden",
     pointerEvents: "none",
   },
   disabled: { opacity: 0.45 },
-  label: { flexShrink: 1, fontWeight: "600", letterSpacing: -0.1, textAlign: "center" },
+  label: {
+    flexShrink: 1,
+    fontWeight: "600",
+    letterSpacing: -0.1,
+    textAlign: "center",
+  },
   root: { alignSelf: "flex-start", maxWidth: "100%" },
 });

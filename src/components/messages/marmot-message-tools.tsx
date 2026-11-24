@@ -3,7 +3,8 @@ import { randomUUID } from "expo-crypto";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, ScrollView, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Action, Ink, Row } from "@/components/ui/kit";
 import {
   marmot,

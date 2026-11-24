@@ -9,14 +9,13 @@ import { useColorScheme } from "react-native";
 import { ThemeSwitcher } from "@/components/ui/theme-switch";
 import type { ThemeChoice } from "@/stores/preferences";
 import {
-  type GlassyUiPreferences,
-  type GlassyUiTheme,
+  type SystemAccessibility,
   readSystemAccessibility,
   subscribeToSystemAccessibility,
 } from "./lib/preferences";
-import { GLASS_COLORS } from "./lib/tokens";
+import { themes, type ThemeName } from "@/theme/tokens";
 
-type Preferences = Required<GlassyUiPreferences>;
+type Preferences = SystemAccessibility & { theme: ThemeName };
 const PreferencesContext = createContext<Preferences | null>(null);
 
 export function GlassProvider({
@@ -34,16 +33,18 @@ export function GlassProvider({
     readSystemAccessibility,
     readSystemAccessibility,
   );
-  const preferences = useMemo<Record<GlassyUiTheme, Preferences>>(
+  const preferences = useMemo<Record<ThemeName, Preferences>>(
     () => ({
-      light: { theme: "light", mode: "clear", ...accessibility },
-      dark: { theme: "dark", mode: "clear", ...accessibility },
+      light: { theme: "light", ...accessibility },
+      dark: { theme: "dark", ...accessibility },
     }),
     [accessibility],
   );
   return (
     <ThemeSwitcher
-      theme={choice === "system" ? (scheme === "dark" ? "dark" : "light") : choice}
+      theme={
+        choice === "system" ? (scheme === "dark" ? "dark" : "light") : choice
+      }
       choice={choice}
       enabled={animateThemeChanges && !accessibility.reduceMotion}
     >
@@ -64,5 +65,5 @@ export function usePreferences() {
 
 export function useGlassTheme() {
   const preferences = usePreferences();
-  return { colors: GLASS_COLORS[preferences.theme], preferences };
+  return { colors: themes[preferences.theme].glass, preferences };
 }

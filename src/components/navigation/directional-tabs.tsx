@@ -1,6 +1,7 @@
 import { TabSlot, type TabSlotProps } from "expo-router/ui";
 import { useCallback, useEffect, useLayoutEffect } from "react";
-import { AppState, StyleSheet, type ViewStyle } from "react-native";
+import { AppState, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   type SharedValue,
@@ -9,7 +10,7 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 import { scheduleOnUI } from "react-native-worklets";
-import { travelSpring } from "./motion";
+import { motion } from "@/theme/tokens";
 import { nextTabTravel, type TabFrame } from "./tab-travel";
 
 export function DirectionalTabs({
@@ -43,7 +44,7 @@ export function DirectionalTabs({
       cancelAnimation(progress);
       frame.set(travel.frame);
       progress.set(travel.kind === "settle" ? 1 : travel.start);
-      if (travel.kind === "slide") progress.set(withSpring(1, travelSpring));
+      if (travel.kind === "slide") progress.set(withSpring(1, motion.travel));
     });
   }, [active, frame, order, progress, reduceMotion]);
 

@@ -10,9 +10,9 @@ import {
 } from "@/components/glassyui/glass-segmented-control";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { useTranslationLanguages } from "@/components/settings/translation-languages";
 import { Action, Screen, Search } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
@@ -67,7 +67,7 @@ export default function TranslationModels() {
   function row({ code, name }: { code: string; name: string }) {
     const ready = downloaded?.includes(code);
     return (
-      <SettingsRow
+      <ListRow
         key={code}
         title={name}
         detail={t(
@@ -170,19 +170,19 @@ export default function TranslationModels() {
           </SettingsDescription>
         )}
       {filter === "all" && !!requested?.length && (
-        <SettingsGroup title={t("translation:required")}>
+        <ListGroup title={t("translation:required")}>
           {requested.map(row)}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {!!installed?.length && (
-        <SettingsGroup title={t("translation:downloaded")}>
+        <ListGroup title={t("translation:downloaded")}>
           {installed.map(row)}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {filter === "all" && !!others?.length && (
-        <SettingsGroup title={t("translation:available")}>
+        <ListGroup title={t("translation:available")}>
           {others.map(row)}
-        </SettingsGroup>
+        </ListGroup>
       )}
     </Screen>
   );

@@ -8,11 +8,11 @@ import { useTranslation } from "react-i18next";
 import {
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   useWindowDimensions,
   View,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   FadeIn,
@@ -40,6 +40,7 @@ import { namespaces } from "@/i18n";
 import { formatDuration, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, spring, useTheme } from "@/theme";
+import { callMaterial } from "@/theme/tokens";
 import {
   ConferenceSheet,
   ConferenceTiles,
@@ -209,7 +210,7 @@ export function CallScreen({
         />
       ) : null}
       <LinearGradient
-        colors={["#1A2649E6", "#222C56EB", "#0B1326FA"]}
+        colors={callMaterial.stage}
         locations={[0, 0.48, 1]}
         style={StyleSheet.absoluteFill}
       />
@@ -248,7 +249,7 @@ export function CallScreen({
             <View style={styles.groupHeader}>
               <GlassSurface
                 preset="control"
-                tint="#1B2335"
+                tint={callMaterial.panel}
                 style={styles.videoHeader}
               >
                 <Control
@@ -290,7 +291,7 @@ export function CallScreen({
           controls={
             <GlassSurface
               preset="control"
-              tint="#1B2335"
+              tint={callMaterial.panel}
               style={styles.videoControls}
             >
               <Control
@@ -321,7 +322,7 @@ export function CallScreen({
                 icon="hangup"
                 label={t("calls:end")}
                 compact
-                tint="#BA304B"
+                tint={callMaterial.end}
                 onPress={end}
               />
             </GlassSurface>
@@ -375,7 +376,7 @@ export function CallScreen({
                     ]}
                   >
                     <LinearGradient
-                      colors={["#6178BC", "#3F4597", "#2F315A"]}
+                      colors={callMaterial.voiceMark}
                       style={StyleSheet.absoluteFill}
                     />
                     <Text
@@ -497,7 +498,7 @@ export function CallScreen({
                     <Control
                       icon="hangup"
                       label={t("calls:decline")}
-                      tint="#BA304B"
+                      tint={callMaterial.end}
                       onPress={() => {
                         calling.end();
                         close();
@@ -506,13 +507,13 @@ export function CallScreen({
                     <Control
                       icon="phone"
                       label={t("calls:answer")}
-                      tint="#087959"
+                      tint={callMaterial.answer}
                       onPress={calling.accept}
                     />
                   </>
                 ) : call.phase === "ended" ? (
                   <Control
-                    icon="hangup"
+                    icon="close"
                     label={t("common:done")}
                     onPress={close}
                   />
@@ -521,7 +522,7 @@ export function CallScreen({
                     icon="hangup"
                     label={t("calls:end")}
                     iconOnly
-                    tint="#BA304B"
+                    tint={callMaterial.end}
                     onPress={end}
                   />
                 ) : null}
@@ -676,14 +677,14 @@ function Control({
       <GlassSurface
         preset="control"
         elevation="none"
-        tint={tint ?? (selected ? "#3E55A1" : "#26345D")}
+        tint={tint ?? (selected ? callMaterial.selected : callMaterial.control)}
         style={[
           styles.button,
           tint && styles.strong,
           compact && (tint ? styles.videoEnd : styles.compact),
         ]}
       >
-        <Icon name={icon} size={tint ? 29 : 23} color="#F9FAFF" />
+        <Icon name={icon} size={tint ? 29 : 23} color={callMaterial.ink} />
       </GlassSurface>
       {!compact && !iconOnly && (
         <Text numberOfLines={1} style={styles.controlLabel}>
@@ -704,7 +705,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     borderRadius: 300,
     borderWidth: 1,
-    borderColor: "#B0BFFF13",
+    borderColor: callMaterial.rim,
   },
   top: {
     flexDirection: "row",
@@ -716,7 +717,7 @@ const styles = StyleSheet.create({
   topSpacer: { flex: 1 },
   groupHeader: { width: "100%", gap: 2 },
   groupName: {
-    color: "#F5F7FF",
+    color: callMaterial.ink,
     fontSize: 31,
     fontWeight: "700",
     textAlign: "center",
@@ -739,12 +740,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 7,
     borderRadius: 999,
-    borderColor: "#D6DEFF60",
-    backgroundColor: "#9DB4FF12",
+    borderColor: callMaterial.haloStroke,
+    backgroundColor: callMaterial.halo,
   },
   pulse: {
     borderWidth: 1,
-    borderColor: "#ACC0FF",
+    borderColor: callMaterial.focus,
     borderRadius: 999,
   },
   portrait: {
@@ -753,9 +754,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  initials: { color: "#F3F5FF", fontWeight: "600" },
+  initials: { color: callMaterial.ink, fontWeight: "600" },
   name: {
-    color: "#F6F8FF",
+    color: callMaterial.ink,
     fontSize: 36,
     fontWeight: "700",
     textAlign: "center",
@@ -768,15 +769,15 @@ const styles = StyleSheet.create({
     borderRadius: 99,
     backgroundColor: "#B7C4FB",
   },
-  status: { color: "#D1DBFC", fontSize: 16, fontWeight: "500" },
+  status: { color: callMaterial.muted, fontSize: 16, fontWeight: "500" },
   reason: {
-    color: "#D1DBFC",
+    color: callMaterial.muted,
     fontSize: 14,
     textAlign: "center",
     maxWidth: 310,
   },
   timer: {
-    color: "#F3F6FF",
+    color: callMaterial.ink,
     fontSize: 28,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
@@ -790,7 +791,7 @@ const styles = StyleSheet.create({
   },
   primary: { flexDirection: "row", justifyContent: "center", gap: 46 },
   control: { alignItems: "center", gap: space.sm },
-  controlLabel: { color: "#E5EAFF", fontSize: 13, fontWeight: "500" },
+  controlLabel: { color: callMaterial.muted, fontSize: 13, fontWeight: "500" },
   button: {
     width: 56,
     height: 56,
@@ -817,11 +818,11 @@ const styles = StyleSheet.create({
     paddingEnd: 14,
   },
   videoIdentity: { flex: 1 },
-  videoName: { color: "#F6F8FF", fontSize: 16, fontWeight: "700" },
-  videoCaption: { color: "#D6DEF4", fontSize: 12 },
+  videoName: { color: callMaterial.ink, fontSize: 16, fontWeight: "700" },
+  videoCaption: { color: callMaterial.muted, fontSize: 12 },
   videoTimer: { fontSize: 16 },
   videoNotice: {
-    color: "#FFF",
+    color: callMaterial.ink,
     backgroundColor: "#151D31EE",
     borderRadius: 22,
     overflow: "hidden",

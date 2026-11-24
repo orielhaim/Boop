@@ -1,10 +1,7 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  SettingsDescription,
-  SettingsGroup,
-} from "@/components/settings/group";
+import { SettingsDescription, ListGroup } from "@/components/ui/list-group";
 import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-policy-row";
 import { Action, Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
@@ -20,7 +17,7 @@ export default function ProfilePhotoPrivacy() {
     <Screen
       navigationHeader={<ScreenHeader title={t("settings:profilePhotos")} />}
     >
-      <SettingsGroup>
+      <ListGroup>
         <ProfilePhotoPolicyRow
           title={t("settings:photoPolicy")}
           value={privacy.photoPolicy()}
@@ -33,7 +30,7 @@ export default function ProfilePhotoPrivacy() {
             }
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
       <SettingsDescription>{t("settings:photoPolicyHelp")}</SettingsDescription>
       <Action
         variant="soft"

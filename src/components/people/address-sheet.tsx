@@ -1,7 +1,8 @@
 import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Share, StyleSheet, View } from "react-native";
+import { Share, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { AnimatedQRCode } from "react-native-animated-codes";
 import { GlassSheetTitle } from "@/components/glassyui/glass-sheet";
 import { Ink } from "@/components/ui/kit";

@@ -1,6 +1,7 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useState } from "react";
-import { StyleSheet, View, type ViewStyle } from "react-native";
+import { View, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   Easing,

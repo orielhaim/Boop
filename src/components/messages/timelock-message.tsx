@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Icon } from "@/components/ui/kit";
 import type { UnlockFailure } from "@/core/messaging/special-messages/timelock";
 import { resolveLanguage } from "@/i18n";

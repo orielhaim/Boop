@@ -1,5 +1,5 @@
-import type { ComponentRef } from "react";
 import {
+  type ComponentRef,
   Children,
   createContext,
   forwardRef,
@@ -14,7 +14,6 @@ import {
 import {
   Animated,
   Pressable,
-  StyleSheet,
   Text,
   View,
   type LayoutChangeEvent,
@@ -24,9 +23,10 @@ import {
   type ViewProps,
   type ViewStyle,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useGlassTheme } from "./glass-provider";
 import { GlassSurface } from "./glass-surface";
-import { GLASS_RADIUS } from "./lib/tokens";
+import { radius } from "@/theme/tokens";
 import { useControllableState } from "./lib/use-controllable-state";
 import { useSelectionIndicator } from "./lib/use-selection-indicator";
 
@@ -125,7 +125,14 @@ export const GlassSegmentedControl = forwardRef<
     );
 
     const context = useMemo(
-      () => ({ disabled, forgetItem, onItemLayout, select, selected, requested }),
+      () => ({
+        disabled,
+        forgetItem,
+        onItemLayout,
+        select,
+        selected,
+        requested,
+      }),
       [disabled, forgetItem, onItemLayout, requested, select, selected],
     );
 
@@ -250,7 +257,7 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.45 },
   indicator: {
     borderCurve: "continuous",
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     position: "absolute",
     start: 0,
   },
@@ -258,7 +265,7 @@ const styles = StyleSheet.create({
   item: {
     alignItems: "center",
     borderCurve: "continuous",
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     flex: 1,
     flexDirection: "row",
     gap: 6,
@@ -269,10 +276,10 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   label: { fontSize: 14, fontWeight: "500", lineHeight: 20 },
-  round: { borderCurve: "continuous", borderRadius: GLASS_RADIUS.capsule },
+  round: { borderCurve: "continuous", borderRadius: radius.round },
   track: {
     alignSelf: "stretch",
-    borderRadius: GLASS_RADIUS.capsule,
+    borderRadius: radius.round,
     flexDirection: "row",
     padding: INSET,
   },

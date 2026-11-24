@@ -1,4 +1,5 @@
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   GlassAvatar,
   type GlassAvatarSize,
@@ -42,6 +43,7 @@ export function PersonAvatar({
   return (
     <GlassAvatar
       name={name}
+      identityKey={publicKey}
       src={photo}
       size={size}
       fallback={pattern}

@@ -1,11 +1,11 @@
-import type { ComponentRef } from "react";
+import type { ComponentRef, RefObject } from "react";
 import { BlurView } from "expo-blur";
 import { GlassView } from "expo-glass-effect";
 import { Children, forwardRef } from "react";
-import { StyleSheet, Text, View, type ViewProps } from "react-native";
+import { Platform, StyleSheet, Text, View, type ViewProps } from "react-native";
 import { useGlassTheme } from "./glass-provider";
 import { resolveGlassMaterial } from "./lib/material";
-import { GLASS_RADIUS } from "./lib/tokens";
+import { radius } from "@/theme/tokens";
 
 export type SurfacePreset =
   "subtle" | "standard" | "prominent" | "control" | "overlay";
@@ -27,6 +27,10 @@ export type GlassSurfaceProps = ViewProps & {
    * does over a white backdrop.
    */
   tint?: string;
+  /** Android blur samples this separate backdrop view. */
+  blurTarget?: RefObject<ComponentRef<typeof View> | null>;
+  /** Keep the glass tint and rim on Android controls without a blur target. */
+  translucentFallback?: boolean;
 };
 
 // How strongly each preset blurs where the system's glass is unavailable. On the web these
@@ -48,16 +52,33 @@ export const GlassSurface = forwardRef<
   GlassSurfaceProps
 >(
   (
-    { children, elevation = "base", preset = "standard", style, tint, ...rest },
+    {
+      children,
+      blurTarget,
+      elevation = "base",
+      preset = "standard",
+      style,
+      tint,
+      translucentFallback = false,
+      ...rest
+    },
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
-    const material = resolveGlassMaterial(preferences.reduceTransparency);
-    const radius = StyleSheet.flatten(style)?.borderRadius ?? GLASS_RADIUS.md;
+    const material = resolveGlassMaterial(
+      preferences.reduceTransparency,
+      Boolean(blurTarget),
+      translucentFallback,
+    );
+    const borderRadius =
+      StyleSheet.flatten(style)?.borderRadius ?? radius.control;
     const corners = {
-      borderRadius: radius,
+      borderRadius,
       borderCurve: "continuous",
     } as const;
+    const lens = translucentFallback ? colors.lens : undefined;
+    const rim = lens?.rim ?? colors.rim;
+    const rimHighlight = lens?.glint ?? colors.rimHighlight;
 
     return (
       <View
@@ -77,15 +98,10 @@ export const GlassSurface = forwardRef<
             style={[StyleSheet.absoluteFill, corners, styles.layer]}
             colorScheme={preferences.theme}
             glassEffectStyle={preset === "subtle" ? "clear" : "regular"}
-            tintColor={
-              tint ??
-              (preferences.mode === "tinted"
-                ? colors.glassFill.tinted
-                : undefined)
-            }
+            tintColor={tint}
           />
         ) : null}
-        {material === "blur" ? (
+        {material === "blur" || material === "tinted" ? (
           <View
             style={[
               StyleSheet.absoluteFill,
@@ -94,16 +110,23 @@ export const GlassSurface = forwardRef<
               styles.clip,
             ]}
           >
-            <BlurView
-              style={StyleSheet.absoluteFill}
-              intensity={BLUR_INTENSITY[preset]}
-              tint={
-                preferences.theme === "dark"
-                  ? "systemUltraThinMaterialDark"
-                  : "systemUltraThinMaterialLight"
-              }
-              blurMethod="none"
-            />
+            {material === "blur" && (
+              <BlurView
+                style={StyleSheet.absoluteFill}
+                intensity={BLUR_INTENSITY[preset]}
+                tint={
+                  preferences.theme === "dark"
+                    ? "systemUltraThinMaterialDark"
+                    : "systemUltraThinMaterialLight"
+                }
+                blurTarget={Platform.OS === "android" ? blurTarget : undefined}
+                blurMethod={
+                  Platform.OS === "android"
+                    ? "dimezisBlurViewSdk31Plus"
+                    : undefined
+                }
+              />
+            )}
             <View
               style={[
                 StyleSheet.absoluteFill,
@@ -111,9 +134,12 @@ export const GlassSurface = forwardRef<
                   ? { backgroundColor: tint, opacity: 0.92 }
                   : {
                       backgroundColor:
-                        preset === "overlay"
+                        lens?.frost ??
+                        (preset === "overlay"
                           ? colors.overlaySurface
-                          : colors.glassFill[preferences.mode],
+                          : preset === "prominent"
+                            ? colors.glassFill.tinted
+                            : colors.glassFill.clear),
                     },
               ]}
             />
@@ -122,7 +148,7 @@ export const GlassSurface = forwardRef<
                 StyleSheet.absoluteFill,
                 corners,
                 {
-                  boxShadow: `inset 0px 1px 0px ${colors.rimHighlight}, inset 0px 0px 0px 1px ${colors.rim}`,
+                  boxShadow: `inset 0px 1px 0px ${rimHighlight}, inset 0px 0px 0px 1px ${rim}`,
                 },
               ]}
             />

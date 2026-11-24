@@ -5,7 +5,8 @@ import {
   useTheme,
 } from "@kesha-antonov/react-native-chat";
 import type { ComponentProps, ReactNode } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   type Content,
   type ContentNode,

@@ -14,7 +14,8 @@ import {
 } from "expo-image-picker";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import { useWindowDimensions, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
@@ -321,7 +322,7 @@ function CropPhoto({ source, wide = false, onSave, onCancel }: CropProps) {
               width: size,
               height: cropHeight,
               borderRadius: wide ? space.md : size / 2,
-              backgroundColor: colors.surface,
+              backgroundColor: colors.raised,
             },
           ]}
         >
