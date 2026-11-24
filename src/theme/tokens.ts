@@ -178,6 +178,17 @@ function buildTheme(name: ThemeName, colors: typeof lightColors) {
     motion,
     conversation,
     glass: {
+      dock: dark
+        ? {
+            tint: "rgba(30, 52, 79, 0.30)",
+            rim: "rgba(180, 205, 240, 0.21)",
+            opaque: "#242F40",
+          }
+        : {
+            tint: "rgba(212, 226, 247, 0.52)",
+            rim: "rgba(63, 90, 133, 0.23)",
+            opaque: "#E0E8F4",
+          },
       accent: colors.outgoing,
       accentForeground: colors.outgoingInk,
       border: colors.line,

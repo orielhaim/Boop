@@ -1,11 +1,12 @@
 diff --git a/build/glass-tab-bar.d.ts b/build/glass-tab-bar.d.ts
-index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..1391ecf25d4e6fbb92d0ced131604011ec6bdac6 100644
+index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..ab500af2c3583dfe0c24e075a96115c5da6acfec 100644
 --- a/build/glass-tab-bar.d.ts
 +++ b/build/glass-tab-bar.d.ts
-@@ -1,6 +1,9 @@
+@@ -1,6 +1,10 @@
  import { SymbolViewProps } from 'expo-symbols';
 -import { type ReactNode } from 'react';
 +import { type ComponentRef, type RefObject, type ReactNode } from 'react';
++import { type BlurTint } from 'expo-blur';
 +import { View } from 'react-native';
  import type { TabListProps, TabTriggerSlotProps } from 'expo-router/ui';
 +export declare const EXPANDED_HEIGHT = 58;
@@ -13,7 +14,16 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..1391ecf25d4e6fbb92d0ced131604011
  export type GlassTabBarTheme = {
      activeTint: string;
      inactiveTint: string;
-@@ -28,16 +31,22 @@ export type GlassTabBarProps = TabListProps & {
+@@ -8,6 +12,8 @@ export type GlassTabBarTheme = {
+     highlight: string;
+     /** Dark tint layered over the liquid glass. */
+     glassTint: string;
++    /** Optional hairline around the Android blur surface. */
++    glassRim?: string;
+     /** Opaque-ish background used when liquid glass is unavailable. */
+     solidFallback: string;
+ };
+@@ -28,16 +34,24 @@ export type GlassTabBarProps = TabListProps & {
      theme?: Partial<GlassTabBarTheme>;
      /** Haptic tick while the scrub crosses tab boundaries (iOS). */
      haptics?: boolean;
@@ -24,6 +34,8 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..1391ecf25d4e6fbb92d0ced131604011
 +    edgeFadeColor?: string;
 +    /** Android backdrop captured from a sibling BlurTargetView. */
 +    blurTarget?: RefObject<ComponentRef<typeof View> | null>;
++    /** Tint applied by Expo BlurView on Android. */
++    blurTint?: BlurTint;
  };
  /**
   * Floating liquid-glass tab bar with Revolut-style minimize-on-scroll,
@@ -31,7 +43,7 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..1391ecf25d4e6fbb92d0ced131604011
   * with expo-router's headless tabs.
   */
 -export declare function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics, ...props }: GlassTabBarProps): import("react").JSX.Element;
-+export declare function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics, bottomOffset: bottomOffsetOverride, hidden, edgeFadeColor, blurTarget, ...props }: GlassTabBarProps): import("react").JSX.Element;
++export declare function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics, bottomOffset: bottomOffsetOverride, hidden, edgeFadeColor, blurTarget, blurTint, ...props }: GlassTabBarProps): import("react").JSX.Element;
  /** One tab trigger: icon + label that fades when minimized. */
  export declare function GlassTabButton({ item, index, isFocused, onPress, ...props }: TabTriggerSlotProps & {
      item: GlassTabItem;
@@ -40,7 +52,7 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..1391ecf25d4e6fbb92d0ced131604011
 -//# sourceMappingURL=glass-tab-bar.d.ts.map
 \ No newline at end of file
 diff --git a/build/glass-tab-bar.js b/build/glass-tab-bar.js
-index 420cb04242abe5c71811088fd76bb91090558c5f..04b6edeae7457a30148ad989763138ebd8754ff7 100644
+index 420cb04242abe5c71811088fd76bb91090558c5f..942128edd92d1e12bde9ca9937f6d1db18737aad 100644
 --- a/build/glass-tab-bar.js
 +++ b/build/glass-tab-bar.js
 @@ -1,17 +1,18 @@
@@ -72,7 +84,7 @@ index 420cb04242abe5c71811088fd76bb91090558c5f..04b6edeae7457a30148ad989763138eb
   * with expo-router's headless tabs.
   */
 -export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics = true, ...props }) {
-+export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics = true, bottomOffset: bottomOffsetOverride, hidden = false, edgeFadeColor, blurTarget, ...props }) {
++export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides, haptics = true, bottomOffset: bottomOffsetOverride, hidden = false, edgeFadeColor, blurTarget, blurTint, ...props }) {
      const insets = useSafeAreaInsets();
 -    const { width: windowWidth } = useWindowDimensions();
 +    const { width } = useSafeAreaFrame();
@@ -82,7 +94,7 @@ index 420cb04242abe5c71811088fd76bb91090558c5f..04b6edeae7457a30148ad989763138eb
      const minimized = useMinimizeState();
      const progress = minimized.progress;
      const slideIndex = useSharedValue(0);
-@@ -158,15 +162,18 @@ export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides,
+@@ -158,15 +162,27 @@ export function GlassTabBar({ children, onIndexSelected, theme: themeOverrides,
              transform: [{ translateX: ROW_PAD_H + itemWidth * slideIndex.value }],
          };
      });
@@ -97,7 +109,16 @@ index 420cb04242abe5c71811088fd76bb91090558c5f..04b6edeae7457a30148ad989763138eb
                      bottom: 0,
                      height: bottomOffset + EXPANDED_HEIGHT + BLUR_BLEED,
 -                } }), _jsx(View, { pointerEvents: "box-none", style: { marginHorizontal: BAR_MARGIN, marginBottom: bottomOffset }, children: _jsx(GestureDetector, { gesture: gesture, children: _jsxs(Animated.View, { style: barStyle, children: [isLiquidGlassAvailable() ? (_jsx(AnimatedGlassView, { glassEffectStyle: "regular", style: [
-+                } }), _jsx(View, { pointerEvents: "box-none", style: { marginLeft: BAR_MARGIN + leftInset, marginRight: BAR_MARGIN + rightInset, marginBottom: bottomOffset }, children: _jsx(GestureDetector, { gesture: gesture, children: _jsxs(Animated.View, { style: barStyle, children: [Platform.OS === 'android' && blurTarget && Number(Platform.Version) >= 31 ? (_jsx(_Fragment, { children: _jsxs(Animated.View, { pointerEvents: "none", style: [StyleSheet.absoluteFill, shapeStyle, { overflow: 'hidden' }], children: [_jsx(BlurView, { blurTarget: blurTarget, blurMethod: "dimezisBlurViewSdk31Plus", intensity: 70, style: StyleSheet.absoluteFill }), _jsx(View, { style: [
++                } }), _jsx(View, { pointerEvents: "box-none", style: { marginLeft: BAR_MARGIN + leftInset, marginRight: BAR_MARGIN + rightInset, marginBottom: bottomOffset }, children: _jsx(GestureDetector, { gesture: gesture, children: _jsxs(Animated.View, { style: barStyle, children: [Platform.OS === 'android' && blurTarget && Number(Platform.Version) >= 31 ? (_jsx(_Fragment, { children: _jsxs(Animated.View, { pointerEvents: "none", style: [
++                                        StyleSheet.absoluteFill,
++                                        shapeStyle,
++                                        {
++                                            borderColor: theme.glassRim,
++                                            borderCurve: 'continuous',
++                                            borderWidth: theme.glassRim ? StyleSheet.hairlineWidth : 0,
++                                            overflow: 'hidden',
++                                        },
++                                    ], children: [_jsx(BlurView, { blurTarget: blurTarget, blurMethod: "dimezisBlurViewSdk31Plus", intensity: 44, tint: blurTint, style: StyleSheet.absoluteFill }), _jsx(View, { style: [
 +                                                StyleSheet.absoluteFill,
 +                                                { backgroundColor: theme.glassTint },
 +                                            ] })] }) })) : isLiquidGlassAvailable() ? (_jsx(AnimatedGlassView, { glassEffectStyle: "regular", style: [
@@ -168,7 +189,7 @@ index 50889aeca11be27599dd5e42ef3a7b76125e4f55..f5519a2f4f3c635d100ebe0d8b47d5f2
                  } })] }));
  }
 diff --git a/src/glass-tab-bar.tsx b/src/glass-tab-bar.tsx
-index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b961ba727aa 100644
+index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ecb5dfda20 100644
 --- a/src/glass-tab-bar.tsx
 +++ b/src/glass-tab-bar.tsx
 @@ -8,9 +8,12 @@ import {
@@ -180,7 +201,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
    type ReactNode,
  } from 'react';
 -import { Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
-+import { BlurView } from 'expo-blur';
++import { BlurView, type BlurTint } from 'expo-blur';
 +import { Platform, Pressable, StyleSheet, View } from 'react-native';
  import { Gesture, GestureDetector } from 'react-native-gesture-handler';
  import Animated, {
@@ -205,7 +226,16 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
  /** Extra horizontal inset applied to the pill when minimized (per side). */
  const MINIMIZED_INSET = 34;
  /** Outer margin between the pill and the screen edges (per side). */
-@@ -100,6 +103,13 @@ export type GlassTabBarProps = TabListProps & {
+@@ -65,6 +68,8 @@ export type GlassTabBarTheme = {
+   highlight: string;
+   /** Dark tint layered over the liquid glass. */
+   glassTint: string;
++  /** Optional hairline around the Android blur surface. */
++  glassRim?: string;
+   /** Opaque-ish background used when liquid glass is unavailable. */
+   solidFallback: string;
+ };
+@@ -100,6 +105,15 @@ export type GlassTabBarProps = TabListProps & {
    theme?: Partial<GlassTabBarTheme>;
    /** Haptic tick while the scrub crosses tab boundaries (iOS). */
    haptics?: boolean;
@@ -216,10 +246,12 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
 +  edgeFadeColor?: string;
 +  /** Android backdrop captured from a sibling BlurTargetView. */
 +  blurTarget?: RefObject<ComponentRef<typeof View> | null>;
++  /** Tint applied by Expo BlurView on Android. */
++  blurTint?: BlurTint;
  };
  
  /**
-@@ -112,10 +122,17 @@ export function GlassTabBar({
+@@ -112,10 +126,18 @@ export function GlassTabBar({
    onIndexSelected,
    theme: themeOverrides,
    haptics = true,
@@ -227,6 +259,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
 +  hidden = false,
 +  edgeFadeColor,
 +  blurTarget,
++  blurTint,
    ...props
  }: GlassTabBarProps) {
    const insets = useSafeAreaInsets();
@@ -238,7 +271,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
    const minimized = useMinimizeState();
    const progress = minimized.progress;
    const slideIndex = useSharedValue(0);
-@@ -258,7 +275,7 @@ export function GlassTabBar({
+@@ -258,7 +280,7 @@ export function GlassTabBar({
      };
    });
  
@@ -247,7 +280,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
    const barContext = useMemo(
      () => ({ slideIndex, isDragging, theme }),
      [slideIndex, isDragging, theme],
-@@ -268,10 +285,11 @@ export function GlassTabBar({
+@@ -268,10 +290,11 @@ export function GlassTabBar({
      <View
        {...props}
        pointerEvents="box-none"
@@ -260,7 +293,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
          style={{
            position: 'absolute',
            left: 0,
-@@ -282,10 +300,30 @@ export function GlassTabBar({
+@@ -282,10 +305,40 @@ export function GlassTabBar({
        />
        <View
          pointerEvents="box-none"
@@ -273,12 +306,22 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..3cfbb6da4169883523033c72106f8b96
 +              <>
 +                <Animated.View
 +                  pointerEvents="none"
-+                  style={[StyleSheet.absoluteFill, shapeStyle, { overflow: 'hidden' }]}
++                  style={[
++                    StyleSheet.absoluteFill,
++                    shapeStyle,
++                    {
++                      borderColor: theme.glassRim,
++                      borderCurve: 'continuous',
++                      borderWidth: theme.glassRim ? StyleSheet.hairlineWidth : 0,
++                      overflow: 'hidden',
++                    },
++                  ]}
 +                >
 +                  <BlurView
 +                    blurTarget={blurTarget}
 +                    blurMethod="dimezisBlurViewSdk31Plus"
-+                    intensity={70}
++                    intensity={44}
++                    tint={blurTint}
 +                    style={StyleSheet.absoluteFill}
 +                  />
 +                  <View

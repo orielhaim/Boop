@@ -4,6 +4,7 @@ import {
   type GlassTabItem,
   TabBarMinimizeProvider,
 } from "expo-glass-tabs";
+import { Image } from "expo-image";
 import { router, useIsFocused, usePathname } from "expo-router";
 import { TabList, TabTrigger, useTabsWithChildren } from "expo-router/ui";
 import { DirectionalTabs } from "@/components/navigation/directional-tabs";
@@ -16,6 +17,7 @@ import { Icon, tapFeedback } from "@/components/ui/kit";
 import { MorphFab } from "@/components/ui/molecules/morph-fab";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
+import { useAvatar } from "@/core/avatars/use-avatar";
 import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
@@ -23,9 +25,10 @@ import {
 import { useAccountMarmotWindow } from "@/components/messages/marmot-window";
 import { marmot } from "@/core/marmot/native";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
-import { useChatsEnabled } from "@/services/local-context";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
 import { useTheme } from "@/theme";
+import { themes } from "@/theme/tokens";
 import {
   GlassBackdropProvider,
   GlassBackdropTarget,
@@ -50,6 +53,9 @@ function DockNavigator() {
   const { t, i18n } = useTranslation(namespaces);
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
   const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
+  const { identity } = useLocal();
+  const photo = useAvatar(identity.publicKey, false);
+  const dockMaterial = themes[theme].glass.dock;
   const chatsEnabled = useChatsEnabled();
   const showIdentitySheet = useIdentitySheet();
   const [chatsVisible, setChatsVisible] = useState(true);
@@ -117,14 +123,23 @@ function DockNavigator() {
   const profile: GlassTabItem = {
     name: "profile",
     label: t("navigation:profile"),
-    renderIcon: ({ tint, size }) => (
-      <Icon
-        name="person"
-        size={size}
-        color={tint}
-        weight={tint === colors.accent ? "fill" : "regular"}
-      />
-    ),
+    renderIcon: ({ tint, size }) =>
+      photo ? (
+        <Image
+          accessible={false}
+          source={{ uri: photo }}
+          contentFit="cover"
+          cachePolicy="memory"
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+        />
+      ) : (
+        <Icon
+          name="person"
+          size={size}
+          color={tint}
+          weight={tint === colors.accent ? "fill" : "regular"}
+        />
+      ),
   };
   const chatsTab = { item: messages, href: "/" } as const;
   const callsTab = { item: calls, href: "/calls" } as const;
@@ -146,6 +161,11 @@ function DockNavigator() {
         blurTarget={
           focused && !reduceTransparency ? (blurTarget ?? undefined) : undefined
         }
+        blurTint={
+          theme === "dark"
+            ? "systemUltraThinMaterialDark"
+            : "systemUltraThinMaterial"
+        }
         bottomOffset={bottomOffset}
         hidden={keyboardVisible}
         edgeFadeColor={colors.background}
@@ -161,11 +181,10 @@ function DockNavigator() {
           inactiveTint: colors.muted,
           highlight: colors.selected,
           glassTint: reduceTransparency
-            ? colors.raised
-            : theme === "dark"
-              ? "rgba(20, 29, 51, 0.58)"
-              : "rgba(243, 246, 252, 0.66)",
-          solidFallback: colors.raised,
+            ? dockMaterial.opaque
+            : dockMaterial.tint,
+          glassRim: dockMaterial.rim,
+          solidFallback: dockMaterial.opaque,
         }}
       >
         {ordered.map(({ item, href }, index) => (

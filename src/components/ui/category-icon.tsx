@@ -76,18 +76,19 @@ export function CategoryIcon({ category }: { category: SettingsCategory }) {
         end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
-      <Icon name={item.icon} size={20} color="#FFFFFF" weight="duotone" />
+      <Icon name={item.icon} size={17} color="#FFFFFF" weight="duotone" />
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   frame: {
-    width: 38,
-    height: 38,
+    width: 28,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: theme.radius.control,
+    borderRadius: theme.radius.small,
+    borderCurve: "continuous",
     overflow: "hidden",
     boxShadow: theme.glass.shadow,
   },

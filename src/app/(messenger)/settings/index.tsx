@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/category-icon";
 import { PersonAvatar } from "@/components/people/person-avatar";
 import { usePerson } from "@/components/people/use-person";
-import { GlassBackButton } from "@/components/ui/back-button";
+import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
 import { Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
@@ -20,27 +20,37 @@ const categoryRows = [
   {
     category: "appearance",
     titleKey: "settings:appearance",
+    detailKey: "settings:categoryAppearanceHelp",
     route: "/settings/appearance",
   },
-  { category: "calls", titleKey: "settings:calls", route: "/settings/calls" },
+  {
+    category: "calls",
+    titleKey: "settings:calls",
+    detailKey: "settings:categoryCallsHelp",
+    route: "/settings/calls",
+  },
   {
     category: "audio",
     titleKey: "audio:settings",
+    detailKey: "settings:categoryAudioHelp",
     route: "/settings/playback",
   },
   {
     category: "storage",
     titleKey: "storage:title",
+    detailKey: "settings:categoryStorageHelp",
     route: "/settings/storage",
   },
   {
     category: "language",
     titleKey: "settings:language",
+    detailKey: "settings:categoryLanguageHelp",
     route: "/settings/language",
   },
   {
     category: "identity",
     titleKey: "settings:identity",
+    detailKey: "settings:categoryIdentityHelp",
     route: "/settings/identity",
   },
   {
@@ -55,11 +65,16 @@ const categoryRows = [
     detailKey: "settings:categoryConnectionsHelp",
     route: "/settings/connections",
   },
-  { category: "about", titleKey: "settings:about", route: "/settings/about" },
+  {
+    category: "about",
+    titleKey: "settings:about",
+    detailKey: "settings:categoryAboutHelp",
+    route: "/settings/about",
+  },
 ] as const satisfies readonly {
   category: SettingsCategory;
   titleKey: string;
-  detailKey?: string;
+  detailKey: string;
   route: Parameters<typeof router.push>[0];
 }[];
 
@@ -71,7 +86,7 @@ function CategoryRow({
 }: {
   category: SettingsCategory;
   title: string;
-  detail?: string;
+  detail: string;
   onPress: () => void;
 }) {
   return (
@@ -114,90 +129,87 @@ export default function Settings() {
             else router.replace("/profile");
           }}
         />
-        <Ink kind="screenTitle" accessibilityRole="header" style={styles.title}>
-          {t("navigation:settings")}
-        </Ink>
-      </View>
-
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${t("settings:editProfile")}, ${displayName}`}
-        onPress={() => {
-          tapFeedback();
-          edit();
-        }}
-        style={({ pressed }) => [
-          styles.profileCard,
-          pressed && { backgroundColor: colors.pressed },
-        ]}
-      >
-        <PersonAvatar
-          size="lg"
-          publicKey={identity.publicKey}
-          name={displayName}
-          photo={photo}
-          hasName={Boolean(profile?.name || draft?.name)}
-        />
-        <View style={styles.profileCopy}>
-          <Ink kind="rowTitle" numberOfLines={1}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${t("settings:editProfile")}, ${displayName}`}
+          onPress={() => {
+            tapFeedback();
+            edit();
+          }}
+          style={({ pressed }) => [styles.identity, pressed && styles.pressed]}
+        >
+          <View>
+            <PersonAvatar
+              size="xxl"
+              publicKey={identity.publicKey}
+              name={displayName}
+              photo={photo}
+              hasName={Boolean(profile?.name || draft?.name)}
+            />
+            <View style={styles.editBadge}>
+              <Icon name="edit" size={14} color={colors.outgoingInk} />
+            </View>
+          </View>
+          <Ink
+            kind={profile?.name || draft?.name ? "profileName" : "body"}
+            numberOfLines={2}
+            style={styles.name}
+          >
             {displayName}
           </Ink>
-          <Ink kind="description" muted>
+          <Ink kind="description" style={styles.editLabel}>
             {t("settings:editProfile")}
           </Ink>
-        </View>
-        <Icon name="edit" size={19} color={colors.muted} />
-      </Pressable>
+        </Pressable>
+      </View>
 
-      <ListGroup dividers="inset">
-        {categoryRows.slice(0, 5).map((row) => (
-          <CategoryRow
-            key={row.category}
-            category={row.category}
-            title={t(row.titleKey)}
-            detail={"detailKey" in row ? t(row.detailKey) : undefined}
-            onPress={() => router.push(row.route)}
-          />
-        ))}
-      </ListGroup>
-      <ListGroup dividers="inset">
-        {categoryRows.slice(5, 8).map((row) => (
-          <CategoryRow
-            key={row.category}
-            category={row.category}
-            title={t(row.titleKey)}
-            detail={"detailKey" in row ? t(row.detailKey) : undefined}
-            onPress={() => router.push(row.route)}
-          />
-        ))}
-      </ListGroup>
-      <ListGroup dividers="inset">
-        <CategoryRow
-          category="about"
-          title={t("settings:about")}
-          onPress={() => router.push("/settings/about")}
-        />
-      </ListGroup>
+      {[
+        categoryRows.slice(0, 5),
+        categoryRows.slice(5, 8),
+        categoryRows.slice(8),
+      ].map((group) => (
+        <ListGroup key={group[0]?.category} dividers="none">
+          {group.map((row) => (
+            <CategoryRow
+              key={row.category}
+              category={row.category}
+              title={t(row.titleKey)}
+              detail={t(row.detailKey)}
+              onPress={() => router.push(row.route)}
+            />
+          ))}
+        </ListGroup>
+      ))}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   header: {
-    minHeight: 48,
     flexDirection: "row",
-    alignItems: "center",
-    gap: theme.space.md,
+    alignItems: "flex-start",
   },
-  title: { flex: 1 },
-  profileCard: {
-    minHeight: 82,
-    flexDirection: "row",
+  identity: {
+    flex: 1,
+    marginEnd: backButtonSize,
     alignItems: "center",
-    gap: theme.space.md,
-    padding: theme.space.md,
-    borderRadius: theme.radius.group,
-    backgroundColor: theme.colors.grouped,
+    gap: theme.space.sm,
+    paddingVertical: theme.space.sm,
   },
-  profileCopy: { flex: 1, gap: theme.space.xs },
+  pressed: { opacity: 0.75 },
+  name: { textAlign: "center", marginTop: theme.space.xs },
+  editLabel: { color: theme.colors.accent },
+  editBadge: {
+    position: "absolute",
+    bottom: 0,
+    end: 0,
+    width: 29,
+    height: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.radius.round,
+    backgroundColor: theme.colors.outgoing,
+    borderColor: theme.colors.background,
+    borderWidth: 2,
+  },
 }));

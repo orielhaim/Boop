@@ -87,7 +87,6 @@ export const en = {
     identityMismatch:
       "The saved key does not match this installation. Restore the original secure storage before retrying.",
     openingTagline: "Mind your own business",
-    skipIntro: "Skip intro",
     reviewAddressHint:
       "Check the public address for the identity you’re restoring.",
     create: "Create Account",
@@ -727,8 +726,15 @@ export const en = {
     mediaPublished: "Published Blossom servers",
     mediaNoPublished: "No published Blossom servers were found.",
     editProfile: "Edit Profile",
+    categoryAppearanceHelp: "Theme, chat text, and bubble shape",
+    categoryCallsHelp: "Call history, ringtone, and haptics",
+    categoryAudioHelp: "Player preferences and voice note speed",
+    categoryStorageHelp: "Device storage, downloads, and data usage",
+    categoryLanguageHelp: "App language, translation, and transcription",
+    categoryIdentityHelp: "Identity keys, linked devices, and backups",
     categoryPrivacyHelp: "App lock, profile photos, and link previews",
     categoryConnectionsHelp: "Relays, private inbox, and media servers",
+    categoryAboutHelp: "App version and build information",
     profilePhotos: "Profile Photos",
     linkPreviews: "Link Previews",
     linkPreview_off: "Off",
