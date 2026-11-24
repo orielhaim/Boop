@@ -9,12 +9,14 @@ export function PersonAvatar({
   name,
   photo,
   hasName,
+  animateArrival,
   size = "md",
 }: {
   publicKey: string;
   name: string;
   photo?: string;
   hasName: boolean;
+  animateArrival?: boolean;
   size?: GlassAvatarSize;
 }) {
   const cell = size === "xl" || size === "xxl" ? 6 : 3;
@@ -37,7 +39,15 @@ export function PersonAvatar({
       })}
     </View>
   );
-  return <GlassAvatar name={name} src={photo} size={size} fallback={pattern} />;
+  return (
+    <GlassAvatar
+      name={name}
+      src={photo}
+      size={size}
+      fallback={pattern}
+      animateArrival={animateArrival}
+    />
+  );
 }
 
 const styles = StyleSheet.create({

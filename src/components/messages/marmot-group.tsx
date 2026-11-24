@@ -1,4 +1,5 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
+import { ProfileElement } from "@/components/navigation/profile-elements";
 import { router, useIsFocused, usePreventRemove } from "expo-router";
 import type { File } from "expo-file-system";
 import { asc } from "drizzle-orm";
@@ -29,7 +30,11 @@ import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { SaveButton } from "@/components/ui/save-button";
-import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
+import {
+  backButtonSize,
+  ChatProfileBackButton,
+  GlassBackButton,
+} from "@/components/ui/back-button";
 import {
   Action,
   Avatar,
@@ -577,14 +582,23 @@ const groupSetupStyles = StyleSheet.create({
 export function MarmotGroupDetailsScreen({
   id,
   editing = false,
+  morph,
 }: {
   id: string;
   editing?: boolean;
+  morph?: string;
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { db, identity, privacy, lock, isCurrent, chatPreferences } =
-    useLocal();
+  const {
+    db,
+    identity,
+    privacy,
+    lock,
+    isCurrent,
+    chatPreferences,
+    conversations,
+  } = useLocal();
   const translateError = useMarmotError();
   const [busy, setBusy] = useState(false);
   const [loadedPhoto, setLoadedPhoto] = useState<{
@@ -603,6 +617,14 @@ export function MarmotGroupDetailsScreen({
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
   const { details } = state.snapshot ?? {};
+  const [chatHeader] = useState(() => {
+    const snapshot = morph ? conversations.get(id)?.snapshot : undefined;
+    if (snapshot && !snapshot.invited)
+      return {
+        title: snapshot.title,
+        asset: snapshot.image ? snapshot.avatarAsset : undefined,
+      };
+  });
   const [observation, setObservation] = useState<{
     snapshot: typeof state.snapshot;
     value: MarmotGroupDiagnostics;
@@ -632,7 +654,9 @@ export function MarmotGroupDetailsScreen({
   const photo =
     member && privacy.photoPolicy() !== "nobody" ? details?.image : undefined;
   const cachedPhoto = usePreparedGroupAvatar(
-    photo ? details?.avatarAsset : undefined,
+    details ? (photo ? details.avatarAsset : undefined) : chatHeader?.asset,
+    true,
+    Boolean(morph),
   );
   const imageUri =
     photo && loadedPhoto?.hash === photo ? loadedPhoto.uri : cachedPhoto;
@@ -744,6 +768,76 @@ export function MarmotGroupDetailsScreen({
             : "messages:marmot.conversationDetails",
         );
 
+  const peer = isGroup
+    ? undefined
+    : details?.members.find((person) => !person.self);
+  const groupName = peer
+    ? contactByKey(db, peer.id).get()?.name || peer.name || peer.npub
+    : details?.name || chatHeader?.title || t("messages:marmot.group");
+  const avatar = (
+    <GlassAvatar
+      name={groupName}
+      src={imageUri}
+      size="xl"
+      animateArrival={!morph}
+    />
+  );
+  const canLoadImage = Boolean(photo && !imageUri);
+  const profileHeader = !editing && !details?.pendingInvitation && (
+    <GroupProfileHeader
+      morph={morph}
+      name={details || morph ? groupName : undefined}
+      count={isGroup ? details?.members.length : undefined}
+      description={details?.description}
+      back={back}
+      edit={
+        canEdit ? () => router.push(conversationRoute(id, "edit")) : undefined
+      }
+      editTitle={editTitle}
+      avatar={
+        peer ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("contacts:openProfile", { name: groupName })}
+            onPress={() =>
+              router.push({
+                pathname: "/person/[key]",
+                params: { key: peer.id },
+              })
+            }
+          >
+            <Avatar publicKey={peer.id} name={groupName} size="xl" />
+          </Pressable>
+        ) : details || morph ? (
+          <Pressable
+            accessible={canLoadImage}
+            accessibilityRole={canLoadImage ? "button" : undefined}
+            accessibilityLabel={
+              canLoadImage ? t("messages:marmot.viewGroupPhoto") : undefined
+            }
+            disabled={canLoadImage && busy}
+            onPress={canLoadImage ? () => void loadImage() : undefined}
+          >
+            {avatar}
+            {canLoadImage && (
+              <View
+                style={[
+                  styles.photoBadge,
+                  {
+                    backgroundColor: colors.accentSoft,
+                    borderColor: colors.background,
+                  },
+                ]}
+              >
+                <Icon name="download" size={14} />
+              </View>
+            )}
+          </Pressable>
+        ) : undefined
+      }
+    />
+  );
+
   if (
     state.error ||
     !details ||
@@ -756,12 +850,12 @@ export function MarmotGroupDetailsScreen({
         navigationHeader={
           editing || details?.pendingInvitation ? (
             <ScreenHeader title={title} onBack={back} />
+          ) : morph ? (
+            <ChatProfileBackButton onPress={back} />
           ) : undefined
         }
       >
-        {!editing && !details?.pendingInvitation && (
-          <GroupProfileHeader name={details?.name} back={back} />
-        )}
+        {profileHeader}
         {state.error ? (
           <Empty
             detail=""
@@ -790,13 +884,6 @@ export function MarmotGroupDetailsScreen({
       </Screen>
     );
 
-  const peer = isGroup
-    ? undefined
-    : details.members.find((person) => !person.self);
-  const groupName = peer
-    ? contactByKey(db, peer.id).get()?.name || peer.name || peer.npub
-    : details.name || t("messages:marmot.group");
-  const avatar = <GlassAvatar name={groupName} src={imageUri} size="xl" />;
   const roster = (
     <SettingsGroup title={t("messages:marmot.members")}>
       {editing && details.canInvite && (
@@ -1167,9 +1254,12 @@ export function MarmotGroupDetailsScreen({
               ) : undefined
             }
           />
+        ) : morph ? (
+          <ChatProfileBackButton onPress={back} />
         ) : undefined
       }
     >
+      {profileHeader}
       {editing ? (
         <>
           {isGroup && (
@@ -1289,58 +1379,6 @@ export function MarmotGroupDetailsScreen({
         </>
       ) : (
         <>
-          <GroupProfileHeader
-            name={groupName}
-            count={isGroup ? details.members.length : undefined}
-            description={details.description}
-            back={back}
-            edit={
-              canEdit
-                ? () => router.push(conversationRoute(id, "edit"))
-                : undefined
-            }
-            editTitle={editTitle}
-            avatar={
-              peer ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("contacts:openProfile", {
-                    name: groupName,
-                  })}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/person/[key]",
-                      params: { key: peer.id },
-                    })
-                  }
-                >
-                  <Avatar publicKey={peer.id} name={groupName} size="xl" />
-                </Pressable>
-              ) : photo && !imageUri ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("messages:marmot.viewGroupPhoto")}
-                  disabled={busy}
-                  onPress={() => void loadImage()}
-                >
-                  {avatar}
-                  <View
-                    style={[
-                      styles.photoBadge,
-                      {
-                        backgroundColor: colors.accentSoft,
-                        borderColor: colors.background,
-                      },
-                    ]}
-                  >
-                    <Icon name="download" size={14} />
-                  </View>
-                </Pressable>
-              ) : (
-                avatar
-              )
-            }
-          />
           {member &&
             (isGroup ? (
               <MarmotActiveCall
@@ -1476,6 +1514,7 @@ function GroupMemberIdentity({
 }
 
 function GroupProfileHeader({
+  morph,
   name,
   avatar,
   count,
@@ -1484,6 +1523,7 @@ function GroupProfileHeader({
   edit,
   editTitle,
 }: {
+  morph?: string;
   name?: string;
   avatar?: ReactNode;
   count?: number;
@@ -1498,8 +1538,12 @@ function GroupProfileHeader({
   return (
     <View style={styles.profileHeader}>
       <View style={styles.profileAvatar}>
-        <GlassBackButton onPress={back} style={styles.profileBack} />
-        {avatar}
+        {!morph && (
+          <GlassBackButton onPress={back} style={styles.profileBack} />
+        )}
+        <ProfileElement profile={morph} part="avatar">
+          {avatar}
+        </ProfileElement>
         {edit && (
           <Pressable
             accessibilityRole="button"
@@ -1515,14 +1559,20 @@ function GroupProfileHeader({
         )}
       </View>
       {name && (
-        <Ink
-          kind="heading"
-          accessibilityRole="header"
-          style={styles.profileName}
-          numberOfLines={3}
+        <ProfileElement
+          profile={morph}
+          part="name"
+          style={styles.profileNameSlot}
         >
-          {name}
-        </Ink>
+          <Ink
+            kind="heading"
+            accessibilityRole="header"
+            style={styles.profileName}
+            numberOfLines={3}
+          >
+            {name}
+          </Ink>
+        </ProfileElement>
       )}
       {count !== undefined && (
         <Ink kind="caption" muted style={styles.profileCaption}>
@@ -1655,6 +1705,7 @@ const styles = StyleSheet.create({
   },
   profileBack: { position: "absolute", top: 0, start: 0 },
   profileEdit: { position: "absolute", top: 0, end: 0, borderRadius: 22 },
+  profileNameSlot: { maxWidth: "100%" },
   profileName: {
     fontSize: 25,
     letterSpacing: -0.55,

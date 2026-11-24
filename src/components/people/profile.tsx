@@ -14,8 +14,12 @@ import {
   GlassSheetTitle,
 } from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
+import { ProfileElement } from "@/components/navigation/profile-elements";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
-import { GlassBackButton } from "@/components/ui/back-button";
+import {
+  ChatProfileBackButton,
+  GlassBackButton,
+} from "@/components/ui/back-button";
 import { Empty, Icon, Ink, Screen } from "@/components/ui/kit";
 import { CompactAction } from "@/components/ui/messenger-ui";
 import { useBlockAction } from "@/components/ui/privacy-actions";
@@ -42,10 +46,12 @@ import { usePerson, useVerifiedIdentifier } from "./use-person";
 export function PersonProfile({
   publicKey,
   hint,
+  morph,
   tab = false,
 }: {
   publicKey: string | null;
   hint?: string;
+  morph?: string;
   tab?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
@@ -54,6 +60,7 @@ export function PersonProfile({
       key={publicKey}
       publicKey={publicKey}
       hint={hint}
+      morph={morph}
       tab={tab}
     />
   ) : (
@@ -72,10 +79,12 @@ export function PersonProfile({
 function ProfileContent({
   publicKey,
   hint,
+  morph,
   tab,
 }: {
   publicKey: string;
   hint?: string;
+  morph?: string;
   tab: boolean;
 }) {
   const onScroll = useMinimizeOnScroll();
@@ -254,8 +263,13 @@ function ProfileContent({
   const displayName = localName || name;
   const shortAddress = `${address.slice(0, 15)}…${address.slice(-6)}`;
   const editProfile = () => router.push("/settings/edit-profile");
+  const back = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/people");
+  };
   return (
     <Screen scroll={false} tab={tab} topInset>
+      {morph && <ChatProfileBackButton onPress={back} />}
       <ParallaxScrollView
         headerMaxHeight={128}
         headerOverlap={46}
@@ -294,14 +308,8 @@ function ProfileContent({
         }
         headerControls={
           <>
-            {!tab && (
-              <GlassBackButton
-                style={styles.bannerBack}
-                onPress={() => {
-                  if (router.canGoBack()) router.back();
-                  else router.replace("/people");
-                }}
-              />
+            {!tab && !morph && (
+              <GlassBackButton style={styles.bannerBack} onPress={back} />
             )}
             <CompactAction
               icon="qr"
@@ -342,29 +350,34 @@ function ProfileContent({
                 : {})}
               style={[styles.avatar, { backgroundColor: colors.background }]}
             >
-              <PersonAvatar
-                publicKey={publicKey}
-                name={displayName}
-                photo={photo}
-                hasName={Boolean(localName || contact?.name || profile?.name)}
-                size="xxl"
-              />
+              <ProfileElement profile={morph} part="avatar">
+                <PersonAvatar
+                  publicKey={publicKey}
+                  name={displayName}
+                  photo={photo}
+                  animateArrival={!morph}
+                  hasName={Boolean(localName || contact?.name || profile?.name)}
+                  size="xxl"
+                />
+              </ProfileElement>
             </Transition.Boundary>
             <View style={styles.identity}>
-              <Ink
-                kind="heading"
-                accessibilityRole="header"
-                numberOfLines={2}
-                style={[
-                  styles.name,
-                  !localName &&
-                    !contact?.name &&
-                    !profile?.name &&
-                    styles.fallbackName,
-                ]}
-              >
-                {displayName}
-              </Ink>
+              <ProfileElement profile={morph} part="name">
+                <Ink
+                  kind="heading"
+                  accessibilityRole="header"
+                  numberOfLines={2}
+                  style={[
+                    styles.name,
+                    !localName &&
+                      !contact?.name &&
+                      !profile?.name &&
+                      styles.fallbackName,
+                  ]}
+                >
+                  {displayName}
+                </Ink>
+              </ProfileElement>
               {profile?.name && profile.name !== name && (
                 <Ink muted kind="caption">
                   {profile.name}

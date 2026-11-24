@@ -5,12 +5,14 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   GlassSurface,
   type SurfaceElevation,
 } from "@/components/glassyui/glass-surface";
 import { Icon, tapFeedback } from "@/components/ui/kit";
-import { useTheme } from "@/theme";
+import { directionFor, resolveLanguage } from "@/i18n";
+import { space, useTheme } from "@/theme";
 
 export const backButtonSize = 44;
 
@@ -38,10 +40,12 @@ export function GlassBackButton({
   onPress,
   style,
   elevation,
+  dimOnPress = true,
 }: {
   onPress: () => void;
   style?: StyleProp<ViewStyle>;
   elevation?: SurfaceElevation;
+  dimOnPress?: boolean;
 }) {
   const { t } = useTranslation("common");
   return (
@@ -52,10 +56,30 @@ export function GlassBackButton({
         tapFeedback();
         onPress();
       }}
-      style={({ pressed }) => [style, pressed && styles.pressed]}
+      style={({ pressed }) => [style, dimOnPress && pressed && styles.pressed]}
     >
       <GlassBackIcon elevation={elevation} />
     </Pressable>
+  );
+}
+
+export function ChatProfileBackButton({ onPress }: { onPress: () => void }) {
+  const { top, left, right } = useSafeAreaInsets();
+  const { i18n } = useTranslation();
+  const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
+  return (
+    <GlassBackButton
+      onPress={onPress}
+      elevation="none"
+      dimOnPress={false}
+      style={[
+        styles.profileBack,
+        {
+          top: top + space.xs,
+          ...(rtl ? { right: right + space.sm } : { left: left + space.sm }),
+        },
+      ]}
+    />
   );
 }
 
@@ -76,4 +100,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   pressed: { opacity: 0.72 },
+  profileBack: { position: "absolute", zIndex: 1 },
 });

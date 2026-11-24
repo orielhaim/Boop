@@ -3,9 +3,10 @@ import { PersonProfile } from "@/components/people/profile";
 import { parsePublicIdentity, parsePublicKey } from "@/core/identity/keys";
 
 export default function PersonRoute() {
-  const { key, reference } = useLocalSearchParams<{
+  const { key, reference, profileMorph } = useLocalSearchParams<{
     key: string;
     reference?: string;
+    profileMorph?: string;
   }>();
   const publicKey = typeof key === "string" ? parsePublicKey(key) : null;
   const hint =
@@ -14,6 +15,11 @@ export default function PersonRoute() {
     <PersonProfile
       publicKey={publicKey}
       hint={hint?.key === publicKey ? reference : undefined}
+      morph={
+        publicKey && profileMorph === `person:${publicKey}`
+          ? profileMorph
+          : undefined
+      }
     />
   );
 }

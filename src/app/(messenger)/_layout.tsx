@@ -10,7 +10,10 @@ import { useNavigationMotion } from "@/components/navigation/motion";
 import { ProfilePhotoControls } from "@/components/people/profile-photo-controls";
 import { Easing } from "react-native-reanimated";
 import { useTheme } from "@/theme";
-import { marmotChatScene } from "@/core/marmot/conversation-route";
+import {
+  marmotChatScene,
+  profileMorphParam,
+} from "@/core/marmot/conversation-route";
 import { useChatsEnabled } from "@/services/local-context";
 
 const audioPlayerOptions: BlankStackNavigationOptions = {
@@ -37,7 +40,7 @@ export const unstable_settings = { anchor: "(tabs)" };
 export default function MessengerLayout() {
   const chats = useChatsEnabled();
   const { reduceMotion } = useTheme();
-  const { push, detail, media, modal } = useNavigationMotion();
+  const { push, detail, media, modal, profileMorph } = useNavigationMotion();
 
   return (
     <AudioFrame>
@@ -59,7 +62,12 @@ export default function MessengerLayout() {
               : audioPlayerOptions
           }
         />
-        <BlankStack.Screen name="person/[key]" options={detail} />
+        <BlankStack.Screen
+          name="person/[key]"
+          options={({ route }) =>
+            profileMorphParam(route.params) ? profileMorph : detail
+          }
+        />
         <BlankStack.Screen
           name="profile-photo/[key]"
           options={{
@@ -76,7 +84,7 @@ export default function MessengerLayout() {
             options={({ route }) => {
               const params = route.params;
               if (params && "view" in params && params.view === "details")
-                return detail;
+                return profileMorphParam(params) ? profileMorph : detail;
               if (params && "view" in params && params.view === "edit")
                 return { ...push, gestureEnabled: false };
               if (params && "key" in params && params.key === "new-group")

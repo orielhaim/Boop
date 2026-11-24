@@ -7,6 +7,10 @@ import Transition, {
 } from "react-native-screen-transitions";
 import type { BlankStackNavigationOptions } from "react-native-screen-transitions/expo-router";
 import { useTranslation } from "react-i18next";
+import {
+  profileElementId,
+  profileMorphParam,
+} from "@/core/marmot/conversation-route";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { useTheme } from "@/theme";
 
@@ -19,6 +23,7 @@ export const travelSpring = {
 
 const travel = { open: travelSpring, close: travelSpring };
 const fade = { duration: 100, easing: Easing.out(Easing.quad) };
+
 const dissolve: ScreenStyleInterpolator = ({ current, focused }) => {
   "worklet";
   return focused ? { content: { opacity: current.progress } } : null;
@@ -110,6 +115,43 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
   }
   const detail = reduceMotion ? push : zoom(false);
   const media = reduceMotion ? push : zoom(true);
+  const profileMorph: BlankStackNavigationOptions = reduceMotion
+    ? push
+    : {
+        ...push,
+        screenStyleInterpolator: (props) => {
+          "worklet";
+          const { active, bounds, focused } = props;
+          const profile = profileMorphParam(active.route.params);
+          if (!profile) return horizontal(props, sign);
+          const progress = Math.max(0, Math.min(1, active.progress));
+          const avatar = profileElementId(profile, "avatar");
+          const name = profileElementId(profile, "name");
+          const avatarBounds = bounds(avatar);
+          const nameBounds = bounds(name);
+          // Keep the handoff short so differently wrapped titles don't ghost.
+          const nameHandoff = interpolate(
+            progress,
+            [0.44, 0.5],
+            [0, 1],
+            "clamp",
+          );
+          return {
+            ...(focused ? { content: { opacity: progress } } : {}),
+            ...(avatarBounds.link()?.status === "complete"
+              ? { [avatar]: avatarBounds.styles({ scaleMode: "uniform" }) }
+              : {}),
+            ...(nameBounds.link()?.status === "complete"
+              ? {
+                  [name]: {
+                    ...nameBounds.styles({ scaleMode: "uniform" }),
+                    opacity: focused ? nameHandoff : 1 - nameHandoff,
+                  },
+                }
+              : {}),
+          };
+        },
+      };
 
   const modal: BlankStackNavigationOptions = reduceMotion
     ? { ...push, gestureEnabled: false }
@@ -118,5 +160,5 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
         gestureDirection: [{ gesture: "vertical", area: "edge" }],
         transitionSpec: travel,
       });
-  return { push, detail, media, modal };
+  return { push, detail, media, modal, profileMorph };
 }

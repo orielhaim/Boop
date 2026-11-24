@@ -13,7 +13,7 @@ import { messagingMetric } from "@/core/messaging/diagnostics";
 import { audioFile, showMiniPlayer } from "@/core/audio/types";
 import { playerPlayback } from "@/core/audio/controller";
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import Transition from "react-native-screen-transitions";
+import { ProfileElement } from "@/components/navigation/profile-elements";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import {
   Bubble,
@@ -434,7 +434,10 @@ export function MarmotConversationScreen({
     !peer && !snapshot?.invited && snapshot?.image
       ? snapshot.avatarAsset
       : undefined,
+    true,
+    true,
   );
+  const profileMorph = peer ? `person:${peer}` : `group:${id}`;
   const self = identity.publicKey;
   const blocked = Boolean(peer && privacy.isBlocked(peer));
   const title = snapshot?.invited
@@ -1353,7 +1356,7 @@ export function MarmotConversationScreen({
       ...route,
       params: {
         ...route.params,
-        origin: `group:${id}`,
+        profileMorph,
       },
     });
   }
@@ -1444,6 +1447,8 @@ export function MarmotConversationScreen({
     <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
       <GlassBackButton
         elevation="none"
+        dimOnPress={false}
+        style={styles.headerBack}
         onPress={
           searching
             ? closeSearch
@@ -1481,36 +1486,42 @@ export function MarmotConversationScreen({
                 {title}
               </Ink>
             ) : (
-              <Transition.Boundary
-                id={peer ? `person:${peer}` : `group:${id}`}
+              <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={title}
                 style={styles.profileLink}
                 onPress={() => {
+                  if (!navigation.isFocused() || locked) return;
                   tapFeedback();
                   if (peer) {
                     router.push({
                       pathname: "/person/[key]",
-                      params: { key: peer, origin: `person:${peer}` },
+                      params: { key: peer, profileMorph },
                     });
                   } else openGroupDetails();
                 }}
               >
-                <Transition.Boundary.Target>
+                <ProfileElement profile={profileMorph} part="avatar">
                   <GlassAvatar
                     size="md"
                     name={title}
                     src={peer ? avatar : groupAvatar}
                   />
-                </Transition.Boundary.Target>
-                <Ink
-                  kind="heading"
-                  numberOfLines={1}
-                  style={styles.profileName}
+                </ProfileElement>
+                <ProfileElement
+                  profile={profileMorph}
+                  part="name"
+                  style={styles.profileNameSlot}
                 >
-                  {title}
-                </Ink>
-              </Transition.Boundary>
+                  <Ink
+                    kind="heading"
+                    numberOfLines={1}
+                    style={styles.profileName}
+                  >
+                    {title}
+                  </Ink>
+                </ProfileElement>
+              </Pressable>
             )}
           </GlassSurface>
           {!snapshot.invited && (
@@ -2599,6 +2610,7 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
   },
   headerCapsule: { minHeight: 44, borderRadius: radius.round },
+  headerBack: { alignSelf: "flex-start" },
   headerIdentity: { flex: 1, minWidth: 0, justifyContent: "center" },
   profileLink: {
     flexDirection: "row",
@@ -2608,7 +2620,8 @@ const styles = StyleSheet.create({
     paddingStart: 2,
     paddingEnd: space.md,
   },
-  profileName: { flex: 1, fontSize: 16 },
+  profileNameSlot: { flexShrink: 1, minWidth: 0 },
+  profileName: { fontSize: 16 },
   invitationTitle: { paddingHorizontal: space.md, fontSize: 16 },
   headerActions: { flexDirection: "row", alignItems: "center" },
   menuButton: {

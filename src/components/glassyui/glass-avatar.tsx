@@ -27,6 +27,7 @@ export type GlassAvatarStatus = "online" | "away" | "busy" | "offline";
 export type GlassAvatarProps = Omit<ViewProps, "children"> & {
   /** Describes the image. Defaults to `name`. */
   alt?: string;
+  animateArrival?: boolean;
   /** Shown when there is no image or it fails to load. Defaults to the initials of `name`. */
   fallback?: ReactNode;
   /** Names the person. Its initials fill in for a missing image and pick the colour. */
@@ -107,6 +108,7 @@ function toneOf(name: string) {
 }
 
 type FaceProps = {
+  animateArrival: boolean;
   fallback: ReactNode;
   source: ImageSourcePropType | undefined;
   tone: readonly [string, string];
@@ -115,7 +117,7 @@ type FaceProps = {
 /** The image once it loads, over the fallback until then or for good if it fails. */
 const AnimatedImage = Animated.createAnimatedComponent(Image);
 
-function Face({ fallback, source, tone }: FaceProps) {
+function Face({ animateArrival, fallback, source, tone }: FaceProps) {
   const { preferences } = useGlassTheme();
   const [status, setStatus] = useState<"loading" | "loaded" | "failed">(
     "loading",
@@ -125,7 +127,7 @@ function Face({ fallback, source, tone }: FaceProps) {
   const handleLoad = useCallback(() => {
     setStatus("loaded");
 
-    if (preferences.reduceMotion) {
+    if (!animateArrival || preferences.reduceMotion) {
       arrival.setValue(1);
 
       return;
@@ -137,7 +139,7 @@ function Face({ fallback, source, tone }: FaceProps) {
       toValue: 1,
       useNativeDriver: GLASS_MOTION.nativeDriver,
     }).start();
-  }, [arrival, preferences.reduceMotion]);
+  }, [animateArrival, arrival, preferences.reduceMotion]);
 
   const handleError = useCallback(() => setStatus("failed"), []);
 
@@ -161,9 +163,10 @@ function Face({ fallback, source, tone }: FaceProps) {
         <AnimatedImage
           accessible={false}
           onError={handleError}
-          onLoad={handleLoad}
+          onLoad={animateArrival ? handleLoad : undefined}
+          onDisplay={animateArrival ? undefined : handleLoad}
           cachePolicy="memory"
-          transition={preferences.reduceMotion ? 0 : 160}
+          transition={!animateArrival || preferences.reduceMotion ? 0 : 160}
           contentFit="cover"
           source={source}
           style={[
@@ -192,7 +195,7 @@ export const GlassAvatar = forwardRef<
   GlassAvatarProps
 >(
   (
-    { alt, fallback, name, size = "md", source, src, status, style, ...rest },
+    { alt, animateArrival = true, fallback, name, size = "md", source, src, status, style, ...rest },
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
@@ -238,6 +241,7 @@ export const GlassAvatar = forwardRef<
         >
           <Face
             key={imageKey}
+            animateArrival={animateArrival}
             fallback={content}
             source={image}
             tone={name ? toneOf(name) : NAMELESS}

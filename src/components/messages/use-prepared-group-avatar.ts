@@ -6,6 +6,7 @@ import { useLocal } from "@/services/local-context";
 export function usePreparedGroupAvatar(
   asset: MarmotAvatarAsset | null | undefined,
   visible = true,
+  retainWhileUnfocused = false,
 ) {
   const { identity, isCurrent, lock, privacy } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
@@ -14,11 +15,10 @@ export function usePreparedGroupAvatar(
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const eligible =
     visible &&
-    focused &&
     state.active &&
     !state.locked &&
     privacy.photoPolicy() !== "nobody";
-  const target = eligible ? asset?.target : undefined;
+  const target = eligible && focused ? asset?.target : undefined;
   const reference =
     eligible &&
     (asset?.availability === "ready" || asset?.availability === "stale")
@@ -37,7 +37,7 @@ export function usePreparedGroupAvatar(
     void marmot.requestAvatarAssets([target]).catch(() => undefined);
   }, [isCurrent, reference, target]);
   useEffect(() => {
-    if (!reference || !isCurrent()) return;
+    if (!focused || !reference || !isCurrent()) return;
     let mounted = true;
     void marmot
       .readAvatarAssets([reference])
@@ -61,8 +61,12 @@ export function usePreparedGroupAvatar(
     return () => {
       mounted = false;
     };
-  }, [account, isCurrent, reference, revision, target]);
-  return eligible && key && image?.account === account && image.key === key
+  }, [account, focused, isCurrent, reference, revision, target]);
+  return eligible &&
+    (focused || retainWhileUnfocused) &&
+    key &&
+    image?.account === account &&
+    image.key === key
     ? image.uri
     : undefined;
 }
