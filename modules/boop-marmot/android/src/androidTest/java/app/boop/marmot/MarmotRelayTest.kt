@@ -11,10 +11,13 @@ import java.net.URI
 import java.net.HttpURLConnection
 import java.util.UUID
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONObject
@@ -202,6 +205,67 @@ class MarmotRelayTest {
         }
         connection.cancel()
         assertNull(connection.next())
+      }
+    } finally {
+      try { alice.close() } finally {
+        bob.close()
+        root.deleteRecursively()
+      }
+    }
+  }
+
+  @Test fun blockListPersistsWithoutMessagingAndUpdatesOpenWindows() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    val root = File(instrumentation.targetContext.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    BoopMarmotModule.initializeBindings(instrumentation.targetContext)
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    try {
+      alice.start()
+      bob.start()
+      for (client in listOf(alice, bob)) {
+        await("initial account declarations") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      val text = "message received before blocking"
+      alice.kit.sendTextWithClientToken(alice.key, direct, text, "before-block")
+      bob.receives(direct, alice.key, text)
+      bob.kit.subscribeBlockedUsers(bob.key).use { blocks ->
+        val initial = checkNotNull(blocks.snapshot())
+        assertTrue(initial.users.isEmpty())
+        bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.LATEST, null, 5u, 15_000u).use { window ->
+          assertTrue(checkNotNull(window.snapshot()).messages.any { it.timeline.plaintext == text })
+          coroutineScope {
+            val a = async { bob.kit.blockUser(bob.key, alice.key) }
+            val b = async { bob.kit.blockUser(bob.key, alice.key) }
+            a.await()
+            b.await()
+          }
+          val updated = withTimeout(15_000) { checkNotNull(blocks.next()) }
+          assertTrue(updated.revision > initial.revision)
+          assertEquals(alice.key, updated.users.single().publicKey)
+          assertTrue(updated.users.single().isPrivate)
+          assertTrue(alice.kit.getBlockedUsers(alice.key).isEmpty())
+          withTimeout(15_000) {
+            while (checkNotNull(window.next()).messages.any { it.timeline.plaintext == text }) { }
+          }
+          window.cancel()
+        }
+        val receiver = launch { blocks.next() }
+        yield()
+        withTimeout(5_000) { receiver.cancelAndJoin() }
+      }
+      bob.close()
+      bob.start(messaging = false)
+      bob.kit.subscribeBlockedUsers(bob.key).use { blocks ->
+        assertEquals(alice.key, checkNotNull(blocks.snapshot()).users.single().publicKey)
+        assertTrue(bob.kit.isUserBlocked(bob.key, alice.key))
+        bob.kit.unblockUser(bob.key, alice.key)
+        assertTrue(withTimeout(15_000) { checkNotNull(blocks.next()) }.users.isEmpty())
       }
     } finally {
       try { alice.close() } finally {
@@ -839,7 +903,7 @@ class MarmotRelayTest {
     lateinit var key: String
       private set
 
-    suspend fun start(identity: String? = null) {
+    suspend fun start(identity: String? = null, messaging: Boolean = true) {
       val opened = Marmot.newWithConfiguration(
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
@@ -855,7 +919,7 @@ class MarmotRelayTest {
         ),
       )
       running = opened
-      opened.start()
+      if (messaging) opened.start()
       if (!::key.isInitialized) {
         val relays = listOf(relay)
         key = when {

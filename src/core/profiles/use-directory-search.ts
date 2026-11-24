@@ -15,7 +15,15 @@ type Result =
 export function useDirectorySearch(input: string, enabled: boolean) {
   const { identity, lock, nip05, privacy, profiles, relays } = useLocal();
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
-  const active = enabled && lockState.active && !lockState.locked;
+  const blocks = useSyncExternalStore(
+    privacy.blocks.subscribe,
+    privacy.blocks.snapshot,
+  );
+  const active =
+    enabled &&
+    lockState.active &&
+    !lockState.locked &&
+    blocks.status === "ready";
   const term = input.trim();
   const [result, setResult] = useState<Result>();
   useEffect(() => {
@@ -129,6 +137,12 @@ export function useDirectorySearch(input: string, enabled: boolean) {
       : undefined;
   return {
     exactKey,
-    current: current && "keys" in current ? current : undefined,
+    current:
+      current && "keys" in current
+        ? {
+            ...current,
+            keys: current.keys.filter((key) => !privacy.isBlocked(key)),
+          }
+        : undefined,
   };
 }

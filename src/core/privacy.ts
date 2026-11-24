@@ -1,10 +1,10 @@
 import type { ProfilePhotoPolicy } from "@/core/avatars/protocol";
-import { eq, isNotNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { preference, setPreference } from "@/db/queries";
 import type * as schema from "@/db/schema";
 import { contacts, peerPermissions } from "@/db/schema";
-import { parsePublicKey } from "./identity/keys";
+import type { BlockedUsers } from "./marmot/blocked-users";
 import {
   type LinkPreviewPolicy,
   previewPolicy,
@@ -18,47 +18,11 @@ export type PrivacyPreferences = {
   requests: boolean;
 };
 
-export function messagePermission({
-  preferences,
-  blocked,
-  contact,
-  approved,
-  initiated,
-  established,
-}: {
-  preferences: PrivacyPreferences;
-  blocked: boolean;
-  contact: boolean;
-  approved: boolean;
-  initiated: boolean;
-  established: boolean;
-}): "blocked" | "allow" | "request" | "reject" {
-  if (blocked) return "blocked";
-  if (initiated) return "allow";
-  if (preferences.messages === "initiated") return "reject";
-  if (approved || contact) return "allow";
-  if (
-    preferences.messages === "everyone" &&
-    (established || !preferences.requests)
-  )
-    return "allow";
-  return preferences.requests ? "request" : "reject";
-}
-
 export function createPrivacy<Result>(
   db: BaseSQLiteDatabase<"sync", Result, typeof schema>,
-  localKey: string,
+  blocks: BlockedUsers,
 ) {
-  const blocked = new Set(
-    db
-      .select()
-      .from(peerPermissions)
-      .where(isNotNull(peerPermissions.blockedAt))
-      .all()
-      .map((row) => row.publicKey),
-  );
   const listeners = new Set<() => void>();
-  const blockListeners = new Set<(key: string) => void>();
   const calls = preference(db, "privacy.calls");
   const messagesPolicy = preference(db, "privacy.messages");
   const photos = preference(db, "privacy.profilePhotos");
@@ -81,7 +45,8 @@ export function createPrivacy<Result>(
     revision++;
     for (const listener of listeners) listener();
   }
-  const isBlocked = (key: string) => blocked.has(key);
+  blocks.subscribe(notify);
+  const { isBlocked } = blocks;
   const isContact = (key: string) =>
     Boolean(
       db
@@ -101,6 +66,7 @@ export function createPrivacy<Result>(
   }
 
   return {
+    blocks,
     isBlocked,
     isContact,
     photoPolicy: () => preferences.profilePhotos,
@@ -109,12 +75,6 @@ export function createPrivacy<Result>(
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
-      };
-    },
-    subscribeBlock(listener: (key: string) => void) {
-      blockListeners.add(listener);
-      return () => {
-        blockListeners.delete(listener);
       };
     },
     revision: () => revision,
@@ -138,21 +98,22 @@ export function createPrivacy<Result>(
           (preferences.calls === "contacts" && isContact(key)))
       );
     },
-    messagePermission(key: string) {
+    messagePermission(key: string): "blocked" | "allow" | "request" | "reject" {
       if (isBlocked(key)) return "blocked";
       const grant = db
         .select()
         .from(peerPermissions)
         .where(eq(peerPermissions.publicKey, key))
         .get();
-      return messagePermission({
-        preferences,
-        blocked: false,
-        contact: isContact(key),
-        initiated: grant?.initiated === true,
-        approved: grant?.approved === true,
-        established: false,
-      });
+      if (grant?.initiated) return "allow";
+      if (preferences.messages === "initiated") return "reject";
+      if (
+        grant?.approved ||
+        (preferences.messages === "everyone" && !preferences.requests) ||
+        isContact(key)
+      )
+        return "allow";
+      return preferences.requests ? "request" : "reject";
     },
     noteCompletedCall: noteInitiation,
     noteInitiatedMessage: noteInitiation,
@@ -165,30 +126,6 @@ export function createPrivacy<Result>(
           set: { approved: true },
         })
         .run();
-    },
-    blockedKeys: () => [...blocked],
-    block(input: string) {
-      const key = parsePublicKey(input);
-      if (!key || key === localKey || isBlocked(key)) return;
-      const blockedAt = Date.now();
-      db.insert(peerPermissions)
-        .values({ publicKey: key, blockedAt })
-        .onConflictDoUpdate({
-          target: peerPermissions.publicKey,
-          set: { blockedAt },
-        })
-        .run();
-      blocked.add(key);
-      for (const listener of blockListeners) listener(key);
-      notify();
-    },
-    unblock(key: string) {
-      db.update(peerPermissions)
-        .set({ blockedAt: null })
-        .where(eq(peerPermissions.publicKey, key))
-        .run();
-      blocked.delete(key);
-      notify();
     },
   };
 }

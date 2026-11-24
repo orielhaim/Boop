@@ -961,6 +961,8 @@ export const he = {
     blockedChat: "כדי לשלוח הודעות או להתקשר, יש לבטל את החסימה.",
     noBlocked: "לא נמצאו משתמשים חסומים תואמים",
     searchBlocked: "חיפוש לפי שם או מפתח ציבורי",
+    loadingBlocked: "טוען משתמשים חסומים…",
+    blockedUnavailable: "רשימת המשתמשים החסומים אינה זמינה",
     privacyWriteFailed: "לא ניתן לשמור את השינוי. אפשר לנסות שוב.",
     showIdentityQr: "הצגת קוד QR של הזהות",
     appLock: "נעילת האפליקציה",

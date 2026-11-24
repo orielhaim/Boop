@@ -455,7 +455,13 @@ const directoryResult = z.object({
   key: accountKey,
   profile: publicProfile.nullish(),
 });
+const blockListSnapshot = z.object({
+  revision: z.string().regex(/^\d+$/),
+  keys: accountKey.array(),
+});
+
 type Events = {
+  blockedUsers: (event: { id: string; rows: unknown }) => void;
   relayLiveness: (event: { id: string; rows: unknown }) => void;
   directorySearchResults: (event: { id: string; rows: unknown }) => void;
   attachmentProgress: (event: {
@@ -520,7 +526,7 @@ type Bridge = {
     owner: string,
     reference: string,
   ): Promise<unknown>;
-  prepareObservation(id: string): boolean;
+  prepareObservation(id: string, accountScoped: boolean): boolean;
   searchDirectory(owner: string, id: string, query: string): Promise<void>;
   cancelObservation(id: string): void;
   removeAccount(key: string): Promise<void>;
@@ -742,7 +748,8 @@ type Bridge = {
   setArchived(group: string, archived: boolean): Promise<void>;
   setPinned(group: string, pinned: boolean): Promise<void>;
   setMuted(group: string, muted: boolean): Promise<void>;
-  setBlocked(key: string, blocked: boolean): Promise<void>;
+  watchBlockedUsers(owner: string, id: string): Promise<void>;
+  setBlocked(owner: string, key: string, blocked: boolean): Promise<unknown>;
   retryConversation(group: string): Promise<void>;
   createPoll(
     group: string,
@@ -808,7 +815,7 @@ export const marmotDirectory = {
   ) {
     if (signal.aborted) return;
     const bridge = native();
-    if (!bridge.prepareObservation(id))
+    if (!bridge.prepareObservation(id, false))
       throw new Error("Directory search unavailable");
     const listener = bridge.addListener("directorySearchResults", (event) => {
       if (event.id !== id || signal.aborted) return;
@@ -847,38 +854,68 @@ export const marmotRelays = {
     return native().setAccountRelays(key, list === "inbox", urls, bootstrap);
   },
   reconnect: (url: string) => native().reconnectMarmotRelay(url),
-  observe(
+  observe: (
     key: string,
     receive: (rows: MarmotRelayLiveness[]) => void,
     ended: () => void,
-  ) {
-    const bridge = native();
-    const id = randomUUID();
-    const listener = bridge.addListener("relayLiveness", (event) => {
-      if (event.id === id) receive(relayLiveness.array().parse(event.rows));
-    });
-    let closed = false;
-    const close = () => {
-      closed = true;
-      listener.remove();
-      bridge.cancelObservation(id);
-    };
-    try {
-      if (!bridge.prepareObservation(id)) throw new Error("AccountBusy");
-      void bridge
-        .watchRelayLiveness(key, id)
-        .catch(() => undefined)
-        .finally(() => {
-          listener.remove();
-          if (!closed) ended();
-        });
-      return close;
-    } catch (error) {
-      close();
-      throw error;
-    }
+  ) =>
+    observeAccount("relayLiveness", key, relayLiveness.array(), receive, ended),
+};
+
+export const marmotBlocks = {
+  observe: (
+    owner: string,
+    receive: (snapshot: z.infer<typeof blockListSnapshot>) => void,
+    ended: (error: unknown) => void,
+  ) => observeAccount("blockedUsers", owner, blockListSnapshot, receive, ended),
+  async set(owner: string, key: string, blocked: boolean) {
+    return blockListSnapshot.parse(
+      await native().setBlocked(owner, key, blocked),
+    );
   },
 };
+
+function observeAccount<T>(
+  event: "relayLiveness" | "blockedUsers",
+  owner: string,
+  schema: z.ZodType<T>,
+  receive: (rows: T) => void,
+  ended: (error: unknown) => void,
+) {
+  const bridge = native();
+  const id = randomUUID();
+  let closed = false;
+  const listener = bridge.addListener(event, (update) => {
+    if (closed || update.id !== id) return;
+    const parsed = schema.safeParse(update.rows);
+    if (parsed.success) receive(parsed.data);
+    else finish(parsed.error);
+  });
+  function close() {
+    if (closed) return;
+    closed = true;
+    listener.remove();
+    bridge.cancelObservation(id);
+  }
+  function finish(error?: unknown) {
+    if (closed) return;
+    close();
+    ended(error);
+  }
+  try {
+    if (!bridge.prepareObservation(id, event === "blockedUsers"))
+      throw new Error("AccountBusy");
+    const watch =
+      event === "relayLiveness"
+        ? bridge.watchRelayLiveness(owner, id)
+        : bridge.watchBlockedUsers(owner, id);
+    void watch.then(() => finish(), finish);
+    return close;
+  } catch (error) {
+    close();
+    throw error;
+  }
+}
 
 export const marmotAccounts = {
   async prepareImport(token: string, input: string, password: string) {
@@ -1465,8 +1502,6 @@ export const marmot = {
   setPinned: (group: string, pinned: boolean) =>
     native().setPinned(group, pinned),
   setMuted: (group: string, muted: boolean) => native().setMuted(group, muted),
-  setBlocked: (key: string, blocked: boolean) =>
-    native().setBlocked(key, blocked),
   retryConversation: (group: string) => native().retryConversation(group),
   createPoll: (
     group: string,

@@ -1,3 +1,4 @@
+import { createBlockedUsers } from "@/core/marmot/blocked-users";
 import { createAudioController } from "@/core/audio/controller";
 import { createNativePlayback, setupPlayback } from "@/core/audio/engine";
 import { createAudioSources } from "@/core/audio/sources";
@@ -69,6 +70,7 @@ import { createMarmotViewport } from "@/core/marmot/viewport";
 import {
   marmot,
   marmotAccounts,
+  marmotBlocks,
   marmotDirectory,
   marmotRelays,
 } from "@/core/marmot/native";
@@ -191,7 +193,14 @@ async function start() {
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     purgeExpiredOpenedMessages(db);
     const chatPreferences = createChatPreferences(db);
-    const privacy = createPrivacy(db, identity.publicKey);
+    const blocks = createBlockedUsers(identity.publicKey, {
+      observe: marmotBlocks.observe,
+      set(owner, key, blocked) {
+        if (!active()) throw new Error("AccountClosed");
+        return marmotBlocks.set(owner, key, blocked);
+      },
+    });
+    const privacy = createPrivacy(db, blocks);
     const mediaSdk = createMediaSdk(db, signer);
     const messagingStarted = performance.now();
     const relays = createRelayService(
@@ -277,61 +286,26 @@ async function start() {
     const marmotSession = createMarmotSession({
       async open(discovery, mediaOrigin) {
         if (!isCurrent()) throw new Error("AccountClosed");
-        const state = await marmotAccounts.open(
+        return marmotAccounts.open(
           account.key,
           { general: initialRelays.general, discovery },
           mediaOrigin,
         );
-        try {
-          for (const key of privacy.blockedKeys())
-            await marmot.setBlocked(key, true);
-        } catch (failure) {
-          await marmot.closeAccount();
-          throw failure;
-        }
-        return state;
       },
-      close: () => marmot.closeAccount(),
+      close: marmot.closeAccount,
       beforeClose: () => beforeAccountClose?.(),
     });
-    let previousBlocks = new Set(privacy.blockedKeys());
-    privacy.subscribe(() => {
-      const current = new Set(privacy.blockedKeys());
-      const changes = [
-        ...[...previousBlocks]
-          .filter((key) => !current.has(key))
-          .map((key) => ({ key, blocked: false })),
-        ...[...current]
-          .filter((key) => !previousBlocks.has(key))
-          .map((key) => ({ key, blocked: true })),
-      ];
-      previousBlocks = current;
-      if (changes.length)
-        void marmotSession
-          .ready()
-          .then(async () => {
-            for (const { key, blocked } of changes) {
-              if (privacy.isBlocked(key) === blocked)
-                await marmot.setBlocked(key, blocked);
-            }
-          })
-          .catch(() => undefined);
-    });
+    const messagingAvailable = () =>
+      blocks.ready() &&
+      chatPreferences.enabled() &&
+      marmotSession.status() === "ready";
     privacy.subscribe(avatars.invalidate);
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
     });
     const marmotViewport = createMarmotViewport(
       identity.publicKey,
-      () => {
-        const state = lock.getState();
-        return (
-          state.active &&
-          !state.locked &&
-          AppState.currentState === "active" &&
-          chatPreferences.enabled()
-        );
-      },
+      () => active() && lock.getState().active && messagingAvailable(),
       privacy.isBlocked,
     );
     const previews = createNativeLinkPreviews(
@@ -346,11 +320,13 @@ async function start() {
       signer,
       {
         get(peerKey) {
+          if (privacy.isBlocked(peerKey)) return "unknown";
           const row = contactByKey(db, peerKey).get();
           return row ? (row.allowIncomingVideo ? "always" : "ask") : "unknown";
         },
         allow(peerKey) {
           return (
+            !privacy.isBlocked(peerKey) &&
             updateContactPreferences(db, peerKey, {
               allowIncomingVideo: true,
             }).changes === 1
@@ -428,8 +404,20 @@ async function start() {
           : !!entry;
       },
     });
-    privacy.subscribeBlock((key) => {
-      calling.peerBlocked(key);
+    let previousBlocks: ReadonlySet<string> | undefined;
+    blocks.subscribe(() => {
+      profiles.authorizationChanged();
+      const state = blocks.snapshot();
+      if (state.status !== "ready") {
+        previousBlocks = undefined;
+        return;
+      }
+      const previous = previousBlocks;
+      previousBlocks = state.keys;
+      for (const key of state.keys) {
+        if (previous?.has(key)) continue;
+        calling.peerBlocked(key);
+      }
     });
     callSignaling.subscribe((message) => {
       if (message.type === "call.rtc") media.receive(message);
@@ -444,8 +432,7 @@ async function start() {
       account: identity.publicKey,
       appLocale: () => i18n.language,
       active,
-      available: () =>
-        chatPreferences.enabled() && marmotSession.status() === "ready",
+      available: messagingAvailable,
       audioBusy: () => {
         const call = calling.store.getState().call;
         return Boolean(call && call.phase !== "ended");
@@ -458,7 +445,7 @@ async function start() {
       NonNullable<ReturnType<typeof speechSource>>
     >();
     function admitDownloadedVoice() {
-      if (!active() || marmotSession.status() !== "ready") return;
+      if (!active() || !messagingAvailable()) return;
       for (const [key, voice] of pendingVoiceNotes) {
         pendingVoiceNotes.delete(key);
         speech.availableLocally(voice, speechPriority.download);
@@ -478,12 +465,10 @@ async function start() {
         ),
       ),
       eligible: active,
-      available: (source) =>
-        source.kind === "http" ||
-        (chatPreferences.enabled() && marmotSession.status() === "ready"),
+      available: (source) => source.kind === "http" || messagingAvailable(),
       authorized: (source) =>
         source.kind === "http" ||
-        (!privacy.isBlocked(source.sender) &&
+        (!blocks.has(source.sender) &&
           !chatPreferences.hidden(source.target[0]).includes(source.target[1])),
       completed: (source) => {
         if (source.kind !== "marmot" || !source.voice) return;
@@ -500,7 +485,7 @@ async function start() {
         track.source.expiresAt > Date.now()) &&
         (track.source.kind === "http" ||
           (chatPreferences.enabled() &&
-            !privacy.isBlocked(track.source.sender) &&
+            !blocks.has(track.source.sender) &&
             !chatPreferences
               .hidden(track.source.target[0])
               .includes(track.source.target[1]))));
@@ -508,13 +493,12 @@ async function start() {
     const audioSources = createAudioSources({
       scope: downloadScope,
       downloads,
-      ready: () =>
-        !closingAudioAttachments && marmotSession.status() === "ready",
+      ready: () => !closingAudioAttachments && messagingAvailable(),
       allowed,
       canDownload: active,
       canImport: () => !lock.getState().locked,
       blocked: privacy.isBlocked,
-      subscribePrivacy: privacy.subscribe,
+      subscribePrivacy: blocks.subscribe,
     });
     const playback = audioPersistence({
       account: identity.publicKey,
@@ -557,7 +541,7 @@ async function start() {
     audio.revalidate();
     audio.privacy(lock.getState());
     lock.subscribe(() => audio.privacy(lock.getState()));
-    privacy.subscribe(audio.revalidate);
+    blocks.subscribe(audio.revalidate);
     chatPreferences.subscribe(audio.revalidate);
     calling.store.subscribe(({ call }) =>
       audio.call(Boolean(call && call.phase !== "ended")),
@@ -588,7 +572,7 @@ async function start() {
         );
         if (!live()) {
           if (target !== account.key) await marmotAccounts.remove(target);
-          if (!chatPreferences.enabled()) await marmot.closeAccount(true);
+          if (!chatPreferences.enabled()) await marmotSession.stop(true);
           return false;
         }
         if (target === account.key) return false;
@@ -597,6 +581,7 @@ async function start() {
           copyInstallationPreferences(db, installation);
           selectAccount(installation, target);
           retired = true;
+          blocks.stop();
           calling.end();
           callSignaling.stop();
           relays.stop();
@@ -695,10 +680,6 @@ export function LocalSessionLifecycle() {
     downloads.network(false, false);
     const stopDownloads = downloads.start();
     const unsubscribeSpeechCall = calling.store.subscribe(speech.sync);
-    const unsubscribeSpeechPrivacy = privacy.subscribe(() => {
-      void speech.reconcile();
-      void downloads.reconcile();
-    });
     const lowPower = addLowPowerModeListener(speech.power);
     const memory = AppState.addEventListener(
       "memoryWarning",
@@ -810,6 +791,19 @@ export function LocalSessionLifecycle() {
           queueMicrotask(avatars.invalidate);
       },
     );
+    function observeBlocks() {
+      if (mounted && isCurrent() && !marmotSession.transitioning())
+        privacy.blocks.start();
+      else privacy.blocks.stop();
+    }
+    const unsubscribeBlocks = privacy.blocks.subscribe(() => {
+      speech.sync();
+      if (!privacy.blocks.ready() || !activeEligibility() || !isCurrent())
+        return;
+      callSignaling.start();
+      void speech.reconcile();
+      downloads.accountReady();
+    });
     function updateUnlocks() {
       const enabled = activeEligibility();
       profiles.setActive(enabled);
@@ -850,7 +844,7 @@ export function LocalSessionLifecycle() {
         }
         return;
       }
-      callSignaling.start();
+      if (privacy.blocks.ready()) callSignaling.start();
       relays.start();
       connectMessaging();
       marmotSession.reconnected();
@@ -868,6 +862,7 @@ export function LocalSessionLifecycle() {
       else if (state === "background" && !lock.getState().authenticating)
         background();
       updateRelayEligibility();
+      observeBlocks();
       if (state === "active") recoverNetwork();
       updateBackupConditions();
     };
@@ -877,6 +872,7 @@ export function LocalSessionLifecycle() {
       admitDownloadedVoice();
       updateUnlocks();
       updateRelayEligibility();
+      observeBlocks();
       recoverNetwork();
       if (
         lock.getState().authenticating ||
@@ -900,14 +896,7 @@ export function LocalSessionLifecycle() {
       chatsEnabled = next;
       speech.sync();
       if (next) connectMessaging();
-      else
-        void marmotSession
-          .stop()
-          .then(() => {
-            if (mounted && isCurrent() && !chatPreferences.enabled())
-              return marmot.closeAccount(true);
-          })
-          .catch(() => undefined);
+      else void marmotSession.stop(true).catch(() => undefined);
     });
     const unsubscribeMedia = mediaSdk.subscribe(() => {
       const next = attachmentOrigin();
@@ -916,6 +905,7 @@ export function LocalSessionLifecycle() {
       connectMessaging();
     });
     const unsubscribeAccount = marmotSession.subscribe(() => {
+      observeBlocks();
       observeRelayLiveness();
       speech.accountReady();
       if (marmotSession.status() === "ready") downloads.accountReady();
@@ -957,6 +947,7 @@ export function LocalSessionLifecycle() {
       )
         return;
       outboundWake = false;
+      observeBlocks();
       relays.reconnect();
       profileEditor.retry();
       profiles.routesChanged();
@@ -991,12 +982,13 @@ export function LocalSessionLifecycle() {
       .catch(() => undefined);
     return () => {
       mounted = false;
+      privacy.blocks.stop();
       eligible = false;
       observeRelayLiveness();
       stopSpeech();
       stopDownloads();
       unsubscribeSpeechCall();
-      unsubscribeSpeechPrivacy();
+      unsubscribeBlocks();
       lowPower.remove();
       memory.remove();
       stopGroupCalls();

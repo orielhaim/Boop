@@ -57,9 +57,11 @@ export function createProfileDirectory(
   }
 
   async function load(keys: string[], epoch: number) {
+    keys = keys.filter((key) => !blocked(key));
     if (!keys.length || !valid(epoch)) return;
     const rows = await reader.read(keys).catch(() => []);
-    if (valid(epoch)) rows.forEach(receive);
+    if (valid(epoch))
+      for (const row of rows) if (!blocked(row.key)) receive(row);
   }
 
   function schedule() {
@@ -103,17 +105,29 @@ export function createProfileDirectory(
         keys.map((key) => reader.refresh(key, routes)),
       ).finally(() => {
         refreshing = false;
-        for (const key of keys) if (visible.has(key)) pending.add(key);
+        for (const key of keys)
+          if (visible.has(key) && !blocked(key)) pending.add(key);
         schedule();
       });
     });
   }
 
   return {
-    profile: (key: string) => profiles.get(key),
+    profile: (key: string) => (blocked(key) ? undefined : profiles.get(key)),
+    authorizationChanged() {
+      for (const [key, callbacks] of listeners) {
+        if (blocked(key)) {
+          pending.delete(key);
+          refreshed.delete(key);
+        } else if (!profiles.has(key)) pending.add(key);
+        for (const callback of callbacks) callback();
+      }
+      schedule();
+    },
     presentSearch(rows: MarmotPublicProfile[]) {
       if (!valid(generation)) return;
-      for (const row of rows) if (!profiles.has(row.key)) receive(row);
+      for (const row of rows)
+        if (!blocked(row.key) && !profiles.has(row.key)) receive(row);
     },
     reload(key: string) {
       generation++;

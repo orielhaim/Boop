@@ -993,6 +993,8 @@ export const en = {
     blockedChat: "Unblock this identity to send messages or call.",
     noBlocked: "No matching blocked users",
     searchBlocked: "Search name or public key",
+    loadingBlocked: "Loading blocked users…",
+    blockedUnavailable: "Blocked users are unavailable",
     privacyWriteFailed: "Couldn’t save this change. Try again.",
     showIdentityQr: "Show identity QR",
     appLock: "App Lock",

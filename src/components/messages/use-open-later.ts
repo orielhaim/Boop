@@ -1,3 +1,4 @@
+import type { BlockedUsers } from "@/core/marmot/blocked-users";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { MarmotConversation, MarmotWindow } from "@/core/marmot/native";
 import {
@@ -20,7 +21,7 @@ export function useOpenLater(
   snapshot: MarmotConversation | undefined,
   active: boolean,
   hidden: readonly string[],
-  blockedKeys: string,
+  blockState: ReturnType<BlockedUsers["snapshot"]>,
 ) {
   const { db, isCurrent, lock, privacy } = useLocal();
   const resolver = useRef<ReturnType<typeof createOpenLaterResolver>>(null);
@@ -78,7 +79,7 @@ export function useOpenLater(
       if (row.deleted) removeOpenedMessage(db, row.id);
     }
     resolver.current?.scan(rows ?? []);
-  }, [active, blockedKeys, db, hidden, snapshot, window]);
+  }, [active, blockState, db, hidden, snapshot, window]);
 
   return {
     states: active && result?.window === window ? result?.states : undefined,

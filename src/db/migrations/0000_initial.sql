@@ -32,7 +32,6 @@ CREATE TABLE `link_preview_cache` (
 --> statement-breakpoint
 CREATE TABLE `peer_permissions` (
 	`public_key` text PRIMARY KEY NOT NULL,
-	`blocked_at` integer,
 	`initiated` integer DEFAULT false NOT NULL,
 	`approved` integer DEFAULT false NOT NULL
 );

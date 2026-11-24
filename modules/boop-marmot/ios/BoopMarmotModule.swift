@@ -12,7 +12,11 @@ public final class BoopMarmotModule: Module {
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
   private let directoryLock = NSLock()
-  private var observations: [String: Task<Void, Error>?] = [:]
+  private struct Observation {
+    let accountScoped: Bool
+    var task: Task<Void, Error>?
+  }
+  private var observations: [String: Observation] = [:]
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
   private var isForeground = true
   private var foregroundGeneration: UInt64 = 0
@@ -20,9 +24,9 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
     OnAppEntersBackground {
-      self.directoryLock.withLock { self.observations.values.forEach { $0?.cancel() } }
+      self.directoryLock.withLock { self.observations.values.filter { !$0.accountScoped }.forEach { $0.task?.cancel() } }
       let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
         self.isForeground = false
         self.foregroundGeneration &+= 1
@@ -94,10 +98,10 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("cachedDirectorySearch") { (owner: String, query: String) async throws -> [Document] in
       try await self.withSigner(owner) { try $0.searchCachedUsers(accountIdHex: owner, query: query, limit: 48).map(searchResultDocument) }
     }
-    Function("prepareObservation") { (id: String) -> Bool in
+    Function("prepareObservation") { (id: String, accountScoped: Bool) -> Bool in
       self.directoryLock.withLock {
         guard self.observations.count < 8, self.observations.index(forKey: id) == nil else { return false }
-        self.observations[id] = .some(nil)
+        self.observations[id] = Observation(accountScoped: accountScoped)
         return true
       }
     }
@@ -115,7 +119,7 @@ public final class BoopMarmotModule: Module {
       }
     }
     Function("cancelObservation") { (id: String) in
-      self.directoryLock.withLock { self.observations.removeValue(forKey: id).flatMap { $0 }?.cancel() }
+      self.directoryLock.withLock { self.observations.removeValue(forKey: id)?.task?.cancel() }
     }
     AsyncFunction("requestAvatarAssets") { (targets: [String]) async throws -> [Document] in
       try await self.withAccount { try await $0.requestAvatarAssets(accountRef: $1, targets: targets).map(avatarDocument) }
@@ -916,10 +920,28 @@ public final class BoopMarmotModule: Module {
         else { _ = try kit.clearChatMuted(accountRef: account, groupIdHex: group) }
       }
     }
-    AsyncFunction("setBlocked") { (key: String, blocked: Bool) async throws in
-      try await self.withAccount { kit, account in
-        if blocked { _ = try await kit.blockUser(accountRef: account, userAccountIdHex: key) }
-        else { _ = try await kit.unblockUser(accountRef: account, userAccountIdHex: key) }
+    AsyncFunction("watchBlockedUsers") { (owner: String, id: String) async throws in
+      try await self.withObservation(id) {
+        let stream = try await self.withSigner(owner, foreground: false) { try $0.subscribeBlockedUsers(accountRef: owner) }
+        func emit(_ snapshot: BlockListSnapshotFfi) {
+          self.sendEvent("blockedUsers", ["id": id, "rows": self.blockListDocument(snapshot)])
+        }
+        try Task.checkCancellation()
+        guard let initial = stream.snapshot() else { throw problem("BlockListUnavailable") }
+        emit(initial)
+        while let snapshot = try await stream.nextCancellable() {
+          try Task.checkCancellation()
+          emit(snapshot)
+        }
+      }
+    }
+    AsyncFunction("setBlocked") { (owner: String, key: String, blocked: Bool) async throws -> Document in
+      try await self.withSigner(owner) { kit in
+        if blocked { try await kit.blockUser(accountRef: owner, userAccountIdHex: key) }
+        else { try await kit.unblockUser(accountRef: owner, userAccountIdHex: key) }
+        let stream = try kit.subscribeBlockedUsers(accountRef: owner)
+        guard let snapshot = stream.snapshot() else { throw problem("BlockListUnavailable") }
+        return self.blockListDocument(snapshot)
       }
     }
     AsyncFunction("retryConversation") { (group: String) async throws in
@@ -982,7 +1004,7 @@ public final class BoopMarmotModule: Module {
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
     let work = directoryLock.withLock { () -> [Task<Void, Error>] in
-      let work = observations.values.compactMap { $0 }
+      let work = observations.values.compactMap(\.task)
       observations.removeAll()
       return work
     }
@@ -1010,9 +1032,10 @@ public final class BoopMarmotModule: Module {
 
   private func withObservation(_ id: String, work: @escaping () async throws -> Void) async throws {
     let task = directoryLock.withLock { () -> Task<Void, Error>? in
-      guard case .some(.none) = observations[id] else { return nil }
+      guard var observation = observations[id], observation.task == nil else { return nil }
       let task = Task { try await work() }
-      observations[id] = .some(task)
+      observation.task = task
+      observations[id] = observation
       return task
     }
     guard let task else { throw problem("AccountClosed") }
@@ -1020,9 +1043,13 @@ public final class BoopMarmotModule: Module {
     try await task.value
   }
 
-  private func withSigner<T>(_ key: String, _ call: (Marmot) async throws -> T) async throws -> T {
+  private func blockListDocument(_ snapshot: BlockListSnapshotFfi) -> Document {
+    ["revision": String(snapshot.revision), "keys": snapshot.users.map { $0.publicKey }]
+  }
+
+  private func withSigner<T>(_ key: String, foreground: Bool = true, _ call: (Marmot) async throws -> T) async throws -> T {
     try await protocolCall {
-      guard attachmentLock.withLock({ isForeground }) else { throw problem("AccountClosed") }
+      guard !foreground || attachmentLock.withLock({ isForeground }) else { throw problem("AccountClosed") }
       let kit = try await runtime.beginSignerCall(key)
       do {
         let result = try await call(kit)
@@ -1313,7 +1340,9 @@ private actor Runtime {
       try await kit.start()
       started = true
     } catch {
+      let previous = configuration
       try? await stopRuntime()
+      if signerAccount != nil, let previous { _ = try? await prepare(previous, start: false) }
       throw error
     }
   }

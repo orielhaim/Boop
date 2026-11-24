@@ -44,7 +44,8 @@ test("cached projections load as one batch even while a visible profile refresh 
   const duplicate = directory.watch(first);
   const blocked = directory.watch(second);
   await Bun.sleep(0);
-  expect(reads).toEqual([[first, second]]);
+  expect(reads).toEqual([[first]]);
+  expect(directory.profile(second)).toBeUndefined();
   expect(refreshes).toEqual([first]);
   expect(directory.profile(first)?.name).toBe("Offline cache");
   release();
@@ -106,4 +107,24 @@ test("an acknowledged edit supersedes a previously started profile read", async 
   read.resolve([row(first, "Stale")]);
   await Bun.sleep(0);
   expect(observed).toEqual(["Published"]);
+});
+
+test("blocking a peer suppresses its in-flight profile and preserves other profiles", async () => {
+  const pendingRead = Promise.withResolvers<MarmotPublicProfile[]>();
+  let blocked = false;
+  const directory = createProfileDirectory(
+    { read: () => pendingRead.promise, refresh: async () => {} },
+    () => true,
+    (key) => key === first && blocked,
+    () => [],
+  );
+  directory.setActive(true);
+  directory.read([first, second]);
+  await Bun.sleep(0);
+  blocked = true;
+  directory.authorizationChanged();
+  pendingRead.resolve([row(first, "Blocked"), row(second, "Visible")]);
+  await Bun.sleep(0);
+  expect(directory.profile(first)).toBeUndefined();
+  expect(directory.profile(second)?.name).toBe("Visible");
 });

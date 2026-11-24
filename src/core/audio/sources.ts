@@ -105,7 +105,8 @@ export function createAudioSources({
           };
           const authorized = () => {
             const state = window.getState();
-            if (state.status !== "ready" || !allowed(track)) return false;
+            if (state.status !== "ready" || !ready() || !allowed(track))
+              return false;
             const { snapshot } = state;
             return (
               snapshot.authorityReady &&

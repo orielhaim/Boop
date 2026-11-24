@@ -29,6 +29,53 @@ const source = (id: string, hash?: string): MarmotDownload => ({
 const id = (name: string) => downloadId(source(name).target);
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+test("a retained attachment lease cannot escape when account policy becomes unavailable", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  let available = true;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const manager = createDownloadManager({
+    store,
+    eligible: () => true,
+    available: () => available,
+    authorized: () => true,
+    transport: {
+      transfer: async () => "ready",
+      status: async () => "ready",
+      control: async () => {},
+      async open(_job, consume) {
+        entered.resolve();
+        await release.promise;
+        await consume({
+          path: "/verified-local",
+          name: "file",
+          type: "image/jpeg",
+        });
+      },
+    },
+  });
+  const stop = manager.start();
+  try {
+    manager.enqueue(source("lease"));
+    await tick();
+    expect(manager.get(id("lease"))?.state).toBe("completed");
+    let opened = false;
+    const attempt = manager.open(id("lease"), async () => {
+      opened = true;
+    });
+    await entered.promise;
+    available = false;
+    release.resolve();
+    await attempt;
+    expect(opened).toBe(false);
+    expect(manager.get(id("lease"))?.state).toBe("completed");
+  } finally {
+    release.resolve();
+    stop();
+  }
+});
+
 function fixture(sqlite: Database) {
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });

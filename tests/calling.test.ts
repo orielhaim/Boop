@@ -73,6 +73,13 @@ test("signed NIP-59 call rumor reaches only its intended inbox, expires, and sta
     replyRelays: [replyRelay],
   });
   expect(await unwrapCallSignal(wrapped.rawEvent(), third)).toBeNull();
+  expect(
+    await unwrapCallSignal(
+      wrapped.rawEvent(),
+      callee,
+      (key) => key === caller.pubkey,
+    ),
+  ).toBeNull();
   const envelope = {
     senderKey: caller.pubkey,
     recipientKey: callee.pubkey,
@@ -408,6 +415,10 @@ test("an uninvited group member joins through a correlated encrypted-control off
     expect(alice.store.getState().fullGroupCall?.callId).toBe(call.id);
     expect(alice.store.getState().joining).toBeUndefined();
     bob.store.setState({ participants: connected });
+    charlie.peerBlocked(callee.pubkey);
+    expect(charlie.store.getState().call?.phase).toBe("connected");
+    expect(revoked).toEqual([callee.pubkey]);
+    revoked.length = 0;
     roster.delete(third.pubkey);
     charlie.reconcileGroup(group, roster);
     expect(charlie.store.getState().call?.phase).toBe("ended");

@@ -250,13 +250,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "blocked_at": {
-          "name": "blocked_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "initiated": {
           "name": "initiated",
           "type": "integer",

@@ -666,7 +666,7 @@ export function createDownloadManager({
       )
         return;
       await transport.open?.(job, async (file) => {
-        if (eligible() && jobs.get(id) === job && allowed(job))
+        if (eligible() && jobs.get(id) === job && usable(job) && allowed(job))
           await consume(file);
       });
     },

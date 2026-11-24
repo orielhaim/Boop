@@ -420,7 +420,7 @@ export function MarmotConversationScreen({
   const listened = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.listened(id),
   );
-  const blockedKeys = privacy.blockedKeys().join(",");
+  const blockState = privacy.blocks.snapshot();
   const presentation = useMemo(
     () =>
       createAttachmentPresentation(
@@ -487,7 +487,7 @@ export function MarmotConversationScreen({
     for (const row of snapshot?.messages ?? [])
       if (row.deleted || row.invalidationStatus)
         downloads.invalidate(id, row.id);
-  }, [blockedKeys, downloads, hidden, id, locked, presentation, snapshot]);
+  }, [blockState, downloads, hidden, id, locked, presentation, snapshot]);
   useEffect(() => {
     if (
       !focused ||
@@ -531,10 +531,12 @@ export function MarmotConversationScreen({
       !blocked,
     ),
     hidden,
-    blockedKeys,
+    blockState,
   );
   const messages = useMemo(() => {
-    const blocked = new Set(blockedKeys.split(","));
+    const blocked = (key: string) =>
+      key !== self &&
+      (blockState.status !== "ready" || blockState.keys.has(key));
     const omitted = new Set(hidden);
     const played = new Set(listened);
     const names = new Map(people?.map((person) => [person.id, person.name]));
@@ -550,12 +552,14 @@ export function MarmotConversationScreen({
     const systemText = (event: NonNullable<MarmotMessage["system"]>) => {
       const subject = event.subject ?? event.actor;
       const name =
-        event.name || (subject && !blocked.has(subject) && names.get(subject));
+        event.name || (subject && !blocked(subject) && names.get(subject));
       const label = t(systemLabel(event.type));
       return name ? [label, name].join(" · ") : label;
     };
     return (rows ?? [])
-      .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
+      .filter(
+        (row) => (row.system || !blocked(row.sender)) && !omitted.has(row.id),
+      )
       .map((row): ChatMessage => {
         const status = row.sender === self ? delivery(row) : undefined;
         return {
@@ -593,7 +597,7 @@ export function MarmotConversationScreen({
           system: Boolean(row.system),
           replyMessage:
             row.replyPreview &&
-            !blocked.has(row.replyPreview.sender) &&
+            !blocked(row.replyPreview.sender) &&
             !omitted.has(row.replyPreview.id)
               ? {
                   _id: row.replyPreview.id,
@@ -630,7 +634,7 @@ export function MarmotConversationScreen({
     rows,
     contacts,
     people,
-    blockedKeys,
+    blockState,
     hidden,
     listened,
     mentionNames,
@@ -1696,7 +1700,13 @@ export function MarmotConversationScreen({
                     <InputToolbar {...props} />
                   </>
                 ) : blocked ? (
-                  <Ink>{t("messages:marmot.blocked")}</Ink>
+                  <Ink>
+                    {t(
+                      blockState.status === "ready"
+                        ? "messages:marmot.blocked"
+                        : "security:blockedUnavailable",
+                    )}
+                  </Ink>
                 ) : null
               }
               onDraftChange={(text) => {
@@ -2315,13 +2325,17 @@ function MarmotInvitation({
     .slice(0, 4)
     .map((member) => member.name || member.npub.slice(0, 15) + "…")
     .join(", ");
-  function respond(accept: boolean) {
+  function respond(accept: boolean, block = false) {
     if (busy) return;
     const current = inviter ? privacy.messagePermission(inviter) : undefined;
     if (accept && current !== "allow" && current !== "request") return;
     setBusy(true);
     void (async () => {
       if (!isCurrent() || lock.getState().locked) return;
+      if (block && inviter) {
+        await privacy.blocks.block(inviter);
+        if (!isCurrent() || lock.getState().locked) return;
+      }
       if (accept) {
         const latest = await marmot.groupInvitation(id);
         if (!isCurrent() || lock.getState().locked || !inviter) return;
@@ -2345,11 +2359,13 @@ function MarmotInvitation({
     <View style={styles.invitation}>
       <Ink>
         {t(
-          permission === "blocked"
-            ? "messages:marmot.blocked"
-            : permission === "reject"
-              ? "messages:marmot.inviteFiltered"
-              : "messages:marmot.inviteRequired",
+          !privacy.blocks.ready()
+            ? "security:blockedUnavailable"
+            : permission === "blocked"
+              ? "messages:marmot.blocked"
+              : permission === "reject"
+                ? "messages:marmot.inviteFiltered"
+                : "messages:marmot.inviteRequired",
         )}
       </Ink>
       {allowed && invitation?.name && <Ink kind="title">{invitation.name}</Ink>}
@@ -2369,13 +2385,7 @@ function MarmotInvitation({
         {t("messages:marmot.decline")}
       </Action>
       {inviter && permission !== "blocked" && (
-        <Action
-          disabled={busy}
-          onPress={() => {
-            privacy.block(inviter);
-            respond(false);
-          }}
-        >
+        <Action disabled={busy} onPress={() => respond(false, true)}>
           {t("messages:marmot.blockInviter")}
         </Action>
       )}

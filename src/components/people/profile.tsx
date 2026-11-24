@@ -127,8 +127,9 @@ function ProfileContent({
     nip05: pendingProfile?.nip05 ?? profile?.nip05,
   };
   const block = useBlockAction(publicKey);
+  const restricted = privacy.isBlocked(publicKey);
   const verified = useVerifiedIdentifier(
-    focused && !block.blocked ? details.nip05 : undefined,
+    focused && !restricted ? details.nip05 : undefined,
     publicKey,
   );
   const chatsEnabled = useChatsEnabled();
@@ -152,14 +153,14 @@ function ProfileContent({
       focused &&
       lockState.active &&
       !lockState.locked &&
-      !block.blocked &&
+      !restricted &&
       allowImages
     )
       return avatars.allowVisit(publicKey);
   }, [
     allowImages,
     avatars,
-    block.blocked,
+    restricted,
     focused,
     lockState.active,
     lockState.locked,
@@ -187,8 +188,8 @@ function ProfileContent({
   );
   useEffect(
     () =>
-      privacy.subscribeBlock((key) => {
-        if (key === publicKey) {
+      privacy.blocks.subscribe(() => {
+        if (privacy.isBlocked(publicKey)) {
           setImageConsent(undefined);
           setContactEditor(undefined);
         }
@@ -199,7 +200,7 @@ function ProfileContent({
     if (
       !focused ||
       !hint ||
-      block.blocked ||
+      restricted ||
       lockState.locked ||
       !lockState.active
     )
@@ -212,7 +213,7 @@ function ProfileContent({
       .catch(() => undefined);
     return () => job.abort();
   }, [
-    block.blocked,
+    restricted,
     focused,
     hint,
     lockState.active,
@@ -417,7 +418,7 @@ function ProfileContent({
                 style={styles.primary}
                 icon="chat"
                 label={t("contacts:message")}
-                disabled={block.blocked}
+                disabled={restricted}
                 onPress={() =>
                   router.push({
                     pathname: "/chat/[key]",
@@ -430,7 +431,7 @@ function ProfileContent({
               iconOnly
               icon="phone"
               label={t("messenger:voice")}
-              disabled={block.blocked}
+              disabled={restricted}
               onPress={() =>
                 router.push({
                   pathname: "/call/[key]",
@@ -478,7 +479,7 @@ function ProfileContent({
             )}
           </View>
         )}
-        {!block.blocked &&
+        {!restricted &&
           !avatars.autoLoads(publicKey) &&
           !allowImages &&
           Boolean(profile?.picture || details.banner) && (
@@ -504,7 +505,7 @@ function ProfileContent({
             open={
               focused &&
               lockState.active &&
-              !block.blocked &&
+              !restricted &&
               !lockState.locked &&
               !!contactEditor
             }
@@ -579,7 +580,7 @@ function ProfileContent({
         )}
         {!own && (
           <SettingsGroup>
-            {!block.blocked && (
+            {!restricted && (
               <SettingsRow
                 title={t(contact ? "messenger:nickname" : "contacts:saveAs")}
                 detail={contact?.name || undefined}
@@ -608,7 +609,7 @@ function ProfileContent({
                     )
                   }
                 />
-                {!block.blocked && (
+                {!restricted && (
                   <>
                     <SettingsRow
                       title={t("settings:photoChange")}
@@ -652,10 +653,13 @@ function ProfileContent({
                 />
               </>
             )}
-            <SettingsRow title={block.label} onPress={block.onPress} />
+            <SettingsRow
+              title={block.label}
+              onPress={block.disabled ? undefined : block.onPress}
+            />
           </SettingsGroup>
         )}
-        {!own && !block.blocked && <PersonContext publicKey={publicKey} />}
+        {!own && !restricted && <PersonContext publicKey={publicKey} />}
         {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
       </ParallaxScrollView>
     </Screen>

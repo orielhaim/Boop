@@ -30,8 +30,9 @@ class BoopMarmotModule : Module() {
   private val shutdownTurn = Mutex()
   private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-  private val observations = ConcurrentHashMap<String, CompletableJob>()
-  private val directoryWork = ConcurrentHashMap.newKeySet<Job>()
+  private data class Observation(val ticket: CompletableJob, val accountScoped: Boolean)
+  private val observations = ConcurrentHashMap<String, Observation>()
+  private val directoryWork = ConcurrentHashMap<Job, Boolean>()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
@@ -48,15 +49,17 @@ class BoopMarmotModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
     OnActivityEntersForeground {
       foregroundGeneration.incrementAndGet()
       downloadsForeground = true
     }
     OnActivityEntersBackground {
       downloadsForeground = false
-      observations.values.toList().also { observations.clear() }.forEach { it.cancel() }
-      directoryWork.forEach { it.cancel() }
+      observations.forEach { (id, observation) ->
+        if (!observation.accountScoped && observations.remove(id, observation)) observation.ticket.cancel()
+      }
+      directoryWork.forEach { (job, foreground) -> if (foreground) job.cancel() }
       foregroundGeneration.incrementAndGet()
       attachmentAdmissions.values.forEach { it.set(true) }
       val controls = attachmentControls.values.toList()
@@ -189,9 +192,9 @@ class BoopMarmotModule : Module() {
     AsyncFunction("cachedDirectorySearch") Coroutine { owner: String, query: String ->
       withSigner(owner) { kit -> kit.searchCachedUsers(owner, query, 48u).map { searchResultDocument(it) } }
     }
-    Function("prepareObservation") { id: String ->
+    Function("prepareObservation") { id: String, accountScoped: Boolean ->
       if (observations.size >= 8) throw problem("SearchInProgress")
-      observations.putIfAbsent(id, Job()) == null
+      observations.putIfAbsent(id, Observation(Job(), accountScoped)) == null
     }
     AsyncFunction("searchDirectory") Coroutine { owner: String, id: String, query: String ->
       withObservation(owner, id) { kit ->
@@ -206,7 +209,7 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    Function("cancelObservation") { id: String -> observations.remove(id)?.cancel(); Unit }
+    Function("cancelObservation") { id: String -> observations.remove(id)?.ticket?.cancel(); Unit }
     AsyncFunction("requestAvatarAssets") Coroutine { targets: List<String> ->
       withSession { active ->
         active.kit.requestAvatarAssets(active.account, targets).map { it.document() }
@@ -1055,10 +1058,28 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    AsyncFunction("setBlocked") Coroutine { key: String, blocked: Boolean ->
-      withSession {
-        if (blocked) it.kit.blockUser(it.account, key) else it.kit.unblockUser(it.account, key)
-        Unit
+    AsyncFunction("watchBlockedUsers") Coroutine { owner: String, id: String ->
+      withObservation(owner, id) { kit ->
+        kit.subscribeBlockedUsers(owner).use { stream ->
+          fun emit(snapshot: BlockListSnapshotFfi) {
+            sendEvent("blockedUsers", mapOf("id" to id, "rows" to snapshot.document()))
+          }
+          currentCoroutineContext().ensureActive()
+          emit(stream.snapshot() ?: throw problem("BlockListUnavailable"))
+          while (true) {
+            val snapshot = stream.next() ?: break
+            currentCoroutineContext().ensureActive()
+            emit(snapshot)
+          }
+        }
+      }
+    }
+    AsyncFunction("setBlocked") Coroutine { owner: String, key: String, blocked: Boolean ->
+      withDirectory(owner) { kit ->
+        if (blocked) kit.blockUser(owner, key) else kit.unblockUser(owner, key)
+        kit.subscribeBlockedUsers(owner).use { stream ->
+          (stream.snapshot() ?: throw problem("BlockListUnavailable")).document()
+        }
       }
     }
     AsyncFunction("retryConversation") Coroutine { group: String ->
@@ -1151,9 +1172,9 @@ class BoopMarmotModule : Module() {
     shutdownTurn.withLock {
       val work = lifecycle.withLock {
         closingAccount = true
-        directoryWork.toList()
+        directoryWork.keys.toList()
       }
-      observations.values.toList().also { observations.clear() }.forEach { it.cancel() }
+      observations.values.toList().also { observations.clear() }.forEach { it.ticket.cancel() }
       work.forEach { it.cancel() }
       try {
         work.joinAll()
@@ -1321,29 +1342,34 @@ class BoopMarmotModule : Module() {
       kit.start()
       runtimeStarted = true
     } catch (error: Throwable) {
-      withContext(NonCancellable) { runCatching { stopRuntime() } }
+      withContext(NonCancellable) {
+        val configuration = runtimeConfiguration
+        runCatching { stopRuntime() }
+        if (signerAccount != null && configuration != null) runCatching { makeRuntime(configuration) }
+      }
       throw error
     }
   }
 
   private suspend fun withObservation(owner: String, id: String, work: suspend (Marmot) -> Unit) {
-    val ticket = observations[id] ?: throw problem("AccountClosed")
+    val observation = observations[id] ?: throw problem("AccountClosed")
+    val ticket = observation.ticket
     val job = currentCoroutineContext().job
     val cancellation = ticket.invokeOnCompletion { if (ticket.isCancelled) job.cancel() }
     try {
-      withDirectory(owner, work)
+      withDirectory(owner, foreground = !observation.accountScoped, work = work)
     } finally {
       cancellation.dispose()
-      observations.remove(id, ticket)
+      observations.remove(id, observation)
       ticket.complete()
     }
   }
 
-  private suspend fun <T> withDirectory(owner: String, work: suspend (Marmot) -> T): T = protocol {
+  private suspend fun <T> withDirectory(owner: String, foreground: Boolean = true, work: suspend (Marmot) -> T): T = protocol {
     val job = currentCoroutineContext().job
     val kit = lifecycle.withLock {
-      if (closingAccount || !downloadsForeground || signerAccount != owner) throw problem("AccountClosed")
-      (marmotRuntime ?: throw problem("AccountClosed")).also { directoryWork.add(job) }
+      if (closingAccount || (foreground && !downloadsForeground) || signerAccount != owner) throw problem("AccountClosed")
+      (marmotRuntime ?: throw problem("AccountClosed")).also { directoryWork[job] = foreground }
     }
     try { work(kit) } finally { directoryWork.remove(job) }
   }
@@ -1356,6 +1382,9 @@ class BoopMarmotModule : Module() {
         work(kit)
       }
     }
+
+  private fun BlockListSnapshotFfi.document(): Document =
+    mapOf("revision" to revision.toString(), "keys" to users.map { it.publicKey })
 
   private fun searchResultDocument(row: UserDirectorySearchResultFfi): Document =
     mapOf("key" to row.accountIdHex, "profile" to row.profile?.let { profileDocument(row.accountIdHex, it, null, false) })

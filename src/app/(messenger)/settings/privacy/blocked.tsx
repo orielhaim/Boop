@@ -1,10 +1,10 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { Action, Empty, Screen } from "@/components/ui/kit";
-import { useBlockAction, usePrivacy } from "@/components/ui/privacy-actions";
+import { useBlockAction } from "@/components/ui/privacy-actions";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
@@ -23,21 +23,24 @@ function BlockedRow({
       title={title}
       detail={`${toNpub(publicKey).slice(0, 19)}…`}
       value={action.label}
-      onPress={action.onPress}
+      onPress={action.disabled ? undefined : action.onPress}
     />
   );
 }
 
 export default function BlockedUsers() {
   const { t } = useTranslation(namespaces);
-  const { db, identity } = useLocal();
-  const privacy = usePrivacy();
+  const {
+    db,
+    identity,
+    privacy: { blocks },
+  } = useLocal();
   const [filter, setFilter] = useState("");
   const target = parsePublicKey(filter);
   const action = useBlockAction(target ?? "");
   const query = filter.trim().toLowerCase();
-  const matches = privacy
-    .blockedKeys()
+  const snapshot = useSyncExternalStore(blocks.subscribe, blocks.snapshot);
+  const matches = (snapshot.status === "ready" ? [...snapshot.keys] : [])
     .map((key) => {
       const name = contactByKey(db, key).get()?.name;
       return { key, name, address: toNpub(key) };
@@ -59,9 +62,24 @@ export default function BlockedUsers() {
         accessibilityLabel={t("security:searchBlocked")}
       />
       {target && target !== identity.publicKey && !action.blocked && (
-        <Action onPress={action.onPress}>{t("security:block")}</Action>
+        <Action disabled={action.disabled} onPress={action.onPress}>
+          {t("security:block")}
+        </Action>
       )}
-      {matches.length ? (
+      {snapshot.status === "unavailable" && (
+        <Action onPress={blocks.start}>{t("common:retry")}</Action>
+      )}
+      {snapshot.status !== "ready" ? (
+        <Empty
+          icon="lock"
+          title={t(
+            snapshot.status === "loading"
+              ? "security:loadingBlocked"
+              : "security:blockedUnavailable",
+          )}
+          detail=""
+        />
+      ) : matches.length ? (
         <SettingsGroup>
           {matches.map(({ key, name, address }) => (
             <BlockedRow

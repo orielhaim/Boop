@@ -22,7 +22,7 @@ export function createMarmotSession({
     discovery: readonly string[],
     mediaOrigin: string | null,
   ) => Promise<MarmotReadiness>;
-  close: () => Promise<void>;
+  close: (pauseMessaging: boolean) => Promise<void>;
   beforeClose: () => Promise<void> | undefined;
 }) {
   let desired: Configuration | null = null;
@@ -30,6 +30,7 @@ export function createMarmotSession({
   let state: State = { status: "pending" };
   let transition = Promise.resolve();
   let revision = 0;
+  let transitioning = false;
   const listeners = new Set<() => void>();
 
   function publish(next: State) {
@@ -38,14 +39,14 @@ export function createMarmotSession({
     for (const listener of listeners) listener();
   }
 
-  function reconcile() {
+  function reconcile(pauseMessaging = false) {
     const next = desired;
     transition = transition.then(async () => {
       if (next !== desired) return;
       try {
-        if (active && active !== next) {
-          await beforeClose();
-          await close();
+        if ((active && active !== next) || pauseMessaging) {
+          if (active) await beforeClose();
+          await close(pauseMessaging);
           active = null;
         }
         if (next !== desired) return;
@@ -53,11 +54,18 @@ export function createMarmotSession({
           await open(next.discovery, next.mediaOrigin);
           active = next;
         }
-        if (next === desired) publish({ status: active ? "ready" : "pending" });
+        if (next === desired) {
+          transitioning = false;
+          publish({ status: active ? "ready" : "pending" });
+        }
       } catch (cause) {
-        if (next === desired) publish({ status: "failed", cause });
+        if (next === desired) {
+          transitioning = false;
+          publish({ status: "failed", cause });
+        }
       }
     });
+    transitioning = true;
     publish({ status: "pending" });
     return transition;
   }
@@ -73,10 +81,10 @@ export function createMarmotSession({
       desired = next;
       return reconcile();
     },
-    async stop() {
-      if (desired || active) {
+    async stop(pauseMessaging = false) {
+      if (desired || active || pauseMessaging) {
         desired = null;
-        await reconcile();
+        await reconcile(pauseMessaging);
       } else await transition;
       if (state.status === "failed") throw state.cause;
     },
@@ -98,6 +106,7 @@ export function createMarmotSession({
       void reconcile();
     },
     status: () => state.status,
+    transitioning: () => transitioning,
     revision: () => revision,
     subscribe(listener: () => void) {
       listeners.add(listener);

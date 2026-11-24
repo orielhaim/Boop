@@ -131,6 +131,7 @@ export function createVoiceTranscription({
       return false;
     const details = await marmot.groupAccess(group, true);
     return (
+      !blocked(source.sender) &&
       details.membership === "member" &&
       !details.pendingInvitation &&
       !details.pendingLeave &&

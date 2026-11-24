@@ -1,0 +1,99 @@
+import { parsePublicKey } from "../identity/keys";
+
+type Snapshot = { revision: string; keys: readonly string[] };
+type Source = {
+  observe(
+    owner: string,
+    receive: (snapshot: Snapshot) => void,
+    ended: (error: unknown) => void,
+  ): () => void;
+  set(owner: string, key: string, blocked: boolean): Promise<Snapshot>;
+};
+
+type State =
+  | { status: "loading" | "unavailable" }
+  | { status: "ready"; revision: bigint; keys: ReadonlySet<string> };
+
+export function createBlockedUsers(owner: string, source: Source) {
+  let state: State = { status: "loading" };
+  let cancel: (() => void) | undefined;
+  let generation = 0;
+  let writes = Promise.resolve();
+  const listeners = new Set<() => void>();
+
+  function publish(next: State) {
+    state = next;
+    for (const listener of listeners) listener();
+  }
+
+  function receive(snapshot: Snapshot) {
+    const revision = BigInt(snapshot.revision);
+    if (state.status === "ready" && revision <= state.revision) return;
+    publish({ status: "ready", revision, keys: new Set(snapshot.keys) });
+  }
+
+  async function set(input: string, blocked: boolean) {
+    const key = parsePublicKey(input);
+    if (!key || key === owner) throw new Error("InvalidBlockTarget");
+    if (state.status !== "ready") throw new Error("BlockListUnavailable");
+    const current = generation;
+    const write = writes.then(async () => {
+      if (current !== generation) throw new Error("AccountClosed");
+      const snapshot = await source.set(owner, key, blocked);
+      if (current !== generation) throw new Error("AccountClosed");
+      receive(snapshot);
+    });
+    writes = write.catch(() => undefined);
+    await write;
+  }
+
+  return {
+    snapshot: () => state,
+    ready: () => state.status === "ready",
+    has: (key: string) => state.status === "ready" && state.keys.has(key),
+    isBlocked: (key: string) =>
+      key !== owner && (state.status !== "ready" || state.keys.has(key)),
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    start() {
+      if (cancel) return;
+      const current = ++generation;
+      const ended = () => {
+        if (current !== generation) return;
+        generation++;
+        writes = Promise.resolve();
+        cancel = undefined;
+        publish({ status: "unavailable" });
+      };
+      try {
+        if (state.status !== "loading") publish({ status: "loading" });
+        const stop = source.observe(
+          owner,
+          (snapshot) => {
+            if (current === generation) receive(snapshot);
+          },
+          ended,
+        );
+        if (current === generation) cancel = stop;
+        else stop();
+      } catch {
+        ended();
+      }
+    },
+    stop() {
+      generation++;
+      writes = Promise.resolve();
+      cancel?.();
+      cancel = undefined;
+      if (state.status !== "loading") publish({ status: "loading" });
+    },
+    block: (key: string) => set(key, true),
+    unblock: (key: string) => set(key, false),
+  };
+}
+
+export type BlockedUsers = ReturnType<typeof createBlockedUsers>;

@@ -910,16 +910,29 @@ export function createCallController({
     receive,
     groupAllowed,
     peerBlocked(key: string) {
-      if (!active) return;
+      const { joining, participants } = store.getState();
+      if (joining?.recipientKey === key) clearJoinRequest(joining);
+      const attempt = active;
+      if (!attempt) return;
+      if (attempt.invitation?.signal.recipientKey === key)
+        settleInvitation(attempt, "cancelled", true);
+      const involved =
+        attempt.base.peerKey === key ||
+        attempt.media?.involves?.(key) ||
+        participants.some((member) => member.key === key) ||
+        attempt.invite.conference?.roster.includes(key);
+      if (!involved) return;
       if (
-        active.base.peerKey === key ||
-        active.media?.involves?.(key) ||
-        store.getState().participants.some((member) => member.key === key) ||
-        active.invite.conference?.roster.includes(key)
+        attempt.base.groupId &&
+        attempt.answeredAt !== null &&
+        attempt.media?.conference?.revokePeer
       ) {
-        finish(active, active.answeredAt === null ? "cancelled" : "completed");
-      } else if (active.invitation?.signal.recipientKey === key) {
-        settleInvitation(active, "cancelled", true);
+        attempt.media.conference.revokePeer(key);
+      } else {
+        finish(
+          attempt,
+          attempt.answeredAt === null ? "cancelled" : "completed",
+        );
       }
     },
     isRequestingMicrophone: () => active?.microphonePrompt === true,

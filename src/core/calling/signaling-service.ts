@@ -227,7 +227,7 @@ export function createCallSignalingService({
     },
     send,
     async prepareRoute(callId: string, recipient: string) {
-      if (!replyTargets(callId, recipient).length)
+      if (!isBlocked(recipient) && !replyTargets(callId, recipient).length)
         await discoverRoute(callId, recipient);
     },
     subscribe(listener: (signal: CallSignal) => void) {

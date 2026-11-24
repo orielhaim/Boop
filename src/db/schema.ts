@@ -81,7 +81,6 @@ export const speechJobs = sqliteTable(
 
 export const peerPermissions = sqliteTable("peer_permissions", {
   publicKey: text("public_key").primaryKey().notNull(),
-  blockedAt: integer("blocked_at"),
   initiated: integer({ mode: "boolean" }).notNull().default(false),
   approved: integer({ mode: "boolean" }).notNull().default(false),
 });
