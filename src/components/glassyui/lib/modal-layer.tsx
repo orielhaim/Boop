@@ -1,5 +1,5 @@
-import type { ComponentRef } from "react";
 import {
+  type ComponentRef,
   createContext,
   forwardRef,
   useCallback,
@@ -14,31 +14,25 @@ import {
   I18nManager,
   Modal,
   Pressable,
-  StyleSheet,
   Text,
   type ModalProps,
   type StyleProp,
   type TextProps,
   type ViewStyle,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   initialWindowMetrics,
   SafeAreaInsetsContext,
 } from "react-native-safe-area-context";
 import { useGlassTheme } from "../glass-provider";
-import { GlassIcon } from "./icons";
+import { Icon } from "@/components/ui/icon";
 
 /** Arrivals ease out on the library's curve (`--lg-ease-out`); exits ease in. */
 export const LAYER_EASING = {
   in: Easing.bezier(0.42, 0, 1, 1),
   out: Easing.bezier(0.32, 0.72, 0, 1),
 };
-
-/** The fill of a control on glass under a finger (`--lg-control-surface-hover`). */
-export const CONTROL_SURFACE_PRESSED = {
-  dark: "rgba(245, 245, 247, 0.14)",
-  light: "rgba(255, 255, 255, 0.95)",
-} as const;
 
 // Without these, iOS turns a landscape screen back to portrait while a layer is open.
 const ORIENTATIONS = [
@@ -192,7 +186,7 @@ export function ModalLayerCloseButton({
   onPress,
   style,
 }: ModalLayerCloseButtonProps) {
-  const { colors, preferences } = useGlassTheme();
+  const { colors } = useGlassTheme();
 
   return (
     <Pressable
@@ -204,7 +198,7 @@ export function ModalLayerCloseButton({
         styles.close,
         {
           backgroundColor: pressed
-            ? CONTROL_SURFACE_PRESSED[preferences.theme]
+            ? colors.pressedSurface
             : colors.controlSurface,
           borderColor: colors.border,
         },
@@ -212,11 +206,10 @@ export function ModalLayerCloseButton({
       ]}
     >
       {({ pressed }) => (
-        <GlassIcon
+        <Icon
           color={pressed ? colors.foreground : colors.mutedForeground}
           name="close"
           size={16}
-          strokeWidth={1.6}
         />
       )}
     </Pressable>

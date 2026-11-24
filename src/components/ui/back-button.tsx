@@ -1,10 +1,6 @@
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  StyleSheet,
-  type StyleProp,
-  type ViewStyle,
-} from "react-native";
+import { Pressable, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   GlassSurface,

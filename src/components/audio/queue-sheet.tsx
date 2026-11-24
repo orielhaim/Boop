@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import Animated, { useAnimatedRef } from "react-native-reanimated";
 import Sortable from "react-native-sortables";
@@ -149,7 +150,7 @@ const QueueRow = memo(function QueueRow({
     <View
       style={[
         styles.row,
-        { backgroundColor: current ? colors.accentSoft : colors.surface },
+        { backgroundColor: current ? colors.selected : colors.raised },
       ]}
     >
       {handle ?? (

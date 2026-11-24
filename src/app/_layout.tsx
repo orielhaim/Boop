@@ -17,7 +17,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Modal, StyleSheet, View } from "react-native";
+import { Alert, AppState, Modal, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
@@ -243,7 +244,7 @@ function BootSurface({ children }: { children: ReactNode }) {
           ...base.colors,
           primary: colors.accent,
           background: colors.background,
-          card: colors.surface,
+          card: colors.raised,
           text: colors.text,
           border: colors.line,
         },

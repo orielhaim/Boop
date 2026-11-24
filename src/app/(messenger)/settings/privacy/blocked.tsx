@@ -2,7 +2,7 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { Action, Empty, Screen } from "@/components/ui/kit";
 import { useBlockAction } from "@/components/ui/privacy-actions";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
@@ -19,7 +19,7 @@ function BlockedRow({
 }) {
   const action = useBlockAction(publicKey);
   return (
-    <SettingsRow
+    <ListRow
       title={title}
       detail={`${toNpub(publicKey).slice(0, 19)}…`}
       value={action.label}
@@ -80,7 +80,7 @@ export default function BlockedUsers() {
           detail=""
         />
       ) : matches.length ? (
-        <SettingsGroup>
+        <ListGroup>
           {matches.map(({ key, name, address }) => (
             <BlockedRow
               key={key}
@@ -88,7 +88,7 @@ export default function BlockedUsers() {
               title={name ?? `${address.slice(0, 23)}…`}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       ) : (
         <Empty icon="lock" title={t("security:noBlocked")} detail="" />
       )}

@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import type { ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { GlassBackButton, backButtonSize } from "@/components/ui/back-button";
 import { Ink } from "@/components/ui/kit";
 import { space } from "@/theme";

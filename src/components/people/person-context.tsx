@@ -3,7 +3,7 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { conversationRoute } from "@/components/messages/marmot-inbox";
 import { useMarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import { marmot } from "@/core/marmot/native";
@@ -85,9 +85,9 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
   return (
     <>
       {calls.length > 0 && (
-        <SettingsGroup title={t("calls:recents")}>
+        <ListGroup title={t("calls:recents")}>
           {calls.map((call) => (
-            <SettingsRow
+            <ListRow
               key={call.id}
               icon={call.outcome === "missed" ? "missed" : call.direction}
               title={t(
@@ -96,11 +96,11 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
               detail={format.format(call.startedAt)}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {enabled && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             title={t("messenger:sharedGroups")}
             onPress={() => {
               setMatches(undefined);
@@ -109,7 +109,7 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
           />
           {show &&
             matches?.map((group) => (
-              <SettingsRow
+              <ListRow
                 key={group.id}
                 title={group.name}
                 onPress={() =>
@@ -118,9 +118,9 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
               />
             ))}
           {show && matches?.length === 0 && (
-            <SettingsRow title={t("messenger:noSharedGroups")} />
+            <ListRow title={t("messenger:noSharedGroups")} />
           )}
-        </SettingsGroup>
+        </ListGroup>
       )}
     </>
   );

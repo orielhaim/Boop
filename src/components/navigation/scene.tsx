@@ -1,6 +1,7 @@
 import { useIsFocused } from "expo-router";
 import type { ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 
 export function navigationScene({ children }: { children: ReactNode }) {
   return <NavigationScene>{children}</NavigationScene>;

@@ -1,10 +1,7 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
-import {
-  SettingsDescription,
-  SettingsGroup,
-} from "@/components/settings/group";
+import { SettingsDescription, ListGroup } from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { usePrivacy } from "@/components/ui/privacy-actions";
@@ -19,7 +16,7 @@ export default function LinkPreviewPrivacy() {
     <Screen
       navigationHeader={<ScreenHeader title={t("settings:linkPreviews")} />}
     >
-      <SettingsGroup>
+      <ListGroup>
         <SettingsMenuRow
           title={t("settings:linkPreviews")}
           value={policy}
@@ -35,7 +32,7 @@ export default function LinkPreviewPrivacy() {
             }
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
       <SettingsDescription>
         {t(`settings:linkPreviewHelp_${policy}`)}
       </SettingsDescription>

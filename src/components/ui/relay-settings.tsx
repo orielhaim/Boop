@@ -1,13 +1,14 @@
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, StyleSheet, View } from "react-native";
+import { Alert, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { Action, Icon, Ink } from "@/components/ui/kit";
 import { marmotRelays } from "@/core/marmot/native";
 import type { RelayEdit } from "@/core/nostr/account-relays";
@@ -164,8 +165,8 @@ export function RelaySettings() {
 
   return (
     <>
-      <SettingsGroup title={t("connections:relays")}>
-        <SettingsRow
+      <ListGroup title={t("connections:relays")}>
+        <ListRow
           title={t("connections:marmot")}
           value={
             runtime === "ready" && nativeStates.length
@@ -178,7 +179,7 @@ export function RelaySettings() {
               : t("common:unknown")
           }
         />
-        <SettingsRow
+        <ListRow
           title={t("connections:independent")}
           value={
             Object.keys(signalStates).length
@@ -191,13 +192,13 @@ export function RelaySettings() {
               : t("common:unknown")
           }
         />
-        <SettingsRow
+        <ListRow
           title={t("connections:reconnect")}
           onPress={() => void reconnect()}
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("connections:privateInbox")}>
-        <SettingsRow
+      </ListGroup>
+      <ListGroup title={t("connections:privateInbox")}>
+        <ListRow
           title={t(
             roles.inbox.length
               ? "connections:inboxPublished"
@@ -205,20 +206,20 @@ export function RelaySettings() {
           )}
           value={lists ? String(roles.inbox.length) : t("common:unknown")}
         />
-        <SettingsToggle
+        <PreferenceToggle
           title={t("connections:incomingCalls")}
           value={incomingCalls}
           onChange={(enabled) => {
             if (!busy) void change({ list: "incomingCalls", enabled });
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
       <SettingsDescription>{t("connections:rolesHelp")}</SettingsDescription>
       {error ? <SettingsDescription>{error}</SettingsDescription> : null}
       {busy ? (
         <SettingsDescription>{t("connections:saving")}</SettingsDescription>
       ) : null}
-      <SettingsGroup title={t("connections:savedRelays")}>
+      <ListGroup title={t("connections:savedRelays")}>
         {addresses.map((url) => {
           const state = runtime === "ready" ? statusByUrl.get(url) : undefined;
           const independent = signalStates[url];
@@ -232,14 +233,14 @@ export function RelaySettings() {
             !lists.allowed.some((entry) => normalize(entry) === url);
           return (
             <View key={url}>
-              <SettingsRow
+              <ListRow
                 title={url}
                 detail={[
                   ...enabled.map((role) => t(`connections:${role}`)),
                   ...(bootstrap.includes(url)
                     ? [t("connections:bootstrap")]
                     : []),
-                ].join(" · ")}
+                ].join(" ï¿½ ")}
                 trailing={
                   <Icon
                     name={show ? "collapse" : "expand"}
@@ -255,11 +256,11 @@ export function RelaySettings() {
                   <Ink kind="caption" muted selectable style={styles.address}>
                     {url}
                   </Ink>
-                  <SettingsRow
+                  <ListRow
                     title={t("connections:marmot")}
                     value={t(statusLabels[state?.status ?? "unknown"])}
                   />
-                  <SettingsRow
+                  <ListRow
                     title={t("connections:independent")}
                     value={t(statusLabels[independent ?? "unknown"])}
                   />
@@ -281,7 +282,7 @@ export function RelaySettings() {
                     </SettingsDescription>
                   ) : null}
                   {(["general", "inbox", "discovery"] as const).map((role) => (
-                    <SettingsToggle
+                    <PreferenceToggle
                       key={role}
                       title={t(`connections:${role}`)}
                       value={roles[role].includes(url)}
@@ -290,7 +291,7 @@ export function RelaySettings() {
                       }}
                     />
                   ))}
-                  <SettingsRow
+                  <ListRow
                     title={t("connections:reconnect")}
                     onPress={() => void reconnect(url)}
                   />
@@ -300,10 +301,10 @@ export function RelaySettings() {
           );
         })}
         {addresses.length === 0 ? (
-          <SettingsRow title={t("connections:empty")} />
+          <ListRow title={t("connections:empty")} />
         ) : null}
-      </SettingsGroup>
-      <SettingsGroup title={t("connections:add")}>
+      </ListGroup>
+      <ListGroup title={t("connections:add")}>
         <View style={styles.input}>
           <GlassInput
             label={t("connections:address")}
@@ -332,9 +333,9 @@ export function RelaySettings() {
             <SettingsDescription>{inputError}</SettingsDescription>
           ) : null}
         </View>
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
+      </ListGroup>
+      <ListGroup>
+        <ListRow
           title={t("connections:restoreDefaults")}
           onPress={() => {
             if (busy || !lists) return;
@@ -354,7 +355,7 @@ export function RelaySettings() {
             );
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
     </>
   );
 }

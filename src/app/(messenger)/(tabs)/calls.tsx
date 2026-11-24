@@ -1,7 +1,8 @@
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { Redirect } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { CallHistory } from "@/components/calls/call-history";
 import { Screen } from "@/components/ui/kit";
 import { CompactHeader } from "@/components/ui/messenger-ui";

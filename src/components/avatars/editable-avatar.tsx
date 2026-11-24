@@ -1,7 +1,8 @@
 import type { MenuAction } from "@expo/ui/community/menu";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";

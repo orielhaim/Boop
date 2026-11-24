@@ -4,10 +4,10 @@ import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Linking } from "react-native";
 import {
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ProfilePhotoPolicyRow } from "@/components/settings/profile-photo-policy-row";
 import { Screen } from "@/components/ui/kit";
@@ -45,8 +45,8 @@ export default function Privacy() {
 
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:privacy")} />}>
-      <SettingsGroup title={t("security:deviceAccess")}>
-        <SettingsToggle
+      <ListGroup title={t("security:deviceAccess")}>
+        <PreferenceToggle
           title={t("security:appLock")}
           detail={
             authenticating
@@ -61,13 +61,13 @@ export default function Privacy() {
           onTitlePress={() => router.push("/settings/privacy/app-lock")}
           onChange={(value) => void lock.change(value ? "enable" : "disable")}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:permissions")}
           icon="settings"
           onPress={() => router.push("/settings/privacy/permissions")}
         />
-      </SettingsGroup>
-      <SettingsGroup title={t("security:callPrivacy")}>
+      </ListGroup>
+      <ListGroup title={t("security:callPrivacy")}>
         <SettingsMenuRow
           title={t("security:whoCanCall")}
           value={selected.calls}
@@ -78,14 +78,14 @@ export default function Privacy() {
           ]}
           onChange={(value) => save(() => privacy.set("calls", value))}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:incomingVideo")}
           icon="camera"
           onPress={() => router.push("/settings/privacy/incoming-video")}
         />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsToggle
+      </ListGroup>
+      <ListGroup>
+        <PreferenceToggle
           title={t("common:chats")}
           detail={t("security:chatsHelp")}
           value={chatsEnabled}
@@ -102,7 +102,7 @@ export default function Privacy() {
           disabled={!chatsEnabled}
           onChange={(value) => save(() => privacy.set("messages", value))}
         />
-        <SettingsToggle
+        <PreferenceToggle
           title={t("security:messageRequests")}
           detail={t(
             strict ? "security:strictRequests" : "security:requestsHelp",
@@ -111,9 +111,9 @@ export default function Privacy() {
           value={selected.requests}
           onChange={(value) => save(() => privacy.set("requests", value))}
         />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
+      </ListGroup>
+      <ListGroup>
+        <ListRow
           title={t("settings:linkPreviews")}
           detail={t(`settings:linkPreview_${selected.linkPreviews}`)}
           onPress={() => router.push("/settings/privacy/link-previews")}
@@ -124,12 +124,12 @@ export default function Privacy() {
           onTitlePress={() => router.push("/settings/privacy/profile-photos")}
           onChange={(value) => save(() => privacy.set("profilePhotos", value))}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:blockedUsers")}
           icon="lock"
           onPress={() => router.push("/settings/privacy/blocked")}
         />
-        <SettingsRow
+        <ListRow
           title={t("security:privacyPolicy")}
           icon="info"
           onPress={() => {
@@ -138,7 +138,7 @@ export default function Privacy() {
             );
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

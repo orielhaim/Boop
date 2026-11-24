@@ -3,13 +3,14 @@ import * as Clipboard from "expo-clipboard";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
@@ -39,25 +40,25 @@ export default function Identity() {
       compact
       navigationHeader={<ScreenHeader title={t("settings:identity")} />}
     >
-      <SettingsGroup>
+      <ListGroup>
         {chats && (
-          <SettingsRow
+          <ListRow
             title={t("messages:marmot.devices")}
             onPress={() => router.push("./identity/devices")}
           />
         )}
         {chats && (
-          <SettingsRow
+          <ListRow
             title={t("messages:marmot.backups")}
             onPress={() => router.push("./identity/backup")}
           />
         )}
-      </SettingsGroup>
-      <SettingsGroup title={t("settings:publicAddress")}>
+      </ListGroup>
+      <ListGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>
           {identity.npub}
         </Ink>
-      </SettingsGroup>
+      </ListGroup>
       <View style={styles.actions}>
         <Action variant="soft" onPress={() => void copy()}>
           <Icon name="copy" size={18} />
@@ -69,8 +70,8 @@ export default function Identity() {
         </Action>
       </View>
       {notice && <SettingsDescription>{notice}</SettingsDescription>}
-      <SettingsGroup>
-        <SettingsRow
+      <ListGroup>
+        <ListRow
           icon="download"
           title={t("security:exportIdentityKey")}
           onPress={() =>
@@ -80,12 +81,12 @@ export default function Identity() {
             })
           }
         />
-        <SettingsRow
+        <ListRow
           icon="key"
           title={t("security:importIdentityKey")}
           onPress={() => router.push("/settings/identity-keys")}
         />
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

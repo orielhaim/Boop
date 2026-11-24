@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { StyleSheet } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { OverlayProps } from "react-native-screen-transitions";
 import { GlassBackButton } from "@/components/ui/back-button";

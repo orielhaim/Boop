@@ -1,4 +1,5 @@
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Ink } from "@/components/ui/kit";
 import { MorphLoader } from "@/components/ui/organisms/morph-loader";
 import { space } from "@/theme";

@@ -4,11 +4,29 @@ const expo = require("eslint-config-expo/flat");
 module.exports = defineConfig([
   expo,
   {
-    ignores: [
-      "src/components/glassyui/**",
-      "src/db/migrations/**",
-      "dist/**",
-      "modules/boop-marmot/sdk/**",
-    ],
+    ignores: ["src/db/migrations/**", "dist/**", "modules/boop-marmot/sdk/**"],
+  },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/components/ui/icon.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "expo-symbols",
+              message: "Use Boop's semantic Icon registry.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["phosphor-react-native", "phosphor-react-native/**"],
+              message: "Register the glyph in src/components/ui/icon.tsx.",
+            },
+          ],
+        },
+      ],
+    },
   },
 ]);

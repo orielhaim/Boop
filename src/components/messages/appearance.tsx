@@ -12,47 +12,68 @@ import { GlassBackIcon } from "@/components/ui/back-button";
 import type { ChatPresentation } from "@/core/marmot/chat-preferences";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { dark, light, space, type, useTheme } from "@/theme";
+import { avatarGradients, themes } from "@/theme/tokens";
 
 const appearance: ChatAppearanceName = "soft";
+const avatar = {
+  palette: avatarGradients.map(([start]) => start),
+  paletteEnd: avatarGradients.map(([, end]) => end),
+  textColor: light.onMedia,
+};
 
-const icons: ChatIcons = {
+const icons = {
   arrowLeft: ({ color }) => <GlassBackIcon color={color} />,
   chevronLeft: (props) => <Icon name="previous" {...props} />,
-  pencil: (props) => <Icon name="add" {...props} />,
+  chevronDown: (props) => <Icon name="expand" {...props} />,
+  plus: (props) => <Icon name="add" {...props} />,
+  pencil: (props) => <Icon name="edit" {...props} />,
   send: (props) => <Icon name="send" {...props} />,
   reply: (props) => <Icon name="reply" {...props} />,
   forward: (props) => <Icon name="forward" {...props} />,
   backspace: (props) => <Icon name="erase" {...props} />,
-};
+  mic: (props) => <Icon name="microphone" {...props} />,
+  camera: (props) => <Icon name="camera" {...props} />,
+  play: (props) => <Icon name="play" {...props} />,
+  pause: (props) => <Icon name="pause" {...props} />,
+  close: (props) => <Icon name="close" {...props} />,
+  clock: (props) => <Icon name="time" {...props} />,
+  check: (props) => <Icon name="check" {...props} />,
+  checkAll: (props) => <Icon name="checkAll" {...props} />,
+  pin: (props) => <Icon name="pin" {...props} />,
+  pinOff: (props) => <Icon name="unpin" {...props} />,
+  pushpin: (props) => <Icon name="pin" {...props} weight="fill" />,
+  emoji: (props) => <Icon name="emoji" {...props} />,
+  emojiAnimals: (props) => <Icon name="animals" {...props} />,
+  emojiFood: (props) => <Icon name="food" {...props} />,
+  emojiActivities: (props) => <Icon name="sports" {...props} />,
+  emojiTravel: (props) => <Icon name="travel" {...props} />,
+  emojiObjects: (props) => <Icon name="objects" {...props} />,
+  emojiSymbols: (props) => <Icon name="star" {...props} />,
+  emojiFlags: (props) => <Icon name="report" {...props} />,
+  paperclip: (props) => <Icon name="attach" {...props} />,
+  lock: (props) => <Icon name="timedLock" {...props} />,
+  trash: (props) => <Icon name="trash" {...props} />,
+  copy: (props) => <Icon name="copy" {...props} />,
+  keyboard: (props) => <Icon name="keyboard" {...props} />,
+  search: (props) => <Icon name="search" {...props} />,
+  gallery: (props) => <Icon name="media" {...props} />,
+  file: (props) => <Icon name="file" {...props} />,
+  location: (props) => <Icon name="location" {...props} />,
+  download: (props) => <Icon name="download" {...props} />,
+  checkCircle: (props) => <Icon name="checkCircle" {...props} />,
+  archive: (props) => <Icon name="archive" {...props} />,
+  unarchive: (props) => <Icon name="unarchive" {...props} />,
+  archiveFolder: (props) => <Icon name="archive" {...props} weight="fill" />,
+  mute: (props) => <Icon name="bellOff" {...props} />,
+  unmute: (props) => <Icon name="bell" {...props} />,
+  verified: (props) => <Icon name="verified" {...props} weight="fill" />,
+  reorder: (props) => <Icon name="reorder" {...props} />,
+} satisfies Required<ChatIcons>;
 
 export const conversationMaterials = {
-  light: {
-    canvas: ["#F0EEFC", "#E7EDF8", "#E2F0EF"],
-    contours: "#546491",
-    panel: "#F9F9FF",
-    rim: "#CED5EA",
-    incoming: "#FDFDFF",
-    outgoing: ["#4F459D", "#385AA8"],
-  },
-  dark: {
-    canvas: ["#19162D", "#101929", "#10272B"],
-    contours: "#B3BCD8",
-    panel: "#24293E",
-    rim: "#454D67",
-    incoming: "#232C40",
-    outgoing: ["#5946A4", "#3A519C"],
-  },
-} satisfies Record<
-  "light" | "dark",
-  {
-    canvas: [string, string, string];
-    contours: string;
-    panel: string;
-    rim: string;
-    incoming: string;
-    outgoing: [string, string];
-  }
->;
+  light: themes.light.conversation,
+  dark: themes.dark.conversation,
+};
 
 export function messagePresentation({ textSize, rounding }: ChatPresentation) {
   return {
@@ -71,11 +92,12 @@ function chatTheme(
   const material = detail?.material;
   const message = detail && messagePresentation(detail.presentation);
   return {
+    avatar,
     colors: {
       background: material ? "transparent" : colors.background,
       accent: material?.outgoing[0] ?? colors.outgoing,
       onAccent: colors.outgoingInk,
-      incomingBubble: material?.incoming ?? colors.surface,
+      incomingBubble: material?.incoming ?? colors.grouped,
       incomingText: colors.text,
       incomingMeta: colors.muted,
       outgoingBubble: material?.outgoing[0] ?? colors.outgoing,
@@ -84,14 +106,14 @@ function chatTheme(
       outgoingVoiceFill: colors.outgoingInk,
       outgoingVoiceTrack: "#FFFFFF80",
       inputBarBackground: material ? "transparent" : colors.background,
-      inputBackground: material?.panel ?? colors.surface,
+      inputBackground: material?.panel ?? colors.recessed,
       inputFieldBorder: material?.rim ?? colors.line,
       inputText: colors.text,
       placeholder: colors.muted,
       composerIcon: colors.accent,
       inputCursor: colors.accent,
-      selectionBackground: colors.accentSoft,
-      surface: colors.surface,
+      selectionBackground: colors.selected,
+      surface: colors.raised,
       separator: colors.line,
       error: colors.danger,
       incomingLink: colors.accent,
@@ -100,19 +122,19 @@ function chatTheme(
       incomingReplyName: colors.accent,
       outgoingReplyLine: "#E5EBFF",
       outgoingReplyName: "#FFFFFF",
-      dayPillBackground: colors.accentSoft,
+      dayPillBackground: colors.selected,
       dayPillText: colors.text,
-      unreadSeparatorBackground: colors.accentSoft,
+      unreadSeparatorBackground: colors.selected,
       unreadSeparatorText: colors.accent,
       unreadSeparatorArrow: colors.accent,
-      scrollToBottomBackground: colors.surface,
+      scrollToBottomBackground: colors.raised,
       scrollToBottomIcon: colors.accent,
       scrollToBottomBadge: colors.outgoing,
       scrollToBottomBadgeText: colors.outgoingInk,
     },
     chatList: {
       background: colors.background,
-      headerBackground: colors.surface,
+      headerBackground: colors.background,
       headerText: colors.text,
       headerSubtitle: colors.muted,
       headerSubtitleActive: colors.accent,
@@ -126,8 +148,8 @@ function chatTheme(
       badgeMuted: colors.muted,
       badgeText: colors.outgoingInk,
       divider: colors.line,
-      pressed: colors.accentSoft,
-      selectedRow: colors.accentSoft,
+      pressed: colors.pressed,
+      selectedRow: colors.selected,
       checkbox: colors.outgoing,
       swipeArchive: colors.outgoing,
       swipeUnarchive: colors.muted,
@@ -135,23 +157,23 @@ function chatTheme(
       fabIcon: colors.outgoingInk,
     },
     contextMenu: {
-      background: colors.surface,
+      background: colors.overlay,
       text: colors.text,
       icon: colors.muted,
-      pressed: colors.accentSoft,
+      pressed: colors.selected,
       destructive: colors.danger,
-      reactionSelected: colors.accentSoft,
+      reactionSelected: colors.selected,
     },
     emojiKeyboard: {
-      background: colors.surface,
-      tabIndicator: colors.accentSoft,
+      background: colors.raised,
+      tabIndicator: colors.selected,
       icon: colors.muted,
       iconSelected: colors.accent,
       sectionTitle: colors.text,
-      searchBackground: colors.background,
+      searchBackground: colors.recessed,
       searchText: colors.text,
       searchIcon: colors.muted,
-      popupBackground: colors.surface,
+      popupBackground: colors.raised,
     },
     bubble: {
       outgoingGradient: material?.outgoing ?? null,
@@ -160,7 +182,7 @@ function chatTheme(
       isTimeInline: false,
     },
     typography: {
-      message: message?.text ?? type.body,
+      message: message?.text ?? type.message,
       composer: type.body,
       ...(material ? { time: { fontSize: 11 }, day: { fontSize: 12 } } : {}),
     },

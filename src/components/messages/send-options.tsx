@@ -1,13 +1,8 @@
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Platform,
-  ScrollView,
-  StyleSheet,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { Platform, ScrollView, View, useWindowDimensions } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   GlassSheet,
   GlassSheetContent,
@@ -175,7 +170,7 @@ export function OpenLaterSheet({
             />
           ) : null}
           <View
-            style={[styles.selection, { backgroundColor: colors.accentSoft }]}
+            style={[styles.selection, { backgroundColor: colors.selected }]}
           >
             <Ink style={styles.strong}>
               {Number.isFinite(requested)

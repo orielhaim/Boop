@@ -2,7 +2,7 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { speeds } from "@/core/audio/types";
@@ -16,7 +16,7 @@ export default function PlaybackSettings() {
   const prefs = useStore(audio.store, (state) => state.preferences);
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings")} />}>
-      <SettingsGroup>
+      <ListGroup>
         <SettingsMenuRow
           title={t("openWith")}
           value={prefs.external ? "external" : "internal"}
@@ -37,19 +37,19 @@ export default function PlaybackSettings() {
           }))}
           onChange={(voiceSpeed) => audio.preferences({ voiceSpeed })}
         />
-      </SettingsGroup>
-      <SettingsGroup>
-        <SettingsRow
+      </ListGroup>
+      <ListGroup>
+        <ListRow
           icon="audio"
           title={t("nowPlaying")}
           onPress={() => router.navigate("/audio-player")}
         />
-        <SettingsRow
+        <ListRow
           icon="file"
           title={t("openDevice")}
           onPress={() => void pick()}
         />
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

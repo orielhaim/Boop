@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -103,7 +104,7 @@ export function DownloadProgressRing({
             width: inner,
             height: inner,
             borderRadius: inner / 2,
-            backgroundColor: colors.accentSoft,
+            backgroundColor: colors.selected,
           },
         ]}
       >

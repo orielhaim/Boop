@@ -12,9 +12,9 @@ import { Alert, AppState, Platform } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import {
   marmot,
@@ -139,18 +139,18 @@ export default function MarmotBackups() {
         {t("messages:marmot.backupConsent")}
       </SettingsDescription>
       {state && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             title={t("messages:marmot.backups")}
             value={t(state.enabled ? "common:on" : "common:off")}
           />
           {state.enabled && (
-            <SettingsRow
+            <ListRow
               title={t("messages:marmot.backupWriter")}
               value={t(state.thisDeviceWrites ? "common:on" : "common:off")}
             />
           )}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {protectedScreen && state && !setup && !state.enabled && (
         <Action
@@ -167,7 +167,7 @@ export default function MarmotBackups() {
         </Action>
       )}
       {protectedScreen && setup && (
-        <SettingsGroup>
+        <ListGroup>
           <Ink>{t("messages:marmot.keepRecoveryWords")}</Ink>
           <Ink style={{ writingDirection: "ltr" }}>{setup.words.join(" ")}</Ink>
           <GlassInput
@@ -211,7 +211,7 @@ export default function MarmotBackups() {
           >
             {t("common:cancel")}
           </Action>
-        </SettingsGroup>
+        </ListGroup>
       )}
       {state?.enabled && (
         <>
@@ -256,7 +256,7 @@ export default function MarmotBackups() {
         </>
       )}
       {protectedScreen && !setup && state && (
-        <SettingsGroup title={t("messages:marmot.restoreBackup")}>
+        <ListGroup title={t("messages:marmot.restoreBackup")}>
           <SettingsDescription>
             {t("messages:marmot.restoreScope")}
           </SettingsDescription>
@@ -305,7 +305,7 @@ export default function MarmotBackups() {
               })}
             </Ink>
           )}
-        </SettingsGroup>
+        </ListGroup>
       )}
       {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
     </Screen>

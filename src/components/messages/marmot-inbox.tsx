@@ -18,7 +18,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
@@ -416,16 +417,14 @@ export function MarmotInbox({
                   styles.invitationRow,
                   {
                     direction: kit.rtl ? "rtl" : "ltr",
-                    backgroundColor: pressed
-                      ? kit.colors.accentSoft
-                      : undefined,
+                    backgroundColor: pressed ? kit.colors.selected : undefined,
                   },
                 ]}
               >
                 <View
                   style={[
                     styles.invitationIcon,
-                    { backgroundColor: kit.colors.accentSoft },
+                    { backgroundColor: kit.colors.selected },
                   ]}
                 >
                   <Icon
@@ -510,6 +509,7 @@ function MarmotChatCell({
       chat={{
         ...props.chat,
         avatar: avatar ?? groupAvatar,
+        avatarIdentity: props.chat.peer ?? props.chat.id,
         title: props.chat.peer ? name : props.chat.title,
         draft: draft && projectMentions(draft, names).text,
         lastMessage: lastMessage && {

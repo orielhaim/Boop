@@ -7,10 +7,10 @@ import { speechLocaleName } from "@/components/messages/voice-transcript";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { SpeechStorage } from "@/components/settings/speech-storage";
 import { Screen } from "@/components/ui/kit";
 import { SaveButton } from "@/components/ui/save-button";
@@ -54,31 +54,31 @@ export default function VoiceTranscriptionSettings() {
   return (
     <Screen navigationHeader={<ScreenHeader title={t("title")} />}>
       <SettingsDescription>{t("privacy")}</SettingsDescription>
-      <SettingsGroup>
-        <SettingsToggle
+      <ListGroup>
+        <PreferenceToggle
           title={t("enabled")}
           value={enabled}
           onChange={(value) => save({ mode: value ? "demand" : "off" })}
         />
         {enabled && (
-          <SettingsRow
+          <ListRow
             title={t("demand")}
             selected={!automatic}
             onPress={() => save({ mode: "demand" })}
           />
         )}
         {enabled && (
-          <SettingsRow
+          <ListRow
             title={t("automatic")}
             detail={t("automaticDetail")}
             selected={automatic}
             onPress={() => save({ mode: "automatic" })}
           />
         )}
-      </SettingsGroup>
+      </ListGroup>
       {enabled && (
-        <SettingsGroup title={t("preferred")}>
-          <SettingsRow
+        <ListGroup title={t("preferred")}>
+          <ListRow
             title={t("preferred")}
             value={
               preferences.preferred
@@ -89,21 +89,21 @@ export default function VoiceTranscriptionSettings() {
               router.push("/settings/language/voice-transcription/models")
             }
           />
-          <SettingsRow
+          <ListRow
             title={t("models")}
             onPress={() =>
               router.push("/settings/language/voice-transcription/models")
             }
           />
-          <SettingsToggle
+          <PreferenceToggle
             title={t("highlight")}
             value={preferences.highlight}
             onChange={(highlight) => save({ highlight })}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {automatic && (
-        <SettingsGroup title={t("automatic")}>
+        <ListGroup title={t("automatic")}>
           {(
             [
               "incoming",
@@ -114,14 +114,14 @@ export default function VoiceTranscriptionSettings() {
               "respectLowPower",
             ] as const
           ).map((field) => (
-            <SettingsToggle
+            <PreferenceToggle
               key={field}
               title={t(field)}
               value={preferences[field]}
               onChange={(value) => save({ [field]: value })}
             />
           ))}
-          <SettingsRow
+          <ListRow
             title={t("duration")}
             value={t("seconds", { count: preferences.maxDuration })}
             onPress={() => {
@@ -135,32 +135,32 @@ export default function VoiceTranscriptionSettings() {
               });
             }}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {enabled && (
-        <SettingsGroup title={t("modelDownloads")}>
-          <SettingsRow
+        <ListGroup title={t("modelDownloads")}>
+          <ListRow
             title={t("manual")}
             selected={preferences.modelDownloads === "manual"}
             onPress={() => save({ modelDownloads: "manual" })}
           />
-          <SettingsRow
+          <ListRow
             title={t("wifi")}
             detail={t("wifiDetail")}
             selected={preferences.modelDownloads === "wifi"}
             onPress={() => save({ modelDownloads: "wifi" })}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {enabled && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             title={t("advanced")}
             expanded={advanced}
             onPress={() => setAdvanced(!advanced)}
           />
           {advanced && (
-            <SettingsRow
+            <ListRow
               title={t("onDevice")}
               value={
                 capability?.fileTranscription && capability.onDevice
@@ -170,7 +170,7 @@ export default function VoiceTranscriptionSettings() {
             />
           )}
           {advanced && capability && (
-            <SettingsRow
+            <ListRow
               title={t("engine")}
               value={
                 {
@@ -182,7 +182,7 @@ export default function VoiceTranscriptionSettings() {
             />
           )}
           {advanced && capability?.fileTranscription && (
-            <SettingsRow
+            <ListRow
               title={t("recognitionMode")}
               value={t(preferences.recognitionMode)}
               onPress={() =>
@@ -199,7 +199,7 @@ export default function VoiceTranscriptionSettings() {
             capability?.fileTranscription &&
             (capability.engine !== "analyzer" ||
               preferences.recognitionMode === "dictation") && (
-              <SettingsToggle
+              <PreferenceToggle
                 title={t("punctuation")}
                 value={preferences.punctuation}
                 onChange={(punctuation) => save({ punctuation })}
@@ -208,7 +208,7 @@ export default function VoiceTranscriptionSettings() {
           {advanced &&
             capability?.fileTranscription &&
             Platform.OS === "android" && (
-              <SettingsToggle
+              <PreferenceToggle
                 title={t("alternatives")}
                 value={preferences.alternatives}
                 onChange={(alternatives) => save({ alternatives })}
@@ -217,7 +217,7 @@ export default function VoiceTranscriptionSettings() {
           {advanced &&
             capability?.fileTranscription &&
             capability.engine !== "recognizer" && (
-              <SettingsToggle
+              <PreferenceToggle
                 title={t("masking")}
                 value={preferences.masking}
                 onChange={(masking) => save({ masking })}
@@ -245,7 +245,7 @@ export default function VoiceTranscriptionSettings() {
                 />
               </View>
             )}
-        </SettingsGroup>
+        </ListGroup>
       )}
       <SpeechStorage />
     </Screen>

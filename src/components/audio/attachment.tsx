@@ -2,7 +2,8 @@ import type { PlaybackSource } from "@hzblj/expo-speech";
 import { MessageAudio, type IMessage } from "@kesha-antonov/react-native-chat";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useStore } from "zustand";
 import { Icon, Ink } from "@/components/ui/kit";
 import type { useVoiceTranscript } from "@/components/messages/voice-transcript";
@@ -87,7 +88,7 @@ function VoiceAction({
       accessibilityLabel={label}
       onPress={onPress}
       disabled={disabled}
-      style={[styles.play, { backgroundColor: colors.accentSoft }]}
+      style={[styles.play, { backgroundColor: colors.selected }]}
     >
       <Icon name={icon} size={22} color={colors.accent} />
     </Pressable>
@@ -289,7 +290,7 @@ export function AudioAttachment(props: TrackProps) {
           }
           disabled={blocked}
           onPress={press}
-          style={[styles.play, { backgroundColor: colors.accentSoft }]}
+          style={[styles.play, { backgroundColor: colors.selected }]}
         >
           <Icon
             name={!ready ? "download" : playing ? "pause" : "play"}

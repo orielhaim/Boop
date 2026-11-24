@@ -1,7 +1,7 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { namespaces } from "@/i18n";
 import { Screen } from "@/components/ui/kit";
 import { RelaySettings } from "@/components/ui/relay-settings";
@@ -12,12 +12,12 @@ export default function Connections() {
     <Screen
       navigationHeader={<ScreenHeader title={t("settings:connections")} />}
     >
-      <SettingsGroup>
-        <SettingsRow
+      <ListGroup>
+        <ListRow
           title={t("settings:mediaStorage")}
           onPress={() => router.push("/settings/connections/media-storage")}
         />
-      </SettingsGroup>
+      </ListGroup>
       <RelaySettings />
     </Screen>
   );

@@ -4,12 +4,13 @@ import { useLocales } from "expo-localization";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, StyleSheet } from "react-native";
+import { Alert } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
 import {
   type LanguagePreference,
@@ -83,9 +84,9 @@ export default function LanguageSettings() {
 
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:language")} />}>
-      <SettingsGroup>
+      <ListGroup>
         {languageChoices.map((choice) => (
-          <SettingsRow
+          <ListRow
             key={choice}
             title={t(names[choice])}
             icon={choice === "auto" ? "language" : undefined}
@@ -99,22 +100,22 @@ export default function LanguageSettings() {
             onPress={() => select(choice)}
           />
         ))}
-      </SettingsGroup>
+      </ListGroup>
       {chatsEnabled && (
-        <SettingsGroup>
-          <SettingsRow
+        <ListGroup>
+          <ListRow
             icon="language"
             title={t("translation:title")}
             onPress={() => router.push("/settings/language/translation")}
           />
-          <SettingsRow
+          <ListRow
             icon="language"
             title={t("speech:title")}
             onPress={() =>
               router.push("/settings/language/voice-transcription")
             }
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {saveFailed ? (
         <SettingsDescription>

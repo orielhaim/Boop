@@ -19,9 +19,9 @@ import {
   type LayoutRectangle,
   PixelRatio,
   Platform,
-  StyleSheet,
   View,
 } from "react-native";
+import { StyleSheet, UnistylesRuntime } from "react-native-unistyles";
 import {
   cancelAnimation,
   Easing,
@@ -43,26 +43,25 @@ import {
   Skia,
 } from "react-native-skia";
 import { scheduleOnRN } from "react-native-worklets";
-import type { GlassyUiTheme } from "@/components/glassyui/lib/preferences";
+import { motion, type ThemeName } from "@/theme/tokens";
 import type { ThemeChoice } from "@/stores/preferences";
 
 type Size = { width: number; height: number };
 type CaptureView = ComponentRef<typeof View>;
-type Presentation = { theme: GlassyUiTheme; choice: ThemeChoice };
+type Presentation = { theme: ThemeName; choice: ThemeChoice };
 type Snapshot = {
   image: SkImage;
   release: () => void;
 };
 type Transition = Size &
   Pick<Snapshot, "image"> & {
-    target: GlassyUiTheme;
+    target: ThemeName;
     liveArea: LayoutRectangle | null;
     reveal: () => void;
     finish: () => void;
   };
 
 const captureTimeout = 300;
-const animationDuration = 600;
 let hardwareCaptureAvailable = true;
 
 const androidSnapshot = requireOptionalNativeModule<{
@@ -221,10 +220,10 @@ export function ThemeSwitcher({
   enabled,
   children,
 }: {
-  theme: GlassyUiTheme;
+  theme: ThemeName;
   choice: ThemeChoice;
   enabled: boolean;
-  children: (theme: GlassyUiTheme) => ReactNode;
+  children: (theme: ThemeName) => ReactNode;
 }) {
   const view = useRef<CaptureView>(null);
   const [liveControl, setLiveControl] = useState<CaptureView | null>(null);
@@ -260,6 +259,9 @@ export function ThemeSwitcher({
   }, [animated]);
 
   useLayoutEffect(() => {
+    if (UnistylesRuntime.themeName !== displayedTheme) {
+      UnistylesRuntime.setTheme(displayedTheme);
+    }
     committed.current = displayedTheme;
   }, [displayedTheme]);
 
@@ -427,7 +429,7 @@ function ThemeReveal({
     progress.set(
       withTiming(
         1,
-        { duration: animationDuration, easing: Easing.out(Easing.cubic) },
+        { duration: motion.themeReveal, easing: Easing.out(Easing.cubic) },
         (finished) => {
           if (finished) scheduleOnRN(finish);
         },

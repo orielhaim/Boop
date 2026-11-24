@@ -6,7 +6,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Keyboard, Linking, StyleSheet, View } from "react-native";
+import { Alert, Keyboard, Linking, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { AvatarPicker } from "@/components/avatars/picker";
 import {
   GlassSheet,
@@ -15,7 +16,7 @@ import {
 } from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { ProfileElement } from "@/components/navigation/profile-elements";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import {
   ChatProfileBackButton,
   GlassBackButton,
@@ -36,7 +37,7 @@ import {
 } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
-import { radius, space, useTheme } from "@/theme";
+import { useTheme } from "@/theme";
 import { AddressSheetContent } from "./address-sheet";
 import { useIdentitySheet } from "./identity-sheet";
 import { PersonContext } from "./person-context";
@@ -271,8 +272,8 @@ function ProfileContent({
     <Screen scroll={false} tab={tab} topInset>
       {morph && <ChatProfileBackButton onPress={back} />}
       <ParallaxScrollView
-        headerMaxHeight={128}
-        headerOverlap={46}
+        headerMaxHeight={148}
+        headerOverlap={54}
         backgroundColor={colors.background}
         bodyStyle={styles.body}
         onScroll={tab ? onScroll : undefined}
@@ -280,12 +281,12 @@ function ProfileContent({
           <View
             style={[
               StyleSheet.absoluteFill,
-              { backgroundColor: colors.accentSoft },
+              { backgroundColor: colors.selected },
             ]}
           >
             {!reduceTransparency && (
               <LinearGradient
-                colors={[colors.heroStart, colors.accentSoft, colors.heroEnd]}
+                colors={[colors.heroStart, colors.selected, colors.heroEnd]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={StyleSheet.absoluteFill}
@@ -364,7 +365,7 @@ function ProfileContent({
             <View style={styles.identity}>
               <ProfileElement profile={morph} part="name">
                 <Ink
-                  kind="heading"
+                  kind="profileName"
                   accessibilityRole="header"
                   numberOfLines={2}
                   style={[
@@ -592,9 +593,9 @@ function ProfileContent({
           </GlassSheet>
         )}
         {!own && (
-          <SettingsGroup>
+          <ListGroup>
             {!restricted && (
-              <SettingsRow
+              <ListRow
                 title={t(contact ? "messenger:nickname" : "contacts:saveAs")}
                 detail={contact?.name || undefined}
                 onPress={() => {
@@ -608,7 +609,7 @@ function ProfileContent({
             )}
             {contact && (
               <>
-                <SettingsRow
+                <ListRow
                   title={t(
                     contact.favorite
                       ? "contacts:removeFavorite"
@@ -624,20 +625,20 @@ function ProfileContent({
                 />
                 {!restricted && (
                   <>
-                    <SettingsRow
+                    <ListRow
                       title={t("settings:photoChange")}
                       detail={t("settings:photoLocalHelp")}
                       onPress={() => setPicking(true)}
                     />
                     {avatars.hasOverride(publicKey) && (
-                      <SettingsRow
+                      <ListRow
                         title={t("settings:photoRemove")}
                         onPress={() =>
                           write(() => avatars.saveOverride(publicKey, null))
                         }
                       />
                     )}
-                    <SettingsRow
+                    <ListRow
                       title={t("video:automatic")}
                       detail={contact.allowIncomingVideo ? "✓" : undefined}
                       onPress={() =>
@@ -650,7 +651,7 @@ function ProfileContent({
                     />
                   </>
                 )}
-                <SettingsRow
+                <ListRow
                   title={t("messenger:removePerson")}
                   onPress={() =>
                     Alert.alert(t("messenger:removePerson"), undefined, [
@@ -666,11 +667,11 @@ function ProfileContent({
                 />
               </>
             )}
-            <SettingsRow
+            <ListRow
               title={block.label}
               onPress={block.disabled ? undefined : block.onPress}
             />
-          </SettingsGroup>
+          </ListGroup>
         )}
         {!own && !restricted && <PersonContext publicKey={publicKey} />}
         {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
@@ -679,18 +680,22 @@ function ProfileContent({
   );
 }
 
-const styles = StyleSheet.create({
-  hero: { gap: space.xs },
+const styles = StyleSheet.create((theme) => ({
+  hero: { gap: theme.space.md },
   body: {
-    gap: space.md,
-    paddingHorizontal: space.lg,
-    paddingBottom: space.xxl,
+    gap: theme.space.lg,
+    paddingHorizontal: theme.space.lg,
+    paddingBottom: theme.space.xxl,
   },
-  bannerBack: { position: "absolute", start: space.sm, top: space.sm },
+  bannerBack: {
+    position: "absolute",
+    start: theme.space.sm,
+    top: theme.space.sm,
+  },
   bannerQr: {
     position: "absolute",
-    top: space.sm,
-    end: space.sm,
+    top: theme.space.sm,
+    end: theme.space.sm,
   },
   orbit: {
     position: "absolute",
@@ -703,36 +708,36 @@ const styles = StyleSheet.create({
   },
   identityLine: {
     alignItems: "center",
-    gap: space.xs,
-    paddingHorizontal: space.sm,
+    gap: theme.space.sm,
+    paddingHorizontal: theme.space.sm,
   },
-  avatar: { padding: 4, borderRadius: radius.round },
+  avatar: { padding: 4, borderRadius: theme.radius.round },
   identity: {
     maxWidth: "100%",
     alignItems: "center",
-    gap: 2,
-    paddingBottom: space.xs,
+    gap: theme.space.xs,
+    paddingBottom: theme.space.sm,
   },
-  name: { fontSize: 25, letterSpacing: -0.5, textAlign: "center" },
-  fallbackName: { fontSize: 18, letterSpacing: 0 },
-  badge: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  name: { ...theme.type.profileName, textAlign: "center" },
+  fallbackName: { ...theme.type.heading, fontSize: 18, letterSpacing: 0 },
+  badge: { flexDirection: "row", alignItems: "center", gap: theme.space.xs },
   actions: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     flexWrap: "wrap",
-    gap: space.sm,
+    gap: theme.space.sm,
   },
   primary: { flex: 1 },
   details: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: space.md,
-    gap: space.sm,
+    paddingTop: theme.space.md,
+    gap: theme.space.sm,
   },
   link: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.sm,
+    gap: theme.space.sm,
     minHeight: 44,
   },
   addressTrigger: {
@@ -740,4 +745,4 @@ const styles = StyleSheet.create({
     textAlignVertical: "center",
     writingDirection: "ltr",
   },
-});
+}));

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Modal, View } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { SettingsToggle } from "@/components/settings/group";
+import { PreferenceToggle } from "@/components/ui/list-group";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import { marmot, type MarmotMessage } from "@/core/marmot/native";
 import { namespaces } from "@/i18n";
@@ -91,7 +91,7 @@ export function MarmotPollComposer({
           keyboardType="number-pad"
           maxLength={4}
         />
-        <SettingsToggle
+        <PreferenceToggle
           title={t("messages:marmot.pollMultiple")}
           value={multiple}
           onChange={setMultiple}

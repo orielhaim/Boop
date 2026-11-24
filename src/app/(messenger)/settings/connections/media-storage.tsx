@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Alert } from "react-native";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { Action, Screen, Search } from "@/components/ui/kit";
 import { BlossomError, blossomServer } from "@/core/media/blossom";
 import {
@@ -221,8 +221,8 @@ ${origins.join("\n")}`,
               : "settings:mediaRolePrivate",
           );
         return (
-          <SettingsGroup key={server.origin}>
-            <SettingsRow
+          <ListGroup key={server.origin}>
+            <ListRow
               title={server.origin}
               detail={
                 (server.enabled
@@ -240,7 +240,7 @@ ${origins.join("\n")}`,
             />
             {open && (
               <>
-                <SettingsToggle
+                <PreferenceToggle
                   title={t("settings:mediaEnabled")}
                   value={server.enabled}
                   onChange={(enabled) => update(server.origin, { enabled })}
@@ -258,7 +258,7 @@ ${origins.join("\n")}`,
                     ? t(`settings:mediaFailure_${health.lastFailure}`)
                     : undefined;
                   return (
-                    <SettingsToggle
+                    <PreferenceToggle
                       key={role}
                       title={roleLabel(role)}
                       detail={
@@ -276,27 +276,27 @@ ${origins.join("\n")}`,
                     />
                   );
                 })}
-                <SettingsRow
+                <ListRow
                   title={t("settings:mediaCheck")}
                   disabled={busy}
                   onPress={() => void check(server.origin)}
                 />
-                <SettingsRow
+                <ListRow
                   title={t("settings:mediaMakePreferred")}
                   disabled={index === 0}
                   onPress={() => move(server.origin, 0)}
                 />
-                <SettingsRow
+                <ListRow
                   title={t("settings:mediaMoveUp")}
                   disabled={index === 0}
                   onPress={() => move(server.origin, index - 1)}
                 />
-                <SettingsRow
+                <ListRow
                   title={t("settings:mediaMoveDown")}
                   disabled={index === config.servers.length - 1}
                   onPress={() => move(server.origin, index + 1)}
                 />
-                <SettingsRow
+                <ListRow
                   title={t("settings:mediaRemove")}
                   icon="erase"
                   onPress={() => {
@@ -311,7 +311,7 @@ ${origins.join("\n")}`,
                 />
               </>
             )}
-          </SettingsGroup>
+          </ListGroup>
         );
       })}
       <Search
@@ -325,8 +325,8 @@ ${origins.join("\n")}`,
       <Action onPress={add} disabled={!url.trim()}>
         {t("settings:mediaAdd")}
       </Action>
-      <SettingsGroup>
-        <SettingsToggle
+      <ListGroup>
+        <PreferenceToggle
           title={t("settings:mediaMirror")}
           detail={t("settings:mediaMirrorDetail")}
           value={config.mirror}
@@ -334,19 +334,19 @@ ${origins.join("\n")}`,
             save({ ...mediaSdk.snapshot(), mirror });
           }}
         />
-        <SettingsRow
+        <ListRow
           title={t("settings:mediaFindPublished")}
           disabled={busy}
           onPress={() => void loadPublished()}
         />
-        <SettingsRow
+        <ListRow
           title={t("settings:mediaPublish")}
           disabled={busy}
           onPress={() =>
             setPublication(publication ? undefined : (published ?? []))
           }
         />
-        <SettingsRow
+        <ListRow
           title={t("settings:mediaRestore")}
           onPress={() =>
             Alert.alert(
@@ -364,13 +364,13 @@ ${origins.join("\n")}`,
             )
           }
         />
-      </SettingsGroup>
+      </ListGroup>
       {publication && (
-        <SettingsGroup title={t("settings:mediaPublicationSelection")}>
+        <ListGroup title={t("settings:mediaPublicationSelection")}>
           {config.servers
             .filter((server) => server.enabled && server.roles.length)
             .map(({ origin }) => (
-              <SettingsToggle
+              <PreferenceToggle
                 key={origin}
                 title={origin}
                 value={publication.includes(origin)}
@@ -383,23 +383,23 @@ ${origins.join("\n")}`,
                 }}
               />
             ))}
-          <SettingsRow
+          <ListRow
             title={t("settings:mediaPublish")}
             disabled={busy || !publication.length}
             onPress={publish}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {!!published?.length && (
-        <SettingsGroup title={t("settings:mediaPublished")}>
+        <ListGroup title={t("settings:mediaPublished")}>
           {published.map((origin) => (
-            <SettingsRow key={origin} title={origin} />
+            <ListRow key={origin} title={origin} />
           ))}
-          <SettingsRow
+          <ListRow
             title={t("settings:mediaImport")}
             onPress={importPublished}
           />
-        </SettingsGroup>
+        </ListGroup>
       )}
       {!!notice && <SettingsDescription>{notice}</SettingsDescription>}
     </Screen>

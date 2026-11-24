@@ -1,7 +1,8 @@
 import { Image } from "expo-image";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Linking, StyleSheet, View } from "react-native";
+import { Alert, AppState, Linking, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { router } from "expo-router";
 import { Action, Ink } from "@/components/ui/kit";
 import { firstPreviewUrl } from "@/core/messaging/link-previews";

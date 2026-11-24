@@ -1,6 +1,7 @@
 // Adapted from Reacticx Save Button (MIT).
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, { FadeIn } from "react-native-reanimated";
 import { MorphLoader } from "@/components/ui/organisms/morph-loader";
 import { useTranslation } from "react-i18next";
@@ -96,7 +97,7 @@ export function SaveButton({
         {
           minHeight: height,
           minWidth: size === "sm" ? 80 : 96,
-          backgroundColor: colors.accentSoft,
+          backgroundColor: colors.selected,
         },
         unavailable && styles.disabled,
       ]}
@@ -127,7 +128,7 @@ export function SaveButton({
                 <Icon name="check" size={16} color={colors.accent} />
               )}
               {phase === "failed" && (
-                <Icon name="hangup" size={16} color={colors.danger} />
+                <Icon name="close" size={16} color={colors.danger} />
               )}
               <Text
                 style={[

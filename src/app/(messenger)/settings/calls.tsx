@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Platform } from "react-native";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-  SettingsToggle,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
 import { setPreference } from "@/db/queries";
 import { namespaces } from "@/i18n";
@@ -52,18 +52,18 @@ export default function CallsAndSounds() {
   }
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:calls")} />}>
-      <SettingsGroup>
-        <SettingsToggle
+      <ListGroup>
+        <PreferenceToggle
           title={t("settings:separateCallsTab")}
           icon="phone"
           value={separateCallsTab}
           onChange={(value) => saveNavigation({ separateCallsTab: value })}
         />
-      </SettingsGroup>
+      </ListGroup>
       {separateCallsTab && (
-        <SettingsGroup title={t("settings:defaultScreen")}>
+        <ListGroup title={t("settings:defaultScreen")}>
           {launchScreens.map((screen) => (
-            <SettingsRow
+            <ListRow
               key={screen}
               title={t(
                 screen === "chats" ? "common:chats" : "navigation:calls",
@@ -72,17 +72,17 @@ export default function CallsAndSounds() {
               onPress={() => saveNavigation({ defaultScreen: screen })}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       )}
-      <SettingsGroup>
-        <SettingsRow
+      <ListGroup>
+        <ListRow
           title={t("settings:incomingRingtone")}
           value={
             Platform.OS === "android" ? t("settings:deviceDefault") : "Boop"
           }
           icon="speaker"
         />
-        <SettingsToggle
+        <PreferenceToggle
           title={t("settings:haptics")}
           value={haptics}
           onChange={(value) => {
@@ -95,7 +95,7 @@ export default function CallsAndSounds() {
             }
           }}
         />
-      </SettingsGroup>
+      </ListGroup>
       {error && <SettingsDescription>{error}</SettingsDescription>}
     </Screen>
   );

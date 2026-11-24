@@ -7,9 +7,9 @@ import { Alert } from "react-native";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { useTranslationLanguages } from "@/components/settings/translation-languages";
 import { Action, Ink, Screen, Search } from "@/components/ui/kit";
 import {
@@ -76,9 +76,9 @@ export default function TranslationTarget() {
         </SettingsDescription>
       )}
       {!!choices?.length && (
-        <SettingsGroup title={t("translation:available")}>
+        <ListGroup title={t("translation:available")}>
           {choices.map(({ code, name }) => (
-            <SettingsRow
+            <ListRow
               key={code}
               title={name}
               selected={code === preferences.target}
@@ -98,7 +98,7 @@ export default function TranslationTarget() {
               }}
             />
           ))}
-        </SettingsGroup>
+        </ListGroup>
       )}
     </Screen>
   );

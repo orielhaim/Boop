@@ -2,12 +2,13 @@ import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AppState, Linking, Platform, StyleSheet } from "react-native";
+import { AppState, Linking, Platform } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   SettingsDescription,
-  SettingsGroup,
-  SettingsRow,
-} from "@/components/settings/group";
+  ListGroup,
+  ListRow,
+} from "@/components/ui/list-group";
 import { Action } from "@/components/ui/kit";
 import {
   allowBluetoothOutput,
@@ -91,19 +92,19 @@ export function PermissionSettings() {
 
   return (
     <>
-      <SettingsGroup>
-        <SettingsRow
+      <ListGroup>
+        <ListRow
           title={t("common:camera")}
           icon="camera"
           value={label(camera)}
         />
-        <SettingsRow
+        <ListRow
           title={t("common:microphone")}
           icon="microphone"
           value={label(microphone)}
         />
         {showsBluetooth && (
-          <SettingsRow
+          <ListRow
             title={t("security:nearby")}
             icon="audio"
             value={bluetooth === "denied" ? undefined : label(bluetooth)}
@@ -134,7 +135,7 @@ export function PermissionSettings() {
             }
           />
         )}
-      </SettingsGroup>
+      </ListGroup>
       <Action
         variant="soft"
         style={styles.settings}

@@ -11,7 +11,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Keyboard, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Keyboard, View, useWindowDimensions } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
@@ -587,7 +588,7 @@ function PendingFavoriteName({ fallback }: { fallback: string }) {
     >
       <Shimmer
         background={colors.line}
-        highlight={colors.accentSoft}
+        highlight={colors.selected}
         progress={reduceMotion ? undefined : progress}
         rtl={false}
         style={styles.pendingLine}

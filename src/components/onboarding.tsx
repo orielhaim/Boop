@@ -18,10 +18,10 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
   FadeIn,
@@ -557,9 +557,7 @@ function WelcomeForm({
                 style={({ pressed }) => [
                   styles.back,
                   {
-                    backgroundColor: pressed
-                      ? colors.accentSoft
-                      : colors.surface,
+                    backgroundColor: pressed ? colors.selected : colors.raised,
                     borderColor: colors.line,
                   },
                 ]}
@@ -617,7 +615,7 @@ function WelcomeForm({
                         styles.addressPanel,
                         {
                           borderColor: colors.line,
-                          backgroundColor: colors.surface,
+                          backgroundColor: colors.raised,
                         },
                       ]}
                     >

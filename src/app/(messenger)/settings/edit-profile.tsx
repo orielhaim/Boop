@@ -2,7 +2,8 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
@@ -125,7 +126,7 @@ export default function EditProfile() {
       }
     >
       <View>
-        <View style={[styles.banner, { backgroundColor: colors.accentSoft }]}>
+        <View style={[styles.banner, { backgroundColor: colors.selected }]}>
           {draft?.banner?.kind !== "remove" && (bannerPreview || banner) && (
             <Image
               source={bannerPreview || banner}
@@ -163,6 +164,7 @@ export default function EditProfile() {
             }
           >
             <GlassAvatar
+              identityKey={identity.publicKey}
               name={edits.name || draft?.name || name}
               size="xl"
               src={

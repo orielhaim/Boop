@@ -1,17 +1,5 @@
 import { AccessibilityInfo, Platform } from "react-native";
 
-export type GlassyUiMode = "clear" | "tinted";
-
-export type GlassyUiTheme = "light" | "dark";
-
-export interface GlassyUiPreferences {
-  theme?: GlassyUiTheme;
-  /** Clear glass shows more of what lies behind it; tinted glass holds a denser frost. */
-  mode?: GlassyUiMode;
-  reduceTransparency?: boolean;
-  reduceMotion?: boolean;
-}
-
 export type SystemAccessibility = {
   reduceMotion: boolean;
   reduceTransparency: boolean;

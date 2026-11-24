@@ -4,7 +4,7 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { router } from "expo-router";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { SettingsGroup, SettingsRow } from "@/components/settings/group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
 import { contacts } from "@/db/schema";
 import { namespaces } from "@/i18n";
@@ -27,10 +27,10 @@ export default function ContactPreferences() {
     <Screen
       navigationHeader={<ScreenHeader title={t("security:incomingVideo")} />}
     >
-      <SettingsGroup title={t("security:autoAllowed")}>
+      <ListGroup title={t("security:autoAllowed")}>
         {data.length ? (
           data.map((contact) => (
-            <SettingsRow
+            <ListRow
               key={contact.publicKey}
               title={contact.name}
               icon="person"
@@ -43,9 +43,9 @@ export default function ContactPreferences() {
             />
           ))
         ) : (
-          <SettingsRow title={t("security:noApproved")} />
+          <ListRow title={t("security:noApproved")} />
         )}
-      </SettingsGroup>
+      </ListGroup>
     </Screen>
   );
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   type ScrollHandlerProcessed,

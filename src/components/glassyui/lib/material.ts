@@ -2,6 +2,7 @@ import {
   isGlassEffectAPIAvailable,
   isLiquidGlassAvailable,
 } from "expo-glass-effect";
+import { Platform } from "react-native";
 
 /**
  * How glass is drawn: the system's own glass on iOS 26 and later, a blur of what lies
@@ -14,8 +15,10 @@ const systemGlass = isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
 
 export function resolveGlassMaterial(
   reduceTransparency: boolean,
+  hasBackdrop: boolean,
 ): GlassMaterial {
-  if (reduceTransparency) return "solid";
+  if (reduceTransparency || (Platform.OS === "android" && !hasBackdrop))
+    return "solid";
 
   return systemGlass ? "liquid" : "blur";
 }

@@ -12,7 +12,8 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import Animated, { useAnimatedRef } from "react-native-reanimated";
 import Sortable from "react-native-sortables";
 import { useAppPreferences } from "@/stores/preferences";
@@ -176,7 +177,7 @@ const DownloadRow = memo(function DownloadRow({
             <Icon name={icon} size={20} />
           </DownloadProgressRing>
         ) : (
-          <View style={[styles.file, { backgroundColor: colors.accentSoft }]}>
+          <View style={[styles.file, { backgroundColor: colors.selected }]}>
             <Icon name={icon} size={20} />
           </View>
         )}
@@ -209,7 +210,7 @@ const DownloadRow = memo(function DownloadRow({
     <View
       style={[
         styles.row,
-        { backgroundColor: colors.surface, borderColor: colors.line },
+        { backgroundColor: colors.raised, borderColor: colors.line },
       ]}
     >
       {handle}
@@ -298,7 +299,7 @@ function RowButton({
       }}
       style={({ pressed }) => [
         styles.button,
-        pressed && { backgroundColor: colors.accentSoft },
+        pressed && { backgroundColor: colors.selected },
       ]}
     >
       <Icon name={icon} size={19} />
@@ -474,7 +475,7 @@ export function DownloadsScreen() {
         {rows.length === 0 ? (
           <View style={styles.empty}>
             <View
-              style={[styles.emptyIcon, { backgroundColor: colors.accentSoft }]}
+              style={[styles.emptyIcon, { backgroundColor: colors.selected }]}
             >
               <Icon name="download" size={30} />
             </View>

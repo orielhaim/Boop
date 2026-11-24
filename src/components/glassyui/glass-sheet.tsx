@@ -1,7 +1,5 @@
-import type { ComponentRef } from "react";
-import { namespaces } from "@/i18n";
-import { useTranslation } from "react-i18next";
 import {
+  type ComponentRef,
   forwardRef,
   useCallback,
   useEffect,
@@ -10,11 +8,12 @@ import {
   type ForwardedRef,
   type ReactNode,
 } from "react";
+import { namespaces } from "@/i18n";
+import { useTranslation } from "react-i18next";
 import {
   Animated,
   I18nManager,
   PanResponder,
-  StyleSheet,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -24,6 +23,7 @@ import {
   type TextProps,
   type ViewProps,
 } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useGlassTheme } from "./glass-provider";
 import { GlassSurface } from "./glass-surface";
 import {

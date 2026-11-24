@@ -1,12 +1,13 @@
 import { useFocusEffect } from "expo-router";
 import { type ComponentRef, useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
 } from "@/components/glassyui/glass-segmented-control";
-import { SettingsDescription } from "@/components/settings/group";
+import { SettingsDescription } from "@/components/ui/list-group";
 import { Section } from "@/components/ui/kit";
 import { useThemeRevealControl } from "@/components/ui/theme-switch";
 import { setPreference } from "@/db/queries";

@@ -12,7 +12,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
+import { StyleSheet } from "react-native-unistyles";
 import { useStore } from "zustand";
 import {
   Action,
@@ -257,7 +258,7 @@ export function MarmotActiveCall({
         style={[
           styles.row,
           Boolean(profileActions) && styles.profileRow,
-          { backgroundColor: colors.accentSoft },
+          { backgroundColor: colors.selected },
         ]}
       >
         <Icon name="audio" color={colors.accent} />
@@ -337,7 +338,7 @@ export function GroupShortcut({
       }}
       style={({ pressed }) => [
         styles.shortcut,
-        pressed && { backgroundColor: colors.accentSoft },
+        pressed && { backgroundColor: colors.selected },
         disabled && { opacity: 0.5 },
       ]}
     >
