@@ -11,6 +11,8 @@ public final class BoopMarmotModule: Module {
   private var draftStages: Set<String> = [] // Guarded by uploadLock.
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
+  private let directoryLock = NSLock()
+  private var directorySearches: [String: Task<Void, Error>?] = [:]
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
   private var isForeground = true
   private var foregroundGeneration: UInt64 = 0
@@ -18,8 +20,9 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults")
     OnAppEntersBackground {
+      self.directoryLock.withLock { self.directorySearches.values.forEach { $0?.cancel() } }
       let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
         self.isForeground = false
         self.foregroundGeneration &+= 1
@@ -68,6 +71,78 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("selectSigner") { (key: String) async throws -> Document in
       try await protocolCall { try await self.runtime.selectSigner(key) }
+    }
+    AsyncFunction("readProfiles") { (owner: String, keys: [String]) async throws -> [Document] in
+      try await self.withSigner(owner) { kit in
+        try kit.cachedIdentityProjections(accountIdHexes: keys).compactMap { item in
+          guard let key = item.accountIdHex, let profile = item.profile else { return nil }
+          return profileDocument(key, profile, item.website, item.bot)
+        }
+      }
+    }
+    AsyncFunction("refreshPublicProfile") { (owner: String, key: String, relays: [String]) async throws in
+      try await self.withSigner(owner) { try await $0.refreshProfile(accountIdHex: key, relays: relays) }
+    }
+    AsyncFunction("updatePublicProfile") { (owner: String, fields: [String: String]) async throws in
+      try await self.withSigner(owner) { kit in
+        _ = try await kit.updateUserProfileUsingAccountRelays(accountRef: owner, edits: fields)
+      }
+    }
+    AsyncFunction("normalizeDirectoryIdentity") { (owner: String, reference: String) async throws -> String? in
+      try await self.withSigner(owner) { $0.accountIdHex(reference: reference) }
+    }
+    AsyncFunction("cachedDirectorySearch") { (owner: String, query: String) async throws -> [Document] in
+      try await self.withSigner(owner) { try $0.searchCachedUsers(accountIdHex: owner, query: query, limit: 48).map(searchResultDocument) }
+    }
+    Function("prepareDirectorySearch") { (id: String) -> Bool in
+      self.directoryLock.withLock {
+        guard self.directorySearches.count < 8, self.directorySearches.index(forKey: id) == nil else { return false }
+        self.directorySearches[id] = .some(nil)
+        return true
+      }
+    }
+    AsyncFunction("searchDirectory") { (owner: String, id: String, query: String) async throws in
+      let task = self.directoryLock.withLock { () -> Task<Void, Error>? in
+        guard case .some(.none) = self.directorySearches[id] else { return nil }
+        let task = Task<Void, Error> {
+          let search = try await self.withSigner(owner) {
+            try await $0.searchUsers(accountIdHex: owner, query: query, radiusStart: 0, radiusEnd: 2)
+          }
+          while let update = try await search.nextCancellable() {
+            try Task.checkCancellation()
+            if case .error = update.trigger { continue }
+            let rows = (update.newResults + update.updatedResults).prefix(48).map(searchResultDocument)
+            if !rows.isEmpty { self.sendEvent("directorySearchResults", ["id": id, "rows": rows]) }
+          }
+        }
+        self.directorySearches[id] = .some(task)
+        return task
+      }
+      guard let task else { throw problem("SearchInProgress") }
+      defer { _ = self.directoryLock.withLock { self.directorySearches.removeValue(forKey: id) } }
+      try await task.value
+    }
+    Function("cancelDirectorySearch") { (id: String) in
+      self.directoryLock.withLock { self.directorySearches.removeValue(forKey: id).flatMap { $0 }?.cancel() }
+    }
+    AsyncFunction("requestAvatarAssets") { (targets: [String]) async throws -> [Document] in
+      try await self.withAccount { try await $0.requestAvatarAssets(accountRef: $1, targets: targets).map(avatarDocument) }
+    }
+    AsyncFunction("readAvatarAssets") { (references: [String]) async throws -> [Document] in
+      try await self.withAccount { kit, account in
+        try await kit.readAvatarAssets(accountRef: account, references: references, maxBytes: 4 * 1024 * 1024).map { asset in
+          let uri = asset.mediaType.flatMap { mime -> String? in
+            guard !asset.bytes.isEmpty,
+              ["image/jpeg", "image/png", "image/webp", "image/gif"].contains(mime) else { return nil }
+            return "data:\(mime);base64,\(asset.bytes.base64EncodedString())"
+          }
+          return ["reference": asset.reference, "revision": String(asset.contentRevision),
+                  "availability": wireName(asset.availability), "deferred": asset.deferred, "uri": bridgeValue(uri)]
+        }
+      }
+    }
+    AsyncFunction("clearMarmotAvatarCache") { (owner: String) async throws in
+      try await self.withSigner(owner) { try await $0.clearAvatarCache(accountRef: owner) }
     }
     AsyncFunction("accountNetworkReady") { (key: String) async throws -> Bool in
       try await self.withSigner(key) { try $0.accountSetupReadiness(accountRef: key) == .networkReady }
@@ -238,11 +313,13 @@ public final class BoopMarmotModule: Module {
         let pending = try await kit.groupPendingCommit(accountRef: account, groupIdHex: group)
         let delivery = try await kit.groupCommitDelivery(accountRef: account, groupIdHex: group)
         let recovery = try await kit.groupRecoveryStatus(accountRef: account, groupIdHex: group)
-        let chat = try kit.chatListRow(accountRef: account, groupIdHex: group)
+        let presented = try await kit.presentedChatListRow(accountRef: account, groupIdHex: group)
+        let chat = presented?.row
         let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
         return [
           "id": group, "name": details.group.name, "description": details.group.description,
           "inviter": bridgeValue(details.group.welcomerAccountIdHex), "relays": details.group.relays,
+          "avatarAsset": bridgeValue(presented?.avatarAsset.map(avatarDocument)),
           "image": bridgeValue(details.group.imageHashHex), "epoch": String(details.mlsState.epoch),
           "mediaV2": details.group.encryptedMedia.version == .v2,
           "mediaEndpoints": details.group.encryptedMedia.defaultBlobEndpoints.map(\.baseUrl),
@@ -294,26 +371,24 @@ public final class BoopMarmotModule: Module {
         })
       }
     }
-    AsyncFunction("groupImage") { (group: String, hash: String, fetch: Bool) async throws -> String? in
+    AsyncFunction("viewGroupImage") { (group: String, hash: String) async throws -> String in
       try await self.withAccount { kit, account in
-        guard hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw problem("InvalidMedia") }
         let details = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
-        guard !details.pendingConfirmation, details.selfMembership == .member, details.imageHashHex == hash else { throw problem("MediaUnavailable") }
-        let manager = FileManager.default
-        let cache = try manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let folder = cache.appendingPathComponent("marmot-group-images").appendingPathComponent(account)
-        let file = folder.appendingPathComponent(hash + ".jpg")
-        if !manager.fileExists(atPath: file.path) {
-          guard fetch else { return nil }
-          let bytes = try await kit.downloadGroupBlossomImage(accountRef: account, groupIdHex: group)
-          let current = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
-          guard !bytes.isEmpty, bytes.count <= maxGroupImage, current.selfMembership == .member, current.imageHashHex == hash else {
-            throw problem("MediaUnavailable")
-          }
-          try manager.createDirectory(at: folder, withIntermediateDirectories: true)
-          try bytes.write(to: file, options: [.atomic, .completeFileProtection])
-        }
-        return file.path
+        guard !details.pendingConfirmation, details.selfMembership == .member,
+          details.imageHashHex == hash else { throw problem("MediaUnavailable") }
+        let bytes = try await kit.downloadGroupBlossomImage(accountRef: account, groupIdHex: group)
+        let current = try await kit.groupDetails(accountRef: account, groupIdHex: group).group
+        guard !bytes.isEmpty, bytes.count <= maxGroupImage, !current.pendingConfirmation,
+          current.selfMembership == .member, current.imageHashHex == hash else { throw problem("MediaUnavailable") }
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+          let type = CGImageSourceGetType(source),
+          let mime = ["public.jpeg": "image/jpeg", "public.png": "image/png",
+                      "org.webmproject.webp": "image/webp", "com.compuserve.gif": "image/gif"][type as String],
+          let dimensions = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = dimensions[kCGImagePropertyPixelWidth] as? Int, (1...4096).contains(width),
+          let height = dimensions[kCGImagePropertyPixelHeight] as? Int, (1...4096).contains(height)
+        else { throw problem("InvalidMedia") }
+        return "data:\(mime);base64,\(bytes.base64EncodedString())"
       }
     }
     AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool) async throws -> [Document] in
@@ -876,6 +951,7 @@ public final class BoopMarmotModule: Module {
   }
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
+    directoryLock.withLock { directorySearches.values.forEach { $0?.cancel() } }
     uploadLock.withLock { uploads.values.forEach { $0.cancel() } }
     try await runtime.close(closeRuntime: closeRuntime, pauseMessaging: pauseMessaging) { [weak self] id in
       self?.sendEvent("windowClosed", ["id": id, "code": "AccountClosed"])
@@ -1038,6 +1114,23 @@ private actor AttachmentCancellation {
 
 private let maxGroupImage = 4 * 1024 * 1024
 
+private func searchResultDocument(_ row: UserDirectorySearchResultFfi) -> Document {
+  ["key": row.accountIdHex, "profile": bridgeValue(row.profile.map { profileDocument(row.accountIdHex, $0, nil, false) })]
+}
+
+private func profileDocument(_ key: String, _ profile: UserProfileMetadataFfi, _ website: String?, _ bot: Bool) -> Document {
+  var result: Document = ["key": key, "bot": bot]
+  result["name"] = profile.name
+  result["displayName"] = profile.displayName
+  result["about"] = profile.about
+  result["picture"] = profile.picture
+  result["banner"] = profile.banner
+  result["nip05"] = profile.nip05
+  result["lud16"] = profile.lud16
+  result["website"] = website
+  return result
+}
+
 private func groupImageInput(_ path: String) throws -> Data {
   let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().path + "/"
   let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
@@ -1156,7 +1249,8 @@ private actor Runtime {
     var seen = Set<String>()
     let relays = (next.general + next.discovery).filter { seen.insert($0).inserted }
     let opened = try Marmot.newWithConfiguration(rootPath: root.resolvingSymlinksInPath().path, relayUrls: relays, options: MarmotOptions(
-      clientName: "Boop", devicePlatform: "iOS", attachmentAcquisitionMode: .hostManaged, deployment: deployment
+      clientName: "Boop", devicePlatform: "iOS", attachmentAcquisitionMode: .hostManaged,
+      acquirePublicAvatars: false, deployment: deployment
     ))
     kit = opened
     configuration = next

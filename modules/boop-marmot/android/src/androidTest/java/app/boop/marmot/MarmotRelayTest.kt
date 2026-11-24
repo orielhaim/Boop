@@ -110,6 +110,57 @@ class MarmotRelayTest {
     } finally { directory.deleteRecursively() }
   }
 
+  @Test fun sparseProfileEditsUseAccountRelaysAndSurviveReopen() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val relay = InstrumentationRegistry.getArguments().getString("relay")
+      ?: error("Pass the fixture WebSocket URL as the relay instrumentation argument")
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val owner = Client(File(root, "owner"), relay, null)
+    val reader = Client(File(root, "reader"), relay, null)
+    try {
+      owner.start()
+      await("profile account ready") {
+        owner.kit.accountSetupReadiness(owner.key) == AccountSetupReadinessFfi.NETWORK_READY
+      }
+      val picture = "https://photos.example.com/avatar.jpg"
+      owner.kit.publishUserProfileUsingAccountRelays(owner.key, UserProfileMetadataFfi(
+        "original-handle", "Original", "Biography", picture, "https://photos.example.com/banner.jpg",
+        "name@example.com", "wallet@example.com",
+      ))
+      val update = owner.kit.updateUserProfileUsingAccountRelays(owner.key, mapOf(
+        "display_name" to "Updated", "banner" to "", "website" to "https://example.com/"
+      ))
+      assertEquals("original-handle", update.name)
+      assertEquals("Updated", update.displayName)
+      assertEquals("Biography", update.about)
+      assertEquals(picture, update.picture)
+      assertNull(update.banner)
+      assertEquals("name@example.com", update.nip05)
+      assertEquals("wallet@example.com", update.lud16)
+
+      reader.start()
+      assertNotEquals(owner.key, reader.key)
+      reader.kit.refreshProfile(owner.key, listOf(relay))
+      var projection = reader.kit.cachedIdentityProjections(listOf(owner.key)).single()
+      assertEquals("Updated", projection.resolvedName)
+      assertEquals("https://example.com/", projection.website)
+      assertEquals(picture, projection.profile?.picture)
+      reader.close()
+      reader.start()
+      projection = reader.kit.cachedIdentityProjections(listOf(owner.key)).single()
+      assertEquals("Updated", projection.resolvedName)
+      assertEquals("https://example.com/", projection.website)
+    } finally {
+      try {
+        reader.close()
+      } finally {
+        owner.close()
+        root.deleteRecursively()
+      }
+    }
+  }
+
   @Test fun directAndGroupUseIndependentDurableAccounts() = runBlocking {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val context = instrumentation.targetContext

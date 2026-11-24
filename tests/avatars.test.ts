@@ -1,16 +1,14 @@
+import type { MarmotPublicProfile } from "../src/core/marmot/native";
+import { createProfileDirectory } from "../src/core/profiles/directory";
+import { publicMediaUrl as publicImageUrl } from "../src/core/media/url";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
+import { generateSecretKey, getPublicKey } from "nostr-tools";
 import { sanitizeAvatarJpeg } from "../src/core/avatars/jpeg";
-import {
-  parseProfile,
-  publicImageUrl,
-  replaces,
-  type ProfilePhotoPolicy,
-} from "../src/core/avatars/protocol";
+import { type ProfilePhotoPolicy } from "../src/core/avatars/protocol";
 import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
 import { initializeTestDatabase } from "./db-fixture";
 import { saveContact, setPreference } from "../src/db/queries";
@@ -19,40 +17,22 @@ import * as schema from "../src/db/schema";
 const secret = generateSecretKey();
 const key = getPublicKey(secret);
 const owner = getPublicKey(generateSecretKey());
-const time = Math.floor(Date.now() / 1000);
 const url = "https://photos.example.com/person.jpg";
-const sign = (content: string, created_at = time) =>
-  finalizeEvent({ kind: 0, content, tags: [], created_at }, secret);
-const signed = (picture = url, created_at = time) =>
-  sign(JSON.stringify({ name: "Public", picture }), created_at);
 
-test("signed profiles validate metadata and apply Nostr replaceable ordering", () => {
-  const first = signed();
-  const parsed = parseProfile(first, key);
-  expect(parsed?.picture).toBe(url);
-  expect(parseProfile({ ...first, sig: "0".repeat(128) }, key)).toBeNull();
-  expect(parseProfile(first, owner)).toBeNull();
-  expect(parseProfile(sign("["), key)).toBeNull();
-  expect(
-    parseProfile(sign(JSON.stringify({ about: "a".repeat(17_000) })), key),
-  ).toBeNull();
-  expect(
-    parseProfile(signed("https://127.0.0.1/avatar.jpg"), key)?.picture,
-  ).toBeNull();
-  expect(
-    parseProfile(sign('{"display_name":"Boop"}'), key)?.picture,
-  ).toBeNull();
-  if (!parsed) throw new Error("Missing profile");
-  expect(replaces({ eventId: "a", createdAt: time + 1 }, parsed)).toBe(true);
-  expect(replaces({ eventId: "a", createdAt: time - 1 }, parsed)).toBe(false);
-  expect(replaces(parsed, parsed)).toBe(false);
-  expect(
-    replaces(
-      { eventId: "a", createdAt: time },
-      { eventId: "b", createdAt: time },
-    ),
-  ).toBe(true);
-});
+function photo(picture: string): MarmotPublicProfile {
+  return {
+    key,
+    picture,
+    name: undefined,
+    displayName: "Boop",
+    about: undefined,
+    banner: undefined,
+    nip05: undefined,
+    lud16: undefined,
+    website: undefined,
+    bot: false,
+  };
+}
 
 test("unsafe URL shapes are excluded before transport", () => {
   for (const url of [
@@ -97,6 +77,7 @@ function fixture(
   const context = { policy, blocked };
   const cache = new Set<string>();
   const local = new Set<string>();
+  const authored = new Map<string, string>();
   const disk: AvatarDisk = {
     newId: randomUUID,
     cacheTarget: (name) => name,
@@ -105,6 +86,20 @@ function fixture(
     copyLocal: (_source, name) => {
       local.add(name);
     },
+    authored(field, name) {
+      const retained = authored.get(field);
+      return retained === name
+        ? `file:///local/${field}-${retained}`
+        : undefined;
+    },
+    keepAuthored(field, file, name) {
+      if (file && name) authored.set(field, name);
+      else authored.delete(field);
+    },
+    commitCached(staged, name) {
+      cache.delete(staged);
+      cache.add(name);
+    },
     removeCached: (name) => {
       cache.delete(name);
     },
@@ -112,7 +107,8 @@ function fixture(
       local.delete(name);
     },
     clearCache: () => cache.clear(),
-    sweep: () => {},
+    sweepLocal: () => {},
+    pruneCache: () => {},
   };
   const requests: {
     id: string;
@@ -122,6 +118,15 @@ function fixture(
   }[] = [];
   const cancelled: string[] = [];
   let current = true;
+  let projection = photo(url);
+  const profiles = createProfileDirectory(
+    { read: async () => [projection], refresh: async () => {} },
+    () => current,
+    () => context.blocked,
+    () => [],
+  );
+  profiles.setActive(true);
+  profiles.read([key]);
   const avatars = createAvatars(
     db,
     owner,
@@ -137,7 +142,7 @@ function fixture(
             .get(),
         ),
     },
-    { watchProfiles: () => null },
+    profiles,
     disk,
     {
       download: (id, url, name) =>
@@ -158,15 +163,21 @@ function fixture(
     },
     undefined,
     () => current,
+    () => [],
   );
   avatars.setActive(true);
-  avatars.ingest(signed(), key);
   function close() {
+    profiles.setActive(false);
     avatars.setActive(false);
     sqlite.close();
   }
   return {
     context,
+    cache,
+    profile(next: typeof projection) {
+      projection = next;
+      profiles.reload(next.key);
+    },
     db,
     avatars,
     requests,
@@ -247,14 +258,14 @@ for (const change of ["policy", "block", "delete", "identity"] as const) {
       await Bun.sleep(150);
       expect(f.requests).toHaveLength(1);
       expect(f.avatars.resolve(key)).toBeUndefined();
-      expect(f.db.select().from(schema.avatarCache).all()).toEqual([]);
+      expect([...f.cache]).toEqual([]);
     } finally {
       f.close();
     }
   });
 }
 
-test("cache hides immediately on policy change; replacement waits for validated bytes", async () => {
+test("cache hides on policy and source changes and reuses eligible validated bytes", async () => {
   const f = fixture("contacts", true);
   try {
     await Bun.sleep(120);
@@ -271,20 +282,13 @@ test("cache hides immediately on policy change; replacement waits for validated 
     f.context.policy = "contacts";
     f.avatars.invalidate();
     expect(f.avatars.resolve(key)).toBe(first);
-    f.avatars.ingest(
-      signed("https://photos.example.com/replacement.jpg", time + 1),
-      key,
-    );
+    f.profile(photo("https://photos.example.com/replacement.jpg"));
     await Bun.sleep(150);
     expect(f.requests).toHaveLength(2);
-    expect(f.avatars.resolve(key)).toBe(first);
+    expect(f.avatars.resolve(key)).toBeUndefined();
     f.requests[1]?.finish(1024);
     await Bun.sleep(0);
     expect(f.avatars.resolve(key)).not.toBe(first);
-    f.avatars.ingest(signed(), key);
-    expect(f.avatars.profile(key)?.picture).toBe(
-      "https://photos.example.com/replacement.jpg",
-    );
   } finally {
     f.close();
   }
@@ -294,10 +298,7 @@ test("banner downloads share the profile privacy gate and a visit grants tempora
   const f = fixture("contacts", false);
   const banner = "https://photos.example.com/cover.jpg";
   try {
-    f.avatars.ingest(
-      sign(JSON.stringify({ picture: url, banner }), time + 1),
-      key,
-    );
+    f.profile({ ...photo(url), banner });
     f.avatars.watch(key);
     f.avatars.watch(key, true);
     await Bun.sleep(150);
@@ -320,6 +321,44 @@ test("banner downloads share the profile privacy gate and a visit grants tempora
     await Bun.sleep(150);
     expect(f.requests).toHaveLength(2);
     expect(f.avatars.resolve(key)).toBeUndefined();
+  } finally {
+    f.close();
+  }
+});
+
+test("an authored profile image survives clearing downloads without granting its URL network access", async () => {
+  const f = fixture("nobody", false);
+  try {
+    f.profile({ ...photo(url), key: owner });
+    f.avatars.watch(owner);
+    f.avatars.keepUploaded("photo", "file.jpg", url);
+    await Bun.sleep(150);
+    const authored = f.avatars.resolve(owner);
+    expect(authored).toStartWith("file:///local/photo-");
+    f.avatars.clear();
+    expect(f.avatars.resolve(owner)).toBe(authored);
+    expect(f.requests).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("a photo policy change revokes an explicit visit's in-flight download", async () => {
+  const f = fixture("contacts", false);
+  try {
+    f.avatars.watch(key);
+    const release = f.avatars.allowVisit(key);
+    await Bun.sleep(150);
+    const request = f.requests[0];
+    if (!request) throw new Error("Missing explicit request");
+    f.context.policy = "nobody";
+    f.avatars.invalidate();
+    expect(f.cancelled).toEqual([request.id]);
+    request.finish(200);
+    await Bun.sleep(0);
+    expect(f.avatars.resolve(key)).toBeUndefined();
+    expect([...f.cache]).toEqual([]);
+    release();
   } finally {
     f.close();
   }

@@ -21,7 +21,7 @@ export function parsePublicKey(input: string): string | null {
 export function parsePublicIdentity(
   input: string,
 ): { key: string; relays: string[] } | null {
-  const value = input.trim().replace(/^nostr:/i, "");
+  const value = input.trim().replace(/^(?:nostr:|marmot:\/\/profile\/)/i, "");
   if (encodedKey.test(value.toLowerCase())) {
     const key = value.toLowerCase();
     return publicKeySchema.safeParse(key).success ? { key, relays: [] } : null;

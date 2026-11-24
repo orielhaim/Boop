@@ -21,7 +21,7 @@ import {
   View,
 } from "react-native";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
-import { usePerson } from "@/components/people/use-person";
+import { usePerson, usePresentedName } from "@/components/people/use-person";
 import { PersonAvatar } from "@/components/people/person-avatar";
 import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
@@ -42,6 +42,8 @@ import {
 } from "@/components/ui/kit";
 import type { MenuAction } from "@expo/ui/community/menu";
 
+import { useAvatarVisibility } from "@/core/avatars/use-avatar";
+import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { blossomServer } from "@/core/media/blossom";
 import {
@@ -62,7 +64,7 @@ import {
   GroupShortcuts,
   MarmotActiveCall,
 } from "./marmot-active-call";
-import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 
 export function useMarmotError() {
   const { t } = useTranslation(namespaces);
@@ -255,6 +257,35 @@ export function NewMarmotGroup() {
       publicKey !== identity.publicKey && !privacy.isBlocked(publicKey),
   );
   const [step, setStep] = useState(eligible.length ? "people" : "details");
+  const focused = useIsFocused();
+  const [query, setQuery] = useState("");
+  const { exactKey, current: results } = useDirectorySearch(
+    query,
+    focused && step === "people",
+  );
+  const candidates = query.trim()
+    ? [
+        ...new Set([
+          ...(exactKey ? [exactKey] : (results?.keys ?? [])),
+          ...eligible
+            .filter(
+              ({ name, publicKey }) =>
+                name
+                  .toLocaleLowerCase()
+                  .includes(query.trim().toLocaleLowerCase()) ||
+                toNpub(publicKey).startsWith(query.trim().toLowerCase()),
+            )
+            .map(({ publicKey }) => publicKey),
+        ]),
+      ]
+    : eligible.map(({ publicKey }) => publicKey);
+  const avatarVisibility = useAvatarVisibility<string>(
+    (key) => key,
+    focused && step === "people",
+  );
+  const invitees = candidates.filter(
+    (key) => key !== identity.publicKey && !privacy.isBlocked(key),
+  );
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -266,8 +297,9 @@ export function NewMarmotGroup() {
   useEffect(() => () => cleanImage(photo), [photo]);
 
   const busy = status !== "idle";
-  const selecting = step === "people" && eligible.length > 0;
-  const canReturnToPeople = !selecting && eligible.length > 0;
+  const selecting = step === "people";
+  const canReturnToPeople =
+    !selecting && (eligible.length > 0 || selected.length > 0);
   const disablePrevention = usePreventRemove(
     status !== "created" &&
       (busy || Boolean(picker.image) || canReturnToPeople),
@@ -372,10 +404,19 @@ export function NewMarmotGroup() {
       {selecting ? (
         <>
           <FlatList
-            data={eligible}
-            keyExtractor={({ publicKey }) => publicKey}
+            data={invitees}
+            {...avatarVisibility}
+            ListHeaderComponent={
+              <GlassInput
+                label={t("messenger:searchHint")}
+                autoCapitalize="none"
+                value={query}
+                onChangeText={setQuery}
+              />
+            }
+            keyExtractor={(publicKey) => publicKey}
             contentContainerStyle={groupSetupStyles.people}
-            renderItem={({ item: { publicKey } }) => (
+            renderItem={({ item: publicKey }) => (
               <GroupInviteeRow
                 publicKey={publicKey}
                 selected={selected.includes(publicKey)}
@@ -465,6 +506,11 @@ export function NewMarmotGroup() {
             <Ink kind="caption" muted>
               {t("messages:marmot.textOnlyGroup")}
             </Ink>
+          )}
+          {!canReturnToPeople && (
+            <Action onPress={() => setStep("people")}>
+              {t("messages:marmot.selectGroupPeople")}
+            </Action>
           )}
           <InviteeAvailability keys={selected} />
           {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
@@ -652,7 +698,9 @@ export function MarmotGroupDetailsScreen({
   const isGroup = details?.kind !== "direct";
   const photo =
     member && privacy.photoPolicy() !== "nobody" ? details?.image : undefined;
-  const cachedPhoto = useMarmotGroupAvatar(id, photo);
+  const cachedPhoto = usePreparedGroupAvatar(
+    photo ? details?.avatarAsset : undefined,
+  );
   const imageUri =
     photo && loadedPhoto?.hash === photo
       ? loadedPhoto.uri
@@ -697,9 +745,9 @@ export function MarmotGroupDetailsScreen({
     if (!photo || busy) return;
     setBusy(true);
     try {
-      const path = await marmot.groupImage(id, photo, true);
-      if (path && privacy.photoPolicy() !== "nobody")
-        setLoadedPhoto({ hash: photo, uri: `file://${path}` });
+      const uri = await marmot.viewGroupImage(id, photo);
+      if (privacy.photoPolicy() !== "nobody")
+        setLoadedPhoto({ hash: photo, uri });
     } catch (reason) {
       Alert.alert(translateError(reason));
     } finally {
@@ -875,7 +923,10 @@ export function MarmotGroupDetailsScreen({
         }
         return (
           <View key={person.id} style={styles.rosterRow}>
-            <GroupMemberIdentity publicKey={person.id} />
+            <GroupMemberIdentity
+              publicKey={person.id}
+              displayName={person.name}
+            />
             {person.admin && (
               <Ink
                 kind="caption"
@@ -1389,9 +1440,15 @@ export function MarmotGroupDetailsScreen({
   );
 }
 
-function GroupMemberIdentity({ publicKey }: { publicKey: string }) {
+function GroupMemberIdentity({
+  publicKey,
+  displayName,
+}: {
+  publicKey: string;
+  displayName?: string | null;
+}) {
   const { t } = useTranslation(namespaces);
-  const { name } = usePerson(publicKey);
+  const name = usePresentedName(publicKey, displayName);
   return (
     <Pressable
       accessibilityRole="button"
@@ -1533,9 +1590,17 @@ function InviteMemberField({
   invite: (addresses: string) => void;
 }) {
   const { t } = useTranslation(namespaces);
-  const { identity } = useLocal();
+  const { identity, privacy } = useLocal();
+  const focused = useIsFocused();
   const [addresses, setAddresses] = useState("");
+  const last = addresses.split(/[\s,]+/u).at(-1) ?? "";
+  const { exactKey, current } = useDirectorySearch(last, focused && !busy);
   const parsed = resolveAddresses(addresses, identity.publicKey);
+  const suggestions = (
+    exactKey && !parsePublicKey(last) ? [exactKey] : (current?.keys ?? [])
+  )
+    .filter((key) => key !== identity.publicKey && !privacy.isBlocked(key))
+    .slice(0, 5);
   return (
     <>
       <GlassInput
@@ -1545,6 +1610,19 @@ function InviteMemberField({
         multiline
         autoCapitalize="none"
       />
+      {suggestions.map((key) => (
+        <GroupInviteeRow
+          key={key}
+          publicKey={key}
+          selected={false}
+          onToggle={() =>
+            setAddresses(
+              (value) =>
+                value.slice(0, value.length - last.length) + key + "\n",
+            )
+          }
+        />
+      ))}
       <InviteeAvailability keys={parsed ?? []} />
       <Action
         disabled={busy || !parsed?.length}

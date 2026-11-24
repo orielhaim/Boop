@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.media.ThumbnailUtils
-import android.util.AtomicFile
 import android.util.Size
 import android.os.SystemClock
 import android.util.Log
@@ -31,6 +30,8 @@ class BoopMarmotModule : Module() {
   private val shutdownTurn = Mutex()
   private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val directorySearches = ConcurrentHashMap<String, CompletableJob>()
+  private val directoryWork = ConcurrentHashMap.newKeySet<Job>()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
@@ -47,13 +48,15 @@ class BoopMarmotModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults")
     OnActivityEntersForeground {
       foregroundGeneration.incrementAndGet()
       downloadsForeground = true
     }
     OnActivityEntersBackground {
       downloadsForeground = false
+      directorySearches.values.forEach { it.cancel() }
+      directoryWork.forEach { it.cancel() }
       foregroundGeneration.incrementAndGet()
       attachmentAdmissions.values.forEach { it.set(true) }
       val controls = attachmentControls.values.toList()
@@ -164,6 +167,75 @@ class BoopMarmotModule : Module() {
           mapOf("name" to (profile?.displayName ?: profile?.name), "about" to profile?.about)
         }
       }
+    }
+    AsyncFunction("readProfiles") Coroutine { owner: String, keys: List<String> ->
+      withSigner(owner) { kit ->
+        kit.cachedIdentityProjections(keys).mapNotNull { item ->
+          val key = item.accountIdHex ?: return@mapNotNull null
+          val profile = item.profile ?: return@mapNotNull null
+          profileDocument(key, profile, item.website, item.bot)
+        }
+      }
+    }
+    AsyncFunction("refreshPublicProfile") Coroutine { owner: String, key: String, relays: List<String> ->
+      withDirectory(owner) { kit -> kit.refreshProfile(key, relays); Unit }
+    }
+    AsyncFunction("updatePublicProfile") Coroutine { owner: String, fields: Map<String, String> ->
+      withDirectory(owner) { kit -> kit.updateUserProfileUsingAccountRelays(owner, fields); Unit }
+    }
+    AsyncFunction("normalizeDirectoryIdentity") Coroutine { owner: String, reference: String ->
+      withSigner(owner) { it.accountIdHex(reference) }
+    }
+    AsyncFunction("cachedDirectorySearch") Coroutine { owner: String, query: String ->
+      withSigner(owner) { kit -> kit.searchCachedUsers(owner, query, 48u).map { searchResultDocument(it) } }
+    }
+    Function("prepareDirectorySearch") { id: String ->
+      if (directorySearches.size >= 8) throw problem("SearchInProgress")
+      directorySearches.putIfAbsent(id, Job()) == null
+    }
+    AsyncFunction("searchDirectory") Coroutine { owner: String, id: String, query: String ->
+      val ticket = directorySearches[id] ?: throw problem("DirectoryUnavailable")
+      val job = currentCoroutineContext().job
+      val cancellation = ticket.invokeOnCompletion { if (ticket.isCancelled) job.cancel() }
+      try {
+        withDirectory(owner) { kit ->
+          kit.searchUsers(owner, query, 0u, 2u).use { search ->
+            while (true) {
+              val update = search.nextUpdate() ?: break
+              currentCoroutineContext().ensureActive()
+              if (update.trigger is SearchUpdateTriggerFfi.Error) continue
+              val rows = (update.newResults + update.updatedResults).take(48).map { searchResultDocument(it) }
+              if (rows.isNotEmpty()) sendEvent("directorySearchResults", mapOf("id" to id, "rows" to rows))
+            }
+          }
+        }
+      } finally {
+        cancellation.dispose()
+        directorySearches.remove(id, ticket)
+        ticket.complete()
+      }
+    }
+    Function("cancelDirectorySearch") { id: String -> directorySearches.remove(id)?.cancel(); Unit }
+    AsyncFunction("requestAvatarAssets") Coroutine { targets: List<String> ->
+      withSession { active ->
+        active.kit.requestAvatarAssets(active.account, targets).map { it.document() }
+      }
+    }
+    AsyncFunction("readAvatarAssets") Coroutine { references: List<String> ->
+      withSession { active ->
+        active.kit.readAvatarAssets(active.account, references, 4uL * 1024uL * 1024uL).map { asset ->
+          val mime = asset.mediaType
+          val uri = if (asset.bytes.isNotEmpty() && mime != null && mime in setOf("image/jpeg", "image/png", "image/webp", "image/gif")) {
+            val data = android.util.Base64.encodeToString(asset.bytes, android.util.Base64.NO_WRAP)
+            "data:$mime;base64,$data"
+          } else null
+          mapOf("reference" to asset.reference, "revision" to asset.contentRevision.toString(),
+            "availability" to asset.availability.name.lowercase(), "deferred" to asset.deferred, "uri" to uri)
+        }
+      }
+    }
+    AsyncFunction("clearMarmotAvatarCache") Coroutine { owner: String ->
+      withDirectory(owner) { it.clearAvatarCache(owner) }
     }
     AsyncFunction("accountNetworkReady") Coroutine { key: String ->
       withSigner(key) { it.accountSetupReadiness(key) == AccountSetupReadinessFfi.NETWORK_READY }
@@ -390,11 +462,13 @@ class BoopMarmotModule : Module() {
         val pending = it.kit.groupPendingCommit(it.account, group)
         val delivery = it.kit.groupCommitDelivery(it.account, group)
         val recovery = it.kit.groupRecoveryStatus(it.account, group)
-        val chat = it.kit.chatListRow(it.account, group)
+        val presented = it.kit.presentedChatListRow(it.account, group)
+        val chat = presented?.row
         val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
         mapOf(
           "id" to group, "name" to details.group.name, "description" to details.group.description,
           "inviter" to details.group.welcomerAccountIdHex, "relays" to details.group.relays,
+          "avatarAsset" to presented?.avatarAsset?.document(),
           "image" to details.group.imageHashHex, "epoch" to details.mlsState.epoch.toString(),
           "mediaV2" to (details.group.encryptedMedia.version == EncryptedMediaVersionFfi.V2),
           "mediaEndpoints" to details.group.encryptedMedia.defaultBlobEndpoints.map { endpoint -> endpoint.baseUrl },
@@ -442,26 +516,23 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    AsyncFunction("groupImage") Coroutine { group: String, hash: String, fetch: Boolean ->
+    AsyncFunction("viewGroupImage") Coroutine { group: String, hash: String ->
       withSession {
-        if (!hash.matches(HEX)) throw problem("InvalidMedia")
-        val context = appContext.reactContext ?: throw problem("ContextUnavailable")
         val details = it.kit.groupDetails(it.account, group).group
-        if (details.pendingConfirmation || details.selfMembership != SelfMembershipFfi.MEMBER || details.imageHashHex != hash) throw problem("MediaUnavailable")
-        val folder = File(context.cacheDir, "marmot-group-images/${it.account}")
-        folder.mkdirs()
-        val file = AtomicFile(File(folder, "$hash.jpg"))
-        if (!file.baseFile.isFile) {
-          if (!fetch) return@withSession null
-          val bytes = it.kit.downloadGroupBlossomImage(it.account, group)
-          val current = it.kit.groupDetails(it.account, group).group
-          if (bytes.isEmpty() || bytes.size > MAX_GROUP_IMAGE || current.selfMembership != SelfMembershipFfi.MEMBER ||
-            current.imageHashHex != hash) throw problem("MediaUnavailable")
-          val output = file.startWrite()
-          try { output.write(bytes); file.finishWrite(output) }
-          catch (error: Exception) { file.failWrite(output); throw error }
-        }
-        file.baseFile.canonicalPath
+        if (details.pendingConfirmation || details.selfMembership != SelfMembershipFfi.MEMBER ||
+          details.imageHashHex != hash) throw problem("MediaUnavailable")
+        val bytes = it.kit.downloadGroupBlossomImage(it.account, group)
+        val current = it.kit.groupDetails(it.account, group).group
+        if (bytes.isEmpty() || bytes.size > MAX_GROUP_IMAGE || current.pendingConfirmation ||
+          current.selfMembership != SelfMembershipFfi.MEMBER || current.imageHashHex != hash)
+          throw problem("MediaUnavailable")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val mime = bounds.outMimeType?.takeIf { it in setOf("image/jpeg", "image/png", "image/webp", "image/gif") }
+          ?: throw problem("InvalidMedia")
+        if (bounds.outWidth !in 1..4096 || bounds.outHeight !in 1..4096) throw problem("InvalidMedia")
+        val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        "data:$mime;base64,$encoded"
       }
     }
     AsyncFunction("inviteMembers") Coroutine { group: String, members: List<String> ->
@@ -1032,7 +1103,20 @@ class BoopMarmotModule : Module() {
   }
 
   private suspend fun shutdown(closeRuntime: Boolean = false, pauseMessaging: Boolean = false) = withContext(NonCancellable + Dispatchers.IO) {
-    shutdownTurn.withLock { drain(pauseMessaging, closeRuntime) }
+    shutdownTurn.withLock {
+      val work = lifecycle.withLock {
+        closingAccount = true
+        directoryWork.toList()
+      }
+      directorySearches.values.forEach { it.cancel() }
+      work.forEach { it.cancel() }
+      try {
+        work.joinAll()
+        drain(pauseMessaging, closeRuntime)
+      } finally {
+        lifecycle.withLock { closingAccount = false }
+      }
+    }
   }
 
   private suspend fun drain(pauseMessaging: Boolean, closeRuntime: Boolean) {
@@ -1043,7 +1127,6 @@ class BoopMarmotModule : Module() {
         else if (pauseMessaging) pauseRuntime()
         return@withLock null
       }
-      closingAccount = true
       session = null
       active.closing = true
       if (active.activeCalls == 0) active.callsDrained.complete(Unit)
@@ -1064,12 +1147,8 @@ class BoopMarmotModule : Module() {
     } finally {
       active.callsDrained.await()
       lifecycle.withLock {
-        try {
-          if (closeRuntime) stopRuntime()
-          else if (pauseMessaging) pauseRuntime()
-        } finally {
-          closingAccount = false
-        }
+        if (closeRuntime) stopRuntime()
+        else if (pauseMessaging) pauseRuntime()
       }
     }
   }
@@ -1150,6 +1229,7 @@ class BoopMarmotModule : Module() {
       MarmotOptions(
         clientName = "Boop", devicePlatform = "Android",
         attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
+        acquirePublicAvatars = false,
         deployment = marmotDeploymentNeutral().copy(
           keychainService = "app.boop.accounts",
           discoveryIndexerRelays = configuration.discovery,
@@ -1201,6 +1281,15 @@ class BoopMarmotModule : Module() {
     }
   }
 
+  private suspend fun <T> withDirectory(owner: String, work: suspend (Marmot) -> T): T = protocol {
+    val job = currentCoroutineContext().job
+    val kit = lifecycle.withLock {
+      if (closingAccount || !downloadsForeground || signerAccount != owner) throw problem("AccountClosed")
+      (marmotRuntime ?: throw problem("AccountClosed")).also { directoryWork.add(job) }
+    }
+    try { work(kit) } finally { directoryWork.remove(job) }
+  }
+
   private suspend fun <T> withSigner(key: String, work: suspend (Marmot) -> T): T =
     lifecycle.withLock {
       protocol {
@@ -1209,6 +1298,14 @@ class BoopMarmotModule : Module() {
         work(kit)
       }
     }
+
+  private fun searchResultDocument(row: UserDirectorySearchResultFfi): Document =
+    mapOf("key" to row.accountIdHex, "profile" to row.profile?.let { profileDocument(row.accountIdHex, it, null, false) })
+
+  private fun profileDocument(key: String, profile: UserProfileMetadataFfi, website: String?, bot: Boolean): Document =
+    mapOf("key" to key, "name" to profile.name, "displayName" to profile.displayName,
+      "about" to profile.about, "picture" to profile.picture, "banner" to profile.banner,
+      "nip05" to profile.nip05, "lud16" to profile.lud16, "website" to website, "bot" to bot)
 
   private fun groupImageInput(path: String): ByteArray {
     val context = appContext.reactContext ?: throw problem("ContextUnavailable")

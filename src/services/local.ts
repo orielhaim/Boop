@@ -29,6 +29,7 @@ import { getRandomValues } from "expo-crypto";
 import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
+import { createProfileDirectory } from "@/core/profiles/directory";
 import { asc } from "drizzle-orm";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
@@ -36,7 +37,7 @@ import { useEffect } from "react";
 import { AppState } from "react-native";
 import { createCallSignalingService } from "@/core/calling/signaling-service";
 import { createNip05Lookup } from "@/core/nostr/nip05-lookup";
-import { createPublicMetadata } from "@/core/nostr/public-metadata";
+import { createBlossomServerList } from "@/core/media/server-list";
 import { createRelayService } from "@/core/nostr/relay-service";
 import { createCallController } from "@/core/calling/controller";
 import { attachGroupCallLifecycle } from "@/core/calling/group-call-lifecycle";
@@ -61,7 +62,7 @@ import {
 import { createChatPreferences } from "@/core/marmot/chat-preferences";
 import { createMarmotSession } from "@/core/marmot/account-session";
 import { createMarmotViewport } from "@/core/marmot/viewport";
-import { marmot, marmotAccounts } from "@/core/marmot/native";
+import { marmot, marmotAccounts, marmotDirectory } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import {
@@ -191,27 +192,39 @@ async function start() {
       isBlocked: privacy.isBlocked,
       canReceiveCall: privacy.canReceiveCall,
     });
-    const publicMetadata = createPublicMetadata(
+    const blossomLists = createBlossomServerList(
       relays,
       identity.publicKey,
       active,
     );
     const nip05 = createNip05Lookup(active);
     const { disk, localDirectory } = mediaSdk.profileFiles;
+    const profiles = createProfileDirectory(
+      {
+        read: (keys) => marmotDirectory.read(account.key, keys),
+        refresh: (key, routes) =>
+          marmotDirectory.refresh(account.key, key, routes),
+      },
+      active,
+      privacy.isBlocked,
+      () => {
+        const { general, discovery } = relays.configuration();
+        return [...new Set([...discovery, ...general])].slice(0, 8);
+      },
+    );
     const avatars = createAvatars(
       db,
-      identity.publicKey,
+      account.key,
       privacy,
-      publicMetadata,
+      profiles,
       disk,
       mediaSdk.profileDownload,
       mediaSdk.profileMirrors,
       isCurrent,
+      (): string[] => profileEditor.draftFiles(),
     );
     const profileEditor = createProfileEditor(
       db,
-      identity.publicKey,
-      avatars,
       disk,
       (filename, signal, wide) =>
         uploadAvatar(
@@ -220,7 +233,12 @@ async function start() {
           signal,
           wide,
         ),
-      publicMetadata,
+      async (edits, signal) => {
+        if (signal.aborted || !active()) throw new Error("AccountClosed");
+        await marmotDirectory.update(account.key, edits);
+        if (active()) profiles.reload(account.key);
+      },
+      avatars.keepUploaded,
       isCurrent,
       () => marmotAccounts.networkReady(account.key),
     );
@@ -269,13 +287,6 @@ async function start() {
           .catch(() => undefined);
     });
     privacy.subscribe(avatars.invalidate);
-    let profileRelays = publicMetadata.profileRelayKey();
-    relays.subscribe(() => {
-      const next = publicMetadata.profileRelayKey();
-      if (next === profileRelays) return;
-      profileRelays = next;
-      avatars.refreshRelays();
-    });
     messagingMetric("runtime initialized", {
       ms: performance.now() - messagingStarted,
     });
@@ -430,7 +441,7 @@ async function start() {
         createBlossomDownloads(
           downloadScope,
           () => mediaSdk.configured("attachment").map(({ origin }) => origin),
-          publicMetadata.discoverBlossomServers,
+          blossomLists.discoverBlossomServers,
         ),
       ),
       eligible: active,
@@ -556,8 +567,9 @@ async function start() {
           calling.end();
           callSignaling.stop();
           relays.stop();
+          profiles.setActive(false);
           avatars.setActive(false);
-          profileEditor.cancel();
+          profileEditor.setActive(false);
           await audio.close();
           await marmotSession.stop();
           await marmotAccounts.signOut(account.key);
@@ -581,8 +593,9 @@ async function start() {
       avatars,
       previews,
       mediaSdk,
+      profiles,
       profileEditor,
-      publicMetadata,
+      blossomLists,
       nip05,
       privacy,
       chatPreferences,
@@ -634,8 +647,8 @@ export function LocalSessionLifecycle() {
     marmotSession,
     chatPreferences,
     mediaSdk,
+    profiles,
     profileEditor,
-    publicMetadata,
     speech,
     downloads,
     admitDownloadedVoice,
@@ -747,13 +760,18 @@ export function LocalSessionLifecycle() {
           intent = nextIntent;
           configuration = configuredRelays(rows, intent);
           if (AppState.currentState === "active") connect();
+          profiles.routesChanged();
         });
       },
     );
     function updateUnlocks() {
-      avatars.setActive(
-        AppState.currentState === "active" && !lock.getState().locked,
-      );
+      const enabled = activeEligibility();
+      profiles.setActive(enabled);
+      avatars.setActive(enabled);
+      profileEditor.setActive(enabled);
+    }
+    function activeEligibility() {
+      return AppState.currentState === "active" && !lock.getState().locked;
     }
     function background() {
       calling.setForeground(false);
@@ -776,7 +794,7 @@ export function LocalSessionLifecycle() {
       speech.sync();
       if (state === "active") admitDownloadedVoice();
       if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
-      avatars.setActive(state === "active" && !lock.getState().locked);
+      updateUnlocks();
       if (state === "active") {
         calling.setForeground(true);
         connect();
@@ -831,81 +849,13 @@ export function LocalSessionLifecycle() {
       mediaOrigin = next;
       connectMessaging();
     });
-    let profileTimer: ReturnType<typeof setTimeout> | undefined;
-    let profileRetryDelay = 0;
-    let profileRevision = profileEditor.getSnapshot().editRevision;
-    let publishingProfile = false;
-
-    function profileEligible() {
-      return (
-        mounted &&
-        isCurrent() &&
-        AppState.currentState === "active" &&
-        !lock.getState().locked &&
-        Boolean(publicMetadata.profileRelayKey()) &&
-        Boolean(profileEditor.draft())
-      );
-    }
-
-    function scheduleProfilePublish() {
-      if (!profileEligible()) {
-        clearTimeout(profileTimer);
-        profileTimer = undefined;
-        return;
-      }
-      if (profileTimer || publishingProfile) return;
-      profileTimer = setTimeout(() => {
-        profileTimer = undefined;
-        if (!profileEligible()) return;
-        publishingProfile = true;
-        const revision = profileRevision;
-        void profileEditor
-          .publish()
-          .catch(() => undefined)
-          .finally(() => {
-            publishingProfile = false;
-            if (!mounted) return;
-            if (revision === profileRevision && profileEditor.draft()) {
-              profileRetryDelay = Math.min(
-                Math.max(15_000, profileRetryDelay * 2),
-                300_000,
-              );
-            } else {
-              profileRetryDelay = 0;
-            }
-            scheduleProfilePublish();
-          });
-      }, profileRetryDelay);
-    }
-
-    const unsubscribeEditor = profileEditor.subscribe(() => {
-      const revision = profileEditor.getSnapshot().editRevision;
-      if (revision !== profileRevision) {
-        profileRevision = revision;
-        profileRetryDelay = 0;
-        clearTimeout(profileTimer);
-        profileTimer = undefined;
-      }
-      scheduleProfilePublish();
-    });
     const unsubscribeAccount = marmotSession.subscribe(() => {
       speech.accountReady();
       if (marmotSession.status() === "ready") downloads.accountReady();
       admitDownloadedVoice();
       void speech.reconcile();
       updateBackupConditions();
-      scheduleProfilePublish();
     });
-    const unsubscribeProfileRelays = relays.subscribe(scheduleProfilePublish);
-    const unsubscribeProfileLock = lock.subscribe(() => {
-      if (lock.getState().locked) profileEditor.cancel();
-      scheduleProfilePublish();
-    });
-    const profileAppState = AppState.addEventListener("change", (state) => {
-      if (state !== "active") profileEditor.cancel();
-      scheduleProfilePublish();
-    });
-    scheduleProfilePublish();
     const battery = addBatteryStateListener(() => {
       updateBackupConditions();
       void speech.power();
@@ -928,7 +878,11 @@ export function LocalSessionLifecycle() {
       networkWasConnected = isConnected === true;
       updateBackupConditions();
       if (isConnected && AppState.currentState === "active") {
-        if (reconnected && !lock.getState().locked) marmotSession.reconnected();
+        if (reconnected && !lock.getState().locked) {
+          profileEditor.retry();
+          profiles.routesChanged();
+          marmotSession.reconnected();
+        }
         catchUpMessaging();
       }
     });
@@ -951,16 +905,12 @@ export function LocalSessionLifecycle() {
       unsubscribeChats();
       unsubscribeMedia();
       unsubscribeAccount();
-      unsubscribeProfileRelays();
-      unsubscribeProfileLock();
-      unsubscribeEditor();
-      profileAppState.remove();
-      clearTimeout(profileTimer);
-      profileEditor.cancel();
+      profileEditor.setActive(false);
       battery.remove();
       network.remove();
       subscription.remove();
       dbChanges.remove();
+      profiles.setActive(false);
       avatars.setActive(false);
       void marmotSession.stop().catch(() => undefined);
       callSignaling.stop();
@@ -977,8 +927,8 @@ export function LocalSessionLifecycle() {
     marmotSession,
     chatPreferences,
     mediaSdk,
+    profiles,
     profileEditor,
-    publicMetadata,
     speech,
     downloads,
     admitDownloadedVoice,

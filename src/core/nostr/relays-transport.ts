@@ -421,67 +421,37 @@ export function createNostrRelays(signer: NDKSigner) {
     connect,
     connected,
     watchInbox,
-    watchProfiles: (
-      relays: NDKRelay[],
-      authors: string[],
-      onEvent: (event: unknown, author: string) => void,
-      onEose: () => void,
-    ) =>
-      subscription(
-        relays,
-        { kinds: [0], authors, limit: authors.length * 2 },
-        (event) => onEvent(event.rawEvent(), event.pubkey),
-        onEose,
-      ),
-    searchProfiles(
+    discoverProfileKeys(
       targets: NDKRelay[],
       query: string,
-      onEvent: (event: unknown, author: string) => void,
-      onEose: () => void,
-    ) {
-      return subscription(
-        targets,
-        { kinds: [0], search: query, limit: 24 },
-        (event) => onEvent(event.rawEvent(), event.pubkey),
-        onEose,
-        true,
-      );
-    },
-    async lookupProfileHints(
-      author: string,
-      hints: string[],
-      onEvent: (event: unknown, author: string) => void,
+      receive: (key: string) => void,
       signal: AbortSignal,
     ) {
-      const targets = secureRelays(hints)
-        .filter(isPublicRelayAddress)
-        .slice(0, 3)
-        .map(getRelay);
-      await withRelays(targets, async () => {
-        await Promise.all(targets.map(connect));
-        const ready = targets.filter(connected);
-        if (!ready.length || signal.aborted) return;
-        await new Promise<void>((resolve) => {
-          let stop: (() => void) | undefined;
-          const timer = setTimeout(finish, timeout);
-          function finish() {
-            clearTimeout(timer);
-            signal.removeEventListener("abort", finish);
-            stop?.();
-            resolve();
-          }
-          signal.addEventListener("abort", finish, { once: true });
-          stop = subscription(
-            ready,
-            { kinds: [0], authors: [author], limit: 2 },
-            (event) => {
-              if (!signal.aborted && event.pubkey === author)
-                onEvent(event.rawEvent(), author);
-            },
-            finish,
-            true,
-          );
-        });
+      if (!targets.length || signal.aborted) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        let stop: (() => void) | undefined;
+        const keys = new Set<string>();
+        const timer = setTimeout(finish, timeout);
+        function finish() {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", finish);
+          stop?.();
+          resolve();
+        }
+        signal.addEventListener("abort", finish, { once: true });
+        stop = subscription(
+          targets,
+          { kinds: [0], search: query, limit: 24 },
+          (raw) => {
+            if (signal.aborted || keys.size >= 24) return;
+            const event = verifiedEvent(raw.rawEvent());
+            if (event?.kind !== 0 || keys.has(event.pubkey)) return;
+            keys.add(event.pubkey);
+            receive(event.pubkey);
+          },
+          finish,
+          true,
+        );
       });
     },
     async publishReplaceable(

@@ -21,8 +21,13 @@ import {
   watchedVideoLimit,
 } from "@/core/calling/conference";
 import type { VideoState } from "@/core/calling/video";
-import { parsePublicKey, toNpub } from "@/core/identity/keys";
+import { toNpub } from "@/core/identity/keys";
 import { marmot } from "@/core/marmot/native";
+import { useDirectorySearch } from "@/core/profiles/use-directory-search";
+import {
+  useProjectedNames,
+  usePublicProfile,
+} from "@/components/people/use-person";
 import { nameOrAddress, useContacts } from "@/db/contacts";
 import { useLocal } from "@/services/local-context";
 import { VideoTile } from "./video-stage";
@@ -59,9 +64,10 @@ export function InvitationStatus({ onPress }: { onPress: () => void }) {
 }
 
 export function useConferencePeers(video: VideoState | null) {
-  const { calling, avatars } = useLocal();
+  const { calling } = useLocal();
   const participants = useStore(calling.store, (state) => state.participants);
   const contacts = useContacts();
+  const profile = useProjectedNames(participants.map(({ key }) => key));
   const byKey = useMemo(
     () => new Map(contacts.map((contact) => [contact.publicKey, contact])),
     [contacts],
@@ -73,10 +79,7 @@ export function useConferencePeers(video: VideoState | null) {
       const contact = byKey.get(peer.key);
       return {
         ...peer,
-        name: nameOrAddress(
-          contact?.name || avatars.profile(peer.key)?.name,
-          peer.key,
-        ),
+        name: nameOrAddress(contact?.name || profile(peer.key)?.name, peer.key),
         camera: video?.conference?.cameras[peer.key],
       };
     }),
@@ -97,8 +100,11 @@ export function ConferenceSheet({
   activeVideo: VideoState | null;
 }) {
   const { t } = useTranslation(["calls", "common", "contacts", "video"]);
-  const { calling, identity, privacy, avatars } = useLocal();
+  const { calling, identity, privacy } = useLocal();
   const invitations = useStore(calling.store, (state) => state.invitations);
+  const profile = useProjectedNames(
+    open && mode !== "add" ? invitations.map(({ key }) => key) : [],
+  );
   const group = useStore(calling.store, (state) => state.call?.groupId);
   const [query, setQuery] = useState("");
   const [groupPeers, setGroupPeers] = useState<{
@@ -135,7 +141,12 @@ export function ConferenceSheet({
   );
   const occupied = pending || peers.members.length + 1 >= callCapacity;
   const matching = query.trim().toLocaleLowerCase();
-  const key = parsePublicKey(query);
+  const { exactKey: key, current } = useDirectorySearch(
+    query,
+    open && !group && mode === "add" && !occupied,
+  );
+  const found =
+    current?.keys.filter((key) => !peers.byKey.has(key)).slice(0, 12) ?? [];
   const candidates = group
     ? groupPeers?.group === group
       ? groupPeers.members
@@ -153,7 +164,7 @@ export function ConferenceSheet({
     occupied ||
     peers.members.some((member) => member.key === key);
   const invite = (key: string) => {
-    if (unavailable(key)) return;
+    if (unavailable(key) || privacy.isBlocked(key)) return;
     setQuery("");
     setOpen(false);
     void calling.invite(key);
@@ -195,6 +206,11 @@ export function ConferenceSheet({
                   {t("calls:inviteAddress")}
                 </Action>
               )}
+              {found
+                .filter((key) => !unavailable(key) && !privacy.isBlocked(key))
+                .map((key) => (
+                  <DirectoryInvitee key={key} publicKey={key} invite={invite} />
+                ))}
               {contacts.map((contact) => {
                 const joined = peers.members.some(
                   (member) => member.key === contact.publicKey,
@@ -306,7 +322,7 @@ export function ConferenceSheet({
               {invitations.map((item) => {
                 const contact = peers.byKey.get(item.key);
                 const name = nameOrAddress(
-                  contact?.name || avatars.profile(item.key)?.name,
+                  contact?.name || profile(item.key)?.name,
                   item.key,
                 );
                 return (
@@ -466,6 +482,25 @@ export function ConferenceTiles({
       )}
       {tiles}
     </View>
+  );
+}
+
+function DirectoryInvitee({
+  publicKey,
+  invite,
+}: {
+  publicKey: string;
+  invite: (key: string) => void;
+}) {
+  const profile = usePublicProfile(publicKey, true);
+  const name = nameOrAddress(profile?.name, publicKey);
+  return (
+    <Row
+      title={name}
+      leading={<Avatar name={name} publicKey={publicKey} />}
+      trailing={<Icon name="add" />}
+      onPress={() => invite(publicKey)}
+    />
   );
 }
 

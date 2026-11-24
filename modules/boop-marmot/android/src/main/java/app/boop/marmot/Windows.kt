@@ -130,6 +130,13 @@ internal class ConversationWindow(private val handle: ConversationWindowSubscrip
   }
 }
 
+internal fun AvatarAssetFfi.document(): Document = mapOf(
+  "target" to target,
+  "reference" to reference,
+  "revision" to contentRevision.toString(),
+  "availability" to availability.name.lowercase(),
+)
+
 private fun ConversationPresentationFfi.literal() = (title as? PresentationTextFfi.Literal)?.text
 
 private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
@@ -145,6 +152,7 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
       "title" to row.presentation.literal(),
       "peer" to row.presentation.peerId,
       "image" to chat.avatar?.imageHashHex,
+      "avatarAsset" to row.avatarAsset?.document(),
       "kind" to chat.conversationKind.name.lowercase(),
       "lifecycle" to chat.lifecycleState.name.lowercase(),
       "membership" to chat.selfMembership.name.lowercase(),
@@ -175,6 +183,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
     it.titleSource == PresentationSourceFfi.PEER_PROFILE || it.titleSource == PresentationSourceFfi.PEER_FALLBACK
   }?.peerId,
   "image" to (snapshot.header.selected.avatar as? SelectedAvatarFfi.EncryptedGroupImage)?.image?.imageHashHex,
+  "avatarAsset" to snapshot.header.avatarAsset?.document(),
   "lifecycle" to snapshot.header.lifecycle.name.lowercase(),
   "memberCount" to snapshot.header.memberCount?.toDouble(),
   "invited" to snapshot.pendingConfirmation,
@@ -188,7 +197,9 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
         "waveform" to item.waveformSamples.take(64).map { kotlin.math.round(it.coerceIn(0.0, 1.0) * 31).toInt() })
     })
   },
-  "identities" to snapshot.identities.map { mapOf("id" to it.accountIdHex, "name" to it.displayName) },
+  "identities" to snapshot.identities.map {
+    mapOf("id" to it.accountIdHex, "name" to it.displayName, "avatarAsset" to it.avatarAsset?.document())
+  },
   "messages" to snapshot.messages.mapNotNull { message ->
     val row = message.timeline
     val system = row.groupSystem?.takeIf { it.provenance == GroupSystemEventProvenanceFfi.AUTHENTICATED_GROUP_STATE }

@@ -9,12 +9,11 @@ import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { CompactAction } from "@/components/ui/messenger-ui";
-import { Ink, Screen } from "@/components/ui/kit";
+import { Action, Ink, Screen } from "@/components/ui/kit";
 import { LoadingStatus } from "@/components/ui/loading-status";
 import { SaveButton } from "@/components/ui/save-button";
 import { usePerson } from "@/components/people/use-person";
 import { useAvatar } from "@/core/avatars/use-avatar";
-import { profileDetails } from "@/core/avatars/protocol";
 import { publicMediaUrl } from "@/core/media/url";
 import { nip05Address } from "@/core/nostr/nip05";
 import { namespaces } from "@/i18n";
@@ -27,11 +26,8 @@ export default function EditProfile() {
   const { name, photo, profile } = usePerson(identity.publicKey);
   const { colors } = useTheme();
   const banner = useAvatar(identity.publicKey, true, true);
-  const { draft, stage, photoPreview, bannerPreview } = useSyncExternalStore(
-    profileEditor.subscribe,
-    profileEditor.getSnapshot,
-  );
-  const details = profileDetails(profile?.fields);
+  const { draft, stage, error, photoPreview, bannerPreview } =
+    useSyncExternalStore(profileEditor.subscribe, profileEditor.getSnapshot);
   const pendingImages =
     (draft?.photo && draft.photo.kind !== "unchanged") ||
     (draft?.banner && draft.banner.kind !== "unchanged");
@@ -44,9 +40,9 @@ export default function EditProfile() {
   const current = {
     name: draft?.name ?? (profile ? profile.name : initialProfile.name) ?? "",
     about:
-      draft?.about ?? (profile ? details.about : initialProfile.about) ?? "",
-    website: draft?.website ?? details.website ?? "",
-    nip05: draft?.nip05 ?? details.nip05 ?? "",
+      draft?.about ?? (profile ? profile?.about : initialProfile.about) ?? "",
+    website: draft?.website ?? profile?.website ?? "",
+    nip05: draft?.nip05 ?? profile?.nip05 ?? "",
   };
   const changes: typeof edits = {};
   for (const field of ["name", "about", "website", "nip05"] as const) {
@@ -145,7 +141,7 @@ export default function EditProfile() {
               onPress={() => void bannerPicker.pick("gallery")}
             />
             {draft?.banner?.kind !== "remove" &&
-              (details.banner || bannerPreview) && (
+              (profile?.banner || bannerPreview) && (
                 <CompactAction
                   icon="erase"
                   iconOnly
@@ -207,6 +203,11 @@ export default function EditProfile() {
         <Ink accessibilityRole="alert">
           {picker.error || bannerPicker.error}
         </Ink>
+      )}
+      {draft && error && stage === "idle" && (
+        <Action variant="soft" onPress={profileEditor.retry}>
+          {t("messages:editRetry")}
+        </Action>
       )}
       {pendingImages && stage !== "idle" && (
         <LoadingStatus

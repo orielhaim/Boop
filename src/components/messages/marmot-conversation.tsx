@@ -1,3 +1,4 @@
+import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
 import {
@@ -62,7 +63,7 @@ import {
   tapFeedback,
 } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
-import { usePerson } from "@/components/people/use-person";
+import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { locationFromText, locationText } from "@/core/messaging/location";
 import {
@@ -119,7 +120,7 @@ import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
 import { useAccountMarmotWindow } from "./marmot-window";
 import { OpenLaterSheet } from "./send-options";
 import { useMessageTranslations } from "./use-message-translations";
-import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
 import { rememberGroupProfile } from "./group-details-cache";
 
@@ -379,12 +380,14 @@ export function MarmotConversationScreen({
     undefined,
   );
   const peer = snapshot?.peer;
-  const { name: peerName, photo: avatar } = usePerson(
+  const { name: peerName, photo: avatar } = usePresentedPerson(
     snapshot?.invited ? "" : (peer ?? ""),
+    snapshot?.title,
   );
-  const groupAvatar = useMarmotGroupAvatar(
-    id,
-    snapshot?.invited ? undefined : snapshot?.image,
+  const groupAvatar = usePreparedGroupAvatar(
+    !peer && !snapshot?.invited && snapshot?.image
+      ? snapshot.avatarAsset
+      : undefined,
   );
   const self = identity.publicKey;
   const blocked = Boolean(peer && privacy.isBlocked(peer));
@@ -396,6 +399,7 @@ export function MarmotConversationScreen({
   const deleted = t("messages:marmot.removedMessage");
   const rows = snapshot?.messages;
   const people = snapshot?.identities;
+  const contacts = useContacts();
   const mentionRoster = useMentionMembers(
     id,
     Boolean(snapshot && !snapshot.invited && !peer),
@@ -406,8 +410,11 @@ export function MarmotConversationScreen({
     );
     for (const member of mentionRoster.members ?? [])
       names.set(member.npub, member.label);
+    for (const contact of contacts)
+      if (contact.name && names.has(toNpub(contact.publicKey)))
+        names.set(toNpub(contact.publicKey), contact.name);
     return names;
-  }, [mentionRoster.members, people]);
+  }, [contacts, mentionRoster.members, people]);
   const pins = useSyncExternalStore(chatPreferences.subscribe, () =>
     chatPreferences.pinned(id),
   );
@@ -532,6 +539,8 @@ export function MarmotConversationScreen({
     const omitted = new Set(hidden);
     const played = new Set(listened);
     const names = new Map(people?.map((person) => [person.id, person.name]));
+    for (const contact of contacts)
+      if (contact.name) names.set(contact.publicKey, contact.name);
     const user = (key: string) => ({ _id: key, name: names.get(key) });
     return (rows ?? [])
       .filter((row) => !blocked.has(row.sender) && !omitted.has(row.id))
@@ -590,6 +599,7 @@ export function MarmotConversationScreen({
       .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
   }, [
     rows,
+    contacts,
     people,
     deleted,
     blockedKeys,

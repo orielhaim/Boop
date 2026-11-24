@@ -23,11 +23,20 @@ const windowDelta = z.object({
   order: z.array(z.string()).max(200),
   changed: z.array(identifiedRow).max(200),
 });
+const avatarAsset = z.object({
+  target: z.string(),
+  reference: z.string().nullish(),
+  revision: windowRevision.shape.sequence,
+  availability: z.enum(["missing", "ready", "stale", "invalidated"]),
+});
+export type MarmotAvatarAsset = z.infer<typeof avatarAsset>;
+
 const chatRow = z.object({
   id: z.string(),
   title: z.string().nullish(),
   peer: z.string().nullish(),
   image: z.string().nullish(),
+  avatarAsset: avatarAsset.nullish(),
   kind: z.enum(["unknown", "direct", "group"]),
   lifecycle: z.string(),
   membership: z.string(),
@@ -132,6 +141,7 @@ const conversationSnapshot = windowRevision.extend({
   title: z.string().nullish(),
   peer: z.string().nullish(),
   image: z.string().nullish(),
+  avatarAsset: avatarAsset.nullish(),
   lifecycle: z.string(),
   memberCount: z.number().nullish(),
   invited: z.boolean(),
@@ -157,7 +167,13 @@ const conversationSnapshot = windowRevision.extend({
         .max(64),
     })
     .nullish(),
-  identities: z.array(z.object({ id: z.string(), name: z.string() })),
+  identities: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      avatarAsset: avatarAsset.nullish(),
+    }),
+  ),
   messages: z.array(message).max(200),
 });
 
@@ -287,6 +303,7 @@ const editHistory = z.object({
 export type MarmotSearchResult = z.infer<typeof searchResult>;
 export type MarmotEditHistory = z.infer<typeof editHistory>;
 const groupDetails = z.object({
+  avatarAsset: avatarAsset.nullish(),
   id: z.string(),
   name: z.string(),
   description: z.string(),
@@ -396,7 +413,43 @@ export type MarmotDeviceState = z.infer<typeof deviceState>;
 export type MarmotDeviceAction =
   "start" | "match" | "cancel" | "link" | "decline" | "remove";
 
+const optionalText = z
+  .string()
+  .nullish()
+  .transform((value) => value ?? undefined);
+const publicProfile = z.object({
+  key: accountKey,
+  name: optionalText,
+  displayName: optionalText,
+  about: optionalText,
+  picture: optionalText,
+  banner: optionalText,
+  nip05: optionalText,
+  lud16: optionalText,
+  website: optionalText,
+  bot: z.boolean(),
+});
+export type MarmotPublicProfile = z.output<typeof publicProfile>;
+export type MarmotProfileEdits = Partial<
+  Record<
+    | "display_name"
+    | "name"
+    | "about"
+    | "picture"
+    | "banner"
+    | "nip05"
+    | "lud16"
+    | "website",
+    string
+  >
+>;
+
+const directoryResult = z.object({
+  key: accountKey,
+  profile: publicProfile.nullish(),
+});
 type Events = {
+  directorySearchResults: (event: { id: string; rows: unknown }) => void;
   attachmentProgress: (event: {
     transfer: string;
     received: number;
@@ -444,6 +497,24 @@ type Bridge = {
   ): Promise<unknown>;
   selectSigner(key: string): Promise<unknown>;
   accountNetworkReady(key: string): Promise<boolean>;
+  requestAvatarAssets(targets: string[]): Promise<unknown>;
+  readAvatarAssets(references: string[]): Promise<unknown>;
+  clearMarmotAvatarCache(owner: string): Promise<void>;
+  readProfiles(owner: string, keys: string[]): Promise<unknown>;
+  refreshPublicProfile(
+    owner: string,
+    key: string,
+    relays: readonly string[],
+  ): Promise<void>;
+  updatePublicProfile(owner: string, fields: MarmotProfileEdits): Promise<void>;
+  cachedDirectorySearch(owner: string, query: string): Promise<unknown>;
+  normalizeDirectoryIdentity(
+    owner: string,
+    reference: string,
+  ): Promise<unknown>;
+  prepareDirectorySearch(id: string): boolean;
+  searchDirectory(owner: string, id: string, query: string): Promise<void>;
+  cancelDirectorySearch(id: string): void;
   removeAccount(key: string): Promise<void>;
   signInAccount(key: string): Promise<void>;
   signOutAccount(key: string): Promise<void>;
@@ -518,11 +589,7 @@ type Bridge = {
   ): Promise<unknown>;
   respondToInvitation(group: string, accept: boolean): Promise<void>;
   groupDetails(group: string): Promise<unknown>;
-  groupImage(
-    group: string,
-    hash: string,
-    fetch: boolean,
-  ): Promise<string | null>;
+  viewGroupImage(group: string, hash: string): Promise<string>;
   updateGroupImage(group: string, path: string | null): Promise<void>;
   updateGroupMedia(group: string, origins: string[]): Promise<void>;
   searchConversation(
@@ -686,6 +753,56 @@ export type MarmotWindow<S, Direction> = {
 };
 
 const native = () => requireNativeModule<Bridge>("BoopMarmot");
+
+export const marmotDirectory = {
+  async read(owner: string, keys: string[]) {
+    return publicProfile
+      .array()
+      .parse(await native().readProfiles(owner, keys));
+  },
+  refresh(owner: string, key: string, relays: readonly string[]) {
+    return native().refreshPublicProfile(owner, key, relays);
+  },
+  update(owner: string, edits: MarmotProfileEdits) {
+    return native().updatePublicProfile(owner, edits);
+  },
+  async normalize(owner: string, reference: string) {
+    return accountKey
+      .nullish()
+      .parse(await native().normalizeDirectoryIdentity(owner, reference));
+  },
+  async searchCached(owner: string, query: string) {
+    return directoryResult
+      .array()
+      .parse(await native().cachedDirectorySearch(owner, query));
+  },
+  async search(
+    owner: string,
+    id: string,
+    query: string,
+    signal: AbortSignal,
+    receive: (rows: z.infer<typeof directoryResult>[]) => void,
+  ) {
+    if (signal.aborted) return;
+    const bridge = native();
+    if (!bridge.prepareDirectorySearch(id))
+      throw new Error("Directory search unavailable");
+    const listener = bridge.addListener("directorySearchResults", (event) => {
+      if (event.id !== id || signal.aborted) return;
+      const rows = directoryResult.array().safeParse(event.rows);
+      if (rows.success) receive(rows.data);
+    });
+    const cancel = () => bridge.cancelDirectorySearch(id);
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      await bridge.searchDirectory(owner, id, query);
+    } finally {
+      listener.remove();
+      signal.removeEventListener("abort", cancel);
+      cancel();
+    }
+  },
+};
 
 export const marmotAccounts = {
   async prepareImport(token: string, input: string, password: string) {
@@ -904,7 +1021,25 @@ async function openWindow<S extends Revision, Direction extends string>(
   };
 }
 
+const avatarRead = z.object({
+  reference: z.string(),
+  revision: windowRevision.shape.sequence,
+  availability: avatarAsset.shape.availability,
+  deferred: z.boolean(),
+  uri: z.string().startsWith("data:image/").nullish(),
+});
 export const marmot = {
+  async requestAvatarAssets(targets: string[]) {
+    return avatarAsset
+      .array()
+      .parse(await native().requestAvatarAssets(targets));
+  },
+  async readAvatarAssets(references: string[]) {
+    return avatarRead
+      .array()
+      .parse(await native().readAvatarAssets(references));
+  },
+  clearAvatarCache: (owner: string) => native().clearMarmotAvatarCache(owner),
   async diagnostics() {
     return diagnostics.parse(await native().diagnostics());
   },
@@ -974,8 +1109,8 @@ export const marmot = {
   async groupDetails(group: string) {
     return groupDetails.parse(await native().groupDetails(group));
   },
-  groupImage: (group: string, hash: string, fetch = false) =>
-    native().groupImage(group, hash, fetch),
+  viewGroupImage: (group: string, hash: string) =>
+    native().viewGroupImage(group, hash),
   async searchConversation(group: string, text: string | null, media: boolean) {
     return z
       .array(searchResult)

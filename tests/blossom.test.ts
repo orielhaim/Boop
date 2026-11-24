@@ -5,15 +5,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import {
-  finalizeEvent,
-  generateSecretKey,
-  getPublicKey,
-  verifyEvent,
-} from "nostr-tools";
+import { generateSecretKey, verifyEvent } from "nostr-tools";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { createProfileEditor } from "../src/core/avatars/editor";
-import { createAvatars, type AvatarDisk } from "../src/core/avatars/service";
+import { type AvatarDisk } from "../src/core/avatars/service";
 import { initializeTestDatabase } from "./db-fixture";
 import * as schema from "../src/db/schema";
 import {
@@ -22,7 +17,6 @@ import {
 } from "../src/core/media/blossom";
 import { createMediaSettings } from "../src/core/media/servers";
 import { createMediaUploads } from "../src/core/media/uploads";
-import { updateProfileFields } from "../src/core/avatars/protocol";
 
 const origin = "https://blossom.example.com";
 const signer = new NDKPrivateKeySigner(generateSecretKey());
@@ -266,32 +260,10 @@ test("timeout, offline, authentication and explicit cancellation stay distinct",
   ).rejects.toHaveProperty("code", "cancelled");
 });
 
-test("profile edits preserve unrelated public metadata and remove picture explicitly", () => {
-  const fields = {
-    name: "relay name",
-    display_name: "Original",
-    picture: url,
-    about: "Example",
-    custom: { color: "blue" },
-  };
-  expect(updateProfileFields(fields, { displayName: "New" })).toEqual({
-    ...fields,
-    display_name: "New",
-  });
-  expect(updateProfileFields(fields, { picture: null })).toEqual({
-    name: "relay name",
-    display_name: "Original",
-    about: "Example",
-    custom: { color: "blue" },
-  });
-});
-
 test("confirmed photos survive relay refusal and retry without a second upload", async () => {
   using sqlite = new Database(":memory:");
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });
-  const secret = generateSecretKey();
-  const owner = getPublicKey(secret);
   const local = new Set<string>();
   const disk: AvatarDisk = {
     newId: randomUUID,
@@ -302,69 +274,20 @@ test("confirmed photos survive relay refusal and retry without a second upload",
       local.add(name);
     },
     removeCached: () => {},
+    commitCached: () => {},
+    authored: () => undefined,
+    keepAuthored: () => {},
     removeLocal: (name) => {
       local.delete(name);
     },
-    sweep: () => {},
+    sweepLocal: () => {},
+    pruneCache: () => {},
     clearCache: () => {},
   };
-  const sign = (content: string, created_at: number) =>
-    finalizeEvent({ kind: 0, tags: [], content, created_at }, secret);
-  const t = Math.floor(Date.now() / 1000);
-  let published = sign(
-    JSON.stringify({
-      picture: "https://example.com/original.jpg",
-      name: "Original",
-      about: "Keep this",
-    }),
-    t - 1,
-  );
   let accepts = false;
-  let lookupAvailable = false;
   let publishAttempts = 0;
   let beforePublish: (() => Promise<void>) | undefined;
-  const relays = {
-    watchProfiles(
-      _keys: string[],
-      event: (input: unknown, author: string) => void,
-      eose: () => void,
-    ) {
-      return this.watchOwnProfile(event, eose);
-    },
-    watchOwnProfile(
-      event: (input: unknown, author: string) => void,
-      eose: (allReplied: boolean) => void,
-    ) {
-      if (!lookupAvailable) return null;
-      queueMicrotask(() => {
-        event(published, owner);
-        eose(true);
-      });
-      return () => {};
-    },
-    async publishProfile(content: string, createdAt: number) {
-      publishAttempts++;
-      await beforePublish?.();
-      if (!accepts) return null;
-      published = sign(content, createdAt);
-      return published;
-    },
-  };
-  const avatars = createAvatars(
-    db,
-    owner,
-    {
-      isBlocked: () => false,
-      isContact: () => false,
-      photoPolicy: () => "contacts",
-    },
-    relays,
-    disk,
-    null,
-    undefined,
-    () => true,
-  );
-  avatars.ingest(published, owner);
+  const updates: Array<Record<string, string>> = [];
   const attempts: string[] = [];
   const backup = "https://backup.example.com";
   const prefs = new Map<string, string>();
@@ -405,11 +328,15 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   );
   const editor = createProfileEditor(
     db,
-    owner,
-    avatars,
     disk,
     (_file, signal) => uploads.upload("profile", photo, { signal }),
-    relays,
+    async (edits) => {
+      publishAttempts++;
+      await beforePublish?.();
+      if (!accepts) throw new Error("Relay refused update");
+      updates.push(edits);
+    },
+    () => {},
     () => true,
     async () => true,
   );
@@ -428,30 +355,18 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   expect(await editor.publish()).toBe("relays");
   expect(publishAttempts).toBe(1);
   expect(attempts).toEqual([origin, backup]);
-  expect(avatars.profile(owner)?.picture).toBe(
-    "https://example.com/original.jpg",
-  );
+  expect(updates).toEqual([]);
   expect(editor.preview()).toBe(draft);
   accepts = true;
   expect(await editor.publish()).toBe("mirror");
   expect(attempts).toEqual([origin, backup]);
   expect(editor.draft()).toBeNull();
-  expect(avatars.resolve(owner)).toBe(draft);
-  expect(avatars.profile(owner)?.fields).toEqual({
-    name: "Original",
-    about: "Keep this",
-    picture: url,
-  });
+  expect(updates).toEqual([{ picture: url }]);
   editor.removeImage("photo");
   expect(await editor.publish()).toBe("published");
-  expect(avatars.profile(owner)?.fields).toEqual({
-    name: "Original",
-    about: "Keep this",
-  });
-  expect(avatars.resolve(owner)).toBeUndefined();
+  expect(updates.at(-1)).toEqual({ picture: "" });
   expect(local.size).toBe(0);
   expect(observed.at(-1)).toMatchObject({ draft: null, stage: "idle" });
-  lookupAvailable = true;
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   beforePublish = () => {
@@ -467,7 +382,7 @@ test("confirmed photos survive relay refusal and retry without a second upload",
   expect(editor.getSnapshot().draft?.name).toBe("Latest edit");
   beforePublish = undefined;
   expect(await editor.publish()).toBe("published");
-  expect(avatars.profile(owner)?.name).toBe("Latest edit");
+  expect(updates.at(-1)).toEqual({ display_name: "Latest edit" });
   editor.editFields({ name: "Private draft" });
   expect(observed.at(-1)?.draft?.name).toBe("Private draft");
   editor.discard();

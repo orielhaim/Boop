@@ -22,7 +22,7 @@ import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
-import { usePerson } from "@/components/people/use-person";
+import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
 import { projectMentions } from "@/core/messaging/mentions";
@@ -33,7 +33,7 @@ import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
 import { useMarmotChatLists } from "./marmot-chat-lists";
 import { useMarmotWindow } from "./marmot-window";
-import { useMarmotGroupAvatar } from "./use-marmot-group-avatar";
+import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
 
 export function conversationRoute(
@@ -46,7 +46,11 @@ export function conversationRoute(
   };
 }
 
-type ChatRow = ChatListItem & { id: string; peer?: string; image?: string };
+type ChatRow = ChatListItem & {
+  id: string;
+  peer?: string;
+  avatarAsset?: MarmotChatRow["avatarAsset"];
+};
 
 function asChat(
   row: MarmotChatRow,
@@ -66,10 +70,10 @@ function asChat(
       !row.invited && row.kind === "direct"
         ? (row.peer ?? undefined)
         : undefined,
-    image:
-      row.invited || row.membership !== "member"
-        ? undefined
-        : (row.image ?? undefined),
+    avatarAsset:
+      row.kind === "group" && !row.invited && row.membership === "member"
+        ? row.avatarAsset
+        : undefined,
     isArchived: row.archived,
     isMuted: row.muted,
     isPinned: row.pinned,
@@ -216,6 +220,24 @@ export function MarmotInbox({
     );
   }
 
+  const [visibleRows, setVisibleRows] = useState(new Set<string>());
+  const onViewableItemsChanged = useCallback(
+    ({
+      viewableItems,
+    }: {
+      viewableItems: { item: ChatRow; isViewable: boolean }[];
+    }) => {
+      setVisibleRows(
+        new Set(
+          viewableItems
+            .filter(({ isViewable }) => isViewable)
+            .map(({ item }) => item.id),
+        ),
+      );
+    },
+    [],
+  );
+
   return (
     <Screen
       tab={!invitations}
@@ -240,7 +262,9 @@ export function MarmotInbox({
         filterChat={() => true}
         onSearchChange={setSearch}
         dateFormat={kit.locale === "he" ? "D.M.YY" : undefined}
-        renderChat={(props) => <MarmotChatCell {...props} />}
+        renderChat={(props) => (
+          <MarmotChatCell {...props} visible={visibleRows.has(props.chat.id)} />
+        )}
         renderEmpty={(searching) =>
           !snapshot ? (
             error ? (
@@ -305,6 +329,7 @@ export function MarmotInbox({
                 update(selection, (id) => marmot.setArchived(id, value))
         }
         listProps={{
+          onViewableItemsChanged,
           contentContainerStyle: invitations ? undefined : styles.listWithFab,
           onScroll: invitations ? undefined : onScroll,
           onEndReached: page,
@@ -387,9 +412,16 @@ function ChatSyncNotice() {
   ) : null;
 }
 
-function MarmotChatCell(props: ChatListCellProps<ChatRow>) {
-  const { name, photo: avatar } = usePerson(props.chat.peer ?? "");
-  const groupAvatar = useMarmotGroupAvatar(props.chat.id, props.chat.image);
+function MarmotChatCell({
+  visible,
+  ...props
+}: ChatListCellProps<ChatRow> & { visible: boolean }) {
+  const { name, photo: avatar } = usePresentedPerson(
+    props.chat.peer ?? "",
+    props.chat.title,
+    visible,
+  );
+  const groupAvatar = usePreparedGroupAvatar(props.chat.avatarAsset, visible);
   const { draft, lastMessage } = props.chat;
   const mentions = /(?:nostr:|@)npub1/i;
   const { members } = useMentionMembers(

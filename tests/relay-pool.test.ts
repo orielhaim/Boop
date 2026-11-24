@@ -1,5 +1,4 @@
 import { parseServerOrigins, serverListKind } from "../src/core/media/servers";
-import { parseProfile } from "../src/core/avatars/protocol";
 import { expect, spyOn, test } from "bun:test";
 import {
   NDKEvent,
@@ -142,14 +141,13 @@ test("ringing and answer share an in-flight verified inbox lookup within one cal
   }
 });
 
-test("signed profile and Blossom list publication use acknowledged relay events", async () => {
+test("Blossom list publication uses acknowledged relay events", async () => {
   const signer = new NDKPrivateKeySigner("01".repeat(32));
   const author = signer.pubkey;
-  const watched = Promise.withResolvers<void>();
-  const received = Promise.withResolvers<unknown>();
   const transport = createNostrRelays(signer);
   let subscriptionId: string | undefined;
   let accepts = true;
+  const timestamp = Math.floor(Date.now() / 1000);
   let mediaList: unknown;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -172,8 +170,7 @@ test("signed profile and Blossom list publication use acknowledged relay events"
             });
             if (mediaList)
               ws.send(JSON.stringify(["EVENT", subscriptionId, mediaList]));
-          } else
-            expect(filters).toMatchObject({ kinds: [0], authors: [author] });
+          }
           ws.send(JSON.stringify(["EOSE", subscriptionId]));
         }
         if (frame[0] === "EVENT") {
@@ -194,49 +191,8 @@ test("signed profile and Blossom list publication use acknowledged relay events"
   });
   const url = `ws://127.0.0.1:${server.port}/`;
   const relay = transport.addConfigured(url, false);
-  const content = JSON.stringify({
-    picture: "https://media.example.com/a.jpg",
-    about: "Preserved",
-  });
-  const timestamp = Math.floor(Date.now() / 1000);
-  let close: (() => void) | undefined;
   try {
     expect(await transport.connect(relay)).toBe(true);
-    close = transport.watchProfiles(
-      [relay],
-      [author],
-      (event, key) => {
-        expect(key).toBe(author);
-        received.resolve(event);
-      },
-      watched.resolve,
-    );
-    await watched.promise;
-    const event = await transport.publishReplaceable(
-      0,
-      content,
-      [],
-      timestamp,
-      [url],
-      () => true,
-    );
-    const remote = await received.promise;
-    expect(parseProfile(event, author)?.fields).toEqual(JSON.parse(content));
-    expect(parseProfile(remote, author)?.eventId).toBe(event?.id);
-    accepts = false;
-    expect(
-      await transport.publishReplaceable(
-        0,
-        "{}",
-        [],
-        timestamp + 1,
-        [url],
-        () => true,
-      ),
-    ).toBeNull();
-    close?.();
-    close = undefined;
-    accepts = true;
     const origins = ["https://second.example.com", "https://first.example.com"];
     const published = await transport.publishReplaceable(
       serverListKind,
@@ -255,8 +211,76 @@ test("signed profile and Blossom list publication use acknowledged relay events"
     expect(discovered.general?.id).toBe(published?.id);
     expect(parseServerOrigins(discovered.general?.tags ?? [])).toEqual(origins);
   } finally {
-    close?.();
     transport.unconfigure(relay);
     server.stop(true);
   }
 });
+
+test("off-graph relay search returns verified keys and suppresses later results on cancellation", async () => {
+  const secret = Uint8Array.from({ length: 32 }, () => 2);
+  const profile = finalizeEvent(
+    {
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify({ name: "Uncached user" }),
+    },
+    secret,
+  );
+  const late = finalizeEvent(
+    {
+      kind: 0,
+      created_at: profile.created_at,
+      tags: [],
+      content: profile.content,
+    },
+    Uint8Array.from({ length: 32 }, () => 3),
+  );
+  const transport = createNostrRelays(new NDKPrivateKeySigner("01".repeat(32)));
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request, server) {
+      return server.upgrade(request)
+        ? undefined
+        : new Response(null, { status: 400 });
+    },
+    websocket: {
+      message(socket, data) {
+        const [type, id, filter] = JSON.parse(String(data));
+        if (type === "REQ") {
+          expect(filter).toMatchObject({ kinds: [0], search: "Uncached" });
+          socket.send(JSON.stringify(["EVENT", id, profile]));
+          setTimeout(
+            () => socket.send(JSON.stringify(["EVENT", id, late])),
+            30,
+          );
+        }
+      },
+    },
+  });
+  const relay = transport.addConfigured(
+    `ws://127.0.0.1:${server.port}/`,
+    false,
+  );
+  const controller = new AbortController();
+  const found: string[] = [];
+  try {
+    expect(await transport.connect(relay)).toBe(true);
+    await transport.discoverProfileKeys(
+      [relay],
+      "Uncached",
+      (key) => {
+        found.push(key);
+        controller.abort();
+      },
+      controller.signal,
+    );
+    await Bun.sleep(60);
+    expect(found).toEqual([profile.pubkey]);
+  } finally {
+    controller.abort();
+    transport.unconfigure(relay);
+    server.stop(true);
+  }
+}, 9_000);

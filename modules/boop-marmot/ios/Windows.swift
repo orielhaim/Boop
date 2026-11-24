@@ -191,6 +191,11 @@ private func project(_ snapshot: AccountAttentionSnapshotFfi, _ account: String)
   ]
 }
 
+func avatarDocument(_ asset: AvatarAssetFfi) -> Document {
+  ["target": asset.target, "reference": bridgeValue(asset.reference),
+   "revision": String(asset.contentRevision), "availability": wireName(asset.availability)]
+}
+
 private func literal(_ presentation: ConversationPresentationFfi) -> String? {
   if case .literal(let title) = presentation.title { return title }
   return nil
@@ -213,6 +218,7 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
         "title": bridgeValue(literal(row.presentation)),
         "peer": bridgeValue(row.presentation.peerId),
         "image": bridgeValue(chat.avatar?.imageHashHex),
+        "avatarAsset": bridgeValue(row.avatarAsset.map(avatarDocument)),
         "kind": wireName(chat.conversationKind),
         "lifecycle": wireName(chat.lifecycleState),
         "membership": wireName(chat.selfMembership),
@@ -248,6 +254,7 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
     "title": bridgeValue(literal(snapshot.header.selected)),
     "peer": bridgeValue(peer),
     "image": bridgeValue(image),
+    "avatarAsset": bridgeValue(snapshot.header.avatarAsset.map(avatarDocument)),
     "lifecycle": wireName(snapshot.header.lifecycle),
     "memberCount": bridgeValue(snapshot.header.memberCount.map(Double.init)),
     "invited": snapshot.pendingConfirmation,
@@ -262,7 +269,9 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
             "waveform": item.waveformSamples.prefix(64).map { Int((min(1, max(0, $0)) * 31).rounded()) }]
         }]
     }),
-    "identities": snapshot.identities.map { ["id": $0.accountIdHex, "name": $0.displayName] },
+    "identities": snapshot.identities.map {
+      ["id": $0.accountIdHex, "name": $0.displayName, "avatarAsset": bridgeValue($0.avatarAsset.map(avatarDocument))]
+    },
     "messages": snapshot.messages.compactMap { message -> Document? in
       let row = message.timeline
       let system = row.groupSystem.flatMap { $0.provenance == .authenticatedGroupState ? $0 : nil }

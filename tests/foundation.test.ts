@@ -39,7 +39,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   const orm = drizzle(db, { schema });
   migrate(orm, { migrationsFolder });
   migrate(orm, { migrationsFolder });
-  expect(db.query("PRAGMA user_version").values()).toEqual([[2]]);
+  expect(db.query("PRAGMA user_version").values()).toEqual([[3]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
   ).toEqual([[3]]);
@@ -51,12 +51,10 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
       .values()
       .flat(),
   ).toEqual([
-    "avatar_cache",
     "call_history",
     "contacts",
     "downloads",
     "link_preview_cache",
-    "nostr_profiles",
     "peer_permissions",
     "relay_settings",
     "settings",

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { marmot, type MarmotGroupDetails } from "@/core/marmot/native";
-import { contactByKey } from "@/db/queries";
+import { useContacts } from "@/db/contacts";
 import { useLocal } from "@/services/local-context";
 import { loadGroupDetails } from "./group-details-cache";
 import { useMarmotWindow } from "./marmot-window";
 
 export function useMentionMembers(group: string, enabled: boolean) {
-  const { db, marmotSession, avatars } = useLocal();
+  const { marmotSession } = useLocal();
+  const contacts = useContacts();
   const watch = useCallback(() => marmot.openGroupState(group), [group]);
   const { snapshot, error, retry } = useMarmotWindow(watch, enabled);
   const revision = snapshot && `${snapshot.generation}:${snapshot.sequence}`;
@@ -36,17 +37,15 @@ export function useMentionMembers(group: string, enabled: boolean) {
       ? result
       : undefined;
   const roster = current?.members;
-  const members = useMemo(
-    () =>
-      roster?.map((member) => ({
-        ...member,
-        label:
-          contactByKey(db, member.id).get()?.name ||
-          avatars.profile(member.id)?.name ||
-          member.npub,
-      })),
-    [avatars, db, roster],
-  );
+  const members = useMemo(() => {
+    const names = new Map(
+      contacts.map((contact) => [contact.publicKey, contact.name]),
+    );
+    return roster?.map((member) => ({
+      ...member,
+      label: names.get(member.id) || member.name || member.npub,
+    }));
+  }, [contacts, roster]);
   return {
     members,
     failed: Boolean(error || (current && !roster)),

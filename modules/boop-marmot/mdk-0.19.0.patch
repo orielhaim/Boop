@@ -1,5 +1,26 @@
+diff --git a/crates/marmot-app/src/config.rs b/crates/marmot-app/src/config.rs
+index 09b7c5e..bc16547 100644
+--- a/crates/marmot-app/src/config.rs
++++ b/crates/marmot-app/src/config.rs
+@@ -103,6 +103,8 @@ pub struct MarmotAppConfig {
+     pub attachment_acquisition: Option<AttachmentAcquisitionPolicy>,
+     /// Demand and permission ownership, fixed before runtime workers start.
+     pub attachment_acquisition_mode: AttachmentAcquisitionMode,
++    /// Whether this runtime may fetch public profile pictures in the avatar worker.
++    pub acquire_public_avatars: bool,
+     /// Disable exporters for short-lived command processes. Frozen cursors always disable them.
+     pub usage_diagnostics_silent: bool,
+     pub directory_max_future_skew: Duration,
+@@ -258,6 +260,7 @@ impl Default for MarmotAppConfig {
+             device_platform: None,
+             attachment_acquisition: Some(AttachmentAcquisitionPolicy::default()),
+             attachment_acquisition_mode: AttachmentAcquisitionMode::default(),
++            acquire_public_avatars: true,
+             moderation_report_config: None,
+             usage_diagnostics_silent: false,
+             directory_max_future_skew: DEFAULT_DIRECTORY_MAX_FUTURE_SKEW,
 diff --git a/crates/marmot-app/src/local_submissions.rs b/crates/marmot-app/src/local_submissions.rs
-index f8ee05e5..76b9ce20 100644
+index f8ee05e..76b9ce2 100644
 --- a/crates/marmot-app/src/local_submissions.rs
 +++ b/crates/marmot-app/src/local_submissions.rs
 @@ -146,7 +146,7 @@ impl LocalMessageRequest {
@@ -11,8 +32,69 @@ index f8ee05e5..76b9ce20 100644
              }
          } else if let Some(target) = &self.reply_to {
              AppMessageIntent::Reply {
+diff --git a/crates/marmot-app/src/profile_publication.rs b/crates/marmot-app/src/profile_publication.rs
+index 53adb01..108b61e 100644
+--- a/crates/marmot-app/src/profile_publication.rs
++++ b/crates/marmot-app/src/profile_publication.rs
+@@ -33,7 +33,8 @@ impl MarmotApp {
+         );
+         self.publish_user_profile_to_endpoints_and_indexers(
+             &account.label,
+-            profile,
++            serde_json::to_string(&profile_content_json(&profile))?,
++            0,
+             endpoints,
+             bootstrap.indexer_relays,
+             bootstrap
+@@ -54,7 +55,8 @@ impl MarmotApp {
+     pub(crate) async fn publish_user_profile_to_endpoints_and_indexers(
+         &self,
+         label: &str,
+-        profile: UserProfileMetadata,
++        content: String,
++        minimum_created_at: u64,
+         endpoints: Vec<TransportEndpoint>,
+         indexer_relays: Vec<TransportEndpoint>,
+         declared_relays: Vec<TransportEndpoint>,
+@@ -67,12 +69,12 @@ impl MarmotApp {
+         let work = async move {
+             let account = self.account_home().account(label)?;
+             let signer = self.account_signer_for_summary(&account)?;
+-            let content = serde_json::to_string(&profile_content_json(&profile))?;
+-            let mut event = NostrTransportEvent::new_unsigned(
++            let mut event = NostrTransportEvent::new_unsigned_at(
+                 account.account_id_hex.clone(),
+                 KIND_NOSTR_METADATA,
+                 Vec::new(),
+                 content,
++                crate::unix_now_seconds().max(minimum_created_at),
+             );
+             let indexers = self.public_indexer_publish_endpoints(
+                 &indexer_relays,
+diff --git a/crates/marmot-app/src/runtime/account_worker.rs b/crates/marmot-app/src/runtime/account_worker.rs
+index 98d9197..94b6bfb 100644
+--- a/crates/marmot-app/src/runtime/account_worker.rs
++++ b/crates/marmot-app/src/runtime/account_worker.rs
+@@ -5257,6 +5257,7 @@ fn schedule_avatar_acquisition(
+     let transport = client.blossom_http_transport.clone();
+     // Unset, encrypted group images can't load; profile pictures still do.
+     let group_image_server = client.app.deployment().group_image_endpoint.clone();
++    let acquire_public_avatars = client.app.config.acquire_public_avatars;
+     let mut dispatched = false;
+     let result = dispatch_avatar_acquisition(
+         &storage.app_storage(),
+@@ -5267,6 +5268,9 @@ fn schedule_avatar_acquisition(
+             let transport = transport.clone();
+             let group_image_server = group_image_server.clone();
+             async move {
++                if !acquire_public_avatars && matches!(descriptor, storage_sqlite::SelectedAvatar::RemoteImage { .. }) {
++                    return Err(AppError::UnsafeMediaFetch("public avatar acquisition disabled".into()));
++                }
+                 crate::media::avatar::fetch(&descriptor, group_image_server.as_deref(), &transport)
+                     .await
+             }
 diff --git a/crates/marmot-app/src/runtime/account_worker/attachments.rs b/crates/marmot-app/src/runtime/account_worker/attachments.rs
-index b9a2237e..db80931c 100644
+index b9a2237..db80931 100644
 --- a/crates/marmot-app/src/runtime/account_worker/attachments.rs
 +++ b/crates/marmot-app/src/runtime/account_worker/attachments.rs
 @@ -1297,17 +1297,19 @@ pub(super) fn schedule(
@@ -46,7 +128,7 @@ index b9a2237e..db80931c 100644
              match shared
                  .attachment_transfer
 diff --git a/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs b/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
-index 4fcf7313..0589b3dc 100644
+index 4fcf731..0589b3d 100644
 --- a/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
 +++ b/crates/marmot-app/src/runtime/account_worker/tests/refused_subscription_send_tests.rs
 @@ -47,7 +47,14 @@ async fn token_sends_to_a_group_with_a_refused_subscription_are_never_rejected()
@@ -66,7 +148,7 @@ index 4fcf7313..0589b3dc 100644
          .unwrap();
  
 diff --git a/crates/marmot-app/src/runtime/local_submissions.rs b/crates/marmot-app/src/runtime/local_submissions.rs
-index c518bd3c..053ecc36 100644
+index c518bd3..053ecc3 100644
 --- a/crates/marmot-app/src/runtime/local_submissions.rs
 +++ b/crates/marmot-app/src/runtime/local_submissions.rs
 @@ -45,6 +45,28 @@ fn capture_media_reply(tags: &[Vec<String>]) -> Result<Option<String>, AppError>
@@ -241,8 +323,249 @@ index c518bd3c..053ecc36 100644
                  ..Default::default()
              },
              Some(LocalDraftAdmission::Source(revision)),
+diff --git a/crates/marmot-app/src/runtime/mod.rs b/crates/marmot-app/src/runtime/mod.rs
+index dda3ab8..6b2cb12 100644
+--- a/crates/marmot-app/src/runtime/mod.rs
++++ b/crates/marmot-app/src/runtime/mod.rs
+@@ -192,6 +192,7 @@ pub struct MarmotAppRuntime {
+     accounts: AccountManager,
+     setup: onboarding::SetupState,
+     follow_list_updates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
++    profile_updates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+     initial_directory_sync: Arc<Mutex<Option<JoinHandle<()>>>>,
+     #[cfg(test)]
+     shutdown_test_hook: Arc<StdMutex<Option<ShutdownTestHook>>>,
+@@ -1668,6 +1669,7 @@ impl MarmotAppRuntime {
+             accounts,
+             setup,
+             follow_list_updates: Arc::new(Mutex::new(HashMap::new())),
++            profile_updates: Arc::new(Mutex::new(HashMap::new())),
+             initial_directory_sync: Arc::new(Mutex::new(None)),
+             #[cfg(test)]
+             shutdown_test_hook: Arc::new(StdMutex::new(None)),
+@@ -1902,6 +1904,7 @@ impl MarmotAppRuntime {
+     }
+ 
+     pub async fn catch_up_accounts(&self) -> Result<(), AppError> {
++        self.resume_generated_account_setup().await?;
+         let result = self.accounts.catch_up_accounts().await.map(|_| ());
+         self.spawn_moderation_report_retries();
+         result
+@@ -2474,6 +2477,20 @@ impl MarmotAppRuntime {
+             .await
+     }
+ 
++    /// Access the account's signer without exporting its credential.
++    pub fn account_nostr_signer(
++        &self,
++        account_ref: &str,
++    ) -> Result<Arc<dyn transport_nostr_peeler::MarmotNostrSigner>, AppError> {
++        self.shared.lifecycle().ensure_running()?;
++        let account = self.accounts.resolve(account_ref)?;
++        refuse_unlinked(&account)?;
++        if account.signed_out {
++            return Err(AccountHomeError::SecretNotFound(account.account_id_hex).into());
++        }
++        Ok(self.accounts.app.account_signer_for_summary(&account)?.as_nostr_signer())
++    }
++
+     /// See [`MarmotApp::reveal_nsec`]. mdk#543. `caller_context` is the
+     /// privacy-safe surface label recorded in the reveal audit entry.
+     pub fn reveal_nsec(
+@@ -5517,7 +5534,7 @@ impl MarmotAppRuntime {
+         );
+         self.publish_user_profile_to_selected_endpoints(
+             &account,
+-            profile,
++            ProfilePublication::Replace(profile),
+             &merge_source_relays,
+             publish_endpoints,
+             bootstrap.indexer_relays,
+@@ -5552,6 +5569,30 @@ impl MarmotAppRuntime {
+         account_ref: &str,
+         profile: UserProfileMetadata,
+         indexer_relays: Vec<TransportEndpoint>,
++    ) -> Result<UserProfileMetadata, AppError> {
++        self.publish_profile_using_account_route(
++            account_ref, ProfilePublication::Replace(profile), indexer_relays,
++        ).await
++    }
++
++    /// Apply sparse profile edits. Empty values remove fields. Omitted fields
++    /// retain their current values, including extension metadata.
++    pub async fn update_user_profile_using_account_relays(
++        &self,
++        account_ref: &str,
++        edits: std::collections::HashMap<String, String>,
++        indexer_relays: Vec<TransportEndpoint>,
++    ) -> Result<UserProfileMetadata, AppError> {
++        self.publish_profile_using_account_route(
++            account_ref, ProfilePublication::Edit(edits), indexer_relays,
++        ).await
++    }
++
++    async fn publish_profile_using_account_route(
++        &self,
++        account_ref: &str,
++        publication: ProfilePublication,
++        indexer_relays: Vec<TransportEndpoint>,
+     ) -> Result<UserProfileMetadata, AppError> {
+         self.shared.lifecycle().ensure_running()?;
+         let account = self.accounts.resolve(account_ref)?;
+@@ -5569,7 +5610,7 @@ impl MarmotAppRuntime {
+             .account_profile_publish_endpoints(&relay_lists)?;
+         self.publish_user_profile_to_selected_endpoints(
+             &account,
+-            profile,
++            publication,
+             &endpoints,
+             endpoints.clone(),
+             indexer_relays,
+@@ -5592,18 +5633,51 @@ impl MarmotAppRuntime {
+     async fn publish_user_profile_to_selected_endpoints(
+         &self,
+         account: &AccountSummary,
+-        mut profile: UserProfileMetadata,
++        publication: ProfilePublication,
+         merge_source_relays: &[TransportEndpoint],
+         publish_endpoints: Vec<TransportEndpoint>,
+         indexer_relays: Vec<TransportEndpoint>,
+         declared_relays: Vec<TransportEndpoint>,
+     ) -> Result<UserProfileMetadata, AppError> {
+-        if let Some(current) = self
+-            .latest_known_user_profile_for_publish(&account.account_id_hex, merge_source_relays)
+-            .await?
+-        {
+-            profile = merge_user_profile_update(current, profile);
+-        }
++        let lock = self.profile_updates.lock().await
++            .entry(account.account_id_hex.clone())
++            .or_default()
++            .clone();
++        let _update = lock.lock().await;
++        let (mut profile, content, minimum_created_at) = match publication {
++            ProfilePublication::Replace(profile) => {
++                let current = self
++                    .latest_known_user_profile_for_publish(&account.account_id_hex, merge_source_relays)
++                    .await?;
++                let profile = match current {
++                    Some(current) => merge_user_profile_update(current, profile),
++                    None => profile,
++                };
++                let content = serde_json::to_string(&nostr_directory::profile_content_json(&profile))?;
++                (profile, content, 0)
++            }
++            ProfilePublication::Edit(edits) => {
++                let directory = self.accounts.app.directory();
++                let (created_at, fields) = directory
++                    .fetch_current_profile_document(
++                        &account.account_id_hex, merge_source_relays.to_vec(),
++                    ).await?.unwrap_or_default();
++                let cached = directory
++                    .directory_entry_for_account_id(&account.account_id_hex)?
++                    .and_then(|record| record.profile);
++                if cached.is_some_and(|profile| profile.created_at > created_at) {
++                    return Err(AppError::RelayDirectory("current profile has not reached these relays".into()));
++                }
++                let document = apply_profile_edits(fields, edits)?;
++                let content = serde_json::to_string(&document)?;
++                if content.len() > 16 * 1024 {
++                    return Err(AppError::RelayDirectory("edited profile exceeds 16 KiB".into()));
++                }
++                let profile = nostr_directory::project_profile_document(&document)
++                    .ok_or_else(|| AppError::RelayDirectory("invalid profile document".into()))?;
++                (profile, content, created_at.saturating_add(1))
++            }
++        };
+         // Cache the published event's own `created_at`. FFI callers pass
+         // `created_at == 0` (see `UserProfileMetadataFfi -> UserProfileMetadata`),
+         // which loses to any fetched kind-0 in `remember_directory_profile_if_newer`,
+@@ -5616,7 +5690,8 @@ impl MarmotAppRuntime {
+             .app
+             .publish_user_profile_to_endpoints_and_indexers(
+                 &account.label,
+-                profile.clone(),
++                content,
++                minimum_created_at,
+                 publish_endpoints,
+                 indexer_relays,
+                 declared_relays,
+@@ -10435,6 +10510,39 @@ fn newest_user_profile(
+     }
+ }
+ 
++enum ProfilePublication {
++    Replace(UserProfileMetadata),
++    Edit(std::collections::HashMap<String, String>),
++}
++
++fn apply_profile_edits(
++    mut fields: serde_json::Map<String, serde_json::Value>,
++    edits: std::collections::HashMap<String, String>,
++) -> Result<serde_json::Value, AppError> {
++    if let Some(value) = edits.get("display_name") {
++        let previous = fields.remove("displayName");
++        let display_name = fields.get("display_name").or(previous.as_ref());
++        if !edits.contains_key("name") && (!fields.contains_key("name") || fields.get("name") == display_name) {
++            if value.is_empty() {
++                fields.remove("name");
++            } else {
++                fields.insert("name".into(), serde_json::Value::String(value.clone()));
++            }
++        }
++    }
++    for (field, value) in edits {
++        if !matches!(field.as_str(), "display_name" | "name" | "about" | "picture" | "banner" | "nip05" | "lud16" | "website") {
++            return Err(AppError::RelayDirectory("unsupported profile edit field".into()));
++        }
++        if value.is_empty() {
++            fields.remove(&field);
++        } else {
++            fields.insert(field, serde_json::Value::String(value));
++        }
++    }
++    Ok(serde_json::Value::Object(fields))
++}
++
+ fn merge_user_profile_update(
+     mut current: UserProfileMetadata,
+     update: UserProfileMetadata,
+diff --git a/crates/marmot-app/src/runtime/tests.rs b/crates/marmot-app/src/runtime/tests.rs
+index 9d398fb..05ab530 100644
+--- a/crates/marmot-app/src/runtime/tests.rs
++++ b/crates/marmot-app/src/runtime/tests.rs
+@@ -1435,6 +1435,29 @@ fn stamp_published_profile_created_at_preserves_existing_stamp() {
+     assert_eq!(profile.created_at, 42);
+ }
+ 
++#[test]
++fn sparse_profile_edit_preserves_unprojected_fields() {
++    let extension = "x".repeat(5000);
++    let fields = serde_json::json!({
++        "name": "handle", "display_name": "Previous",
++        "banner": "https://example.test/banner",
++        "about": "  line with preserved whitespace  ",
++        "picture": "https://example.test/picture", "lud16": "user@example.test",
++        "custom": {"nested": [1, 2], "long": extension}
++    }).as_object().unwrap().clone();
++    let actual = super::apply_profile_edits(fields, [
++        ("display_name".into(), "Updated".into()),
++        ("banner".into(), String::new()),
++        ("website".into(), "https://example.test".into()),
++    ].into()).unwrap();
++    assert_eq!(actual, serde_json::json!({
++        "name": "handle", "display_name": "Updated",
++        "about": "  line with preserved whitespace  ",
++        "picture": "https://example.test/picture", "lud16": "user@example.test",
++        "custom": {"nested": [1, 2], "long": extension}, "website": "https://example.test"
++    }));
++}
++
+ #[test]
+ fn merge_user_profile_update_preserves_unknown_kind0_fields() {
+     let current = UserProfileMetadata {
 diff --git a/crates/marmot-c/src/subscriptions/conversation_window.rs b/crates/marmot-c/src/subscriptions/conversation_window.rs
-index 3797badd..8f280e76 100644
+index 3797bad..8f280e7 100644
 --- a/crates/marmot-c/src/subscriptions/conversation_window.rs
 +++ b/crates/marmot-c/src/subscriptions/conversation_window.rs
 @@ -660,6 +660,7 @@ pub unsafe extern "C" fn marmot_send_message_draft_with_client_token(
@@ -253,8 +576,84 @@ index 3797badd..8f280e76 100644
                      token,
                  )),
                  out,
+diff --git a/crates/marmot-uniffi/src/commands/account.rs b/crates/marmot-uniffi/src/commands/account.rs
+index 2a2d2d4..222020d 100644
+--- a/crates/marmot-uniffi/src/commands/account.rs
++++ b/crates/marmot-uniffi/src/commands/account.rs
+@@ -634,6 +634,53 @@ impl Marmot {
+             .await?)
+     }
+ 
++    /// Sign an unsigned Nostr event with the active account's signer.
++    pub async fn sign_nostr_event(
++        &self,
++        account_ref: String,
++        unsigned_json: String,
++    ) -> Result<String, MarmotKitError> {
++        use nostr::prelude::UnsignedEvent;
++        let invalid = || MarmotKitError::InvalidIdentity {
++            details: "invalid unsigned Nostr event".into(),
++        };
++        let event = serde_json::from_str::<UnsignedEvent>(&unsigned_json).map_err(|_| invalid())?;
++        event.verify_id().map_err(|_| invalid())?;
++        let signer = self.runtime.account_nostr_signer(&account_ref)?;
++        if event.pubkey.to_hex() != account_ref {
++            return Err(invalid());
++        }
++        signer
++            .sign_event(event)
++            .await
++            .map(|event| event.sig.to_string())
++            .map_err(|_| invalid())
++    }
++
++    /// Encrypt or decrypt a Nostr payload without exposing the credential.
++    pub async fn nostr_cipher(
++        &self,
++        account_ref: String,
++        peer: String,
++        content: String,
++        nip44: bool,
++        encrypt: bool,
++    ) -> Result<String, MarmotKitError> {
++        use nostr::prelude::PublicKey;
++        let invalid = || MarmotKitError::InvalidIdentity {
++            details: "invalid Nostr cipher input".into(),
++        };
++        let peer = PublicKey::from_hex(&peer).map_err(|_| invalid())?;
++        let signer = self.runtime.account_nostr_signer(&account_ref)?;
++        match (nip44, encrypt) {
++            (true, true) => signer.nip44_encrypt(&peer, &content).await,
++            (true, false) => signer.nip44_decrypt(&peer, &content).await,
++            (false, true) => signer.nip04_encrypt(&peer, &content).await,
++            (false, false) => signer.nip04_decrypt(&peer, &content).await,
++        }
++        .map_err(|_| invalid())
++    }
++
+     /// Export the active account's raw private key in canonical `nsec1...`
+     /// bech32 form for an in-app key-backup display (mdk#543).
+     ///
+@@ -730,6 +777,17 @@ impl Marmot {
+         Ok(pushed.into())
+     }
+ 
++    /// Publish sparse edits against the latest profile on the account's relays.
++    pub async fn update_user_profile_using_account_relays(
++        &self,
++        account_ref: String,
++        edits: std::collections::HashMap<String, String>,
++    ) -> Result<UserProfileMetadataFfi, MarmotKitError> {
++        Ok(self.runtime.update_user_profile_using_account_relays(
++            &account_ref, edits, self.app.discovery_indexer_relays(),
++        ).await?.into())
++    }
++
+     /// Upload a public raster profile image to Blossom with the account's
+     /// signer. The returned HTTPS URL can be published as kind:0 `picture`.
+     pub async fn upload_profile_image(
 diff --git a/crates/marmot-uniffi/src/commands/local_submissions.rs b/crates/marmot-uniffi/src/commands/local_submissions.rs
-index 023e8a0b..2f7701ee 100644
+index 023e8a0..2f7701e 100644
 --- a/crates/marmot-uniffi/src/commands/local_submissions.rs
 +++ b/crates/marmot-uniffi/src/commands/local_submissions.rs
 @@ -106,6 +106,7 @@ impl Marmot {
@@ -273,8 +672,136 @@ index 023e8a0b..2f7701ee 100644
                  client_token,
              )
              .await?
+diff --git a/crates/marmot-uniffi/src/commands/onboarding.rs b/crates/marmot-uniffi/src/commands/onboarding.rs
+index d1cd99b..c752755 100644
+--- a/crates/marmot-uniffi/src/commands/onboarding.rs
++++ b/crates/marmot-uniffi/src/commands/onboarding.rs
+@@ -4,10 +4,59 @@ use crate::conversions::{
+ };
+ use crate::external_signer::{ExternalAccountSignerAdapter, ExternalAccountSignerFfi};
+ use crate::{Marmot, MarmotKitError};
++use nostr::nips::nip19::{FromBech32, ToBech32};
++use nostr::nips::nip49::EncryptedSecretKey;
++use nostr::prelude::Keys;
+ use std::sync::Arc;
+ use tokio::sync::Mutex;
+ use zeroize::Zeroizing;
+ 
++/// A decoded identity awaiting the host's explicit import confirmation.
++#[derive(uniffi::Object)]
++pub struct PreparedIdentityImport {
++    public_key: String,
++    nsec: Zeroizing<String>,
++}
++
++#[uniffi::export]
++impl PreparedIdentityImport {
++    pub fn public_key(&self) -> String {
++        self.public_key.clone()
++    }
++}
++
++fn decode_identity_backup(
++    input: &str,
++    password: &str,
++) -> Result<PreparedIdentityImport, MarmotKitError> {
++    let invalid = || MarmotKitError::InvalidIdentity {
++        details: "invalid identity backup".into(),
++    };
++    let input = input.trim();
++    let input = input
++        .get(..6)
++        .filter(|prefix| prefix.eq_ignore_ascii_case("nostr:"))
++        .map_or(input, |_| &input[6..]);
++    if input.len() > 162 || password.len() > 2048 {
++        return Err(invalid());
++    }
++    let keys = if input.starts_with("ncryptsec1") {
++        let encrypted = EncryptedSecretKey::from_bech32(input).map_err(|_| invalid())?;
++        if !(1..=EncryptedSecretKey::MAX_LOG_N).contains(&encrypted.log_n()) {
++            return Err(MarmotKitError::InvalidIdentity {
++                details: "identity backup exceeds the supported scrypt cost".into(),
++            });
++        }
++        Keys::new(encrypted.decrypt(password).map_err(|_| invalid())?)
++    } else {
++        Keys::parse(input).map_err(|_| invalid())?
++    };
++    Ok(PreparedIdentityImport {
++        public_key: keys.public_key().to_hex(),
++        nsec: Zeroizing::new(keys.secret_key().to_bech32().map_err(|_| invalid())?),
++    })
++}
++
+ #[derive(uniffi::Object)]
+ pub struct OnboardingSubscription {
+     snapshot: OnboardingSnapshotFfi,
+@@ -110,6 +159,35 @@ impl Marmot {
+             .await?
+             .into())
+     }
++    /// Decode a raw or NIP-49 identity without returning its secret to the host.
++    pub async fn prepare_identity_import(
++        &self,
++        input: String,
++        password: String,
++    ) -> Result<Arc<PreparedIdentityImport>, MarmotKitError> {
++        let input = Zeroizing::new(input);
++        let password = Zeroizing::new(password);
++        tokio::task::spawn_blocking(move || decode_identity_backup(&input, &password).map(Arc::new))
++            .await
++            .map_err(|_| MarmotKitError::Runtime {
++                details: "identity backup decoding interrupted".into(),
++            })?
++    }
++
++    /// Persist a confirmed identity using the ordinary onboarding checkpoint.
++    pub async fn begin_prepared_onboarding(
++        &self,
++        identity: Arc<PreparedIdentityImport>,
++        options: OnboardingOptionsFfi,
++    ) -> Result<OnboardingSnapshotFfi, MarmotKitError> {
++        Ok(self
++            .runtime
++            .account_setup()
++            .begin_onboarding(identity.nsec.clone(), options.into())
++            .await?
++            .into())
++    }
++
+     /// Persist the identity and return before any network preflight or publication.
+     pub async fn begin_onboarding(
+         &self,
+diff --git a/crates/marmot-uniffi/src/conversions/account.rs b/crates/marmot-uniffi/src/conversions/account.rs
+index f7a307b..0da06ad 100644
+--- a/crates/marmot-uniffi/src/conversions/account.rs
++++ b/crates/marmot-uniffi/src/conversions/account.rs
+@@ -279,16 +279,23 @@ pub struct CachedIdentityProjectionFfi {
+     pub profile: Option<UserProfileMetadataFfi>,
+     pub local_label: Option<String>,
+     pub resolved_name: Option<String>,
++    pub website: Option<String>,
++    pub bot: bool,
+ }
+ 
+ impl From<marmot_app::CachedIdentityProjection> for CachedIdentityProjectionFfi {
+     fn from(value: marmot_app::CachedIdentityProjection) -> Self {
++        let extension = |key: &str| value.profile.as_ref().and_then(|profile| profile.extra.get(key));
++        let website = extension("website").and_then(|value| value.as_str()).map(str::to_owned);
++        let bot = extension("bot").and_then(|value| value.as_bool()).unwrap_or(false);
+         Self {
+             requested_id: value.requested_id,
+             account_id_hex: value.account_id_hex,
+             profile: value.profile.map(Into::into),
+             local_label: value.local_label,
+             resolved_name: value.resolved_name,
++            website,
++            bot,
+         }
+     }
+ }
 diff --git a/crates/marmot-uniffi/src/conversions/conversation_window.rs b/crates/marmot-uniffi/src/conversions/conversation_window.rs
-index 72bed6f9..0db4aa1f 100644
+index 72bed6f..0db4aa1 100644
 --- a/crates/marmot-uniffi/src/conversions/conversation_window.rs
 +++ b/crates/marmot-uniffi/src/conversions/conversation_window.rs
 @@ -373,7 +373,7 @@ impl From<app::SelectedMessageDraft> for SelectedMessageDraftFfi {
@@ -306,11 +833,63 @@ index 72bed6f9..0db4aa1f 100644
              .cloned()
              .collect(),
      )
+diff --git a/crates/marmot-uniffi/src/lib.rs b/crates/marmot-uniffi/src/lib.rs
+index 3dedc1e..140d8ae 100644
+--- a/crates/marmot-uniffi/src/lib.rs
++++ b/crates/marmot-uniffi/src/lib.rs
+@@ -255,6 +255,9 @@ pub struct MarmotOptions {
+     pub secret_store: Option<Arc<dyn SecretStore>>,
+     #[uniffi(default = None)]
+     pub attachment_acquisition_mode: Option<AttachmentAcquisitionModeFfi>,
++    /// Disable public avatar HTTP when the host manages profile-image permissions.
++    #[uniffi(default = None)]
++    pub acquire_public_avatars: Option<bool>,
+     /// Destination for private moderation reports (`submit_moderation_report`). Set per
+     /// build flavor. Invalid values leave reporting unconfigured; `configure_moderation_reporting`
+     /// reports why.
+@@ -278,6 +281,7 @@ impl MarmotOptions {
+             device_platform: None,
+             secret_store: None,
+             attachment_acquisition_mode: None,
++            acquire_public_avatars: None,
+             moderation_report_config: None,
+             deployment,
+         }
+@@ -285,7 +289,11 @@ impl MarmotOptions {
+ 
+     fn app_config(&self) -> MarmotAppConfig {
+         let relay_policy = self.relay_policy.unwrap_or(RelayPolicyFfi::PublicOnly);
+-        MarmotAppConfig::default()
++        let config = MarmotAppConfig {
++            acquire_public_avatars: self.acquire_public_avatars.unwrap_or(true),
++            ..MarmotAppConfig::default()
++        };
++        config
+             .with_attachment_acquisition_mode(
+                 self.attachment_acquisition_mode.unwrap_or_default().into(),
+             )
 diff --git a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
-index 11fbcded..65ae5f3b 100644
+index 11fbcde..f0c953d 100644
 --- a/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
 +++ b/crates/marmot-uniffi/swift-support/CancellableSubscriptions.swift
-@@ -52,6 +52,26 @@ extension BlockListSubscription {
+@@ -12,6 +12,16 @@ extension PresentedChatListSubscription {
+   }
+ }
+ 
++extension UserSearchSubscription {
++  public func nextCancellable() async throws -> UserSearchUpdateFfi? {
++    try Task.checkCancellation()
++    return try await cancellableProjectionNext(
++      uniffi_marmot_uniffi_fn_method_usersearchsubscription_next_update(uniffiClonePointer()),
++      read: FfiConverterTypeUserSearchUpdateFfi.read
++    )
++  }
++}
++
+ extension ChatListWindowSubscription {
+   public func nextCancellable() async throws -> ChatListWindowSnapshotFfi? {
+     try Task.checkCancellation()
+@@ -52,6 +62,26 @@ extension BlockListSubscription {
    }
  }
  
@@ -337,8 +916,104 @@ index 11fbcded..65ae5f3b 100644
  private func cancellableProjectionNext<Value>(
    _ handle: UInt64,
    read: (inout (data: Data, offset: Data.Index)) throws -> Value
+diff --git a/crates/nostr-directory/src/lib.rs b/crates/nostr-directory/src/lib.rs
+index c7d4221..c208c37 100644
+--- a/crates/nostr-directory/src/lib.rs
++++ b/crates/nostr-directory/src/lib.rs
+@@ -62,6 +62,7 @@ pub use search::{
+     OFF_GRAPH_SEARCH_RADIUS, SearchUpdateTrigger, UserSearchParams, UserSearchSubscription,
+     UserSearchUpdate, sort_user_search_results,
+ };
++pub use records::project_profile_document;
+ pub use service::{Directory, DirectoryState};
+ pub use store::hydrate_directory_record;
+ pub use sync::{DirectorySyncHandle, DirectorySyncRunSummary};
+diff --git a/crates/nostr-directory/src/methods.rs b/crates/nostr-directory/src/methods.rs
+index d21b5cf..dad84c3 100644
+--- a/crates/nostr-directory/src/methods.rs
++++ b/crates/nostr-directory/src/methods.rs
+@@ -445,6 +445,31 @@ impl<R: DirectoryResources + DirectoryObserver> Directory<R> {
+         result
+     }
+ 
++    /// Read the current signed kind-0 document for a sparse local edit.
++    /// The directory ignores out-of-window events and verifies relay input
++    /// through the standard profile fetch. Unprojectable content fails closed.
++    pub async fn fetch_current_profile_document(
++        &self,
++        account_id_hex: &str,
++        bootstrap_relays: Vec<TransportEndpoint>,
++    ) -> Result<Option<(u64, serde_json::Map<String, serde_json::Value>)>, DirectoryError> {
++        let key = parse_account_id_hex(account_id_hex)?;
++        let source_relays = self.directory_source_relays(&bootstrap_relays);
++        let freshness = self.directory_freshness();
++        let mut records = self.fetch_events_for_account_ids(
++            std::slice::from_ref(&key), KIND_NOSTR_METADATA, &source_relays,
++        ).await?;
++        records.retain(|record| record.event.kind == KIND_NOSTR_METADATA
++            && record.event.pubkey == key && freshness.accepts(record));
++        crate::published_records::sort_directory_records(&mut records);
++        let Some(record) = records.pop() else { return Ok(None) };
++        if record.event.content.len() > 16 * 1024 {
++            return Err(DirectoryError::RelayDirectory("current profile exceeds 16 KiB".into()));
++        }
++        let fields = serde_json::from_str(&record.event.content)?;
++        Ok(Some((record.event.created_at, fields)))
++    }
++
+     async fn fetch_current_user_profile_for_account_id_unobserved(
+         &self,
+         account_id_hex: &str,
+diff --git a/crates/nostr-directory/src/records.rs b/crates/nostr-directory/src/records.rs
+index fa2e16e..194673d 100644
+--- a/crates/nostr-directory/src/records.rs
++++ b/crates/nostr-directory/src/records.rs
+@@ -361,23 +361,27 @@ pub(crate) fn profile_from_record(
+     record: RelayEventRecord,
+ ) -> Option<(String, UserProfileMetadata)> {
+     let content = serde_json::from_str::<serde_json::Value>(&record.event.content).ok()?;
++    let mut profile = project_profile_document(&content)?;
++    profile.created_at = record.event.created_at;
++    profile.source_relays = source_relays_from_record(&record);
++    Some((record.event.pubkey, profile))
++}
++
++/// Produce the bounded directory representation of a kind-0 document.
++pub fn project_profile_document(content: &serde_json::Value) -> Option<UserProfileMetadata> {
+     content.as_object()?;
+-    Some((
+-        record.event.pubkey.clone(),
+-        UserProfileMetadata {
+-            name: string_field(&content, "name", ProfileStringPolicy::SingleLine),
+-            display_name: string_field(&content, "display_name", ProfileStringPolicy::SingleLine)
+-                .or_else(|| string_field(&content, "displayName", ProfileStringPolicy::SingleLine)),
+-            about: string_field(&content, "about", ProfileStringPolicy::Multiline),
+-            picture: string_field(&content, "picture", ProfileStringPolicy::SingleLine),
+-            banner: string_field(&content, "banner", ProfileStringPolicy::SingleLine),
+-            nip05: string_field(&content, "nip05", ProfileStringPolicy::SingleLine),
+-            lud16: string_field(&content, "lud16", ProfileStringPolicy::SingleLine),
+-            created_at: record.event.created_at,
+-            source_relays: source_relays_from_record(&record),
+-            extra: extra_profile_fields(&content),
+-        },
+-    ))
++    Some(UserProfileMetadata {
++            name: string_field(content, "name", ProfileStringPolicy::SingleLine),
++            display_name: string_field(content, "display_name", ProfileStringPolicy::SingleLine)
++                .or_else(|| string_field(content, "displayName", ProfileStringPolicy::SingleLine)),
++            about: string_field(content, "about", ProfileStringPolicy::Multiline),
++            picture: string_field(content, "picture", ProfileStringPolicy::SingleLine),
++            banner: string_field(content, "banner", ProfileStringPolicy::SingleLine),
++            nip05: string_field(content, "nip05", ProfileStringPolicy::SingleLine),
++            lud16: string_field(content, "lud16", ProfileStringPolicy::SingleLine),
++        extra: extra_profile_fields(content),
++        ..UserProfileMetadata::default()
++    })
+ }
+ 
+ /// Inclusive maximum number of unknown kind:0 fields retained on ingest.
 diff --git a/crates/storage-sqlite/src/app/timeline.rs b/crates/storage-sqlite/src/app/timeline.rs
-index 63d562a9..0106a18d 100644
+index 63d562a..0106a18 100644
 --- a/crates/storage-sqlite/src/app/timeline.rs
 +++ b/crates/storage-sqlite/src/app/timeline.rs
 @@ -2456,7 +2456,9 @@ fn project_single_message_timeline_tx(
@@ -365,7 +1040,7 @@ index 63d562a9..0106a18d 100644
                  let mut row = timeline_row_from_custom_event(event);
                  if event.invalidated {
 diff --git a/crates/storage-sqlite/src/app/timeline/tests.rs b/crates/storage-sqlite/src/app/timeline/tests.rs
-index a2df2df1..9a77e389 100644
+index a2df2df..9a77e38 100644
 --- a/crates/storage-sqlite/src/app/timeline/tests.rs
 +++ b/crates/storage-sqlite/src/app/timeline/tests.rs
 @@ -6150,3 +6150,46 @@ fn discarding_a_send_updates_the_replies_that_quote_it() {
@@ -416,7 +1091,7 @@ index a2df2df1..9a77e389 100644
 +    verify();
 +}
 diff --git a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
-index 1eb2080b..ab417088 100644
+index 1eb2080..ab41708 100644
 --- a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
 +++ b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
 @@ -12,7 +12,8 @@ pub(crate) fn apply(tx: &Transaction<'_>) -> StorageResult<()> {
@@ -451,190 +1126,3 @@ index 1eb2080b..ab417088 100644
 +        assert_eq!(sources, 4);
      }
  }
-diff --git a/crates/marmot-app/src/runtime/mod.rs b/crates/marmot-app/src/runtime/mod.rs
---- a/crates/marmot-app/src/runtime/mod.rs
-+++ b/crates/marmot-app/src/runtime/mod.rs
-@@ -1903,6 +1903,7 @@
-     }
- 
-     pub async fn catch_up_accounts(&self) -> Result<(), AppError> {
-+        self.resume_generated_account_setup().await?;
-         let result = self.accounts.catch_up_accounts().await.map(|_| ());
-         self.spawn_moderation_report_retries();
-         result
-@@ -2472,6 +2472,20 @@
-         self.accounts
-             .safe_export_secret(account_ref, group_id, component_id)
-             .await
-+    }
-+
-+    /// Access the account's signer without exporting its credential.
-+    pub fn account_nostr_signer(
-+        &self,
-+        account_ref: &str,
-+    ) -> Result<Arc<dyn transport_nostr_peeler::MarmotNostrSigner>, AppError> {
-+        self.shared.lifecycle().ensure_running()?;
-+        let account = self.accounts.resolve(account_ref)?;
-+        refuse_unlinked(&account)?;
-+        if account.signed_out {
-+            return Err(AccountHomeError::SecretNotFound(account.account_id_hex).into());
-+        }
-+        Ok(self.accounts.app.account_signer_for_summary(&account)?.as_nostr_signer())
-     }
- 
-     /// See [`MarmotApp::reveal_nsec`]. mdk#543. `caller_context` is the
-diff --git a/crates/marmot-uniffi/src/commands/account.rs b/crates/marmot-uniffi/src/commands/account.rs
---- a/crates/marmot-uniffi/src/commands/account.rs
-+++ b/crates/marmot-uniffi/src/commands/account.rs
-@@ -632,6 +632,53 @@
-             .runtime
-             .unfollow_user(&account_ref, &user.account_id_hex)
-             .await?)
-+    }
-+
-+    /// Sign an unsigned Nostr event with the active account's signer.
-+    pub async fn sign_nostr_event(
-+        &self,
-+        account_ref: String,
-+        unsigned_json: String,
-+    ) -> Result<String, MarmotKitError> {
-+        use nostr::prelude::UnsignedEvent;
-+        let invalid = || MarmotKitError::InvalidIdentity {
-+            details: "invalid unsigned Nostr event".into(),
-+        };
-+        let event = serde_json::from_str::<UnsignedEvent>(&unsigned_json).map_err(|_| invalid())?;
-+        event.verify_id().map_err(|_| invalid())?;
-+        let signer = self.runtime.account_nostr_signer(&account_ref)?;
-+        if event.pubkey.to_hex() != account_ref {
-+            return Err(invalid());
-+        }
-+        signer
-+            .sign_event(event)
-+            .await
-+            .map(|event| event.sig.to_string())
-+            .map_err(|_| invalid())
-+    }
-+
-+    /// Encrypt or decrypt a Nostr payload without exposing the credential.
-+    pub async fn nostr_cipher(
-+        &self,
-+        account_ref: String,
-+        peer: String,
-+        content: String,
-+        nip44: bool,
-+        encrypt: bool,
-+    ) -> Result<String, MarmotKitError> {
-+        use nostr::prelude::PublicKey;
-+        let invalid = || MarmotKitError::InvalidIdentity {
-+            details: "invalid Nostr cipher input".into(),
-+        };
-+        let peer = PublicKey::from_hex(&peer).map_err(|_| invalid())?;
-+        let signer = self.runtime.account_nostr_signer(&account_ref)?;
-+        match (nip44, encrypt) {
-+            (true, true) => signer.nip44_encrypt(&peer, &content).await,
-+            (true, false) => signer.nip44_decrypt(&peer, &content).await,
-+            (false, true) => signer.nip04_encrypt(&peer, &content).await,
-+            (false, false) => signer.nip04_decrypt(&peer, &content).await,
-+        }
-+        .map_err(|_| invalid())
-     }
- 
-     /// Export the active account's raw private key in canonical `nsec1...`
-diff --git a/crates/marmot-uniffi/src/commands/onboarding.rs b/crates/marmot-uniffi/src/commands/onboarding.rs
---- a/crates/marmot-uniffi/src/commands/onboarding.rs
-+++ b/crates/marmot-uniffi/src/commands/onboarding.rs
-@@ -4,9 +4,58 @@
- };
- use crate::external_signer::{ExternalAccountSignerAdapter, ExternalAccountSignerFfi};
- use crate::{Marmot, MarmotKitError};
-+use nostr::nips::nip19::{FromBech32, ToBech32};
-+use nostr::nips::nip49::EncryptedSecretKey;
-+use nostr::prelude::Keys;
- use std::sync::Arc;
- use tokio::sync::Mutex;
- use zeroize::Zeroizing;
-+
-+/// A decoded identity awaiting the host's explicit import confirmation.
-+#[derive(uniffi::Object)]
-+pub struct PreparedIdentityImport {
-+    public_key: String,
-+    nsec: Zeroizing<String>,
-+}
-+
-+#[uniffi::export]
-+impl PreparedIdentityImport {
-+    pub fn public_key(&self) -> String {
-+        self.public_key.clone()
-+    }
-+}
-+
-+fn decode_identity_backup(
-+    input: &str,
-+    password: &str,
-+) -> Result<PreparedIdentityImport, MarmotKitError> {
-+    let invalid = || MarmotKitError::InvalidIdentity {
-+        details: "invalid identity backup".into(),
-+    };
-+    let input = input.trim();
-+    let input = input
-+        .get(..6)
-+        .filter(|prefix| prefix.eq_ignore_ascii_case("nostr:"))
-+        .map_or(input, |_| &input[6..]);
-+    if input.len() > 162 || password.len() > 2048 {
-+        return Err(invalid());
-+    }
-+    let keys = if input.starts_with("ncryptsec1") {
-+        let encrypted = EncryptedSecretKey::from_bech32(input).map_err(|_| invalid())?;
-+        if !(1..=EncryptedSecretKey::MAX_LOG_N).contains(&encrypted.log_n()) {
-+            return Err(MarmotKitError::InvalidIdentity {
-+                details: "identity backup exceeds the supported scrypt cost".into(),
-+            });
-+        }
-+        Keys::new(encrypted.decrypt(password).map_err(|_| invalid())?)
-+    } else {
-+        Keys::parse(input).map_err(|_| invalid())?
-+    };
-+    Ok(PreparedIdentityImport {
-+        public_key: keys.public_key().to_hex(),
-+        nsec: Zeroizing::new(keys.secret_key().to_bech32().map_err(|_| invalid())?),
-+    })
-+}
- 
- #[derive(uniffi::Object)]
- pub struct OnboardingSubscription {
-@@ -110,6 +159,35 @@
-             .await?
-             .into())
-     }
-+    /// Decode a raw or NIP-49 identity without returning its secret to the host.
-+    pub async fn prepare_identity_import(
-+        &self,
-+        input: String,
-+        password: String,
-+    ) -> Result<Arc<PreparedIdentityImport>, MarmotKitError> {
-+        let input = Zeroizing::new(input);
-+        let password = Zeroizing::new(password);
-+        tokio::task::spawn_blocking(move || decode_identity_backup(&input, &password).map(Arc::new))
-+            .await
-+            .map_err(|_| MarmotKitError::Runtime {
-+                details: "identity backup decoding interrupted".into(),
-+            })?
-+    }
-+
-+    /// Persist a confirmed identity using the ordinary onboarding checkpoint.
-+    pub async fn begin_prepared_onboarding(
-+        &self,
-+        identity: Arc<PreparedIdentityImport>,
-+        options: OnboardingOptionsFfi,
-+    ) -> Result<OnboardingSnapshotFfi, MarmotKitError> {
-+        Ok(self
-+            .runtime
-+            .account_setup()
-+            .begin_onboarding(identity.nsec.clone(), options.into())
-+            .await?
-+            .into())
-+    }
-+
-     /// Persist the identity and return before any network preflight or publication.
-     pub async fn begin_onboarding(
-         &self,

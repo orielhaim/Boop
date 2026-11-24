@@ -221,8 +221,16 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
 export default function StorageSettings() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const { marmotSession, avatars, previews, lock, speech, downloads, audio } =
-    useLocal();
+  const {
+    identity,
+    marmotSession,
+    avatars,
+    previews,
+    lock,
+    speech,
+    downloads,
+    audio,
+  } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const network = useNetworkState();
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -287,6 +295,7 @@ export default function StorageSettings() {
                 await downloads.clear(marmot.clearDownloads);
                 await speech.reconcile(true);
               } else if (key === "profileCache") {
+                await marmot.clearAvatarCache(identity.publicKey);
                 avatars.clear();
               } else {
                 previews.clear();

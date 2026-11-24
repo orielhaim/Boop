@@ -3,24 +3,9 @@ import { z } from "zod";
 import type * as schema from "@/db/schema";
 import { preference, setPreference } from "@/db/queries";
 import type { MediaUploadResult } from "../media/uploads";
-import {
-  maxProfileBytes,
-  parseProfile,
-  publicImageUrl,
-  replaces,
-  updateProfileFields,
-} from "./protocol";
-import { verifiedEvent } from "../nostr/gift-wrap";
-import type { AvatarDisk, createAvatars } from "./service";
-
-type Avatars = ReturnType<typeof createAvatars>;
-type Relays = {
-  watchOwnProfile(
-    onEvent: (event: unknown, author: string) => void,
-    onEose: (allReplied: boolean) => void,
-  ): (() => void) | null;
-  publishProfile(content: string, createdAt: number): Promise<unknown>;
-};
+import type { MarmotProfileEdits } from "../marmot/native";
+import { publicMediaUrl } from "../media/url";
+import type { AvatarDisk } from "./service";
 
 const fileName = z.string().regex(/^[a-f0-9-]{36}\.jpg$/u);
 const imageEdit = z.discriminatedUnion("kind", [
@@ -46,15 +31,21 @@ type ProfileStage = "idle" | "uploading" | "publishing";
 
 export function createProfileEditor<Result>(
   db: BaseSQLiteDatabase<"sync", Result, typeof schema>,
-  owner: string,
-  avatars: Pick<Avatars, "profile" | "ingest" | "notify">,
   disk: Pick<AvatarDisk, "newId" | "local" | "copyLocal" | "removeLocal">,
   upload: (
     file: string,
     signal: AbortSignal,
     wide: boolean,
   ) => Promise<MediaUploadResult>,
-  relays: Relays,
+  publishEdits: (
+    edits: MarmotProfileEdits,
+    signal: AbortSignal,
+  ) => Promise<void>,
+  keepUploaded: (
+    field: "photo" | "banner",
+    filename: string | null,
+    url?: string,
+  ) => void,
   isCurrent: () => boolean,
   canPublish: () => Promise<boolean>,
 ) {
@@ -62,6 +53,10 @@ export function createProfileEditor<Result>(
   let stage: ProfileStage = "idle";
   let abort: AbortController | undefined;
   let editRevision = 0;
+  let active = false;
+  let retryDelay = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let error = false;
 
   const readDraft = () => {
     try {
@@ -77,7 +72,7 @@ export function createProfileEditor<Result>(
     return {
       draft,
       stage,
-      editRevision,
+      error,
       bannerPreview:
         draft?.banner?.kind === "upload"
           ? disk.local(draft.banner.file)
@@ -92,83 +87,131 @@ export function createProfileEditor<Result>(
   function notify() {
     snapshot = makeSnapshot();
     for (const listener of listeners) listener();
-    avatars.notify(owner);
   }
   function remove(filename: string | null) {
     if (!filename || !fileName.safeParse(filename).success) return;
     disk.removeLocal(filename);
   }
   function write(draft: Draft | null) {
-    db.transaction((tx) => {
-      setPreference(tx, "profile.draft", draft ? JSON.stringify(draft) : "");
-      setPreference(
-        tx,
-        "profile.draft.banner",
-        draft?.banner?.kind === "upload" ? draft.banner.file : "",
-      );
-      setPreference(
-        tx,
-        "profile.draft.file",
-        draft?.photo.kind === "upload" ? draft.photo.file : "",
-      );
-    });
+    setPreference(db, "profile.draft", draft ? JSON.stringify(draft) : "");
     notify();
+  }
+  function schedule() {
+    if (!active || !isCurrent() || !snapshot.draft || abort || timer) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      const revision = editRevision;
+      void publish()
+        .catch(() => "unavailable")
+        .then((result) => {
+          if (
+            revision === editRevision &&
+            snapshot.draft &&
+            active &&
+            result !== "cancelled"
+          ) {
+            error = true;
+            retryDelay = Math.min(Math.max(15_000, retryDelay * 2), 300_000);
+            notify();
+          }
+          schedule();
+        });
+    }, retryDelay);
+  }
+  function retry() {
+    clearTimeout(timer);
+    timer = undefined;
+    retryDelay = 0;
+    schedule();
   }
   function writeEdit(draft: Draft) {
     if (!isCurrent()) throw new Error("Profile editor unavailable");
     editRevision++;
+    error = false;
     write(draft);
     abort?.abort();
+    retry();
   }
-  function refresh(signal: AbortSignal) {
-    return new Promise<boolean>((resolve) => {
-      let stop: (() => void) | null = null;
-      let invalid: { eventId: string; createdAt: number } | undefined;
-      let finished = false;
-      let answered = false;
-      const timer = setTimeout(finish, 2_000);
-      function finish() {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        stop?.();
-        const cached = avatars.profile(owner);
-        resolve(
-          !signal.aborted &&
-            (answered || Boolean(cached)) &&
-            (!invalid || (cached !== undefined && replaces(cached, invalid))),
+  async function publish() {
+    const saved = readDraft();
+    if (!saved || abort || !isCurrent()) return "unavailable";
+    let draft: Draft = saved;
+    const job = new AbortController();
+    abort = job;
+    const { signal } = job;
+    const valid = () => isCurrent() && !signal.aborted;
+    try {
+      if (!(await canPublish())) return "relays";
+      if (!valid()) return "cancelled";
+      for (const field of ["photo", "banner"] as const) {
+        const image = draft[field];
+        if (image?.kind !== "upload" || image.url) continue;
+        stage = "uploading";
+        notify();
+        const { url, mirror } = await upload(
+          image.file,
+          signal,
+          field === "banner",
         );
-      }
-      signal.addEventListener("abort", finish, { once: true });
-      stop = relays.watchOwnProfile(
-        (event, author) => {
-          if (author !== owner || !isCurrent() || signal.aborted) return;
-          if (parseProfile(event, owner)) {
-            avatars.ingest(event, owner);
-            return;
+        if (!valid()) return "cancelled";
+        if (!publicMediaUrl(url)) return "metadata";
+        draft = { ...draft, [field]: { ...image, url } };
+        write(draft);
+        if (mirror) {
+          const mirrored = await mirror.catch(() => false);
+          if (!valid()) return "cancelled";
+          if (!mirrored) {
+            draft = {
+              ...draft,
+              [field]: { ...image, url, mirrorFailed: true },
+            };
+            write(draft);
           }
-          const verified = verifiedEvent(event);
-          if (
-            verified?.kind !== 0 ||
-            verified.pubkey !== owner ||
-            verified.created_at > Math.floor(Date.now() / 1000) + 60
-          )
-            return;
-          const candidate = {
-            eventId: verified.id,
-            createdAt: verified.created_at,
-          };
-          if (replaces(candidate, invalid)) invalid = candidate;
-        },
-        (allReplied) => {
-          answered = true;
-          if (allReplied) finish();
-        },
-      );
-      if (finished) stop?.();
-      else if (!stop || signal.aborted) finish();
-    });
+        }
+      }
+      stage = "publishing";
+      notify();
+      const edits: MarmotProfileEdits = {};
+      if (draft.name !== undefined) edits.display_name = draft.name;
+      if (draft.about !== undefined) edits.about = draft.about;
+      if (draft.website !== undefined) edits.website = draft.website;
+      if (draft.nip05 !== undefined) edits.nip05 = draft.nip05;
+      for (const [field, image] of [
+        ["picture", draft.photo],
+        ["banner", draft.banner],
+      ] as const) {
+        if (image?.kind === "remove") edits[field] = "";
+        if (image?.kind === "upload" && image.url) edits[field] = image.url;
+      }
+      if (!valid()) return "cancelled";
+      try {
+        await publishEdits(edits, signal);
+      } catch {
+        return valid() ? "relays" : "cancelled";
+      }
+      if (!valid()) return "cancelled";
+      for (const field of ["photo", "banner"] as const) {
+        const item = draft[field];
+        try {
+          if (item?.kind === "remove") keepUploaded(field, null);
+          else if (item?.kind === "upload" && item.url)
+            keepUploaded(field, item.file, item.url);
+        } catch {}
+      }
+      error = false;
+      write(null);
+      if (draft.photo.kind === "upload") remove(draft.photo.file);
+      if (draft.banner?.kind === "upload") remove(draft.banner.file);
+      return [draft.photo, draft.banner].some(
+        (image) => image?.kind === "upload" && image.mirrorFailed,
+      )
+        ? "mirror"
+        : "published";
+    } finally {
+      abort = undefined;
+      stage = "idle";
+      notify();
+    }
   }
   return {
     getSnapshot: () => snapshot,
@@ -227,128 +270,21 @@ export function createProfileEditor<Result>(
       if (draft?.photo.kind === "upload") remove(draft.photo.file);
       if (draft?.banner?.kind === "upload") remove(draft.banner.file);
     },
-    cancel() {
-      abort?.abort();
+    publish,
+    retry,
+    setActive(next: boolean) {
+      if (next === active) return;
+      active = next;
+      if (!active) {
+        clearTimeout(timer);
+        timer = undefined;
+        abort?.abort();
+      } else retry();
     },
-    async publish() {
-      const saved = readDraft();
-      if (!saved || abort || !isCurrent()) return "unavailable";
-      let draft: Draft = saved;
-      const job = new AbortController();
-      abort = job;
-      const { signal } = job;
-      const valid = () => isCurrent() && !signal.aborted;
-      try {
-        if (!(await canPublish())) return "relays";
-        if (!valid()) return "cancelled";
-        for (const field of ["photo", "banner"] as const) {
-          const image = draft[field];
-          if (image?.kind !== "upload" || image.url) continue;
-          stage = "uploading";
-          notify();
-          const { url, mirror } = await upload(
-            image.file,
-            signal,
-            field === "banner",
-          );
-          if (!valid()) return "cancelled";
-          if (!publicImageUrl(url)) return "metadata";
-          draft = { ...draft, [field]: { ...image, url } };
-          write(draft);
-          if (mirror) {
-            const mirrored = await mirror.catch(() => false);
-            if (!valid()) return "cancelled";
-            if (!mirrored) {
-              draft = {
-                ...draft,
-                [field]: { ...image, url, mirrorFailed: true },
-              };
-              write(draft);
-            }
-          }
-        }
-        stage = "publishing";
-        notify();
-        if (!(await refresh(signal)))
-          return signal.aborted ? "cancelled" : "relays";
-        if (!valid()) return "cancelled";
-        const previous = avatars.profile(owner);
-        const imageUrl = (image: Draft["banner"]) =>
-          image?.kind === "upload"
-            ? image.url
-            : image?.kind === "remove"
-              ? null
-              : undefined;
-        const content = JSON.stringify(
-          updateProfileFields(previous?.fields, {
-            displayName: draft.name,
-            about: draft.about,
-            website: draft.website,
-            nip05: draft.nip05,
-            picture: imageUrl(draft.photo),
-            banner: imageUrl(draft.banner),
-          }),
-        );
-        if (new TextEncoder().encode(content).length > maxProfileBytes)
-          return "metadata";
-        const now = Math.floor(Date.now() / 1000);
-        const priorAttempt = Number(preference(db, "profile.publishAt") || 0);
-        const same = preference(db, "profile.publishContent") === content;
-        const acknowledged =
-          previous &&
-          JSON.stringify(previous.fields) === content &&
-          same &&
-          previous.createdAt >= priorAttempt;
-        if (!acknowledged) {
-          const timestamp =
-            same && priorAttempt > (previous?.createdAt ?? 0)
-              ? priorAttempt
-              : Math.max(now, (previous?.createdAt ?? 0) + 1, priorAttempt + 1);
-          if (timestamp > now + 60 || !valid()) return "relays";
-          db.transaction((tx) => {
-            setPreference(tx, "profile.publishAt", String(timestamp));
-            setPreference(tx, "profile.publishContent", content);
-          });
-          const result = await relays.publishProfile(content, timestamp);
-          if (!valid()) return "cancelled";
-          const published = parseProfile(result, owner);
-          if (!published) return "relays";
-          avatars.ingest(result, owner);
-          if (avatars.profile(owner)?.eventId !== published.eventId)
-            return "relays";
-        }
-        const retired: string[] = [];
-        db.transaction((tx) => {
-          for (const field of ["photo", "banner"] as const) {
-            const image = draft[field];
-            if (!image || image.kind === "unchanged") continue;
-            const setting = `profile.${field}`;
-            const old = preference(tx, setting);
-            const next = image.kind === "upload" ? image.file : "";
-            if (old && old !== next) retired.push(old);
-            setPreference(tx, setting, next);
-            setPreference(tx, `${setting}.url`, imageUrl(image) ?? "");
-          }
-          for (const key of [
-            "profile.draft",
-            "profile.draft.file",
-            "profile.draft.banner",
-            "profile.publishAt",
-            "profile.publishContent",
-          ])
-            setPreference(tx, key, "");
-        });
-        for (const file of retired) remove(file);
-        return [draft.photo, draft.banner].some(
-          (image) => image?.kind === "upload" && image.mirrorFailed,
-        )
-          ? "mirror"
-          : "published";
-      } finally {
-        abort = undefined;
-        stage = "idle";
-        notify();
-      }
+    draftFiles() {
+      return [snapshot.draft?.photo, snapshot.draft?.banner].flatMap((image) =>
+        image?.kind === "upload" ? [image.file] : [],
+      );
     },
   };
 }

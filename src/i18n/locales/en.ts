@@ -151,12 +151,12 @@ export const en = {
     clear: "Clear",
     clearing: "Clearing…",
     clear_downloads: "Clear received downloads",
-    clear_profileCache: "Clear cached profile images",
+    clear_profileCache: "Clear cached profile and group images",
     clear_linkPreviews: "Clear link previews",
     clearDetail_downloads:
       "Messages stay in your chats. You can download received attachments again while they are available.",
     clearDetail_profileCache:
-      "Remove downloaded profile photos and banners. Your photos and local overrides are kept.",
+      "Remove downloaded profile photos, banners, and group images. Your photos and local overrides are kept.",
     clearDetail_linkPreviews:
       "Remove stored link previews. The links stay in your chats.",
     clearError: "Could not finish clearing storage.",
