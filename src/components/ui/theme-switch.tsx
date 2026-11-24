@@ -25,6 +25,7 @@ import { StyleSheet, UnistylesRuntime } from "react-native-unistyles";
 import {
   cancelAnimation,
   Easing,
+  useDerivedValue,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
@@ -35,8 +36,8 @@ import {
   Group,
   Image,
   type SkImage,
+  type SkRRect,
   Skia,
-  usePathValue,
 } from "react-native-skia";
 import { scheduleOnRN } from "react-native-worklets";
 import { motion, type ThemeName } from "@/theme/tokens";
@@ -406,15 +407,24 @@ function ThemeReveal({
   // Start beyond the live capsule so the first palette change is visible
   // around the selector even before the radius advances.
   const initialRadius = liveArea ? liveArea.height * 0.85 : 0;
-  const opening = usePathValue((path) => {
-    "worklet";
+  const opening = useDerivedValue<SkRRect>(() => {
     const radius = initialRadius + (maxRadius - initialRadius) * progress.get();
-    path.addCircle(originX, originY, radius);
-    if (liveArea) {
-      const corner = liveArea.height / 2;
-      path.addRRect({ rect: liveArea, rx: corner, ry: corner });
-    }
+    return {
+      rect: {
+        x: originX - radius,
+        y: originY - radius,
+        width: 2 * radius,
+        height: 2 * radius,
+      },
+      rx: radius,
+      ry: radius,
+    };
   });
+  const selector = liveArea && {
+    rect: liveArea,
+    rx: liveArea.height / 2,
+    ry: liveArea.height / 2,
+  };
 
   useLayoutEffect(() => {
     progress.set(0);
@@ -441,15 +451,17 @@ function ThemeReveal({
   }, [finish, progress, revealing]);
 
   return (
-    <Group clip={opening} invertClip>
-      <Image
-        image={image}
-        x={0}
-        y={0}
-        width={width}
-        height={height}
-        fit="fill"
-      />
+    <Group clip={selector ?? undefined} invertClip>
+      <Group clip={opening} invertClip>
+        <Image
+          image={image}
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          fit="fill"
+        />
+      </Group>
     </Group>
   );
 }
