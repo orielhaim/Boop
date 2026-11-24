@@ -102,17 +102,6 @@ export function createAccountRelays({
     return lists;
   }
 
-  async function validate(urls: readonly string[], active: () => boolean) {
-    const policies = await source.classify(owner, urls);
-    check(active);
-    if (
-      policies.length !== urls.length ||
-      !policies.every((policy) => policy === "allowed") ||
-      urls.some((url) => !relayUrl.safeParse(url).success)
-    )
-      throw new Error("RelayPolicy");
-  }
-
   function saveLocal(change: Partial<Preferences>) {
     save(change);
     apply(change);
@@ -126,22 +115,36 @@ export function createAccountRelays({
   ) {
     const before =
       list === "discovery"
-        ? store.getState().discovery
+        ? store.getState().discovery.map(normalize)
         : current[list].map(normalize);
     if (sameRelays(before, urls.map(normalize))) return;
-    if (list === "general" && !urls.length) throw new Error("RelayRequired");
-    if (list === "inbox" && urls.length > 3) throw new Error("InboxLimit");
     if (list === "inbox" && !urls.length)
       return saveLocal({ incomingCalls: false });
-    await validate(urls, active);
-    if (list === "discovery") return saveLocal({ discovery: urls });
+    const policies = urls.length ? await source.classify(owner, urls) : [];
+    check(active);
+    if (policies.length !== urls.length) throw new Error("RelayPolicy");
+    const safeUrls = urls.filter((url, index) => {
+      if (policies[index] === "allowed" && relayUrl.safeParse(url).success)
+        return true;
+      // Imported lists can contain endpoints that have since been retired or
+      // blocked. Clean those entries during edits and reject new unsafe URLs.
+      if (!before.includes(normalize(url))) throw new Error("RelayPolicy");
+      return false;
+    });
+    const safeNormalized = safeUrls.map(normalize);
+    if (list === "general" && !safeUrls.length)
+      throw new Error("RelayRequired");
+    if (list === "inbox" && safeUrls.length > 3) throw new Error("InboxLimit");
+    if (list === "inbox" && !safeUrls.length)
+      return saveLocal({ incomingCalls: false });
+    if (list === "discovery") return saveLocal({ discovery: safeUrls });
 
     const release =
       list === "inbox"
         ? await prepareInbox(
-            urls.map(normalize).filter((url) => !before.includes(url)),
+            safeUrls.filter((url) => !before.includes(normalize(url))),
             routes(current).inbox.filter(
-              (url) => !urls.map(normalize).includes(url),
+              (url) => !safeNormalized.includes(normalize(url)),
             ),
             active,
           )
@@ -151,17 +154,17 @@ export function createAccountRelays({
       if (release === null) throw new Error("InboxVerification");
       const outbox =
         list === "general"
-          ? urls.filter(
+          ? safeUrls.filter(
               (url) =>
-                !before.includes(url) ||
-                current.write.map(normalize).includes(url),
+                !before.includes(normalize(url)) ||
+                current.write.map(normalize).includes(normalize(url)),
             )
           : [];
       const bootstrap = secureRelays([
         ...outbox,
         ...initialAccountRelays.general,
       ]);
-      await source.set(owner, list, urls, bootstrap);
+      await source.set(owner, list, safeUrls, bootstrap);
       await read(active);
     } finally {
       release?.();
@@ -218,7 +221,7 @@ export function createAccountRelays({
             ? store.getState().discovery
             : current[edit.list];
         const url = normalize(edit.url);
-        const urls = roles.filter((item) => item !== url);
+        const urls = roles.filter((item) => normalize(item) !== url);
         if (edit.enabled) urls.push(url);
         await replace(edit.list, urls, current, active);
         if (

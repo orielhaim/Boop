@@ -67,7 +67,7 @@ export default function BlockedUsers() {
         </Action>
       )}
       {snapshot.status === "unavailable" && (
-        <Action onPress={blocks.start}>{t("common:retry")}</Action>
+        <Action onPress={blocks.retry}>{t("common:retry")}</Action>
       )}
       {snapshot.status !== "ready" ? (
         <Empty

@@ -324,7 +324,12 @@ class MarmotRelayTest {
         alice.kit.editMessage(alice.key, direct, first.messageIdHex, "edited by Alice")
         await("edit history") { bob.kit.messageEditHistory(bob.key, direct, first.messageIdHex, null, null, 20u).versions.isNotEmpty() }
         val applicationEvent = """{"latitude":0,"longitude":0}"""
-        alice.kit.sendCustomEvent(alice.key, direct, 24883uL, emptyList(), applicationEvent)
+        val location = alice.kit.submitCustomEventWithClientToken(
+          alice.key, direct, 24883uL, emptyList(), applicationEvent, "location-1",
+        )
+        assertEquals(location, alice.kit.submitCustomEventWithClientToken(
+          alice.key, direct, 24883uL, emptyList(), applicationEvent, "location-1",
+        ))
         bob.receives(direct, alice.key, applicationEvent)
         bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.AUTOMATIC, null, 30u, 15_000u).use { window ->
           await("application event in conversation projection") {
@@ -490,6 +495,13 @@ class MarmotRelayTest {
   }
 
   private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
+    val lastRead = recipient.kit.timelineMessages(recipient.key, latestTimeline(group)).messages.last()
+    val marked = recipient.kit.markTimelineMessageRead(recipient.key, group, lastRead.messageIdHex)
+    assertEquals(lastRead.messageIdHex, marked?.lastReadMessageIdHex)
+    // Keep the next send past the read marker even when the relay fixture can
+    // deliver multiple messages within the same protocol timestamp second.
+    val nextSecond = (lastRead.timelineAt.toLong() + 1) * 1_000
+    delay((nextSecond - System.currentTimeMillis()).coerceAtLeast(0))
     val seed = "unread prefetch fixture"
     sender.kit.sendTextWithClientToken(sender.key, group, seed, "unread-prefetch-fixture")
     recipient.receives(group, sender.key, seed)
@@ -886,6 +898,18 @@ class MarmotRelayTest {
     ), persisted.tags.filter { it.values.first() == "boop-media" }.map { it.values })
     assertEquals(row.messageIdHex, persisted.replyToMessageIdHex)
     assertEquals("arbitrary-filename.mp4", (persisted.media[1] as MediaAttachmentOutcomeFfi.Accepted).reference.fileName)
+    val historyGets = if (fixture) fixtureCall("stats") else 0
+    recipient.kit.attachmentHistoryPage(recipient.key, group, 1u, null).use { initial ->
+      val first = (initial as AttachmentPageReadFfi.Page).page
+      recipient.kit.attachmentHistoryPage(recipient.key, group, 1u, checkNotNull(first.nextCursor)).use { following ->
+        val second = (following as AttachmentPageReadFfi.Page).page
+        val entries = listOf(first.entries.single(), second.entries.single())
+        assertEquals(listOf(AttachmentCategoryFfi.AUDIO, AttachmentCategoryFfi.VIDEO), entries.map { it.category })
+        assertEquals(listOf(0u, 1u), entries.map { (it.attachment as MediaAttachmentOutcomeFfi.Accepted).attachmentIndex })
+        assertTrue(entries.all { it.messageIdHex == persisted.messageIdHex && it.sourceMessageIdHex == persisted.sourceMessageIdHex })
+      }
+    }
+    if (fixture) assertEquals(historyGets, fixtureCall("stats"))
     val anchored = ConversationWindow(recipient.kit.openConversationWindow(
       recipient.key, group, ConversationOpenModeFfi.MESSAGE, accepted.messageIdHex, 3u, 15_000u,
     ))

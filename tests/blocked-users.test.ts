@@ -67,6 +67,21 @@ test("permissions fail closed until the initial MDK snapshot and on stream failu
   stream!.end();
   expect(list.snapshot().status).toBe("unavailable");
   expect(list.isBlocked(peer)).toBe(true);
+  try {
+    await Bun.sleep(350);
+    expect(subscriptions).toHaveLength(2);
+    expect(stream!.cancelled).toBe(true);
+    stream!.receive({ revision: "10", keys: [] });
+    expect(list.isBlocked(peer)).toBe(true);
+    subscriptions[1]!.receive({ revision: "1", keys: [other] });
+    expect(list.isBlocked(peer)).toBe(false);
+    expect(list.isBlocked(other)).toBe(true);
+    subscriptions[1]!.end();
+  } finally {
+    list.stop();
+  }
+  await Bun.sleep(350);
+  expect(subscriptions).toHaveLength(2);
 });
 
 test("concurrent mutations and native events keep the highest exact revision", async () => {
@@ -104,6 +119,29 @@ test("concurrent mutations and native events keep the highest exact revision", a
   mutations[2]!.reply.reject(new Error("BlockPublicationUncertain"));
   await expect(failed).rejects.toThrow("BlockPublicationUncertain");
   expect(list.isBlocked(other)).toBe(true);
+});
+
+test("retries failed subscription creation before permitting independent traffic", async () => {
+  const { source, subscriptions } = fixture();
+  let attempts = 0;
+  const list = createBlockedUsers(owner, {
+    ...source,
+    observe(...args) {
+      if (++attempts === 1) throw new Error("AccountBusy");
+      return source.observe(...args);
+    },
+  });
+  try {
+    list.start();
+    expect(list.isBlocked(peer)).toBe(true);
+    await Bun.sleep(350);
+    expect(attempts).toBe(2);
+    expect(list.isBlocked(peer)).toBe(true);
+    subscriptions[0]!.receive({ revision: "0", keys: [] });
+    expect(list.isBlocked(peer)).toBe(false);
+  } finally {
+    list.stop();
+  }
 });
 
 test("stopping invalidates pending writes and callbacks across runtime and account replacement", async () => {

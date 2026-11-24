@@ -92,24 +92,40 @@ export function ConversationSearch({
     media: boolean;
     term: string;
     rows?: MarmotSearchResult[];
+    next?: string | null;
     failed?: boolean;
   }>();
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
+  const requestGeneration = useRef(0);
   const term = query.trim();
   useEffect(() => {
+    const generation = ++requestGeneration.current;
+    loadingMoreRef.current = false;
     if (!term && !media) return;
     let active = true;
     const job = setTimeout(() => {
       void marmot
         .searchConversation(group, term || null, media)
-        .then((rows) => {
-          if (active) setResult({ group, media, term, rows });
+        .then((page) => {
+          if (active && requestGeneration.current === generation) {
+            setResult({ group, media, term, rows: page.rows, next: page.next });
+            setLoadingMore(false);
+          } else if (page.next) {
+            void marmot.releaseAttachmentHistoryCursor(page.next);
+          }
         })
         .catch(() => {
-          if (active) setResult({ group, media, term, failed: true });
+          if (active && requestGeneration.current === generation)
+            setResult({ group, media, term, failed: true });
+          if (active && requestGeneration.current === generation)
+            setLoadingMore(false);
         });
     }, 220);
     return () => {
       active = false;
+      if (requestGeneration.current === generation)
+        requestGeneration.current += 1;
       clearTimeout(job);
     };
   }, [group, media, term]);
@@ -118,13 +134,73 @@ export function ConversationSearch({
     result?.group === group && result.media === media && result.term === term
       ? result
       : undefined;
+  useEffect(() => {
+    const cursor = latest?.next;
+    return () => {
+      if (cursor) void marmot.releaseAttachmentHistoryCursor(cursor);
+    };
+  }, [latest?.next]);
   const visible = latest?.rows?.filter(
     (row) => !hidden.has(row.id) && !privacy.isBlocked(row.sender),
   );
+  const loadMore = () => {
+    if (!latest?.next || loadingMoreRef.current) return;
+    const generation = requestGeneration.current;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    void marmot
+      .searchConversation(group, term || null, media, latest.next)
+      .then((page) => {
+        if (
+          requestGeneration.current !== generation ||
+          result?.group !== group ||
+          result.media !== media ||
+          result.term !== term
+        ) {
+          if (page.next) void marmot.releaseAttachmentHistoryCursor(page.next);
+          return;
+        }
+        setResult((current) =>
+          current?.group === group &&
+          current.media === media &&
+          current.term === term
+            ? {
+                ...current,
+                rows: page.restart
+                  ? page.rows
+                  : [
+                      ...new Map(
+                        [...(current.rows ?? []), ...page.rows].map((row) => [
+                          row.id,
+                          row,
+                        ]),
+                      ).values(),
+                    ],
+                next: page.next,
+                failed: false,
+              }
+            : current,
+        );
+      })
+      .catch(() => {
+        if (requestGeneration.current === generation)
+          setResult((current) =>
+            current ? { ...current, failed: true, next: null } : current,
+          );
+      })
+      .finally(() => {
+        if (requestGeneration.current === generation) {
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        }
+      });
+  };
   return (
     <View>
       {latest?.failed && <Ink>{t("messages:marmot.operationError")}</Ink>}
-      {visible?.length === 0 && <Ink>{t("messages:marmot.noResults")}</Ink>}
+      {visible?.length === 0 && !latest?.next && !latest?.failed && (
+        <Ink>{t("messages:marmot.noResults")}</Ink>
+      )}
       <ScrollView
         keyboardShouldPersistTaps="handled"
         style={{ maxHeight: 240 }}
@@ -139,6 +215,11 @@ export function ConversationSearch({
               t("messages:marmot.mediaAndFiles")}
           </Action>
         ))}
+        {latest?.next && (
+          <Action size="sm" onPress={loadMore}>
+            {loadingMore ? t("common:checking") : t("messages:marmot.loadMore")}
+          </Action>
+        )}
       </ScrollView>
     </View>
   );
@@ -256,6 +337,8 @@ export function ForwardMessage({
         !canDispatch()
       )
         return;
+      const token = tokens.current.get(destination) ?? randomUUID();
+      tokens.current.set(destination, token);
       if (row.attachments.length && row.sourceId) {
         const files = [];
         for (const item of acceptedAttachments(row)) {
@@ -286,8 +369,6 @@ export function ForwardMessage({
                 : undefined,
           });
         }
-        const token = tokens.current.get(destination) ?? randomUUID();
-        tokens.current.set(destination, token);
         if (
           canDispatch() &&
           !privacy.isBlocked(row.sender) &&
@@ -310,12 +391,19 @@ export function ForwardMessage({
             mirrorFailed: () => Alert.alert(t("messages:mediaMirrorFailed")),
           });
       } else if (row.eventKind === 24883) {
-        await marmot.sendSpecial(destination, row.eventKind, row.text, null);
+        await marmot.sendSpecial(
+          destination,
+          row.eventKind,
+          row.text,
+          null,
+          token,
+        );
       } else if (row.eventKind === 9 || row.eventKind === 1111) {
-        await marmot.sendText(destination, row.text, randomUUID(), null);
+        await marmot.sendText(destination, row.text, token, null);
       } else {
         return;
       }
+      tokens.current.delete(destination);
       onClose();
     } catch (reason) {
       if (!abort.signal.aborted) Alert.alert(translateError(reason));

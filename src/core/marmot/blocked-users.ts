@@ -1,5 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import { parsePublicKey } from "../identity/keys";
+import { createRecovery } from "./recovery";
 
 type Snapshot = { revision: string; keys: readonly string[] };
 type Source = {
@@ -21,6 +22,37 @@ export function createBlockedUsers(owner: string, source: Source) {
   let cancel: (() => void) | undefined;
   let generation = 0;
   let writes = Promise.resolve();
+  let observing = false;
+  const recovery = createRecovery(connect);
+
+  function connect() {
+    if (!observing) return;
+    const current = ++generation;
+    const ended = () => {
+      if (current !== generation) return;
+      generation++;
+      const stop = cancel;
+      cancel = undefined;
+      stop?.();
+      recovery.schedule();
+      setState({ status: "unavailable" }, true);
+    };
+    try {
+      const stop = source.observe(
+        owner,
+        (snapshot) => {
+          if (current !== generation) return;
+          recovery.reset();
+          receive(snapshot);
+        },
+        ended,
+      );
+      if (current === generation) cancel = stop;
+      else stop();
+    } catch {
+      ended();
+    }
+  }
 
   function receive(snapshot: Snapshot) {
     const revision = BigInt(snapshot.revision);
@@ -57,33 +89,19 @@ export function createBlockedUsers(owner: string, source: Source) {
     },
     subscribe,
     start() {
-      if (cancel) return;
-      const current = ++generation;
-      const ended = () => {
-        if (current !== generation) return;
-        generation++;
-        writes = Promise.resolve();
-        cancel = undefined;
-        setState({ status: "unavailable" }, true);
-      };
-      try {
-        if (getState().status !== "loading")
-          setState({ status: "loading" }, true);
-        const stop = source.observe(
-          owner,
-          (snapshot) => {
-            if (current === generation) receive(snapshot);
-          },
-          ended,
-        );
-        if (current === generation) cancel = stop;
-        else stop();
-      } catch {
-        ended();
-      }
+      if (observing) return;
+      observing = true;
+      connect();
+    },
+    retry() {
+      if (!observing || cancel) return;
+      recovery.cancel();
+      connect();
     },
     stop() {
+      observing = false;
       generation++;
+      recovery.reset();
       writes = Promise.resolve();
       cancel?.();
       cancel = undefined;

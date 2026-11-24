@@ -43,6 +43,7 @@ const windowBudget = 6;
 const speculativeBudget = 3;
 const normalWeight = 1024 * 1024;
 const reducedWeight = normalWeight / 4;
+const memoryRecoveryMs = 60_000;
 const maxCandidates = 12;
 const keyOf = (group: string, target?: string) =>
   target === undefined ? group : `${group}:${target}`;
@@ -59,12 +60,14 @@ export type ConversationCandidate = {
 export function createConversationCache({
   open,
   canOpen,
+  clock = () => performance.now(),
 }: {
   open: (
     group: string,
     options: { target?: string; speculative: boolean; signal: AbortSignal },
   ) => Promise<Window>;
   canOpen: () => boolean;
+  clock?: () => number;
 }) {
   const state = createStore(() => ({ available: false, revision: 0 }));
   const active = new Map<string, Entry>();
@@ -72,15 +75,23 @@ export function createConversationCache({
   const slots = new Set<Entry>();
   const rejected = new Map<string, string | undefined>();
   let idle = createIdle(normalWeight);
+  let memoryReducedUntil = 0;
+  let memoryRecovery: ReturnType<typeof setTimeout> | undefined;
+  const messageWeights = new WeakMap<
+    MarmotConversation["messages"][number],
+    number
+  >();
   let candidates: readonly ConversationCandidate[] = [];
+  let candidateInput: CandidateInput | undefined;
   let priority = 0;
   let browsing = false;
-  let foreground = false;
+  let foreground = true;
   let callActive = false;
   let navigation: { group: string; at: number } | undefined;
 
   const ready = () => state.getState().available && canOpen();
-  const canPrefetch = () => ready() && browsing && foreground && !callActive;
+  const canPrefetch = () =>
+    ready() && browsing && foreground && !callActive && !memoryReducedUntil;
   const notify = () => state.setState({});
   const lookup = (key: string) =>
     active.get(key) ??
@@ -105,14 +116,28 @@ export function createConversationCache({
   }
 
   function retain(entry: Entry) {
-    const rows = entry.view.snapshot?.messages ?? [];
-    const weight = rows.reduce(
-      (bytes, row) =>
-        bytes +
-        1024 +
-        2 * (row.text.length + (row.replyPreview?.text.length ?? 0)),
-      1024,
-    );
+    const snapshot = entry.view.snapshot;
+    if (!foreground || !snapshot) {
+      retire(entry);
+      return;
+    }
+    restoreMemoryBudget();
+    const started = performance.now();
+    const { messages, ...metadata } = snapshot;
+    let weight = 1024 + projectedBytes(metadata);
+    for (const row of messages) {
+      let bytes = messageWeights.get(row);
+      if (bytes === undefined) {
+        bytes = projectedBytes(row) + 8;
+        messageWeights.set(row, bytes);
+      }
+      weight += bytes;
+    }
+    messagingMetric("conversation retention weight", {
+      bytes: weight,
+      rows: messages.length,
+      ms: performance.now() - started,
+    });
     const previous = idle.peek(entry.key)?.weight ?? 0;
     // Speculation can use spare cache weight. Reserve eviction of viewed
     // conversations for foreground navigation and updates to retained windows.
@@ -129,6 +154,20 @@ export function createConversationCache({
       reject(entry);
       retire(entry);
     }
+  }
+
+  function restoreMemoryBudget() {
+    if (!memoryReducedUntil || clock() < memoryReducedUntil) return;
+    memoryReducedUntil = 0;
+    cancelMemoryRecovery();
+    const retained = idle.dump();
+    idle = createIdle(normalWeight);
+    idle.load(retained);
+  }
+
+  function cancelMemoryRecovery() {
+    clearTimeout(memoryRecovery);
+    memoryRecovery = undefined;
   }
 
   function releaseWindow(entry: Entry) {
@@ -244,7 +283,8 @@ export function createConversationCache({
 
   function prepareUnread(entry: Entry) {
     const window = entry.window;
-    if (!window || !entry.view.snapshot || entry.unreadPrepared) return;
+    if (!foreground || !window || !entry.view.snapshot || entry.unreadPrepared)
+      return;
     entry.unreadPrepared = true;
     const unread = unreadOutsideWindow(entry);
     if (!unread) return;
@@ -267,16 +307,23 @@ export function createConversationCache({
     concurrency: (worker) => {
       const running = worker.store.state.activeItems.length;
       const next = worker.peekNextItem();
-      if (!ready() || slots.size >= windowBudget || !next || next.closing)
+      if (
+        !ready() ||
+        !foreground ||
+        slots.size >= windowBudget ||
+        !next ||
+        next.closing
+      )
         return running;
       if (next.consumers) return running + 1;
       return canPrefetch() && running === 0 ? 1 : running;
     },
     onSettled: () => queueMicrotask(pump),
   });
-  const refresh = new Batcher<CandidateInput | null>(
-    (updates) => {
-      const latest = updates.findLast((update) => update !== null);
+  const refresh = new Batcher<null>(
+    () => {
+      const latest = candidateInput;
+      candidateInput = undefined;
       if (latest) rankCandidates(latest);
       if (!canPrefetch()) return;
       if (queue.peekNextItem() || queue.store.state.activeItems.length) {
@@ -315,7 +362,17 @@ export function createConversationCache({
   const idleChanges = new Batcher(notify, { wait: 16, maxSize: 12 });
 
   function pump() {
-    if (!ready()) return;
+    if (!ready() || !foreground) return;
+    restoreMemoryBudget();
+    if (memoryReducedUntil && memoryRecovery === undefined) {
+      memoryRecovery = setTimeout(
+        () => {
+          memoryRecovery = undefined;
+          pump();
+        },
+        Math.max(1, memoryReducedUntil - clock()),
+      );
+    }
     if (queue.peekNextItem()?.consumers) {
       if (slots.size >= windowBudget) {
         if (![...slots].some((entry) => entry.closing)) idle.pop();
@@ -327,7 +384,7 @@ export function createConversationCache({
     queue.start();
     if (
       canPrefetch() &&
-      candidates.length > 0 &&
+      (candidateInput || candidates.length > 0) &&
       !queue.peekNextItem() &&
       !queue.store.state.activeItems.length &&
       refresh.store.state.items.length === 0
@@ -366,7 +423,7 @@ export function createConversationCache({
   }
 
   async function runOpen(entry: Entry) {
-    if (!ready() || entry.controller.signal.aborted) return;
+    if (!ready() || !foreground || entry.controller.signal.aborted) return;
     const speculative = !entry.consumers;
     const signal = entry.controller.signal;
     slots.add(entry);
@@ -380,6 +437,7 @@ export function createConversationCache({
         if (
           signal.aborted ||
           !ready() ||
+          !foreground ||
           !entry.consumers ||
           (!entry.target && !speculative)
         )
@@ -401,8 +459,10 @@ export function createConversationCache({
     } catch (error) {
       if (signal.aborted || !ready()) return;
       if (entry.consumers) {
-        entry.view = { error: marmotErrorCode(error) };
-        notify();
+        if (foreground) {
+          entry.view = { error: marmotErrorCode(error) };
+          notify();
+        } else enqueue(entry);
       } else reject(entry);
     } finally {
       if (!entry.window && !entry.closing) slots.delete(entry);
@@ -578,6 +638,7 @@ export function createConversationCache({
         revision: revision + 1,
       }));
       if (!next) {
+        cancelMemoryRecovery();
         navigation = undefined;
         queue.stop();
         queue.clear();
@@ -590,6 +651,7 @@ export function createConversationCache({
         queue.abort();
         rejected.clear();
         candidates = [];
+        candidateInput = undefined;
         clearIdle();
       } else pump();
     },
@@ -604,6 +666,8 @@ export function createConversationCache({
       foreground = next;
       if (!next) {
         // No speculative work while suspended. Keep only mounted consumers.
+        cancelMemoryRecovery();
+        queue.stop();
         clearIdle();
       } else {
         for (const entry of active.values())
@@ -618,19 +682,39 @@ export function createConversationCache({
       pump();
     },
     reclaimMemory() {
-      candidates = [];
+      memoryReducedUntil = clock() + memoryRecoveryMs;
       rejected.clear();
       clearIdle();
-      idle = createIdle(reducedWeight);
+      if (idle.maxSize !== reducedWeight) idle = createIdle(reducedWeight);
     },
     candidates(
       rows: readonly ConversationCandidate[],
       visibleRows: ReadonlySet<string>,
     ) {
       if (!ready()) return;
-      refresh.addItem({ rows, visibleRows });
+      candidateInput = { rows, visibleRows };
+      if (canPrefetch()) refresh.addItem(null);
       pump();
     },
     clearIdle,
   };
+}
+
+// Count projected JS data, including nested arrays, Markdown tokens, identities
+// and attachment metadata. Property slots include references and numbers.
+// UTF-16 is a conservative estimate when the engine stores Latin-1 strings.
+function projectedBytes(value: unknown): number {
+  if (typeof value === "string") return 16 + 2 * value.length;
+  if (Array.isArray(value)) {
+    let bytes = 24 + 8 * value.length;
+    for (const item of value) bytes += projectedBytes(item);
+    return bytes;
+  }
+  if (typeof value === "object" && value !== null) {
+    let bytes = 32;
+    for (const field of Object.values(value))
+      bytes += 8 + projectedBytes(field);
+    return bytes;
+  }
+  return 0;
 }

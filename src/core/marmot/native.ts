@@ -346,6 +346,30 @@ const searchResult = z.object({
   text: z.string(),
   sentAt: z.number(),
 });
+const searchPage = z.object({
+  rows: searchResult.array().max(40),
+  next: z.string().nullish(),
+  restart: z.boolean().catch(false),
+});
+const voiceNote = z.object({
+  target: z.tuple([
+    z.string(),
+    z.string(),
+    z.string(),
+    z.number().int().nonnegative(),
+  ]),
+  hash: z.string().nullable(),
+  sender: z.string(),
+  incoming: z.boolean(),
+  duration: z.number().positive().nullable(),
+  expiresAt: z.number().nullable(),
+  sentAt: z.number().nonnegative(),
+});
+const voiceNotePage = z.object({
+  rows: voiceNote.array().max(24),
+  next: z.string().nullish(),
+});
+export type MarmotVoiceNotePage = z.infer<typeof voiceNotePage>;
 const editHistory = z.object({
   more: z.boolean(),
   versions: z
@@ -463,6 +487,7 @@ const blockListSnapshot = z.object({
 });
 
 type Events = {
+  memoryPressure: () => void;
   blockedUsers: (event: { id: string; rows: unknown }) => void;
   relayLiveness: (event: { id: string; rows: unknown }) => void;
   directorySearchResults: (event: { id: string; rows: unknown }) => void;
@@ -626,7 +651,9 @@ type Bridge = {
     group: string,
     text: string | null,
     media: boolean,
+    cursor: string | null,
   ): Promise<unknown>;
+  releaseAttachmentHistoryCursor(token: string): Promise<void>;
   editHistory(
     group: string,
     message: string,
@@ -652,6 +679,12 @@ type Bridge = {
     token: string,
     reply: string | null,
   ): Promise<string>;
+  sendDraftText(
+    group: string,
+    text: string,
+    token: string,
+    reply: string | null,
+  ): Promise<string>;
   saveDraft(group: string, text: string, reply: string | null): Promise<void>;
   stageMediaDraft(
     group: string,
@@ -666,7 +699,8 @@ type Bridge = {
     kind: 24881 | 24883 | 24884,
     body: string,
     reply: string | null,
-  ): Promise<void>;
+    token: string,
+  ): Promise<string>;
   sendMedia(
     group: string,
     files: ReturnType<typeof mediaUploadArguments>,
@@ -729,8 +763,15 @@ type Bridge = {
     sender: string,
     since: number,
     onlyOutgoing: boolean,
+    cursor: string | null,
   ): Promise<unknown>;
   editMessage(group: string, id: string, content: string): Promise<void>;
+  editLocalMessageWithClientToken(
+    group: string,
+    originalToken: string,
+    content: string,
+    editToken: string,
+  ): Promise<string>;
   deleteMessage(group: string, id: string): Promise<void>;
   discardFailedSend(group: string, id: string): Promise<unknown>;
   reportMessage(group: string, id: string, spam: boolean): Promise<void>;
@@ -1180,6 +1221,8 @@ const avatarRead = z.object({
   uri: z.string().startsWith("data:image/").nullish(),
 });
 export const marmot = {
+  observeMemoryPressure: (receive: () => void) =>
+    native().addListener("memoryPressure", receive),
   async requestAvatarAssets(targets: string[]) {
     return avatarAsset
       .array()
@@ -1326,12 +1369,18 @@ export const marmot = {
   },
   viewGroupImage: (group: string, hash: string) =>
     native().viewGroupImage(group, hash),
-  async searchConversation(group: string, text: string | null, media: boolean) {
-    return z
-      .array(searchResult)
-      .max(40)
-      .parse(await native().searchConversation(group, text, media));
+  async searchConversation(
+    group: string,
+    text: string | null,
+    media: boolean,
+    cursor: string | null = null,
+  ) {
+    return searchPage.parse(
+      await native().searchConversation(group, text, media, cursor),
+    );
   },
+  releaseAttachmentHistoryCursor: (token: string) =>
+    native().releaseAttachmentHistoryCursor(token),
   async editHistory(
     group: string,
     message: string,
@@ -1386,6 +1435,12 @@ export const marmot = {
     token: string,
     reply: string | null,
   ) => native().sendText(group, text, token, reply),
+  sendDraftText: (
+    group: string,
+    text: string,
+    token: string,
+    reply: string | null,
+  ) => native().sendDraftText(group, text, token, reply),
   saveDraft: (group: string, text: string, reply: string | null) =>
     native().saveDraft(group, text, reply),
   sendSpecial: (
@@ -1393,7 +1448,8 @@ export const marmot = {
     kind: 24881 | 24883 | 24884,
     body: string,
     reply: string | null,
-  ) => native().sendSpecial(group, kind, body, reply),
+    token = randomUUID(),
+  ) => native().sendSpecial(group, kind, body, reply, token),
   async sendMedia(
     group: string,
     files: MarmotUpload[],
@@ -1557,10 +1613,29 @@ export const marmot = {
     source: string,
     index: number,
   ) => native().retainedAttachmentBytes(group, id, source, index),
-  recentVoiceNotes: (sender: string, since: number, onlyOutgoing: boolean) =>
-    native().recentVoiceNotes(sender, since, onlyOutgoing),
+  recentVoiceNotes: async (
+    sender: string,
+    since: number,
+    onlyOutgoing: boolean,
+    cursor: string | null,
+  ) =>
+    voiceNotePage.parse(
+      await native().recentVoiceNotes(sender, since, onlyOutgoing, cursor),
+    ),
   editMessage: (group: string, id: string, content: string) =>
     native().editMessage(group, id, content),
+  editLocalMessageWithClientToken: (
+    group: string,
+    originalToken: string,
+    content: string,
+    editToken = randomUUID(),
+  ) =>
+    native().editLocalMessageWithClientToken(
+      group,
+      originalToken,
+      content,
+      editToken,
+    ),
   async discardFailedSend(group: string, id: string) {
     return z
       .enum(["discarded", "still_sending", "not_failed_send"])

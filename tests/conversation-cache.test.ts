@@ -368,6 +368,131 @@ describe("protected conversation cache", () => {
       cache.setForeground(false);
       expect(cache.get("next")).toBeUndefined();
       expect(cache.get("active-1")?.snapshot?.messages[0]?.id).toBe("active-1");
+      active[1]?.();
+      expect(cache.get("active-1")).toBeUndefined();
+      expect(windows.get("active-1")?.closes()).toBe(1);
+    } finally {
+      cache.setAvailable(false);
+    }
+  });
+
+  test("idle memory accounts for structured content and grows again after pressure subsides", async () => {
+    let now = 1000;
+    const cache = createConversationCache({
+      canOpen: () => true,
+      clock: () => now,
+      async open(group) {
+        const rows = Array.from({ length: 100 }, (_, index) => ({
+          ...message(`${group}-${index}`),
+          reactions: [
+            {
+              emoji: "🧡",
+              count: 600,
+              own: false,
+              users: Array.from({ length: 20 }, (_, i) =>
+                (index * 20 + i).toString(16).padStart(64, "0"),
+              ),
+            },
+          ],
+        }));
+        return windowFor(snapshot(rows)).window;
+      },
+    });
+    cache.setAvailable(true);
+    try {
+      cache.reclaimMemory();
+      const release = cache.acquire("pressured");
+      await until(() => Boolean(cache.get("pressured")?.snapshot));
+      release?.();
+      expect(cache.get("pressured")?.snapshot?.messages[0]?.id).toBeUndefined();
+      now += 120_000;
+      const recovered = cache.acquire("recovered");
+      await until(() => Boolean(cache.get("recovered")?.snapshot));
+      recovered?.();
+      expect(cache.get("recovered")?.snapshot?.messages[0]?.id).toBe(
+        "recovered-0",
+      );
+    } finally {
+      cache.setAvailable(false);
+    }
+  });
+
+  test("waits for foreground before opening a newly acquired window", async () => {
+    let opens = 0;
+    const cache = createConversationCache({
+      canOpen: () => true,
+      async open(group) {
+        opens++;
+        return windowFor(snapshot([message(group)])).window;
+      },
+    });
+    cache.setForeground(false);
+    cache.setAvailable(true);
+    try {
+      const release = cache.acquire("chat");
+      await Bun.sleep(25);
+      expect(opens).toBe(0);
+      cache.setForeground(true);
+      await until(() => Boolean(cache.get("chat")?.snapshot));
+      expect(opens).toBe(1);
+      release?.();
+    } finally {
+      cache.setAvailable(false);
+    }
+  });
+
+  test("reopens an acquired window when its in-flight open fails during suspension", async () => {
+    const pending =
+      Promise.withResolvers<ReturnType<typeof windowFor>["window"]>();
+    let opens = 0;
+    const cache = createConversationCache({
+      canOpen: () => true,
+      open(group) {
+        opens++;
+        return opens === 1
+          ? pending.promise
+          : Promise.resolve(windowFor(snapshot([message(group)])).window);
+      },
+    });
+    cache.setAvailable(true);
+    try {
+      const release = cache.acquire("chat");
+      await until(() => opens === 1);
+      cache.setForeground(false);
+      pending.reject(new Error("suspended"));
+      await Bun.sleep(25);
+      expect(opens).toBe(1);
+      expect(cache.get("chat")?.error).toBeUndefined();
+      cache.setForeground(true);
+      await until(() => Boolean(cache.get("chat")?.snapshot));
+      expect(opens).toBe(2);
+      release?.();
+    } finally {
+      pending.reject(new Error("closed"));
+      cache.setAvailable(false);
+    }
+  });
+
+  test("resumes prefetch with the latest candidates after backgrounding during the debounce", async () => {
+    const opens: string[] = [];
+    const cache = createConversationCache({
+      canOpen: () => true,
+      async open(group) {
+        opens.push(group);
+        return windowFor(snapshot([message(group)])).window;
+      },
+    });
+    cache.setAvailable(true);
+    cache.setBrowsing(true);
+    try {
+      cache.candidates([candidate("before-background")], new Set());
+      cache.setForeground(false);
+      cache.candidates([candidate("while-backgrounded")], new Set());
+      await Bun.sleep(180);
+      expect(opens).toEqual([]);
+      cache.setForeground(true);
+      await until(() => opens.length > 0);
+      expect(opens).toEqual(["while-backgrounded"]);
     } finally {
       cache.setAvailable(false);
     }

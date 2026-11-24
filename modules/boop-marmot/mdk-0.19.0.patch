@@ -653,10 +653,41 @@ index 2a2d2d4..222020d 100644
      /// signer. The returned HTTPS URL can be published as kind:0 `picture`.
      pub async fn upload_profile_image(
 diff --git a/crates/marmot-uniffi/src/commands/local_submissions.rs b/crates/marmot-uniffi/src/commands/local_submissions.rs
-index 023e8a0..2f7701e 100644
+index 023e8a0..ac6a963 100644
 --- a/crates/marmot-uniffi/src/commands/local_submissions.rs
 +++ b/crates/marmot-uniffi/src/commands/local_submissions.rs
-@@ -106,6 +106,7 @@ impl Marmot {
+@@ -33,6 +33,30 @@ pub struct MediaUploadSubmissionFfi {
+ #[marmot_uniffi_macros::on_tokio_runtime]
+ #[uniffi::export]
+ impl Marmot {
++    /// Durably admit an app-defined event with caller correlation and retry identity.
++    pub async fn submit_custom_event_with_client_token(
++        &self,
++        account_ref: String,
++        group_id_hex: String,
++        kind: u64,
++        tags: Vec<Vec<String>>,
++        content: String,
++        client_token: String,
++    ) -> Result<LocalSendAcceptanceFfi, MarmotKitError> {
++        Ok(self
++            .runtime
++            .submit_custom_event(
++                &account_ref,
++                &group_id_from_hex(&group_id_hex)?,
++                kind,
++                tags,
++                content,
++                client_token,
++            )
++            .await?
++            .into())
++    }
++
+     /// Return after durable local admission, independently of relay publication.
+     /// Use one opaque token per logical submission; timeline rows echo it locally.
+     pub async fn send_text_with_client_token(
+@@ -106,6 +130,7 @@ impl Marmot {
          account_ref: String,
          revision: Arc<MessageDraftRevisionFfi>,
          attachments: Vec<MediaAttachmentReferenceFfi>,
@@ -664,7 +695,7 @@ index 023e8a0..2f7701e 100644
          client_token: String,
      ) -> Result<LocalSendAcceptanceFfi, MarmotKitError> {
          Ok(self
-@@ -115,6 +116,7 @@ impl Marmot {
+@@ -115,6 +140,7 @@ impl Marmot {
                  &group_id_from_hex(revision.inner.group_id_hex())?,
                  revision.inner.clone(),
                  attachments.into_iter().map(Into::into).collect(),

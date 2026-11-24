@@ -1,7 +1,9 @@
 package app.boop.marmot
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
@@ -19,6 +21,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -34,6 +37,37 @@ class BoopMarmotModule : Module() {
   private data class Observation(val ticket: CompletableJob, val accountScoped: Boolean)
   private val observations = ConcurrentHashMap<String, Observation>()
   private val directoryWork = ConcurrentHashMap<Job, Boolean>()
+  private data class HistoryCursor<T>(val scope: String, val cursor: T)
+  private val attachmentHistoryCursors = ConcurrentHashMap<String, HistoryCursor<AttachmentHistoryCursor>>()
+  private val accountAttachmentHistoryCursors = ConcurrentHashMap<String, HistoryCursor<AccountAttachmentCursor>>()
+
+  private suspend fun timelineRowsAt(
+    active: Session,
+    group: String,
+    at: ULong,
+    targetIds: Set<String>,
+    attachmentType: UInt,
+    search: String? = null,
+  ): Map<String, TimelineMessageRecordFfi> {
+    val found = mutableMapOf<String, TimelineMessageRecordFfi>()
+    var before: ULong? = null
+    var beforeId: String? = null
+    var pages = 0
+    while (found.size < targetIds.size && pages < 4) {
+      currentCoroutineContext().ensureActive()
+      val query = TimelineMessageQueryFfi(group, search, null, at, at, attachmentType = attachmentType,
+        cursorGroupId = group.takeIf { before != null }, before = before, beforeMessageId = beforeId,
+        after = null, afterMessageId = null, limit = 200u)
+      val page = active.kit.timelineMessages(active.account, query)
+      page.messages.filter { it.messageIdHex in targetIds }.forEach { found[it.messageIdHex] = it }
+      pages++
+      if (!page.hasMoreBefore || page.messages.isEmpty()) break
+      val oldest = page.messages.first()
+      before = oldest.timelineAt
+      beforeId = oldest.messageIdHex
+    }
+    return found
+  }
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
@@ -47,10 +81,31 @@ class BoopMarmotModule : Module() {
   private val attachmentControls = ConcurrentHashMap<String, AttachmentTransferControl>()
   @Volatile private var downloadsForeground = true
   private val foregroundGeneration = AtomicLong()
+  private var pressureContext: Context? = null
+  private val memoryPressure = object : ComponentCallbacks2 {
+    override fun onTrimMemory(level: Int) {
+      if (level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) sendEvent("memoryPressure")
+    }
+    override fun onConfigurationChanged(newConfig: Configuration) = Unit
+    @Deprecated("Fallback for older Android releases")
+    override fun onLowMemory() = sendEvent("memoryPressure")
+  }
+
+  private fun stopMemoryPressure() {
+    pressureContext?.unregisterComponentCallbacks(memoryPressure)
+    pressureContext = null
+  }
 
   override fun definition() = ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers", "memoryPressure")
+    OnStartObserving("memoryPressure") {
+      if (pressureContext == null) {
+        pressureContext = appContext.reactContext?.applicationContext
+        pressureContext?.registerComponentCallbacks(memoryPressure)
+      }
+    }
+    OnStopObserving("memoryPressure") { stopMemoryPressure() }
     OnActivityEntersForeground {
       foregroundGeneration.incrementAndGet()
       downloadsForeground = true
@@ -643,6 +698,31 @@ class BoopMarmotModule : Module() {
         result.messageIdHex
       }
     }
+    AsyncFunction("sendDraftText") Coroutine { group: String, text: String, token: String, reply: String? ->
+      withSession { active ->
+        when (val status = active.kit.localSendStatus(active.account, group, token)) {
+          is LocalSendStatusFfi.Completed -> return@withSession status.summary.messageIds.firstOrNull().orEmpty()
+          LocalSendStatusFfi.Queued, LocalSendStatusFfi.EngineOwned -> return@withSession ""
+          LocalSendStatusFfi.Rejected -> throw problem("MessageSendNotAccepted")
+          null -> Unit
+        }
+        var accepted: String? = null
+        retryDraftEdit {
+          active.kit.selectedMessageDraft(active.account, group).use { selected ->
+            if (selected.draft?.mediaAttachments?.isNotEmpty() == true) throw problem("MediaDraftPending")
+            val saved = active.kit.saveMessageDraftInputsIfRevision(
+              active.account, selected.revision, text, reply, emptyList(),
+            )
+            saved.use { draft ->
+              accepted = active.kit.sendMessageDraftWithClientToken(
+                active.account, draft.revision, emptyList(), emptyList(), token,
+              ).messageIdHex
+            }
+          }
+        }
+        accepted ?: throw problem("MessageSendNotAccepted")
+      }
+    }
     AsyncFunction("saveDraft") Coroutine { group: String, text: String, reply: String? ->
       withSession { active ->
         retryDraftEdit {
@@ -656,12 +736,15 @@ class BoopMarmotModule : Module() {
         }
       }
     }
-    AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String? ->
+    AsyncFunction("sendSpecial") Coroutine { group: String, kind: Int, body: String, reply: String?, token: String ->
       withSession {
         if (kind !in setOf(24881, 24883, 24884)) throw problem("InvalidApplicationEvent")
         val tags = reply?.let { target -> listOf(listOf("e", target, "", "reply")) } ?: emptyList()
-        it.kit.sendCustomEvent(it.account, group, kind.toULong(), tags, body)
-        Unit
+        if (kind == 24884) {
+          it.kit.sendCustomEvent(it.account, group, kind.toULong(), tags, body)
+          return@withSession ""
+        }
+        it.kit.submitCustomEventWithClientToken(it.account, group, kind.toULong(), tags, body, token).messageIdHex
       }
     }
     AsyncFunction("stageMediaDraft") Coroutine { group: String, files: List<Map<String, String>>, caption: String, token: String, reply: String? ->
@@ -993,42 +1076,135 @@ class BoopMarmotModule : Module() {
     AsyncFunction("clearDownloads").Coroutine<Unit> {
       withSession { it.kit.removeAttachmentsOlderThan(it.account, (System.currentTimeMillis() / 1_000 + 1).toULong(), null); Unit }
     }
-    AsyncFunction("recentVoiceNotes") Coroutine { sender: String, since: Double, onlyOutgoing: Boolean ->
+    AsyncFunction("recentVoiceNotes") Coroutine { sender: String, since: Double, onlyOutgoing: Boolean, token: String? ->
       withSession { active ->
-        val query = TimelineMessageQueryFfi(null, null, sender.takeIf { onlyOutgoing }, since.toULong(), null,
-          attachmentType = 3u, cursorGroupId = null, before = null,
-          beforeMessageId = null, after = null, afterMessageId = null, limit = 24u)
-        active.kit.timelineMessages(active.account, query).messages
-          .filter { !it.deleted && it.invalidationStatus == null }
-          .flatMap { row ->
-            val source = row.sourceMessageIdHex ?: return@flatMap emptyList()
-            row.media.mapNotNull { media ->
-              val attachment = media as? MediaAttachmentOutcomeFfi.Accepted ?: return@mapNotNull null
-              val reference = attachment.reference
-              if (reference.version != EncryptedMediaVersionFfi.V2 || !reference.mediaType.startsWith("audio/")) return@mapNotNull null
-              val index = attachment.attachmentIndex
-              val tag = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
-                tag.values[1] == index.toString() && tag.values[5] == "voice" }?.values ?: return@mapNotNull null
-              mapOf("target" to listOf(row.groupIdHex, row.messageIdHex, source, index.toInt()),
-                "hash" to reference.plaintextSha256, "sender" to row.sender, "incoming" to (row.sender != sender),
-                "duration" to mediaDuration(tag[3]), "expiresAt" to row.retentionExpiresAt?.toDouble()?.times(1000),
-                "sentAt" to row.timelineAt.toDouble())
+        val scope = "voice:$sender:${since.toLong()}:$onlyOutgoing"
+        val cursor = token?.let {
+          val saved = accountAttachmentHistoryCursors.remove(it) ?: throw problem("AttachmentHistoryCursorMismatch")
+          if (saved.scope != scope) {
+            saved.cursor.destroy()
+            throw problem("AttachmentHistoryCursorMismatch")
+          }
+          saved.cursor
+        }
+        if (token != null && cursor == null) throw problem("AttachmentHistoryCursorMismatch")
+        if (token == null) accountAttachmentHistoryCursors.entries.filter { it.value.scope.startsWith("voice:$sender:") }.forEach {
+          if (accountAttachmentHistoryCursors.remove(it.key, it.value)) it.value.cursor.destroy()
+        }
+        val query = AccountAttachmentQueryFfi(emptyList(), if (onlyOutgoing) listOf(sender) else emptyList(), since.toULong(), null)
+        val read = cursor.use {
+          active.kit.accountAttachmentHistoryPage(active.account, query, 24u, it)
+        }.let {
+          if (it == AccountAttachmentPageReadFfi.RestartRequired)
+            active.kit.accountAttachmentHistoryPage(active.account, query, 24u, null)
+          else it
+        }
+        val page = (read as? AccountAttachmentPageReadFfi.Page)?.page
+          ?: throw problem("AttachmentHistoryUnavailable")
+        page.use {
+          val notes = mutableListOf<Map<String, Any?>>()
+          val metadataById = mutableMapOf<Pair<String, String>, TimelineMessageRecordFfi>()
+          for ((key, entries) in page.entries.filter { it.entry.category == AttachmentCategoryFfi.AUDIO }
+            .groupBy { it.groupIdHex to it.entry.timelineAt }) {
+            val (group, at) = key
+            val metadata = timelineRowsAt(active, group, at, entries.map { it.entry.messageIdHex }.toSet(), 3u)
+            for ((id, row) in metadata) metadataById[group to id] = row
+          }
+          for (item in page.entries) {
+            val entry = item.entry
+            if (entry.category != AttachmentCategoryFfi.AUDIO) continue
+            val accepted = entry.attachment as? MediaAttachmentOutcomeFfi.Accepted ?: continue
+            val reference = accepted.reference
+            if (reference.version != EncryptedMediaVersionFfi.V2 || !reference.mediaType.startsWith("audio/")) continue
+            val row = metadataById[item.groupIdHex to entry.messageIdHex]?.takeIf {
+              !it.deleted && it.invalidationStatus == null && it.sourceMessageIdHex == entry.sourceMessageIdHex
+            } ?: continue
+            val source = entry.sourceMessageIdHex
+            val index = accepted.attachmentIndex
+            val tag = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
+              tag.values[1] == index.toString() && tag.values[5] == "voice" }?.values ?: continue
+            notes.add(mapOf("target" to listOf(item.groupIdHex, row.messageIdHex, source, index.toInt()),
+              "hash" to reference.plaintextSha256, "sender" to row.sender, "incoming" to (row.sender != sender),
+              "duration" to mediaDuration(tag[3]), "expiresAt" to row.retentionExpiresAt?.toDouble()?.times(1000),
+              "sentAt" to row.timelineAt.toDouble()))
+          }
+          val next = page.nextCursor?.let { continuation ->
+            UUID.randomUUID().toString().also { id ->
+              accountAttachmentHistoryCursors[id] = HistoryCursor(scope, continuation)
+              page.nextCursor = null
             }
-          }.take(24)
+          }
+          mapOf("rows" to notes, "next" to next)
+        }
       }
     }
     AsyncFunction("editMessage") Coroutine { group: String, id: String, content: String ->
       withSession { it.kit.editMessage(it.account, group, id, content); Unit }
     }
-    AsyncFunction("searchConversation") Coroutine { group: String, text: String?, media: Boolean ->
+    AsyncFunction("editLocalMessageWithClientToken") Coroutine { group: String, originalToken: String, content: String, editToken: String ->
+      withSession { it.kit.editLocalMessageWithClientToken(it.account, group, originalToken, content, editToken).messageIdHex }
+    }
+    AsyncFunction("searchConversation") Coroutine { group: String, text: String?, media: Boolean, token: String? ->
       withSession {
-        val query = TimelineMessageQueryFfi(group, text, null, null, null,
-          attachmentType = if (media) 5u else 0u, cursorGroupId = null, before = null,
-          beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
-        it.kit.timelineMessages(it.account, query).messages.filterNot { row -> row.deleted }.map { row ->
-          mapOf("id" to row.messageIdHex, "sender" to row.sender, "text" to row.plaintext, "sentAt" to row.timelineAt.toDouble())
+        if (media) {
+          val scope = "media:$group:${text.orEmpty()}"
+          val cursor = token?.let {
+            val saved = attachmentHistoryCursors.remove(it) ?: throw problem("AttachmentHistoryCursorMismatch")
+            if (saved.scope != scope) {
+              saved.cursor.destroy()
+              throw problem("AttachmentHistoryCursorMismatch")
+            }
+            saved.cursor
+          }
+          if (token != null && cursor == null) throw problem("AttachmentHistoryCursorMismatch")
+          if (token == null) attachmentHistoryCursors.entries.filter { it.value.scope.startsWith("media:$group:") }.forEach {
+            if (attachmentHistoryCursors.remove(it.key, it.value)) it.value.cursor.destroy()
+          }
+          val rows = linkedMapOf<String, Map<String, Any?>>()
+          val read = cursor.use { continuation ->
+            it.kit.attachmentHistoryPage(it.account, group, 40u, continuation)
+          }
+          val restarted = read == AttachmentPageReadFfi.RestartRequired
+          val result = if (restarted) it.kit.attachmentHistoryPage(it.account, group, 40u, null) else read
+          val page = (result as? AttachmentPageReadFfi.Page)?.page
+            ?: throw problem("AttachmentHistoryUnavailable")
+          return@withSession page.use { history ->
+            val candidates = history.entries.filter {
+              it.role == AttachmentRoleFfi.SHARED && it.category != AttachmentCategoryFfi.REJECTED
+            }
+            val metadataById = mutableMapOf<String, TimelineMessageRecordFfi>()
+            for ((at, entries) in candidates.groupBy { it.timelineAt }) {
+              metadataById += timelineRowsAt(it, group, at, entries.map { it.messageIdHex }.toSet(), 5u, text)
+            }
+            for (entry in candidates) {
+              if (rows.containsKey(entry.messageIdHex)) continue
+              val row = metadataById[entry.messageIdHex]?.takeIf {
+                !it.deleted && it.invalidationStatus == null && it.sourceMessageIdHex == entry.sourceMessageIdHex
+              } ?: continue
+              rows[row.messageIdHex] = mapOf("id" to row.messageIdHex, "sender" to row.sender,
+                "text" to row.plaintext, "sentAt" to row.timelineAt.toDouble())
+            }
+            val next = history.nextCursor?.let { continuation ->
+              UUID.randomUUID().toString().also { id ->
+                attachmentHistoryCursors[id] = HistoryCursor(scope, continuation)
+                history.nextCursor = null
+              }
+            }
+            mapOf("rows" to rows.values.toList(), "next" to next, "restart" to restarted)
+          }
         }
+        val query = TimelineMessageQueryFfi(group, text, null, null, null,
+          attachmentType = 0u, cursorGroupId = null, before = null,
+          beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
+        mapOf("rows" to it.kit.timelineMessages(it.account, query).messages.filterNot { row -> row.deleted }.map { row ->
+          mapOf("id" to row.messageIdHex, "sender" to row.sender, "text" to row.plaintext, "sentAt" to row.timelineAt.toDouble())
+        }, "next" to null)
       }
+    }
+    AsyncFunction("releaseAttachmentHistoryCursor") Coroutine { token: String ->
+      attachmentHistoryCursors.remove(token)?.cursor?.destroy()
+      accountAttachmentHistoryCursors.remove(token)?.cursor?.destroy()
+      Unit
     }
     AsyncFunction("editHistory") Coroutine { group: String, message: String, before: Double?, id: String? ->
       withSession {
@@ -1149,7 +1325,10 @@ class BoopMarmotModule : Module() {
         Unit
       }
     }
-    OnDestroy { observer.launch { try { shutdown(closeRuntime = true) } finally { observer.cancel() } } }
+    OnDestroy {
+      stopMemoryPressure()
+      observer.launch { try { shutdown(closeRuntime = true) } finally { observer.cancel() } }
+    }
   }
 
   private fun dimensions(width: Int, height: Int): String? =
@@ -1198,6 +1377,10 @@ class BoopMarmotModule : Module() {
         work.joinAll()
         drain(pauseMessaging, closeRuntime)
       } finally {
+        attachmentHistoryCursors.values.forEach { it.cursor.destroy() }
+        attachmentHistoryCursors.clear()
+        accountAttachmentHistoryCursors.values.forEach { it.cursor.destroy() }
+        accountAttachmentHistoryCursors.clear()
         lifecycle.withLock { closingAccount = false }
       }
     }

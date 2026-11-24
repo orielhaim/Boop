@@ -21,6 +21,7 @@ function fixture() {
   let hold: Promise<void> | undefined;
   let publishError = false;
   let probe: Promise<boolean> = Promise.resolve(true);
+  const policies = new Map<string, "allowed" | "retired" | "unsafe">();
   const probeStarted = Promise.withResolvers<void>();
   let releases = 0;
   const configurations: { inbox: readonly string[]; allowed: boolean }[] = [];
@@ -32,7 +33,9 @@ function fixture() {
       },
       async refresh() {},
       async classify(_, urls) {
-        return urls.map(() => "allowed");
+        return urls.map(
+          (url) => policies.get(url.replace(/\/$/, "")) ?? "allowed",
+        );
       },
       async set(_, list, urls) {
         publications.push({ list, urls: [...urls] });
@@ -63,6 +66,9 @@ function fixture() {
     probeStarted: probeStarted.promise,
     replaceObserved: (observed: MarmotRelayLists) => {
       lists = observed;
+    },
+    classifyAs: (url: string, policy: "allowed" | "retired" | "unsafe") => {
+      policies.set(url.replace(/\/$/, ""), policy);
     },
     holdPublication: (waiting: Promise<void>) => {
       hold = waiting;
@@ -124,6 +130,61 @@ test("editing a general list preserves the exact URLs MDK uses to match NIP-65 r
     list: "general",
     urls: [readOnly, old, next],
   });
+});
+
+test("removing an imported unsafe relay prunes other unsafe entries and preserves allowed roles", async () => {
+  const { relays, publications, replaceObserved, classifyAs } = fixture();
+  const retired = "wss://retired.example.com";
+  const unsafe = "wss://unsafe.example.com";
+  const readonly = "wss://readonly.example.com";
+  await relays.refresh();
+  const current = relays.snapshot().lists;
+  if (!current) throw new Error("Expected MDK state");
+  classifyAs(retired, "retired");
+  classifyAs(unsafe, "unsafe");
+  replaceObserved({
+    ...current,
+    general: [readonly, retired, old, unsafe],
+    write: [old],
+    allowed: [readonly, old, next, other],
+  });
+
+  await relays.edit({ list: "general", url: unsafe, enabled: false });
+
+  expect(publications).toEqual([{ list: "general", urls: [readonly, old] }]);
+  expect(relays.snapshot().lists?.general).toEqual([readonly, old]);
+});
+
+test("removing an imported relay works when the inbox also contains retired and unsafe relays", async () => {
+  const { relays, publications, replaceObserved, classifyAs } = fixture();
+  const retired = "wss://retired.example.com";
+  const unsafe = "wss://unsafe.example.com";
+  await relays.refresh();
+  const current = relays.snapshot().lists;
+  if (!current) throw new Error("Expected MDK state");
+  classifyAs(retired, "retired");
+  classifyAs(unsafe, "unsafe");
+  replaceObserved({
+    ...current,
+    inbox: [old, retired, unsafe],
+    allowed: [old, next, other],
+  });
+
+  await relays.edit({ list: "inbox", url: retired, enabled: false });
+
+  expect(publications).toEqual([{ list: "inbox", urls: [old] }]);
+  expect(relays.snapshot().lists?.inbox).toEqual([old]);
+});
+
+test("a newly added unsafe relay fails without committing any changes", async () => {
+  const { relays, publications, classifyAs } = fixture();
+  const unsafe = "wss://unsafe.example.com";
+  classifyAs(unsafe, "unsafe");
+  await expect(
+    relays.edit({ list: "general", url: unsafe, enabled: true }),
+  ).rejects.toThrow("RelayPolicy");
+  expect(publications).toEqual([]);
+  expect(relays.snapshot().lists?.general).toEqual([old]);
 });
 
 test("an unverified inbox or failed MDK publication leaves the old routes intact", async () => {

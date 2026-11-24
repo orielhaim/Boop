@@ -88,6 +88,8 @@ export function createVoiceTranscription({
   let clearing = false;
   let resourceTimer: ReturnType<typeof setTimeout> | undefined;
   let discovering: Promise<void> | undefined;
+  let retainedVoiceCursor: string | null = null;
+  let retainedVoiceSince: number | null = null;
   const sessionStarted = Date.now() / 1000;
   const notes = sourceSchema.array().max(24);
   const listeners = new Set<() => void>();
@@ -186,6 +188,10 @@ export function createVoiceTranscription({
     const accessible = access();
     if (wasAccessible && !accessible) {
       admissionGeneration += 1;
+      if (retainedVoiceCursor)
+        void marmot.releaseAttachmentHistoryCursor(retainedVoiceCursor);
+      retainedVoiceCursor = null;
+      retainedVoiceSince = null;
     }
     const restored = !wasAccessible && accessible;
     wasAccessible = accessible;
@@ -318,24 +324,44 @@ export function createVoiceTranscription({
     )
       return;
     const epoch = admissionGeneration;
-    const since = Math.floor(
-      preferences.downloaded ? Date.now() / 1000 - 86_400 : sessionStarted,
-    );
+    const cursor = retainedVoiceCursor;
+    const since =
+      retainedVoiceCursor && retainedVoiceSince !== null
+        ? retainedVoiceSince
+        : Math.floor(
+            preferences.downloaded
+              ? Date.now() / 1000 - 86_400
+              : sessionStarted,
+          );
     discovering = (async () => {
-      const candidates = notes.parse(
-        await marmot.recentVoiceNotes(
-          account,
-          since,
-          !(preferences.incoming && preferences.downloaded),
-        ),
+      const page = await marmot.recentVoiceNotes(
+        account,
+        since,
+        !(preferences.incoming && preferences.downloaded),
+        cursor,
       );
+      if (epoch !== admissionGeneration || !access()) {
+        if (page.next) void marmot.releaseAttachmentHistoryCursor(page.next);
+        return;
+      }
+      retainedVoiceCursor = page.next ?? null;
+      retainedVoiceSince = page.next ? since : null;
+      const candidates = notes.parse(page.rows);
       for (const source of candidates) {
         if (epoch !== admissionGeneration || !access()) break;
         if (source.incoming) await admit(source, priority.retained);
         else await outgoing(source, source.sentAt);
       }
     })()
-      .catch(() => undefined)
+      .catch(() => {
+        if (epoch === admissionGeneration) {
+          if (retainedVoiceCursor)
+            void marmot.releaseAttachmentHistoryCursor(retainedVoiceCursor);
+          retainedVoiceCursor = null;
+          retainedVoiceSince = null;
+          if (cursor) void marmot.releaseAttachmentHistoryCursor(cursor);
+        }
+      })
       .finally(() => {
         discovering = undefined;
       });
@@ -354,6 +380,10 @@ export function createVoiceTranscription({
       setPreference(db, key, JSON.stringify(next));
       preferences = next;
       admissionGeneration += 1;
+      if (retainedVoiceCursor)
+        void marmot.releaseAttachmentHistoryCursor(retainedVoiceCursor);
+      retainedVoiceCursor = null;
+      retainedVoiceSince = null;
       attemptedModel = undefined;
       scheduler.updateAutomaticScope(
         (source) =>
@@ -381,6 +411,10 @@ export function createVoiceTranscription({
         mounted = false;
         languageRequest = undefined;
         admissionGeneration += 1;
+        if (retainedVoiceCursor)
+          void marmot.releaseAttachmentHistoryCursor(retainedVoiceCursor);
+        retainedVoiceCursor = null;
+        retainedVoiceSince = null;
         clearInterval(interval);
         if (resourceTimer) clearTimeout(resourceTimer);
         resourceTimer = undefined;
@@ -469,6 +503,10 @@ export function createVoiceTranscription({
     async clear() {
       if (clearing) return;
       admissionGeneration += 1;
+      if (retainedVoiceCursor)
+        void marmot.releaseAttachmentHistoryCursor(retainedVoiceCursor);
+      retainedVoiceCursor = null;
+      retainedVoiceSince = null;
       languageRequest = undefined;
       clearAt = Date.now();
       setPreference(db, "speech.clearAt", String(clearAt));

@@ -3,6 +3,32 @@ import { createMarmotSession } from "@/core/marmot/account-session";
 
 const discovery: string[] = [];
 
+test("automatically recovers a transient open without a connectivity event", async () => {
+  let attempts = 0;
+  const ready = Promise.withResolvers<void>();
+  const session = createMarmotSession({
+    async open() {
+      if (++attempts === 1) throw new Error("temporarily unavailable");
+      return "local_ready";
+    },
+    async close() {},
+    beforeClose: () => undefined,
+  });
+  const unsubscribe = session.subscribe(() => {
+    if (session.status() === "ready") ready.resolve();
+  });
+  try {
+    await session.start(discovery, null);
+    expect(session.status()).toBe("failed");
+    await Promise.race([ready.promise, Bun.sleep(700)]);
+    expect(session.status()).toBe("ready");
+    expect(attempts).toBe(2);
+  } finally {
+    unsubscribe();
+    await session.stop();
+  }
+});
+
 test("coalesces duplicate opens and reconnects after a transient failure", async () => {
   let attempts = 0;
   const session = createMarmotSession({
@@ -98,6 +124,24 @@ test("a signed-out account stays unavailable when connectivity returns", async (
   await session.start(discovery, null);
   session.reconnected();
   await expect(session.ready()).rejects.toThrow("signed out");
+  await Bun.sleep(350);
   expect(attempts).toBe(1);
   await session.stop();
+});
+
+test("closing a failed session cancels automatic restart", async () => {
+  let attempts = 0;
+  const session = createMarmotSession({
+    async open() {
+      attempts++;
+      throw new Error("temporarily unavailable");
+    },
+    async close() {},
+    beforeClose: () => undefined,
+  });
+  await session.start(discovery, null);
+  await session.stop();
+  await Bun.sleep(350);
+  expect(attempts).toBe(1);
+  expect(session.status()).toBe("pending");
 });

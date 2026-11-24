@@ -86,6 +86,7 @@ import {
   timeLockKind,
 } from "@/core/messaging/special-messages/timelock";
 import { createAttachmentPresentation } from "@/core/marmot/attachment-presentation";
+import { retryableSubmission } from "@/core/marmot/retryable-submission";
 import { speechSource } from "@/core/speech/service";
 import {
   marmot,
@@ -97,6 +98,7 @@ import {
   pendingMediaDraft,
   waitForAttachmentForeground,
 } from "@/core/marmot/media-send";
+import { marmotErrorCode } from "@/core/marmot/errors";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { localMediaUri } from "@/core/media/open-local-attachment";
 import { contactByKey } from "@/db/queries";
@@ -294,6 +296,7 @@ export function MarmotConversationScreen({
     audio,
     calling,
     downloads,
+    isCurrent,
   } = useLocal();
   const { open: openAudio, queue: queueAudio } = useAudioActions();
   const recordingOwner = useRef(Symbol("chat recording")).current;
@@ -385,10 +388,34 @@ export function MarmotConversationScreen({
   }, [id, lock, navigation]);
   const [composer, setComposer] = useState<string>();
   const [composerFocused, setComposerFocused] = useState(false);
+  const [textSending, setTextSending] = useState(false);
+  const textSendingRef = useRef(false);
+  const composerValue = useRef("");
+  const textSubmission = useRef<
+    | {
+        text: string;
+        reply: string | null;
+        token: string;
+      }
+    | undefined
+  >(undefined);
+  const specialSubmission = useRef<
+    ReturnType<typeof retryableSubmission<string>> | undefined
+  >(undefined);
+  const pendingEdit = useRef<
+    ReturnType<typeof retryableSubmission<string>> | undefined
+  >(undefined);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const composerRef = useRef<ComponentRef<typeof TextInput>>(null);
   const [later, setLater] = useState(false);
   const [laterError, setLaterError] = useState<string>();
+  const laterSubmission = useRef<
+    | ReturnType<
+        typeof retryableSubmission<Promise<{ body: string; token: string }>>
+      >
+    | undefined
+  >(undefined);
+  const laterSending = useRef(false);
   const [visibility, setVisibility] = useState<{
     generation: string;
     ids: ReadonlySet<string>;
@@ -422,6 +449,7 @@ export function MarmotConversationScreen({
   const chatRef = useRef<ChatHandle | null>(null);
   const lastRead = useRef<string | undefined>(undefined);
   const draftWrites = useRef(Promise.resolve());
+  const draftWriteRevision = useRef(0);
   const deferredDraft = useRef<{ text: string; target: string | null }>(
     undefined,
   );
@@ -804,7 +832,7 @@ export function MarmotConversationScreen({
   }, [focused, foreground, jump, lock, locked, messages, navigation]);
   const canSend = Boolean(snapshot?.canSend && !blocked && !snapshot.invited);
   const pendingMedia = pendingMediaDraft(snapshot?.draft);
-  const canCompose = canSend && !pendingMedia && !upload;
+  const canCompose = canSend && !pendingMedia && !upload && !textSending;
   const recoveredVoice: VoiceSend | undefined =
     pendingMedia?.kind === "ready" && pendingMedia.voice
       ? {
@@ -908,6 +936,26 @@ export function MarmotConversationScreen({
   const run = (fn: () => Promise<unknown>) => {
     if (canDispatch()) void fn().catch(showError);
   };
+  function sendSpecial(
+    kind: 24881 | 24883 | 24884,
+    body: string,
+    target: string | null,
+  ) {
+    const key = JSON.stringify([kind, body, target]);
+    const request = retryableSubmission(
+      specialSubmission.current,
+      key,
+      randomUUID,
+    );
+    specialSubmission.current = request;
+    return marmot
+      .sendSpecial(id, kind, body, target, request.value)
+      .then((result) => {
+        if (specialSubmission.current === request)
+          specialSubmission.current = undefined;
+        return result;
+      });
+  }
 
   function deletionTargets(ids: ReadonlySet<string>) {
     const state = window?.getState();
@@ -993,16 +1041,63 @@ export function MarmotConversationScreen({
   }
 
   const writeDraft = useCallback(
-    (text: string, target: string | null) => {
+    function persistDraft(text: string, target: string | null) {
+      if (!text && textSubmission.current) return;
+      const revision = ++draftWriteRevision.current;
+      const draft = { text, target };
       draftWrites.current = draftWrites.current
-        .then(() => marmot.saveDraft(id, text, target))
-        .catch(() => undefined);
+        .then(async () => {
+          if (draftWriteRevision.current !== revision) return false;
+          if (!isCurrent() || marmotSession.revision() !== accountRevision) {
+            deferredDraft.current = draft;
+            return false;
+          }
+          await marmot.saveDraft(id, text, target);
+          return true;
+        })
+        .then((saved) => {
+          if (!saved) return;
+          if (draftWriteRevision.current === revision) {
+            if (
+              deferredDraft.current?.text === draft.text &&
+              deferredDraft.current.target === draft.target
+            )
+              deferredDraft.current = undefined;
+          }
+        })
+        .catch((reason: unknown) => {
+          if (draftWriteRevision.current !== revision) return;
+          if (!isCurrent() || marmotSession.revision() !== accountRevision) {
+            deferredDraft.current = draft;
+            return;
+          }
+          deferredDraft.current = draft;
+          Alert.alert(
+            t("messages:updateError"),
+            String(translateError(reason)),
+            [
+              {
+                text: t("common:retry"),
+                onPress: () => {
+                  if (draftWriteRevision.current === revision)
+                    persistDraft(draft.text, draft.target);
+                },
+              },
+              { text: t("common:cancel"), style: "cancel" },
+            ],
+          );
+        });
     },
-    [id],
+    [accountRevision, id, isCurrent, marmotSession, t, translateError],
   );
   function saveDraft(text: string, target: string | null) {
     setComposer(text);
-    if (!canDispatch()) return;
+    composerValue.current = text;
+    draftWriteRevision.current += 1;
+    if (!canDispatch()) {
+      deferredDraft.current = { text, target };
+      return;
+    }
     if (sendingAttachment.current || pendingMedia) {
       deferredDraft.current = { text, target };
       return;
@@ -1326,24 +1421,48 @@ export function MarmotConversationScreen({
 
   async function sendLater(time: number) {
     const text = (composer ?? snapshot?.draft?.text ?? "").trim();
-    if (!canDispatch() || !text || busy) return;
+    if (!canDispatch() || !text || busy || laterSending.current) return;
+    laterSending.current = true;
     setBusy(true);
     setLaterError(undefined);
     try {
-      const encrypted = await encryptTimeLock(text, time);
+      const target = reply?._id ?? null;
+      const key = JSON.stringify([text, time, target]);
+      const request = retryableSubmission(
+        laterSubmission.current,
+        key,
+        async () => ({
+          body: JSON.stringify(await encryptTimeLock(text, time)),
+          token: randomUUID(),
+        }),
+      );
+      laterSubmission.current = request;
+      if (!canDispatch()) return;
+      let submission: { body: string; token: string };
+      try {
+        submission = await request.value;
+      } catch (reason) {
+        if (laterSubmission.current === request)
+          laterSubmission.current = undefined;
+        throw reason;
+      }
       if (!canDispatch()) return;
       await marmot.sendSpecial(
         id,
         timeLockKind,
-        JSON.stringify(encrypted),
-        reply?._id ?? null,
+        submission.body,
+        target,
+        submission.token,
       );
+      if (laterSubmission.current === request)
+        laterSubmission.current = undefined;
       saveDraft("", null);
       setReply(null);
       setLater(false);
     } catch {
       setLaterError(t("messages:openSendError"));
     } finally {
+      laterSending.current = false;
       setBusy(false);
     }
   }
@@ -1935,8 +2054,7 @@ export function MarmotConversationScreen({
                     for (const item of attachments) {
                       if (item.type === "location") {
                         run(() =>
-                          marmot.sendSpecial(
-                            id,
+                          sendSpecial(
                             locationKind,
                             locationText(item),
                             reply?._id ?? null,
@@ -2049,15 +2167,50 @@ export function MarmotConversationScreen({
                         } else if (item.text.trim()) {
                           const text = item.text.trim();
                           const target = reply?._id ?? null;
-                          run(async () => {
-                            await marmot.sendText(
-                              id,
-                              text,
-                              randomUUID(),
-                              target,
-                            );
-                            setReply(null);
-                          });
+                          if (!canDispatch() || textSendingRef.current)
+                            continue;
+                          const current = textSubmission.current;
+                          const request =
+                            current?.text === text && current.reply === target
+                              ? current
+                              : { text, reply: target, token: randomUUID() };
+                          textSubmission.current = request;
+                          textSendingRef.current = true;
+                          setComposer(text);
+                          composerValue.current = text;
+                          setTextSending(true);
+                          void (async () => {
+                            try {
+                              await draftWrites.current;
+                              if (!canDispatch()) return;
+                              await marmot.sendDraftText(
+                                id,
+                                text,
+                                request.token,
+                                target,
+                              );
+                              if (textSubmission.current === request)
+                                textSubmission.current = undefined;
+                              if (composerValue.current === text) {
+                                setComposer("");
+                                composerValue.current = "";
+                                setReply(null);
+                              }
+                            } catch (reason) {
+                              if (
+                                marmotErrorCode(reason) ===
+                                  "MessageSendNotAccepted" &&
+                                textSubmission.current === request
+                              )
+                                textSubmission.current = undefined;
+                              if (composerValue.current === text)
+                                setComposer(text);
+                              showError(reason);
+                            } finally {
+                              textSendingRef.current = false;
+                              setTextSending(false);
+                            }
+                          })();
                         }
                       }
                     }
@@ -2065,8 +2218,31 @@ export function MarmotConversationScreen({
               }
               onEditMessage={
                 canSend
-                  ? (row, text) =>
-                      run(() => marmot.editMessage(id, row._id, text))
+                  ? (row, text) => {
+                      if (
+                        row.row?.token &&
+                        [9, 1111].includes(row.row.eventKind) &&
+                        ["pending", "failed"].includes(delivery(row.row))
+                      ) {
+                        const key = `${row.row.token}\n${text}`;
+                        const request = retryableSubmission(
+                          pendingEdit.current,
+                          key,
+                          randomUUID,
+                        );
+                        pendingEdit.current = request;
+                        run(async () => {
+                          await marmot.editLocalMessageWithClientToken(
+                            id,
+                            row.row!.token!,
+                            text,
+                            request.value,
+                          );
+                          if (pendingEdit.current === request)
+                            pendingEdit.current = undefined;
+                        });
+                      } else run(() => marmot.editMessage(id, row._id, text));
+                    }
                   : undefined
               }
               onDeleteMessages={(messages) =>

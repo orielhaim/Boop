@@ -12,6 +12,9 @@ public final class BoopMarmotModule: Module {
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
   private let directoryLock = NSLock()
+  private let historyLock = NSLock()
+  private var attachmentHistoryCursors: [String: (scope: String, cursor: AttachmentHistoryCursor)] = [:]
+  private var accountAttachmentHistoryCursors: [String: (scope: String, cursor: AccountAttachmentCursor)] = [:]
   private struct Observation {
     let accountScoped: Bool
     var task: Task<Void, Error>?
@@ -20,6 +23,34 @@ public final class BoopMarmotModule: Module {
   private var attachmentAdmissions: [String: AttachmentCancellation] = [:]
   private var isForeground = true
   private var foregroundGeneration: UInt64 = 0
+
+  private func timelineRowsAt(
+    kit: Marmot,
+    account: String,
+    group: String,
+    at: UInt64,
+    targetIds: Set<String>,
+    attachmentType: UInt32,
+    search: String? = nil
+  ) throws -> [String: TimelineMessageRecordFfi] {
+    var found: [String: TimelineMessageRecordFfi] = [:]
+    var before: UInt64?
+    var beforeId: String?
+    var pages = 0
+    while found.count < targetIds.count && pages < 4 {
+      let query = TimelineMessageQueryFfi(groupIdHex: group, search: search, sender: nil,
+        since: at, until: at, attachmentType: attachmentType, searchWallClock: false,
+        cursorGroupId: before == nil ? nil : group, before: before, beforeMessageId: beforeId,
+        after: nil, afterMessageId: nil, limit: 200)
+      let page = try kit.timelineMessages(accountRef: account, query: query)
+      for row in page.messages where targetIds.contains(row.messageIdHex) { found[row.messageIdHex] = row }
+      pages += 1
+      guard page.hasMoreBefore, let oldest = page.messages.first else { break }
+      before = oldest.timelineAt
+      beforeId = oldest.messageIdHex
+    }
+    return found
+  }
   private var uploads: [String: MediaFileTransferControlFfi] = [:]
 
   public func definition() -> ModuleDefinition {
@@ -408,12 +439,69 @@ public final class BoopMarmotModule: Module {
         return "data:\(mime);base64,\(bytes.base64EncodedString())"
       }
     }
-    AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool) async throws -> [Document] in
+    AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool, token: String?) async throws -> Document in
       try await self.withAccount { kit, account in
+        if media {
+          let scope = "media:\(group):\(text ?? "")"
+          let cursor: AttachmentHistoryCursor? = try self.historyLock.withLock {
+            guard let token else { return nil }
+            guard let saved = self.attachmentHistoryCursors.removeValue(forKey: token), saved.scope == scope else {
+              throw problem("AttachmentHistoryCursorMismatch")
+            }
+            return saved.cursor
+          }
+          if token == nil {
+            self.historyLock.withLock {
+              self.attachmentHistoryCursors = self.attachmentHistoryCursors.filter { !$0.value.scope.hasPrefix("media:\(group):") }
+            }
+          }
+          var read = try await kit.attachmentHistoryPage(accountRef: account, groupIdHex: group, limit: 40, cursor: cursor)
+          var restarted = false
+          if case .restartRequired = read {
+            restarted = true
+            read = try await kit.attachmentHistoryPage(accountRef: account, groupIdHex: group, limit: 40, cursor: nil)
+          }
+          var page: AttachmentPageFfi
+          switch read {
+          case .page(let value): page = value
+          default: throw problem("AttachmentHistoryUnavailable")
+          }
+          let candidates = page.entries.filter { $0.role == .shared && $0.category != .rejected }
+          var metadataByGroup: [String: [String: TimelineMessageRecordFfi]] = [:]
+          for (_, entries) in Dictionary(grouping: candidates, by: \.timelineAt) {
+            guard let first = entries.first else { continue }
+            let metadata = try self.timelineRowsAt(kit: kit, account: account, group: group,
+              at: first.timelineAt, targetIds: Set(entries.map(\.messageIdHex)), attachmentType: 5, search: text)
+            metadataByGroup[group, default: [:]].merge(metadata) { current, _ in current }
+          }
+          var rows: [Document] = []
+          var seen = Set<String>()
+          for entry in candidates where seen.insert(entry.messageIdHex).inserted {
+            guard let row = metadataByGroup[group]?[entry.messageIdHex], !row.deleted,
+              row.invalidationStatus == nil, row.sourceMessageIdHex == entry.sourceMessageIdHex else { continue }
+            rows.append(["id": row.messageIdHex, "sender": row.sender,
+              "text": row.plaintext, "sentAt": Double(row.timelineAt)])
+          }
+          let continuation = page.nextCursor
+          page.nextCursor = nil
+          let next = continuation.map { value -> String in
+            let id = UUID().uuidString
+            self.historyLock.withLock { self.attachmentHistoryCursors[id] = (scope, value) }
+            return id
+          }
+          return ["rows": rows, "next": bridgeValue(next), "restart": restarted]
+        }
         let query = TimelineMessageQueryFfi(groupIdHex: group, search: text, sender: nil, since: nil, until: nil, attachmentType: media ? 5 : 0, cursorGroupId: nil, before: nil, beforeMessageId: nil, after: nil, afterMessageId: nil, limit: 40)
-        return try kit.timelineMessages(accountRef: account, query: query).messages.filter { !$0.deleted }.map {
+        let rows: [Document] = try kit.timelineMessages(accountRef: account, query: query).messages.filter { !$0.deleted }.map {
           ["id": $0.messageIdHex, "sender": $0.sender, "text": $0.plaintext, "sentAt": Double($0.timelineAt)]
         }
+        return ["rows": rows, "next": NSNull()]
+      }
+    }
+    AsyncFunction("releaseAttachmentHistoryCursor") { (token: String) in
+      self.historyLock.withLock {
+        _ = self.attachmentHistoryCursors.removeValue(forKey: token)
+        _ = self.accountAttachmentHistoryCursors.removeValue(forKey: token)
       }
     }
     AsyncFunction("editHistory") { (group: String, message: String, before: Double?, id: String?) async throws -> Document in
@@ -466,9 +554,34 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("sendText") { (group: String, text: String, token: String, reply: String?) async throws -> String in
       try await self.withAccount { kit, account in
         if let reply {
-          return try await kit.replyToMessageWithClientToken(accountRef: account, groupIdHex: group, targetMessageId: reply, text: text, clientToken: token).messageIdHex
+          return try await kit.replyToMessageWithClientToken(accountRef: account, groupIdHex: group,
+            targetMessageId: reply, text: text, clientToken: token).messageIdHex
         }
-        return try await kit.sendTextWithClientToken(accountRef: account, groupIdHex: group, text: text, clientToken: token).messageIdHex
+        return try await kit.sendTextWithClientToken(accountRef: account, groupIdHex: group,
+          text: text, clientToken: token).messageIdHex
+      }
+    }
+    AsyncFunction("sendDraftText") { (group: String, text: String, token: String, reply: String?) async throws -> String in
+      try await self.withAccount { kit, account in
+        switch try kit.localSendStatus(accountRef: account, groupIdHex: group, clientToken: token) {
+        case .completed(let summary): return summary.messageIds.first ?? ""
+        case .queued, .engineOwned: return ""
+        case .rejected: throw problem("MessageSendNotAccepted")
+        case nil: break
+        }
+        for attempt in 0..<3 {
+          do {
+            let selected = try kit.selectedMessageDraft(accountRef: account, groupIdHex: group)
+            guard selected.draft?.mediaAttachments.isEmpty != false else { throw problem("MediaDraftPending") }
+            let draft = try kit.saveMessageDraftInputsIfRevision(accountRef: account, revision: selected.revision,
+              content: text, replyToMessageIdHex: reply, mediaAttachments: [])
+            return try await kit.sendMessageDraftWithClientToken(accountRef: account, revision: draft.revision,
+              attachments: [], tags: [], clientToken: token).messageIdHex
+          } catch MarmotKitError.MessageDraftRevisionConflict where attempt < 2 {
+            continue
+          }
+        }
+        throw problem("MessageDraftRevisionConflict")
       }
     }
     AsyncFunction("saveDraft") { (group: String, text: String, reply: String?) async throws in
@@ -485,11 +598,17 @@ public final class BoopMarmotModule: Module {
         }
       }
     }
-    AsyncFunction("sendSpecial") { (group: String, kind: UInt64, body: String, reply: String?) async throws in
+    AsyncFunction("sendSpecial") { (group: String, kind: UInt64, body: String, reply: String?, token: String) async throws -> String in
       guard [24881, 24883, 24884].contains(kind) else { throw problem("InvalidApplicationEvent") }
-      try await self.withAccount { kit, account in
+      return try await self.withAccount { kit, account in
         let tags = reply.map { [["e", $0, "", "reply"]] } ?? []
-        _ = try await kit.sendCustomEvent(accountRef: account, groupIdHex: group, kind: kind, tags: tags, content: body)
+        if kind == 24884 {
+          _ = try await kit.sendCustomEvent(accountRef: account, groupIdHex: group,
+            kind: kind, tags: tags, content: body)
+          return ""
+        }
+        return try await kit.submitCustomEventWithClientToken(accountRef: account, groupIdHex: group,
+          kind: kind, tags: tags, content: body, clientToken: token).messageIdHex
       }
     }
     AsyncFunction("stageMediaDraft") { (group: String, files: [[String: String]], caption: String, token: String, reply: String?) async throws in
@@ -852,29 +971,68 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("editMessage") { (group: String, id: String, content: String) async throws in
       try await self.withAccount { _ = try await $0.editMessage(accountRef: $1, groupIdHex: group, targetMessageId: id, content: content) }
     }
-    AsyncFunction("recentVoiceNotes") { (sender: String, since: UInt64, onlyOutgoing: Bool) async throws -> [Document] in
+    AsyncFunction("editLocalMessageWithClientToken") { (group: String, originalToken: String, content: String, editToken: String) async throws -> String in
       try await self.withAccount { kit, account in
-        let query = TimelineMessageQueryFfi(groupIdHex: nil, search: nil, sender: onlyOutgoing ? sender : nil, since: since, until: nil,
-          attachmentType: 3, searchWallClock: false, cursorGroupId: nil, before: nil, beforeMessageId: nil,
-          after: nil, afterMessageId: nil, limit: 24)
-        let page = try kit.timelineMessages(accountRef: account, query: query)
-        let sources = page.messages.filter { !$0.deleted && $0.invalidationStatus == nil }.flatMap { row -> [Document] in
-          guard let source = row.sourceMessageIdHex else { return [] }
-          return row.media.compactMap { outcome -> Document? in
-            guard case .accepted(let index, let reference) = outcome, reference.version == .v2,
-              reference.mediaType.hasPrefix("audio/") else { return nil }
-            let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" &&
-              $0.values[1] == String(index) && $0.values[5] == "voice" }
-            guard matches.count == 1, let tag = matches.first?.values else { return nil }
-            let target: [Any] = [row.groupIdHex, row.messageIdHex, source, Int(index)]
-            return ["target": target,
-              "hash": reference.plaintextSha256, "sender": row.sender, "incoming": row.sender != sender,
-              "duration": bridgeValue(mediaDuration(tag[3])),
-              "expiresAt": bridgeValue(row.retentionExpiresAt.map { Double($0) * 1000 }),
-              "sentAt": Double(row.timelineAt)]
+        try await kit.editLocalMessageWithClientToken(accountRef: account, groupIdHex: group,
+          originalClientToken: originalToken, content: content, editClientToken: editToken).messageIdHex
+      }
+    }
+    AsyncFunction("recentVoiceNotes") { (sender: String, since: UInt64, onlyOutgoing: Bool, token: String?) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let scope = "voice:\(sender):\(since):\(onlyOutgoing)"
+        let cursor: AccountAttachmentCursor? = try self.historyLock.withLock {
+          guard let token else { return nil }
+          guard let saved = self.accountAttachmentHistoryCursors.removeValue(forKey: token), saved.scope == scope else {
+            throw problem("AttachmentHistoryCursorMismatch")
+          }
+          return saved.cursor
+        }
+        if token == nil {
+          self.historyLock.withLock {
+            self.accountAttachmentHistoryCursors = self.accountAttachmentHistoryCursors.filter { !$0.value.scope.hasPrefix("voice:\(sender):") }
           }
         }
-        return Array(sources.prefix(24))
+        let query = AccountAttachmentQueryFfi(groups: [], senders: onlyOutgoing ? [sender] : [], minTimelineAt: since, maxTimelineAt: nil)
+        var read = try await kit.accountAttachmentHistoryPage(accountRef: account, query: query, limit: 24, cursor: cursor)
+        if case .restartRequired = read {
+          read = try await kit.accountAttachmentHistoryPage(accountRef: account, query: query, limit: 24, cursor: nil)
+        }
+        guard case .page(let pageValue) = read else { throw problem("AttachmentHistoryUnavailable") }
+        var page = pageValue
+        var metadataByGroup: [String: [String: TimelineMessageRecordFfi]] = [:]
+        for (_, items) in Dictionary(grouping: page.entries, by: { "\($0.groupIdHex):\($0.entry.timelineAt)" }) {
+          guard let first = items.first else { continue }
+          let metadata = try self.timelineRowsAt(kit: kit, account: account, group: first.groupIdHex,
+            at: first.entry.timelineAt, targetIds: Set(items.map { $0.entry.messageIdHex }), attachmentType: 3)
+          metadataByGroup[first.groupIdHex, default: [:]].merge(metadata) { current, _ in current }
+        }
+        var notes: [Document] = []
+        for item in page.entries {
+            let entry = item.entry
+            guard entry.category == .audio,
+              case .accepted(let index, let reference) = entry.attachment,
+              reference.version == .v2, reference.mediaType.hasPrefix("audio/") else { continue }
+            guard let row = metadataByGroup[item.groupIdHex]?[entry.messageIdHex], !row.deleted, row.invalidationStatus == nil,
+              row.sourceMessageIdHex == entry.sourceMessageIdHex else { continue }
+            let source = entry.sourceMessageIdHex
+            let matches = row.tags.filter { $0.values.count == 6 && $0.values[0] == "boop-media" &&
+              $0.values[1] == String(index) && $0.values[5] == "voice" }
+            guard matches.count == 1, let tag = matches.first?.values else { continue }
+            let target: [Any] = [item.groupIdHex, row.messageIdHex, source, Int(index)]
+            notes.append(["target": target, "hash": reference.plaintextSha256,
+              "sender": row.sender, "incoming": row.sender != sender,
+              "duration": bridgeValue(mediaDuration(tag[3])),
+              "expiresAt": bridgeValue(row.retentionExpiresAt.map { Double($0) * 1000 }),
+              "sentAt": Double(row.timelineAt)])
+        }
+        let continuation = page.nextCursor
+        page.nextCursor = nil
+        let next = continuation.map { value -> String in
+          let id = UUID().uuidString
+          self.historyLock.withLock { self.accountAttachmentHistoryCursors[id] = (scope, value) }
+          return id
+        }
+        return ["rows": notes, "next": bridgeValue(next)]
       }
     }
     AsyncFunction("discardFailedSend") { (group: String, id: String) async throws -> String in
@@ -994,6 +1152,12 @@ public final class BoopMarmotModule: Module {
   }
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
+    defer {
+      historyLock.withLock {
+        attachmentHistoryCursors.removeAll()
+        accountAttachmentHistoryCursors.removeAll()
+      }
+    }
     let work = directoryLock.withLock { () -> [Task<Void, Error>] in
       let work = observations.values.compactMap(\.task)
       observations.removeAll()
@@ -1103,15 +1267,15 @@ private struct AttachmentCancelControl: @unchecked Sendable {
   let run: () async -> Void
 }
 
-private func retryDraftEdit(_ edit: () throws -> Void) throws {
+private func retryDraftEdit<T>(_ edit: () throws -> T) throws -> T {
   for attempt in 0..<3 {
     do {
-      try edit()
-      return
+      return try edit()
     } catch MarmotKitError.MessageDraftRevisionConflict where attempt < 2 {
       continue
     }
   }
+  throw problem("MessageDraftRevisionConflict")
 }
 
 private actor AttachmentCancellation {

@@ -2,6 +2,7 @@ import { createStore } from "zustand/vanilla";
 import { marmotErrorCode } from "./errors";
 import { sameRelays } from "../nostr/config";
 import type { MarmotReadiness } from "./native";
+import { createRecovery } from "./recovery";
 
 type Configuration = {
   discovery: readonly string[];
@@ -19,6 +20,7 @@ export function createMarmotSession({
   open,
   close,
   beforeClose,
+  canRetry = () => true,
 }: {
   open: (
     discovery: readonly string[],
@@ -26,6 +28,7 @@ export function createMarmotSession({
   ) => Promise<MarmotReadiness>;
   close: (pauseMessaging: boolean) => Promise<void>;
   beforeClose: () => Promise<void> | undefined;
+  canRetry?: () => boolean;
 }) {
   let desired: Configuration | null = null;
   let active: Configuration | null = null;
@@ -38,12 +41,25 @@ export function createMarmotSession({
   }));
   let transition = Promise.resolve();
   let transitioning = false;
+  const recovery = createRecovery(retryTransient);
+
+  function retryTransient() {
+    const { state } = getState();
+    if (
+      desired &&
+      canRetry() &&
+      state.status === "failed" &&
+      !terminal.has(marmotErrorCode(state.cause))
+    )
+      void reconcile();
+  }
 
   function publish(state: State) {
     setState({ state, revision: getState().revision + 1 });
   }
 
   function reconcile(pauseMessaging = false) {
+    recovery.cancel();
     const next = desired;
     transition = transition.then(async () => {
       if (next !== desired) return;
@@ -59,12 +75,15 @@ export function createMarmotSession({
           active = next;
         }
         if (next === desired) {
+          recovery.reset();
           transitioning = false;
           publish({ status: active ? "ready" : "pending" });
         }
       } catch (cause) {
         if (next === desired) {
           transitioning = false;
+          if (next && !terminal.has(marmotErrorCode(cause)) && canRetry())
+            recovery.schedule();
           publish({ status: "failed", cause });
         }
       }
@@ -82,10 +101,12 @@ export function createMarmotSession({
       )
         return transition;
       const next = { discovery, mediaOrigin };
+      recovery.reset();
       desired = next;
       return reconcile();
     },
     async stop(pauseMessaging = false) {
+      recovery.reset();
       if (desired || active || pauseMessaging) {
         desired = null;
         await reconcile(pauseMessaging);
@@ -97,15 +118,7 @@ export function createMarmotSession({
       if (desired && getState().state.status === "failed") return reconcile();
       return transition;
     },
-    reconnected() {
-      const { state } = getState();
-      if (
-        desired &&
-        state.status === "failed" &&
-        !terminal.has(marmotErrorCode(state.cause))
-      )
-        void reconcile();
-    },
+    reconnected: retryTransient,
     status: () => getState().state.status,
     transitioning: () => transitioning,
     revision: () => getState().revision,

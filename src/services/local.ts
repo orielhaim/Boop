@@ -33,7 +33,7 @@ import { createAvatars } from "@/core/avatars/service";
 import { createProfileDirectory } from "@/core/profiles/directory";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { createStore } from "zustand/vanilla";
 import { createCallSignalingService } from "@/core/calling/signaling-service";
 import { createNip05Lookup } from "@/core/nostr/nip05-lookup";
@@ -294,6 +294,7 @@ async function start() {
       },
       close: marmot.closeAccount,
       beforeClose: () => beforeAccountClose?.(),
+      canRetry: active,
     });
     const messagingAvailable = () =>
       blocks.ready() &&
@@ -305,6 +306,7 @@ async function start() {
       open: marmot.openConversation,
       canOpen: canReadConversations,
     });
+    conversations.setForeground(AppState.currentState === "active");
     function updateConversations() {
       conversations.setAvailable(canReadConversations());
     }
@@ -802,10 +804,12 @@ async function start() {
           AppState.addEventListener("memoryWarning", speech.memoryWarning),
         );
         ownSubscription(
-          AppState.addEventListener(
-            "memoryWarning",
-            conversations.reclaimMemory,
-          ),
+          Platform.OS === "android"
+            ? marmot.observeMemoryPressure(conversations.reclaimMemory)
+            : AppState.addEventListener(
+                "memoryWarning",
+                conversations.reclaimMemory,
+              ),
         );
         own(
           attachGroupCallLifecycle({
@@ -906,7 +910,10 @@ async function start() {
             observeBlocks();
             observeRelayLiveness();
             speech.accountReady();
-            if (marmotSession.status() === "ready") downloads.accountReady();
+            if (marmotSession.status() === "ready") {
+              downloads.accountReady();
+              if (active()) catchUpMessaging();
+            }
             admitDownloadedVoice();
             void speech.reconcile();
             updateBackupConditions();
