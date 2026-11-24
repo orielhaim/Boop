@@ -41,7 +41,7 @@ import {
 } from "@/i18n";
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
-import { initializeLocal, LocalSessionLifecycle } from "@/services/local";
+import { initializeLocal } from "@/services/local";
 import { Onboarding } from "@/components/onboarding";
 import { IdentityMismatchError } from "@/core/identity";
 import { LocalContext, type LocalServices } from "@/services/local-context";
@@ -55,7 +55,7 @@ import {
 } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 
-export const unstable_settings = { initialRouteName: "(messenger)" };
+export const unstable_settings = { anchor: "(messenger)" };
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 SplashScreen.setOptions({ duration: 0, fade: false });
@@ -271,6 +271,11 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
   );
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
   const obscured = state.enabled && (state.locked || !state.active);
+  const { observeSession } = data;
+
+  useEffect(() => {
+    if (state.hasOpened) return observeSession();
+  }, [observeSession, state.hasOpened]);
 
   useEffect(() => {
     const update = (next: typeof AppState.currentState) =>
@@ -326,7 +331,6 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
   if (!state.hasOpened) return <LockScreen lock={lock} state={state} />;
   return (
     <LocalContext.Provider value={data}>
-      <LocalSessionLifecycle />
       <MarmotChatLists enabled={chatsEnabled}>
         <LocaleProvider direction={direction}>
           <IdentitySheetProvider

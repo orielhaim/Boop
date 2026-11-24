@@ -10,7 +10,7 @@ import { z } from "zod";
 
 export const giftWrapKind = 1059;
 export const inboxListKind = 10050;
-export const eventIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+const eventIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
 const event = z.object({
   id: eventIdSchema,
   pubkey: eventIdSchema,

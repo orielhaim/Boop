@@ -485,6 +485,18 @@ test("ringing waits for recipient, connected waits for media, and remote hangup 
   await Bun.sleep(0);
   expect(a.store.getState().call?.phase).toBe("connected");
   expect(b.store.getState().call?.phase).toBe("connected");
+  const connected = a.store.getState().call;
+  a.mute();
+  expect(a.store.getState().call).toMatchObject({
+    phase: "connected",
+    muted: true,
+  });
+  expect(connected).toMatchObject({ phase: "connected", muted: false });
+  a.mute();
+  expect(a.store.getState().call).toMatchObject({
+    phase: "connected",
+    muted: false,
+  });
   const { roomId: _id, offer: _offer, ...relaySignal } = initial;
   b.receive({ ...relaySignal, type: "call.end" });
   expect(b.store.getState().call?.phase).toBe("connected");

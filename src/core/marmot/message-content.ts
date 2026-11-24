@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const timestampStyle = z.enum([
+const timestampStyle = z.enum([
   "short_time",
   "long_time",
   "short_date",

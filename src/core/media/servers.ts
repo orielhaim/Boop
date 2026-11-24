@@ -6,7 +6,6 @@ export type MediaRole = (typeof mediaRoles)[number];
 export const serverListKind = 10063;
 export const maxMediaServers = 8;
 const privateDefault = "https://nostr.download";
-const previousProfileDefault = "https://blossom.nostr.build";
 const configuration = z.object({
   servers: z
     .array(
@@ -67,17 +66,6 @@ export function createMediaSettings(store: Store) {
       current = configuration.parse(JSON.parse(saved));
     } catch {
       current = { servers: [], mirror: false };
-    }
-    const previousDefaults: MediaConfiguration = {
-      servers: [
-        defaultEntry(previousProfileDefault, "profile"),
-        defaultEntry(privateDefault, "attachment"),
-      ],
-      mirror: false,
-    };
-    if (JSON.stringify(current) === JSON.stringify(previousDefaults)) {
-      current = recommendedMediaServers();
-      store.write(key, JSON.stringify(current));
     }
   }
 

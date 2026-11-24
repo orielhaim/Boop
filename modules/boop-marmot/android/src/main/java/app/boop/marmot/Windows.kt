@@ -191,7 +191,9 @@ internal class GroupCallWindow(
   private fun project(rows: List<AppMessageRecordFfi>): Document = mapOf(
     "kind" to "groupCall", "generation" to generation, "sequence" to sequence.toString(),
     "hasMoreBefore" to false, "hasMoreAfter" to false,
-    "announcements" to rows.filter { it.plaintext.length <= 750 }.map {
+    "announcements" to rows.filter {
+      it.plaintext.length <= 750 && it.plaintext.encodeToByteArray().size <= 750
+    }.map {
       mapOf("text" to it.plaintext, "sender" to it.sender, "sentAt" to it.recordedAt.toDouble(), "invalidated" to it.invalidated)
     },
   )

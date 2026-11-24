@@ -1,10 +1,8 @@
+import type { TransferProgress } from "../src/core/downloads/transport";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import {
-  createDownloadManager,
-  type TransferProgress,
-} from "../src/core/downloads/manager";
+import { createDownloadManager } from "../src/core/downloads/manager";
 import {
   downloadId,
   sourceId,

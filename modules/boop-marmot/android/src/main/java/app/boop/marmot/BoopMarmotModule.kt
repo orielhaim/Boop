@@ -831,12 +831,6 @@ class BoopMarmotModule : Module() {
         } finally { thumbnail.recycle() }
       }
     }
-    AsyncFunction("attachmentStatus") Coroutine { group: String, id: String, source: String, index: Int ->
-      withSession {
-        val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
-        it.kit.attachmentTransferSnapshot(it.account, group, listOf(target)).items.firstOrNull()?.state == AttachmentTransferStateFfi.READY
-      }
-    }
     AsyncFunction("retainedAttachmentBytes") Coroutine { group: String, id: String, source: String, index: Int ->
       withSession { active ->
         val target = AttachmentLocalTargetFfi(id, source, index.toUInt())
@@ -1041,9 +1035,6 @@ class BoopMarmotModule : Module() {
     }
     AsyncFunction("markRead") Coroutine { group: String, id: String ->
       withSession { it.kit.markTimelineMessageRead(it.account, group, id); Unit }
-    }
-    AsyncFunction("markUnread") Coroutine { group: String ->
-      withSession { it.kit.setChatManuallyUnread(it.account, group, true); Unit }
     }
     AsyncFunction("setArchived") Coroutine { group: String, archived: Boolean ->
       withSession { it.kit.setGroupArchived(it.account, group, archived); Unit }

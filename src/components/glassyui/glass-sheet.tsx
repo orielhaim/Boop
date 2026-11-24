@@ -28,29 +28,20 @@ import { useGlassTheme } from "./glass-provider";
 import { GlassSurface } from "./glass-surface";
 import {
   LAYER_EASING,
-  ModalLayerClose,
   ModalLayerCloseButton,
   ModalLayerDescription,
   ModalLayerHost,
   ModalLayerRoot,
   ModalLayerScrim,
   ModalLayerTitle,
-  ModalLayerTrigger,
   useLayerPresence,
   useModalLayer,
   useSafeInsets,
   type ModalLayerRootProps,
-  type ModalLayerSlotProps,
 } from "./lib/modal-layer";
 import { GLASS_MOTION } from "./lib/tokens";
 
 export type GlassSheetSide = "top" | "right" | "bottom" | "left";
-
-export type GlassSheetProps = ModalLayerRootProps;
-
-export type GlassSheetTriggerProps = ModalLayerSlotProps;
-
-export type GlassSheetCloseProps = ModalLayerSlotProps;
 
 export type GlassSheetContentProps = ViewProps & {
   children?: ReactNode;
@@ -74,27 +65,9 @@ const FLING_VELOCITY = 0.5;
 // Where a drag of the grabber ended: its distance and its speed, in points per millisecond.
 type GestureRelease = { dy: number; vy: number };
 
-/** Holds a sheet's open state for its trigger, content and close controls. */
-export function GlassSheet(props: GlassSheetProps) {
+/** Shares the controlled open state with the sheet content. */
+export function GlassSheet(props: ModalLayerRootProps) {
   return <ModalLayerRoot {...props} />;
-}
-
-/** Opens the sheet when its single child, such as a GlassButton, is pressed. */
-export function GlassSheetTrigger({ children }: GlassSheetTriggerProps) {
-  return (
-    <ModalLayerTrigger component="GlassSheetTrigger" root="GlassSheet">
-      {children}
-    </ModalLayerTrigger>
-  );
-}
-
-/** Closes the sheet when its single child is pressed. */
-export function GlassSheetClose({ children }: GlassSheetCloseProps) {
-  return (
-    <ModalLayerClose component="GlassSheetClose" root="GlassSheet">
-      {children}
-    </ModalLayerClose>
-  );
 }
 
 // Upward drags meet growing resistance instead of lifting the sheet off its edge.

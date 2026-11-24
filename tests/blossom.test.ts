@@ -1,9 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { generateSecretKey, verifyEvent } from "nostr-tools";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -42,11 +39,8 @@ const response = (overrides = {}) =>
     { status: 201 },
   );
 
-test("file-backed Blossom uses a raw signed PUT and verifies the returned descriptor", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "boop-blossom-"));
-  const filename = join(directory, "ciphertext.bin");
+test("Blossom checks permission before a raw signed PUT and verifies the returned descriptor", async () => {
   const bytes = Uint8Array.from({ length: 64 * 1024 + 16 }, (_, i) => i % 251);
-  writeFileSync(filename, bytes);
   const ciphertextHash = digest(bytes);
   const blobUrl = `${origin}/${ciphertextHash}`;
   const methods: string[] = [];
@@ -90,44 +84,26 @@ test("file-backed Blossom uses a raw signed PUT and verifies the returned descri
   });
   try {
     const endpoint = new URL("/upload", server.url);
-    const progress: unknown[] = [];
     const client = createBlossomClient(signer, {
       sha256,
-      request: (_url, { method, headers, signal }) =>
-        fetch(endpoint, { method, headers, signal }),
-      async putFile({ url, uri, headers, signal, progress }) {
-        expect(url).toBe(`${origin}/upload`);
-        expect(uri).toBe(filename);
-        progress?.(32768, bytes.length);
-        const response = await fetch(endpoint, {
-          method: "PUT",
-          headers,
-          signal,
-          body: Bun.file(uri),
-        });
-        return { status: response.status, body: await response.text() };
-      },
+      request: (_url, { method, headers, signal, body }) =>
+        fetch(endpoint, { method, headers, signal, body }),
     });
     await expect(
       client.put(
         origin,
         {
-          uri: filename,
+          bytes,
           size: bytes.length,
           hash: ciphertextHash,
           mime: "application/octet-stream",
         },
         new AbortController().signal,
-        {
-          progress: (state) => progress.push(state),
-        },
       ),
     ).resolves.toBe(blobUrl);
     expect(methods).toEqual(["HEAD", "PUT"]);
-    expect(progress).toEqual(["checking", "uploading", 49, "validating"]);
   } finally {
     await server.stop(true);
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 

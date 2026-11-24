@@ -18,5 +18,6 @@
 - Process voice transcription through the protected account's speech queue. Open only retained, verified Marmot audio leases. Require on-device recognition and keep transcript text and timings in the encrypted Boop cache.
 - Check Open Later against the loaded conversation window on open and paging. Store verified plaintext in the active account's SQLite cache. Keep decryption off the background schedule.
 - Use typed i18next resources in English and Hebrew for app-owned copy. Check LTR and RTL. Keep original message bytes and local-only derived text separate.
+- Keep Fumadocs as the website’s content framework and Drizzle Kit as the SQLite migration workflow. Keep their configuration and generated migrations when cleaning up the codebase.
 - Use the current SQLite baseline on a fresh database. See [Development](DEVELOPMENT.md) for explicit reset and verification commands.
-- Use Luna as a sub-agent for exploration.
+- Use Luna sub-agents when independent exploration, implementation, or review helps. Use multiple agents in parallel or in successive passes at any stage of a task. Give each agent a distinct scope and verify their findings and changes before integrating them.

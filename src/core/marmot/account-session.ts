@@ -1,3 +1,5 @@
+import { createStore } from "zustand/vanilla";
+import { marmotErrorCode } from "./errors";
 import { sameRelays } from "../nostr/config";
 import type { MarmotReadiness } from "./native";
 
@@ -27,16 +29,18 @@ export function createMarmotSession({
 }) {
   let desired: Configuration | null = null;
   let active: Configuration | null = null;
-  let state: State = { status: "pending" };
+  const { getState, setState, subscribe } = createStore<{
+    state: State;
+    revision: number;
+  }>(() => ({
+    state: { status: "pending" },
+    revision: 0,
+  }));
   let transition = Promise.resolve();
-  let revision = 0;
   let transitioning = false;
-  const listeners = new Set<() => void>();
 
-  function publish(next: State) {
-    state = next;
-    revision++;
-    for (const listener of listeners) listener();
+  function publish(state: State) {
+    setState({ state, revision: getState().revision + 1 });
   }
 
   function reconcile(pauseMessaging = false) {
@@ -86,37 +90,30 @@ export function createMarmotSession({
         desired = null;
         await reconcile(pauseMessaging);
       } else await transition;
+      const { state } = getState();
       if (state.status === "failed") throw state.cause;
     },
     retry() {
-      if (desired && state.status === "failed") return reconcile();
+      if (desired && getState().state.status === "failed") return reconcile();
       return transition;
     },
     reconnected() {
-      if (!desired || state.status !== "failed") return;
-      const { cause } = state;
+      const { state } = getState();
       if (
-        typeof cause === "object" &&
-        cause &&
-        "code" in cause &&
-        typeof cause.code === "string" &&
-        terminal.has(cause.code)
+        desired &&
+        state.status === "failed" &&
+        !terminal.has(marmotErrorCode(state.cause))
       )
-        return;
-      void reconcile();
+        void reconcile();
     },
-    status: () => state.status,
+    status: () => getState().state.status,
     transitioning: () => transitioning,
-    revision: () => revision,
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    revision: () => getState().revision,
+    subscribe,
     async ready() {
       await Promise.resolve();
       await transition;
+      const { state } = getState();
       if (state.status === "failed") throw state.cause;
       if (state.status !== "ready") throw new Error("AccountClosed");
     },

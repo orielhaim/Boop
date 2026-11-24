@@ -76,8 +76,8 @@ test("recommended servers keep roles independent and a saved empty list stays em
   ).toEqual([second, first]);
 });
 
-test("opening media settings upgrades the original defaults only", () => {
-  const legacy: MediaConfiguration = {
+test("opening media settings preserves explicitly saved storage hosts", () => {
+  const saved: MediaConfiguration = {
     servers: [
       {
         origin: "https://blossom.nostr.build",
@@ -93,15 +93,15 @@ test("opening media settings upgrades the original defaults only", () => {
     mirror: false,
   };
   const key = "media.servers.v1";
-  const stock = settingsFor(new Map([[key, JSON.stringify(legacy)]]));
+  const stock = settingsFor(new Map([[key, JSON.stringify(saved)]]));
   expect(
     stock.settings.configured("profile").map(({ origin }) => origin),
-  ).toEqual(["https://blossom.jumble.social"]);
+  ).toEqual(["https://blossom.nostr.build"]);
   expect(createMediaSettings(stock.store).snapshot()).toEqual(
     stock.settings.snapshot(),
   );
 
-  const customized = { ...legacy, mirror: true };
+  const customized = { ...saved, mirror: true };
   const custom = settingsFor(new Map([[key, JSON.stringify(customized)]]));
   expect(custom.settings.snapshot()).toEqual(customized);
 });

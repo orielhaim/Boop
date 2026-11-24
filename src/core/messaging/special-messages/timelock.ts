@@ -28,8 +28,6 @@ export const maxTimeLockDate = Date.UTC(9999, 11, 31, 23, 59, 56);
 const maxRound = roundAt(maxTimeLockDate, quicknet) + 1;
 const maxTextLength = 4_000;
 const maxCiphertext = 17_000;
-export const maxTimeLockPayload = 18_000;
-export const maxTimeLockEnvelope = 48_000;
 export const timeLockKind = 24881;
 const timestamp = z
   .number()
@@ -66,7 +64,6 @@ const contentSchema = scheduleSchema
   })
   .strict();
 export type TimeLockContent = z.infer<typeof contentSchema>;
-export type MessageContent = { type: "text"; body: string } | TimeLockContent;
 
 const armorHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
 const textEncoder = new TextEncoder();

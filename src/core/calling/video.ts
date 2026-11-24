@@ -53,16 +53,16 @@ const header = {
   callId: opaqueId,
   sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 };
-export const videoOffer = z.strictObject({
+const videoOffer = z.strictObject({
   ...header,
   type: z.literal("offer"),
 });
-export const videoStop = z.strictObject({ ...header, type: z.literal("stop") });
+const videoStop = z.strictObject({ ...header, type: z.literal("stop") });
 export const cameraMetadata = z.strictObject({
   ...header,
   kind: z.literal("camera"),
 });
-export const videoReply = z.strictObject({ ...header, allowed: z.boolean() });
+const videoReply = z.strictObject({ ...header, allowed: z.boolean() });
 type Offer = z.infer<typeof videoOffer>;
 type Stop = z.infer<typeof videoStop>;
 type Metadata = z.infer<typeof cameraMetadata>;

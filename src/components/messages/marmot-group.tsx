@@ -59,7 +59,8 @@ import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
-import { marmotErrorCode, useMarmotWindow } from "./marmot-window";
+import { marmotErrorCode } from "@/core/marmot/errors";
+import { useMarmotWindow } from "./marmot-window";
 import {
   GroupShortcut,
   GroupShortcuts,

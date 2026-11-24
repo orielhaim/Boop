@@ -702,12 +702,6 @@ public final class BoopMarmotModule: Module {
         return result
       }
     }
-    AsyncFunction("attachmentStatus") { (group: String, id: String, source: String, index: UInt32) async throws -> Bool in
-      try await self.withAccount { kit, account in
-        let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
-        return try await kit.attachmentTransferSnapshot(accountRef: account, groupIdHex: group, targets: [target]).items.first?.state == .ready
-      }
-    }
     AsyncFunction("retainedAttachmentBytes") { (group: String, id: String, source: String, index: UInt32) async throws -> Double? in
       try await self.withAccount { kit, account in
         let target = AttachmentLocalTargetFfi(messageIdHex: id, sourceMessageIdHex: source, attachmentIndex: index)
@@ -904,9 +898,6 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("markRead") { (group: String, id: String) async throws in
       try await self.withAccount { _ = try $0.markTimelineMessageRead(accountRef: $1, groupIdHex: group, messageIdHex: id) }
-    }
-    AsyncFunction("markUnread") { (group: String) async throws in
-      try await self.withAccount { _ = try $0.setChatManuallyUnread(accountRef: $1, groupIdHex: group, manuallyUnread: true) }
     }
     AsyncFunction("setArchived") { (group: String, archived: Bool) async throws in
       try await self.withAccount { _ = try await $0.setGroupArchived(accountRef: $1, groupIdHex: group, archived: archived) }

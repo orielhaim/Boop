@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CallView } from "./controller";
 import type { VideoState } from "./video";
 
-export const systemCallEvent = z.object({
+const systemCallEvent = z.object({
   kind: z.enum([
     "end",
     "open",

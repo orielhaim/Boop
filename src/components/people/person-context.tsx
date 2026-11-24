@@ -5,13 +5,11 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingsGroup, SettingsRow } from "@/components/settings/group";
 import { conversationRoute } from "@/components/messages/marmot-inbox";
-import { useMarmotWindow } from "@/components/messages/marmot-window";
+import { useMarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import { marmot } from "@/core/marmot/native";
 import { callHistory } from "@/db/schema";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
-
-const openChats = () => marmot.openChatList("chats");
 
 export function PersonContext({ publicKey }: { publicKey: string }) {
   const { t, i18n } = useTranslation(namespaces);
@@ -27,7 +25,9 @@ export function PersonContext({ publicKey }: { publicKey: string }) {
     [db, publicKey],
   );
   const [show, setShow] = useState(false);
-  const { snapshot } = useMarmotWindow(openChats, enabled && show);
+  const {
+    inbox: { snapshot },
+  } = useMarmotChatLists();
   const [matches, setMatches] = useState<{ id: string; name: string }[]>();
   useEffect(() => {
     if (!snapshot || !show) return;

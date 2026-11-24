@@ -13,8 +13,6 @@ import {
   type DownloadSource,
 } from "./types";
 
-export type { TransferProgress } from "./transport";
-
 type Store = {
   load(): DownloadJob[];
   save(jobs: DownloadJob[]): void;

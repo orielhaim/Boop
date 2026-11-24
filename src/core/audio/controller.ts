@@ -1,4 +1,5 @@
 import { PlaybackDownloadCancelled } from "./download";
+import { immer } from "zustand/middleware/immer";
 import { createStore } from "zustand/vanilla";
 import {
   initialPlayback,
@@ -71,6 +72,18 @@ type Session = {
   listened: boolean;
 };
 type Preferences = { external: boolean; voiceSpeed: Speed };
+type AudioState = Pick<
+  SavedPlayback,
+  "upcoming" | "history" | "repeat" | "shuffle"
+> & {
+  current?: Current;
+  pausedMusic?: PausedMusic;
+  preparingVoice?: string;
+  preferences: Preferences;
+  speed: Speed;
+  blocked: boolean;
+};
+
 type Dependencies = {
   saved?: SavedPlayback;
   save(value: SavedPlayback): void;
@@ -95,20 +108,22 @@ type Dependencies = {
 
 export function createAudioController(deps: Dependencies) {
   const saved = deps.saved ?? initialPlayback;
-  const store = createStore(() => ({
-    current: saved.current
-      ? current(saved.current.track, saved.current.position, "restored")
-      : undefined,
-    upcoming: saved.upcoming,
-    history: saved.history,
-    repeat: saved.repeat,
-    shuffle: saved.shuffle,
-    preferences: deps.preferences,
-    speed: saved.current?.track.voice ? deps.preferences.voiceSpeed : speeds[1],
-    blocked: false,
-    preparingVoice: undefined as string | undefined,
-    pausedMusic: undefined as PausedMusic | undefined,
-  }));
+  const store = createStore<AudioState>()(
+    immer(() => ({
+      current: saved.current
+        ? current(saved.current.track, saved.current.position, "restored")
+        : undefined,
+      upcoming: saved.upcoming,
+      history: saved.history,
+      repeat: saved.repeat,
+      shuffle: saved.shuffle,
+      preferences: deps.preferences,
+      speed: saved.current?.track.voice
+        ? deps.preferences.voiceSpeed
+        : speeds[1],
+      blocked: false,
+    })),
+  );
   const get = store.getState;
   const set = store.setState;
   let music = saved.music;
@@ -326,9 +341,10 @@ export function createAudioController(deps: Dependencies) {
   function failSession(session: Session) {
     if (activeSession !== session) return;
     if (session.track.voice && restoreMusic()) return;
-    const active = get().current;
     detach();
-    if (active) set({ current: { ...active, phase: "error" } });
+    set(({ current }) => {
+      if (current) current.phase = "error";
+    });
     persist();
   }
 
@@ -699,10 +715,11 @@ export function createAudioController(deps: Dependencies) {
       return;
     const value = Math.min(active.duration, Math.max(0, position));
     const engine = parked ? suspended?.engine : activeSession?.engine;
-    if (parked) {
-      music = { track: parked.track, position: value };
-      set({ pausedMusic: { ...parked, position: value } });
-    } else set({ current: { ...active, position: value } });
+    if (parked) music = { track: parked.track, position: value };
+    set((state) => {
+      const playback = parked ? state.pausedMusic : state.current;
+      if (playback) playback.position = value;
+    });
     persist();
     await engine?.seek(value).catch(() => undefined);
   }
@@ -715,21 +732,31 @@ export function createAudioController(deps: Dependencies) {
     else void play(active.track);
   }
 
+  function updatePreferences(patch: Partial<Preferences>) {
+    const voiceSpeed = get().current?.track.voice
+      ? patch.voiceSpeed
+      : undefined;
+    set((state) => {
+      Object.assign(state.preferences, patch);
+      if (voiceSpeed !== undefined) state.speed = voiceSpeed;
+    });
+    deps.savePreferences(get().preferences);
+    if (voiceSpeed !== undefined) activeSession?.engine?.speed(voiceSpeed);
+  }
+
   function speed(speed: Speed, fromPlayer = false) {
     if (!speeds.includes(speed)) return;
-    const parked = fromPlayer ? get().pausedMusic : undefined;
-    if (parked) {
-      set({ pausedMusic: { ...parked, speed } });
+    if (fromPlayer && get().pausedMusic) {
+      set(({ pausedMusic }) => {
+        if (pausedMusic) pausedMusic.speed = speed;
+      });
       suspended?.engine?.speed(speed);
-      return;
+    } else if (get().current?.track.voice) {
+      updatePreferences({ voiceSpeed: speed });
+    } else {
+      set({ speed });
+      activeSession?.engine?.speed(speed);
     }
-    if (get().current?.track.voice) {
-      const preferences = { ...get().preferences, voiceSpeed: speed };
-      set({ preferences });
-      deps.savePreferences(preferences);
-    }
-    set({ speed });
-    activeSession?.engine?.speed(speed);
   }
 
   function stopPlayer() {
@@ -749,7 +776,6 @@ export function createAudioController(deps: Dependencies) {
       controls();
       return;
     }
-    const active = get().current;
     set({ blocked });
     if (blocked) {
       handoff?.abort();
@@ -758,8 +784,11 @@ export function createAudioController(deps: Dependencies) {
       // Remove the native media session as well, so remote Play cannot bypass a call.
       detach();
       releaseSuspended();
-      if (active)
-        set({ current: { ...active, phase: "paused", metadata: undefined } });
+      set(({ current }) => {
+        if (!current) return;
+        current.phase = "paused";
+        current.metadata = undefined;
+      });
       persist();
     }
   }
@@ -799,7 +828,9 @@ export function createAudioController(deps: Dependencies) {
       const active = get().current;
       if (active?.phase === "loading") {
         detach();
-        set({ current: { ...active, phase: "paused" } });
+        set(({ current }) => {
+          if (current) current.phase = "paused";
+        });
         persist();
       } else activeSession?.engine?.pause();
       const task = open(token.signal)
@@ -893,15 +924,7 @@ export function createAudioController(deps: Dependencies) {
       });
       persist();
     },
-    preferences(patch: Partial<Preferences>) {
-      const preferences = { ...get().preferences, ...patch };
-      set({ preferences });
-      deps.savePreferences(preferences);
-      if (patch.voiceSpeed && get().current?.track.voice) {
-        set({ speed: patch.voiceSpeed });
-        activeSession?.engine?.speed(patch.voiceSpeed);
-      }
-    },
+    preferences: updatePreferences,
     speed,
     privacy(state: { locked: boolean; enabled: boolean }) {
       locked = state.locked;
@@ -957,4 +980,3 @@ export function createAudioController(deps: Dependencies) {
     },
   };
 }
-export type AudioController = ReturnType<typeof createAudioController>;

@@ -28,7 +28,7 @@ export const marmotDownloads: DownloadTransport<MarmotDownload> = {
     if (
       !changed &&
       action === "remove" &&
-      (await marmot.attachmentStatus(...target))
+      (await marmot.attachmentTransferState(...target)) === "ready"
     )
       throw new Error("DownloadRemoveFailed");
   },

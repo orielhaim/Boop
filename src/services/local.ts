@@ -33,8 +33,8 @@ import { createAvatars } from "@/core/avatars/service";
 import { createProfileDirectory } from "@/core/profiles/directory";
 import { getLocales } from "expo-localization";
 import { addDatabaseChangeListener } from "expo-sqlite";
-import { useEffect } from "react";
 import { AppState } from "react-native";
+import { createStore } from "zustand/vanilla";
 import { createCallSignalingService } from "@/core/calling/signaling-service";
 import { createNip05Lookup } from "@/core/nostr/nip05-lookup";
 import { createBlossomServerList } from "@/core/media/server-list";
@@ -106,7 +106,6 @@ import { createDerivedTranslations } from "@/db/translations";
 import { purgeExpiredOpenedMessages } from "@/db/open-later";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
-import { useLocal } from "./local-context";
 
 async function start() {
   const started = performance.now();
@@ -423,20 +422,16 @@ async function start() {
       if (message.type === "call.rtc") media.receive(message);
       else calling.receive(message);
     });
-    const nativeOpen = attachSystemPresentation(calling, {
-      privateMode: () => lock.getState().enabled,
-      subscribe: lock.subscribe,
-    });
+    const nativeOpen = createStore<{ id: string | null }>(() => ({ id: null }));
+    const callActive = ({ call }: ReturnType<typeof calling.store.getState>) =>
+      Boolean(call && call.phase !== "ended");
     const speech = createVoiceTranscription({
       db,
       account: identity.publicKey,
       appLocale: () => i18n.language,
       active,
       available: messagingAvailable,
-      audioBusy: () => {
-        const call = calling.store.getState().call;
-        return Boolean(call && call.phase !== "ended");
-      },
+      audioBusy: () => callActive(calling.store.getState()),
       blocked: privacy.isBlocked,
       hidden: (group, id) => chatPreferences.hidden(group).includes(id),
     });
@@ -543,9 +538,7 @@ async function start() {
     lock.subscribe(() => audio.privacy(lock.getState()));
     blocks.subscribe(audio.revalidate);
     chatPreferences.subscribe(audio.revalidate);
-    calling.store.subscribe(({ call }) =>
-      audio.call(Boolean(call && call.phase !== "ended")),
-    );
+
     marmotSession.subscribe(() => {
       if (marmotSession.status() === "ready") closingAudioAttachments = false;
     });
@@ -558,7 +551,358 @@ async function start() {
         downloads.beforeAccountClose(),
       ]);
     };
-    appLock = lock;
+    let stopObserving: (() => void) | undefined;
+
+    function observeSession() {
+      if (!isCurrent() || stopObserving) return;
+      const databasePath =
+        db.$client.getFirstSync<{ file: string }>(
+          "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        )?.file ?? db.$client.databasePath;
+      let checkAfterPrompt: ReturnType<typeof setTimeout> | undefined;
+      const attachmentOrigin = () =>
+        mediaSdk.configured("attachment")[0]?.origin ?? null;
+      let mediaOrigin = attachmentOrigin();
+      let discovery = accountRelays.snapshot().discovery;
+      let mounted = true;
+      let eligible = false;
+      let catchUp: Promise<void> | undefined;
+      let closeRelayLiveness: (() => void) | undefined;
+      function observeRelayLiveness() {
+        if (isCurrent() && eligible && marmotSession.status() === "ready") {
+          if (closeRelayLiveness) return;
+          try {
+            closeRelayLiveness = marmotRelays.observe(
+              identity.publicKey,
+              (rows) => {
+                const previous = accountRelays.snapshot().liveness;
+                if (
+                  !sameRelays(
+                    previous.map(({ url }) => url),
+                    rows.map(({ url }) => url),
+                  )
+                )
+                  void accountRelays.refresh().catch(() => undefined);
+                accountRelays.setLiveness(rows);
+              },
+              () => {
+                closeRelayLiveness = undefined;
+                accountRelays.setLiveness([]);
+              },
+            );
+          } catch {
+            accountRelays.setLiveness([]);
+          }
+        } else {
+          closeRelayLiveness?.();
+          closeRelayLiveness = undefined;
+          accountRelays.setLiveness([]);
+        }
+      }
+      let conditionsRevision = 0;
+      function updateBackupConditions() {
+        const revision = ++conditionsRevision;
+        if (!chatPreferences.enabled()) return;
+        void marmotSession
+          .ready()
+          .then(async () => {
+            if (!mounted || revision !== conditionsRevision) return;
+            const eligible = AppState.currentState === "active";
+            if (!eligible) {
+              await marmot.backupConditions(false, false);
+              return;
+            }
+            const [network, battery] = await Promise.all([
+              getNetworkStateAsync(),
+              getBatteryStateAsync(),
+            ]);
+            if (
+              mounted &&
+              revision === conditionsRevision &&
+              AppState.currentState === "active"
+            ) {
+              await marmot.backupConditions(
+                network.type === NetworkStateType.WIFI &&
+                  network.isConnected === true,
+                battery === BatteryState.CHARGING ||
+                  battery === BatteryState.FULL,
+              );
+            }
+          })
+          .catch(() => undefined);
+      }
+      function connectMessaging() {
+        if (active() && chatPreferences.enabled())
+          void marmotSession.start(discovery, mediaOrigin);
+      }
+      function observeBlocks() {
+        if (mounted && isCurrent() && !marmotSession.transitioning())
+          blocks.start();
+        else blocks.stop();
+      }
+      function background() {
+        calling.setForeground(false);
+        if (calling.isRequestingMicrophone()) return;
+        callSignaling.stop();
+        relays.stop();
+      }
+      function catchUpMessaging() {
+        if (catchUp || !chatPreferences.enabled()) return;
+        catchUp = marmotSession
+          .ready()
+          .then(async () => {
+            if (mounted && active()) await marmot.catchUp();
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            catchUp = undefined;
+          });
+      }
+      function updateRelayEligibility() {
+        const next = active();
+        if (!mounted || !isCurrent() || next === eligible) return;
+        eligible = next;
+        if (!next) {
+          observeRelayLiveness();
+          if (lock.getState().locked) {
+            callSignaling.stop();
+            relays.stop();
+          }
+          return;
+        }
+        if (blocks.ready()) callSignaling.start();
+        relays.start();
+        connectMessaging();
+        marmotSession.reconnected();
+        observeRelayLiveness();
+        void accountRelays.refresh(true).catch(() => undefined);
+        catchUpMessaging();
+      }
+      function syncPrivacyAndRouting() {
+        downloads.sync();
+        speech.sync();
+        admitDownloadedVoice();
+        const enabled = active();
+        profiles.setActive(enabled);
+        avatars.setActive(enabled);
+        profileEditor.setActive(enabled);
+        updateRelayEligibility();
+        observeBlocks();
+        recoverNetwork();
+      }
+      const update = (state: typeof AppState.currentState) => {
+        clearTimeout(checkAfterPrompt);
+        if (state === "active") calling.setForeground(true);
+        else if (state === "background" && !lock.getState().authenticating)
+          background();
+        syncPrivacyAndRouting();
+        updateBackupConditions();
+      };
+      let networkRevision = 0;
+      let lastNetwork: NetworkRoute | undefined;
+      let outboundWake = false;
+      function updateNetwork(
+        state: Awaited<ReturnType<typeof getNetworkStateAsync>>,
+      ) {
+        if (!mounted) return;
+        const { isConnected, isInternetReachable, type } = state;
+        downloads.network(
+          isConnected !== false,
+          type === NetworkStateType.CELLULAR,
+        );
+        if (isConnected === undefined) return;
+        const connected = isConnected && isInternetReachable !== false;
+        const previous = lastNetwork;
+        if (previous?.connected === connected && previous.type === type) return;
+        lastNetwork = { connected, type };
+        updateBackupConditions();
+        if (!connectivityRestored(previous, lastNetwork)) return;
+        outboundWake = true;
+        recoverNetwork();
+      }
+      function recoverNetwork() {
+        if (!outboundWake || !lastNetwork?.connected || !active()) return;
+        outboundWake = false;
+        observeBlocks();
+        relays.reconnect();
+        profileEditor.retry();
+        profiles.routesChanged();
+        void accountRelays.refresh(true).catch(() => undefined);
+        if (chatPreferences.enabled()) {
+          marmotSession.reconnected();
+          observeRelayLiveness();
+          void marmotSession
+            .ready()
+            .then(async () => {
+              if (mounted && active() && lastNetwork?.connected)
+                await marmot.notifyConnectivityRestored();
+            })
+            .catch(() => undefined);
+          catchUpMessaging();
+        }
+      }
+      const disposers: (() => void)[] = [];
+      function own(dispose: (() => void) | undefined) {
+        if (dispose) disposers.push(dispose);
+      }
+      function ownSubscription(subscription: { remove(): void }) {
+        own(() => subscription.remove());
+      }
+      const stop = () => {
+        if (!mounted) return;
+        mounted = false;
+        stopObserving = undefined;
+        clearTimeout(checkAfterPrompt);
+        for (const dispose of disposers.reverse()) dispose();
+        blocks.stop();
+        eligible = false;
+        observeRelayLiveness();
+        profiles.setActive(false);
+        avatars.setActive(false);
+        profileEditor.setActive(false);
+        if (isCurrent()) void marmotSession.stop().catch(() => undefined);
+        callSignaling.stop();
+        relays.stop();
+      };
+      stopObserving = stop;
+      try {
+        own(
+          attachSystemPresentation(calling, nativeOpen, {
+            privateMode: () => lock.getState().enabled,
+            subscribe: lock.subscribe,
+          }),
+        );
+        own(speech.start());
+        downloads.network(false, false);
+        own(downloads.start());
+        own(
+          calling.store.subscribe((next, previous) => {
+            const busy = callActive(next);
+            if (busy === callActive(previous)) return;
+            audio.call(busy);
+            speech.sync();
+          }),
+        );
+        audio.call(callActive(calling.store.getState()));
+        ownSubscription(addLowPowerModeListener(speech.power));
+        ownSubscription(
+          AppState.addEventListener("memoryWarning", speech.memoryWarning),
+        );
+        own(
+          attachGroupCallLifecycle({
+            calling,
+            localKey: identity.publicKey,
+            ready: marmotSession.ready,
+            client: marmot,
+          }),
+        );
+        let profileRoutes = relayRoutes(relays.configuration());
+        own(
+          accountRelays.subscribe(() => {
+            const next = accountRelays.snapshot().discovery;
+            if (!sameRelays(discovery, next)) {
+              discovery = next;
+              connectMessaging();
+            }
+            const routes = relayRoutes(relays.configuration());
+            if (!sameRelays(profileRoutes, routes)) {
+              profileRoutes = routes;
+              profiles.routesChanged();
+            }
+          }),
+        );
+        ownSubscription(
+          addDatabaseChangeListener(({ databaseFilePath, tableName }) => {
+            if (databaseFilePath === databasePath && tableName === "contacts") {
+              queueMicrotask(() => {
+                if (mounted && isCurrent()) avatars.invalidate();
+              });
+            }
+          }),
+        );
+        own(
+          blocks.subscribe(() => {
+            speech.sync();
+            if (!blocks.ready() || !active()) return;
+            callSignaling.start();
+            void speech.reconcile();
+            downloads.accountReady();
+          }),
+        );
+        own(
+          lock.subscribe(() => {
+            syncPrivacyAndRouting();
+            if (
+              lock.getState().authenticating ||
+              AppState.currentState !== "background"
+            )
+              return;
+            clearTimeout(checkAfterPrompt);
+            checkAfterPrompt = setTimeout(() => {
+              if (
+                AppState.currentState === "background" &&
+                !lock.getState().authenticating
+              )
+                background();
+            }, 800);
+          }),
+        );
+        ownSubscription(AppState.addEventListener("change", update));
+        let chatsEnabled = chatPreferences.enabled();
+        own(
+          chatPreferences.subscribe(() => {
+            const next = chatPreferences.enabled();
+            if (next === chatsEnabled) return;
+            chatsEnabled = next;
+            speech.sync();
+            if (next) connectMessaging();
+            else void marmotSession.stop(true).catch(() => undefined);
+          }),
+        );
+        own(
+          mediaSdk.subscribe(() => {
+            const next = attachmentOrigin();
+            if (next === mediaOrigin) return;
+            mediaOrigin = next;
+            connectMessaging();
+          }),
+        );
+        own(
+          marmotSession.subscribe(() => {
+            observeBlocks();
+            observeRelayLiveness();
+            speech.accountReady();
+            if (marmotSession.status() === "ready") downloads.accountReady();
+            admitDownloadedVoice();
+            void speech.reconcile();
+            updateBackupConditions();
+          }),
+        );
+        ownSubscription(
+          addBatteryStateListener(() => {
+            updateBackupConditions();
+            void speech.power();
+          }),
+        );
+        update(AppState.currentState);
+        ownSubscription(
+          addNetworkStateListener((state) => {
+            networkRevision += 1;
+            updateNetwork(state);
+          }),
+        );
+        void getNetworkStateAsync()
+          .then((state) => {
+            if (mounted && networkRevision === 0) updateNetwork(state);
+          })
+          .catch(() => undefined);
+      } catch (error) {
+        stop();
+        throw error;
+      }
+      return stop;
+    }
+
     messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
       status: "ready" as const,
@@ -581,13 +925,8 @@ async function start() {
           copyInstallationPreferences(db, installation);
           selectAccount(installation, target);
           retired = true;
-          blocks.stop();
           calling.end();
-          callSignaling.stop();
-          relays.stop();
-          profiles.setActive(false);
-          avatars.setActive(false);
-          profileEditor.setActive(false);
+          stopObserving?.();
           await audio.close();
           await marmotSession.stop();
           await marmotAccounts.signOut(account.key);
@@ -607,7 +946,7 @@ async function start() {
       downloads,
       audio,
       audioSources,
-      admitDownloadedVoice,
+      observeSession,
       avatars,
       previews,
       mediaSdk,
@@ -652,382 +991,4 @@ export function initializeLocal() {
 export function finishOnboarding(db: Awaited<ReturnType<typeof openDatabase>>) {
   db.$client.closeSync();
   initialization = undefined;
-}
-
-export function LocalSessionLifecycle() {
-  const {
-    db,
-    identity,
-    relays,
-    accountRelays,
-    callSignaling,
-    calling,
-    lock,
-    avatars,
-    marmotSession,
-    chatPreferences,
-    mediaSdk,
-    profiles,
-    profileEditor,
-    speech,
-    downloads,
-    admitDownloadedVoice,
-    privacy,
-    isCurrent,
-  } = useLocal();
-  useEffect(() => {
-    const stopSpeech = speech.start();
-    downloads.network(false, false);
-    const stopDownloads = downloads.start();
-    const unsubscribeSpeechCall = calling.store.subscribe(speech.sync);
-    const lowPower = addLowPowerModeListener(speech.power);
-    const memory = AppState.addEventListener(
-      "memoryWarning",
-      speech.memoryWarning,
-    );
-    const stopGroupCalls = attachGroupCallLifecycle({
-      calling,
-      localKey: identity.publicKey,
-      ready: marmotSession.ready,
-      client: marmot,
-    });
-    const databasePath =
-      db.$client.getFirstSync<{ file: string }>(
-        "SELECT file FROM pragma_database_list WHERE name = 'main'",
-      )?.file ?? db.$client.databasePath;
-    let checkAfterPrompt: ReturnType<typeof setTimeout> | undefined;
-    const attachmentOrigin = () =>
-      mediaSdk.configured("attachment")[0]?.origin ?? null;
-    let mediaOrigin = attachmentOrigin();
-    let discovery = accountRelays.snapshot().discovery;
-    let mounted = true;
-    let eligible = false;
-    let catchUp: Promise<void> | undefined;
-    let closeRelayLiveness: (() => void) | undefined;
-    function observeRelayLiveness() {
-      if (isCurrent() && eligible && marmotSession.status() === "ready") {
-        if (closeRelayLiveness) return;
-        try {
-          closeRelayLiveness = marmotRelays.observe(
-            identity.publicKey,
-            (rows) => {
-              const previous = accountRelays.snapshot().liveness;
-              if (
-                !sameRelays(
-                  previous.map(({ url }) => url),
-                  rows.map(({ url }) => url),
-                )
-              )
-                void accountRelays.refresh().catch(() => undefined);
-              accountRelays.setLiveness(rows);
-            },
-            () => {
-              closeRelayLiveness = undefined;
-              accountRelays.setLiveness([]);
-            },
-          );
-        } catch {
-          accountRelays.setLiveness([]);
-        }
-      } else {
-        closeRelayLiveness?.();
-        closeRelayLiveness = undefined;
-        accountRelays.setLiveness([]);
-      }
-    }
-    let conditionsRevision = 0;
-    function updateBackupConditions() {
-      const revision = ++conditionsRevision;
-      if (!chatPreferences.enabled()) return;
-      void marmotSession
-        .ready()
-        .then(async () => {
-          if (!mounted || revision !== conditionsRevision) return;
-          const eligible = AppState.currentState === "active";
-          if (!eligible) {
-            await marmot.backupConditions(false, false);
-            return;
-          }
-          const [network, battery] = await Promise.all([
-            getNetworkStateAsync(),
-            getBatteryStateAsync(),
-          ]);
-          if (
-            mounted &&
-            revision === conditionsRevision &&
-            AppState.currentState === "active"
-          ) {
-            await marmot.backupConditions(
-              network.type === NetworkStateType.WIFI &&
-                network.isConnected === true,
-              battery === BatteryState.CHARGING ||
-                battery === BatteryState.FULL,
-            );
-          }
-        })
-        .catch(() => undefined);
-    }
-    function connectMessaging() {
-      if (!isCurrent() || lock.getState().locked) return;
-      if (chatPreferences.enabled() && AppState.currentState === "active")
-        void marmotSession.start(discovery, mediaOrigin);
-    }
-    let profileRoutes = relayRoutes(relays.configuration());
-    const unsubscribeRelaySettings = accountRelays.subscribe(() => {
-      const next = accountRelays.snapshot().discovery;
-      if (!sameRelays(discovery, next)) {
-        discovery = next;
-        connectMessaging();
-      }
-      const routes = relayRoutes(relays.configuration());
-      if (!sameRelays(profileRoutes, routes)) {
-        profileRoutes = routes;
-        profiles.routesChanged();
-      }
-    });
-    const dbChanges = addDatabaseChangeListener(
-      ({ databaseFilePath, tableName }) => {
-        if (databaseFilePath === databasePath && tableName === "contacts")
-          queueMicrotask(avatars.invalidate);
-      },
-    );
-    function observeBlocks() {
-      if (mounted && isCurrent() && !marmotSession.transitioning())
-        privacy.blocks.start();
-      else privacy.blocks.stop();
-    }
-    const unsubscribeBlocks = privacy.blocks.subscribe(() => {
-      speech.sync();
-      if (!privacy.blocks.ready() || !activeEligibility() || !isCurrent())
-        return;
-      callSignaling.start();
-      void speech.reconcile();
-      downloads.accountReady();
-    });
-    function updateUnlocks() {
-      const enabled = activeEligibility();
-      profiles.setActive(enabled);
-      avatars.setActive(enabled);
-      profileEditor.setActive(enabled);
-    }
-    function activeEligibility() {
-      return AppState.currentState === "active" && !lock.getState().locked;
-    }
-    function background() {
-      calling.setForeground(false);
-      if (calling.isRequestingMicrophone()) return;
-      callSignaling.stop();
-      relays.stop();
-    }
-    function catchUpMessaging() {
-      if (catchUp || !chatPreferences.enabled()) return;
-      catchUp = marmotSession
-        .ready()
-        .then(async () => {
-          if (mounted && isCurrent() && activeEligibility())
-            await marmot.catchUp();
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          catchUp = undefined;
-        });
-    }
-    function updateRelayEligibility() {
-      const next = activeEligibility();
-      if (!mounted || !isCurrent() || next === eligible) return;
-      eligible = next;
-      if (!next) {
-        observeRelayLiveness();
-        if (lock.getState().locked) {
-          callSignaling.stop();
-          relays.stop();
-        }
-        return;
-      }
-      if (privacy.blocks.ready()) callSignaling.start();
-      relays.start();
-      connectMessaging();
-      marmotSession.reconnected();
-      observeRelayLiveness();
-      void accountRelays.refresh(true).catch(() => undefined);
-      catchUpMessaging();
-    }
-    const update = (state: typeof AppState.currentState) => {
-      downloads.sync();
-      speech.sync();
-      if (state === "active") admitDownloadedVoice();
-      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
-      updateUnlocks();
-      if (state === "active") calling.setForeground(true);
-      else if (state === "background" && !lock.getState().authenticating)
-        background();
-      updateRelayEligibility();
-      observeBlocks();
-      if (state === "active") recoverNetwork();
-      updateBackupConditions();
-    };
-    const unsubscribeLock = lock.subscribe(() => {
-      downloads.sync();
-      speech.sync();
-      admitDownloadedVoice();
-      updateUnlocks();
-      updateRelayEligibility();
-      observeBlocks();
-      recoverNetwork();
-      if (
-        lock.getState().authenticating ||
-        AppState.currentState !== "background"
-      )
-        return;
-      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
-      checkAfterPrompt = setTimeout(() => {
-        if (
-          AppState.currentState === "background" &&
-          !lock.getState().authenticating
-        )
-          background();
-      }, 800);
-    });
-    const subscription = AppState.addEventListener("change", update);
-    let chatsEnabled = chatPreferences.enabled();
-    const unsubscribeChats = chatPreferences.subscribe(() => {
-      const next = chatPreferences.enabled();
-      if (next === chatsEnabled) return;
-      chatsEnabled = next;
-      speech.sync();
-      if (next) connectMessaging();
-      else void marmotSession.stop(true).catch(() => undefined);
-    });
-    const unsubscribeMedia = mediaSdk.subscribe(() => {
-      const next = attachmentOrigin();
-      if (next === mediaOrigin) return;
-      mediaOrigin = next;
-      connectMessaging();
-    });
-    const unsubscribeAccount = marmotSession.subscribe(() => {
-      observeBlocks();
-      observeRelayLiveness();
-      speech.accountReady();
-      if (marmotSession.status() === "ready") downloads.accountReady();
-      admitDownloadedVoice();
-      void speech.reconcile();
-      updateBackupConditions();
-    });
-    const battery = addBatteryStateListener(() => {
-      updateBackupConditions();
-      void speech.power();
-    });
-    let networkRevision = 0;
-    let lastNetwork: NetworkRoute | undefined;
-    let outboundWake = false;
-    function updateNetwork(
-      state: Awaited<ReturnType<typeof getNetworkStateAsync>>,
-    ) {
-      const { isConnected, isInternetReachable, type } = state;
-      downloads.network(
-        isConnected !== false,
-        type === NetworkStateType.CELLULAR,
-      );
-      if (isConnected === undefined) return;
-      const connected = isConnected && isInternetReachable !== false;
-      const previous = lastNetwork;
-      if (previous?.connected === connected && previous.type === type) return;
-      lastNetwork = { connected, type };
-      updateBackupConditions();
-      if (!connectivityRestored(previous, lastNetwork)) return;
-      outboundWake = true;
-      recoverNetwork();
-    }
-    function recoverNetwork() {
-      if (
-        !outboundWake ||
-        !lastNetwork?.connected ||
-        !activeEligibility() ||
-        !isCurrent()
-      )
-        return;
-      outboundWake = false;
-      observeBlocks();
-      relays.reconnect();
-      profileEditor.retry();
-      profiles.routesChanged();
-      void accountRelays.refresh(true).catch(() => undefined);
-      if (chatPreferences.enabled()) {
-        marmotSession.reconnected();
-        observeRelayLiveness();
-        void marmotSession
-          .ready()
-          .then(async () => {
-            if (
-              mounted &&
-              isCurrent() &&
-              activeEligibility() &&
-              lastNetwork?.connected
-            )
-              await marmot.notifyConnectivityRestored();
-          })
-          .catch(() => undefined);
-        catchUpMessaging();
-      }
-    }
-    update(AppState.currentState);
-    const network = addNetworkStateListener((state) => {
-      networkRevision += 1;
-      updateNetwork(state);
-    });
-    void getNetworkStateAsync()
-      .then((state) => {
-        if (mounted && networkRevision === 0) updateNetwork(state);
-      })
-      .catch(() => undefined);
-    return () => {
-      mounted = false;
-      privacy.blocks.stop();
-      eligible = false;
-      observeRelayLiveness();
-      stopSpeech();
-      stopDownloads();
-      unsubscribeSpeechCall();
-      unsubscribeBlocks();
-      lowPower.remove();
-      memory.remove();
-      stopGroupCalls();
-      if (checkAfterPrompt) clearTimeout(checkAfterPrompt);
-      unsubscribeLock();
-      unsubscribeChats();
-      unsubscribeRelaySettings();
-      unsubscribeMedia();
-      unsubscribeAccount();
-      profileEditor.setActive(false);
-      battery.remove();
-      network.remove();
-      subscription.remove();
-      dbChanges.remove();
-      profiles.setActive(false);
-      avatars.setActive(false);
-      void marmotSession.stop().catch(() => undefined);
-      callSignaling.stop();
-      relays.stop();
-    };
-  }, [
-    db,
-    identity,
-    relays,
-    accountRelays,
-    callSignaling,
-    calling,
-    lock,
-    avatars,
-    marmotSession,
-    chatPreferences,
-    mediaSdk,
-    profiles,
-    profileEditor,
-    speech,
-    downloads,
-    admitDownloadedVoice,
-    privacy,
-    isCurrent,
-  ]);
-  return null;
 }

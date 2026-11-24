@@ -21,6 +21,7 @@ import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, layout, Screen } from "@/components/ui/kit";
 import { marmotAccounts } from "@/core/marmot/native";
 import { backupKind } from "@/core/identity";
+import { marmotErrorCode } from "@/core/marmot/errors";
 import { toNpub } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
@@ -129,10 +130,7 @@ export default function IdentityKeys() {
       if (current())
         setStatus(
           t(
-            typeof error === "object" &&
-              error !== null &&
-              "code" in error &&
-              error.code === "BackupCost"
+            marmotErrorCode(error) === "BackupCost"
               ? "security:backupCost"
               : "security:backupFailed",
           ),

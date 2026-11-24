@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, AppState } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
-import { marmotErrorCode } from "@/components/messages/marmot-window";
+import { marmotErrorCode } from "@/core/marmot/errors";
 import {
   SettingsDescription,
   SettingsGroup,

@@ -1,22 +1,12 @@
 import { useIsFocused } from "expo-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { marmotErrorCode } from "@/core/marmot/errors";
 import type { MarmotWindow } from "@/core/marmot/native";
 import { useLocal } from "@/services/local-context";
 
 const unsubscribe = () => {};
 const subscribeEmpty = () => unsubscribe;
 const empty = () => null;
-
-export function marmotErrorCode(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error &&
-    "code" in error &&
-    typeof error.code === "string"
-  )
-    return error.code;
-  return "NativeFailure";
-}
 
 export function useMarmotWindow<Snapshot, Direction>(
   open: () => Promise<MarmotWindow<Snapshot, Direction>>,
@@ -34,10 +24,6 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
   const accountRevision = useSyncExternalStore(
     marmotSession.subscribe,
     marmotSession.revision,
-  );
-  const accountStatus = useSyncExternalStore(
-    marmotSession.subscribe,
-    marmotSession.status,
   );
   const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
   const [retry, setRetry] = useState(0);
@@ -63,7 +49,7 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
   );
 
   useEffect(() => {
-    if (!enabled || locked || accountStatus === "pending") return;
+    if (!enabled || locked || marmotSession.status() === "pending") return;
     let cancelled = false;
     let active: MarmotWindow<Snapshot, Direction> | undefined;
     const isCurrent = () =>
@@ -107,16 +93,7 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
         });
       }
     };
-  }, [
-    accountRevision,
-    accountStatus,
-    enabled,
-    locked,
-    lock,
-    marmotSession,
-    open,
-    retry,
-  ]);
+  }, [accountRevision, enabled, locked, lock, marmotSession, open, retry]);
 
   return {
     window,

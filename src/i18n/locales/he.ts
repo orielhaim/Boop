@@ -444,7 +444,6 @@ export const he = {
       conversationDetails: "פרטי שיחה",
     },
     openLater: "פתיחה מאוחר יותר",
-    openLaterHint: "נעילת ההודעה עד למועד עתידי",
     openLaterExplanation:
       "ההודעה נשלחת עכשיו. היא נשארת מוצפנת עד למועד הפתיחה ותיפתח כשאות ה־drand המאומת יהיה זמין.",
     openInFive: "בעוד 5 דקות",

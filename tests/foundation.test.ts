@@ -1,8 +1,5 @@
 import { getPublicKey } from "nostr-tools/pure";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import baseline from "../src/db/migrations/bundle";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
@@ -18,25 +15,8 @@ const peerKey = getPublicKey(Buffer.from(secret, "hex"));
 const localKey = getPublicKey(Buffer.from("02".repeat(32), "hex"));
 test("fresh baseline keeps application state and enforces contact uniqueness", () => {
   using db = new Database(":memory:");
-  db.exec("PRAGMA foreign_keys = ON");
-  const migrationsFolder = join(import.meta.dir, "../src/db/migrations");
-  expect(baseline.journal.entries.map(({ tag }) => tag)).toEqual([
-    "0000_initial",
-    "0001_speech_jobs",
-    "0002_downloads",
-  ]);
-  expect(baseline.migrations.m0000).toBe(
-    readFileSync(join(migrationsFolder, "0000_initial.sql"), "utf8"),
-  );
-  expect(baseline.migrations.m0001).toBe(
-    readFileSync(join(migrationsFolder, "0001_speech_jobs.sql"), "utf8"),
-  );
-  expect(baseline.migrations.m0002).toBe(
-    readFileSync(join(migrationsFolder, "0002_downloads.sql"), "utf8"),
-  );
-  const orm = drizzle(db, { schema });
-  migrate(orm, { migrationsFolder });
-  migrate(orm, { migrationsFolder });
+  initializeTestDatabase(db);
+  initializeTestDatabase(db);
   expect(db.query("PRAGMA user_version").values()).toEqual([[4]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),

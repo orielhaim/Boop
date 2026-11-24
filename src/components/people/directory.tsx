@@ -26,7 +26,7 @@ import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
 } from "@/components/glassyui/glass-segmented-control";
-import { useMarmotWindow } from "@/components/messages/marmot-window";
+import { useMarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import {
   Action,
   Icon,
@@ -43,7 +43,6 @@ import { useAvatar, useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { CompactHeader, QuietState } from "@/components/ui/messenger-ui";
 import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import { toNpub } from "@/core/identity/keys";
-import { marmot } from "@/core/marmot/native";
 import {
   contactByKey,
   removeContact,
@@ -57,7 +56,6 @@ import { space, useTheme } from "@/theme";
 import { PersonAvatar } from "./person-avatar";
 import { usePublicProfile, useVerifiedIdentifier } from "./use-person";
 
-const openChats = () => marmot.openChatList("chats");
 type PersonItem = {
   publicKey: string;
   reference?: string;
@@ -86,7 +84,9 @@ export function PeopleDirectory() {
   const focused = useIsFocused() && !showCalls;
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
   useSyncExternalStore(privacy.subscribe, privacy.revision);
-  const { snapshot } = useMarmotWindow(openChats, enabled && !showCalls);
+  const {
+    inbox: { snapshot },
+  } = useMarmotChatLists();
   const [query, setQuery] = useState("");
   const [carouselVisible, setCarouselVisible] = useState(false);
   const [contactMenu, setContactMenu] = useState<{

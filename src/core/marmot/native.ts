@@ -673,12 +673,6 @@ type Bridge = {
     reply: string | null,
   ): Promise<unknown>;
   cancelUpload(token: string): Promise<boolean>;
-  attachmentStatus(
-    group: string,
-    id: string,
-    source: string,
-    index: number,
-  ): Promise<boolean>;
   audioMetadata(path: string): Promise<unknown>;
   inspectMediaFile(
     path: string,
@@ -744,7 +738,6 @@ type Bridge = {
     remove: boolean,
   ): Promise<void>;
   markRead(group: string, id: string): Promise<void>;
-  markUnread(group: string): Promise<void>;
   setArchived(group: string, archived: boolean): Promise<void>;
   setPinned(group: string, pinned: boolean): Promise<void>;
   setMuted(group: string, muted: boolean): Promise<void>;
@@ -814,22 +807,19 @@ export const marmotDirectory = {
     receive: (rows: z.infer<typeof directoryResult>[]) => void,
   ) {
     if (signal.aborted) return;
-    const bridge = native();
-    if (!bridge.prepareObservation(id, false))
-      throw new Error("Directory search unavailable");
-    const listener = bridge.addListener("directorySearchResults", (event) => {
-      if (event.id !== id || signal.aborted) return;
-      const rows = directoryResult.array().safeParse(event.rows);
-      if (rows.success) receive(rows.data);
-    });
-    const cancel = () => bridge.cancelObservation(id);
-    signal.addEventListener("abort", cancel, { once: true });
+    const { close, completed } = observeRows(
+      "directorySearchResults",
+      id,
+      (bridge) => bridge.searchDirectory(owner, id, query),
+      directoryResult.array(),
+      receive,
+    );
+    signal.addEventListener("abort", close, { once: true });
+    if (signal.aborted) close();
     try {
-      await bridge.searchDirectory(owner, id, query);
+      await completed;
     } finally {
-      listener.remove();
-      signal.removeEventListener("abort", cancel);
-      cancel();
+      signal.removeEventListener("abort", close);
     }
   },
 };
@@ -875,6 +865,46 @@ export const marmotBlocks = {
   },
 };
 
+type ObservationEvent =
+  "directorySearchResults" | "relayLiveness" | "blockedUsers";
+
+function observeRows<T>(
+  event: ObservationEvent,
+  id: string,
+  watch: (bridge: Bridge) => Promise<void>,
+  schema: z.ZodType<T>,
+  receive: (rows: T) => void,
+) {
+  const bridge = native();
+  if (!bridge.prepareObservation(id, event === "blockedUsers"))
+    throw new Error("AccountBusy");
+  let closed = false;
+  let listener: ReturnType<Bridge["addListener"]> | undefined;
+  let fail: (error: unknown) => void = () => {};
+  function close() {
+    if (closed) return;
+    closed = true;
+    listener?.remove();
+    bridge.cancelObservation(id);
+  }
+  const invalid = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  try {
+    listener = bridge.addListener(event, (update) => {
+      if (closed || update.id !== id) return;
+      const parsed = schema.safeParse(update.rows);
+      if (parsed.success) receive(parsed.data);
+      else fail(parsed.error);
+    });
+    const completed = Promise.race([watch(bridge), invalid]).finally(close);
+    return { close, completed };
+  } catch (error) {
+    close();
+    throw error;
+  }
+}
+
 function observeAccount<T>(
   event: "relayLiveness" | "blockedUsers",
   owner: string,
@@ -882,39 +912,30 @@ function observeAccount<T>(
   receive: (rows: T) => void,
   ended: (error: unknown) => void,
 ) {
-  const bridge = native();
   const id = randomUUID();
-  let closed = false;
-  const listener = bridge.addListener(event, (update) => {
-    if (closed || update.id !== id) return;
-    const parsed = schema.safeParse(update.rows);
-    if (parsed.success) receive(parsed.data);
-    else finish(parsed.error);
-  });
-  function close() {
-    if (closed) return;
-    closed = true;
-    listener.remove();
-    bridge.cancelObservation(id);
-  }
-  function finish(error?: unknown) {
-    if (closed) return;
-    close();
-    ended(error);
-  }
-  try {
-    if (!bridge.prepareObservation(id, event === "blockedUsers"))
-      throw new Error("AccountBusy");
-    const watch =
+  const { close, completed } = observeRows(
+    event,
+    id,
+    (bridge) =>
       event === "relayLiveness"
         ? bridge.watchRelayLiveness(owner, id)
-        : bridge.watchBlockedUsers(owner, id);
-    void watch.then(() => finish(), finish);
-    return close;
-  } catch (error) {
+        : bridge.watchBlockedUsers(owner, id),
+    schema,
+    receive,
+  );
+  let cancelled = false;
+  void completed.then(
+    () => {
+      if (!cancelled) ended(undefined);
+    },
+    (error: unknown) => {
+      if (!cancelled) ended(error);
+    },
+  );
+  return () => {
+    cancelled = true;
     close();
-    throw error;
-  }
+  };
 }
 
 export const marmotAccounts = {
@@ -1376,12 +1397,6 @@ export const marmot = {
     }
   },
   discardMediaDraft: (group: string) => native().discardMediaDraft(group),
-  attachmentStatus: (
-    group: string,
-    id: string,
-    source: string,
-    index: number,
-  ) => native().attachmentStatus(group, id, source, index),
   audioMetadata: async (path: string) =>
     z
       .object({
@@ -1496,7 +1511,6 @@ export const marmot = {
   reactToMessage: (group: string, id: string, emoji: string, remove: boolean) =>
     native().reactToMessage(group, id, emoji, remove),
   markRead: (group: string, id: string) => native().markRead(group, id),
-  markUnread: (group: string) => native().markUnread(group),
   setArchived: (group: string, archived: boolean) =>
     native().setArchived(group, archived),
   setPinned: (group: string, pinned: boolean) =>

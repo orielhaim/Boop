@@ -461,7 +461,6 @@ export const en = {
       conversationDetails: "Conversation details",
     },
     openLater: "Open Later",
-    openLaterHint: "Lock this message until a future time",
     openLaterExplanation:
       "The message is sent now. It stays encrypted until the unlock time and opens when the verified drand beacon is available.",
     openInFive: "In 5 minutes",

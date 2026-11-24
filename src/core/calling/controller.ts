@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { immer } from "zustand/middleware/immer";
 import { createStore } from "zustand/vanilla";
 import { publicKeySchema } from "../identity/keys";
 import {
@@ -170,11 +171,26 @@ export function createCallController({
     unavailableGroupCall?: { callId: string; at: number };
     fullGroupCall?: { callId: string; at: number };
     groupLobby?: { groupId: string; callId: string };
-  }>(() => ({ call: null, video: null, participants: [], invitations: [] }));
+  }>()(
+    immer(() => ({
+      call: null,
+      video: null,
+      participants: [],
+      invitations: [],
+    })),
+  );
   const seen = new Map<string, number>();
   let active: Attempt | undefined;
   let openingLobby: AbortController | undefined;
   let available = false;
+
+  function updateConnected(
+    update: (call: Extract<CallView, { phase: "connected" }>) => void,
+  ) {
+    store.setState(({ call }) => {
+      if (call?.phase === "connected") update(call);
+    });
+  }
 
   function groupAllowed(group: string, peers: string[]) {
     return (
@@ -216,12 +232,13 @@ export function createCallController({
   ) {
     if (!invite.conference) return;
     const entry = { key: invite.recipientKey, id: invite.conference.id, phase };
-    store.setState(({ invitations }) => ({
+    const { invitations } = store.getState();
+    store.setState({
       invitations: [
         ...invitations.filter(({ key }) => key !== entry.key),
         entry,
       ].slice(-callCapacity),
-    }));
+    });
   }
 
   function settleInvitation(
@@ -399,7 +416,9 @@ export function createCallController({
           }
           attempt.media?.close();
           attempt.stoppedAt ??= now();
-          store.setState({ call: { ...call, reconnecting: true } });
+          updateConnected((call) => {
+            call.reconnecting = true;
+          });
           clearTimeout(attempt.timer);
           attempt.timer = setTimeout(
             () => lostGroupPeer(attempt, "remote-disconnected"),
@@ -414,14 +433,15 @@ export function createCallController({
         onRemoteMute: (muted) => {
           if (active !== attempt) return;
           remoteMuted = muted;
-          const { call } = store.getState();
-          if (call?.phase === "connected")
-            store.setState({ call: { ...call, remoteMuted } });
+          updateConnected((call) => {
+            call.remoteMuted = muted;
+          });
         },
         onReconnecting: (reconnecting) => {
-          const { call } = store.getState();
-          if (active === attempt && call?.phase === "connected")
-            store.setState({ call: { ...call, reconnecting } });
+          if (active === attempt)
+            updateConnected((call) => {
+              call.reconnecting = reconnecting;
+            });
         },
         onMicrophonePrompt: (open) => {
           attempt.microphonePrompt = open;
@@ -446,22 +466,24 @@ export function createCallController({
             clearTimeout(attempt.invitation?.timer);
             attempt.invitation = undefined;
           }
-          store.setState(({ invitations }) => ({
+          store.setState({
             participants,
-            invitations: invitations.filter(
-              ({ key }) => !participants.some((member) => member.key === key),
-            ),
-          }));
+            invitations: store
+              .getState()
+              .invitations.filter(
+                ({ key }) => !participants.some((member) => member.key === key),
+              ),
+          });
         },
         onVideo: (video) => {
           if (active === attempt) store.setState({ video });
         },
         onRouting: (next) => {
           routing = next;
-          const { call } = store.getState();
-          if (active === attempt && call?.phase === "connected") {
-            store.setState({ call: { ...call, routing } });
-          }
+          if (active === attempt)
+            updateConnected((call) => {
+              call.routing = next;
+            });
         },
       });
       if (signal.aborted) {
@@ -1198,8 +1220,11 @@ export function createCallController({
     mute() {
       const { call } = store.getState();
       if (!active?.media || call?.phase !== "connected") return;
-      active.media.mute(!call.muted);
-      store.setState({ call: { ...call, muted: !call.muted } });
+      const muted = !call.muted;
+      active.media.mute(muted);
+      updateConnected((current) => {
+        if (current.id === call.id) current.muted = muted;
+      });
     },
     video: () =>
       store.getState().call?.phase === "connected"

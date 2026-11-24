@@ -37,7 +37,7 @@ For the media test, start `bun scripts/marmot-test-blossom.ts` and forward its p
 
 An authorized HTTPS Blossom endpoint also exercises the encrypted group-image round trip. Test identities, credentials, and native stores are independent of the app. On PowerShell, quote each `-Pandroid.testInstrumentationRunnerArguments.*` argument.
 
-`src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` to generate schema SQL and refresh the runtime bundle. Preserve the baseline's `PRAGMA user_version` when regenerating it.
+`src/db/schema.ts` defines the application tables and indexes. Run `bun run db:generate` after changing the schema. Drizzle Kit generates the SQL, migration metadata, and Expo migration module in `src/db/migrations`. The app applies that module at database startup with Drizzle’s Expo SQLite migrator. Run `bunx drizzle-kit check` to validate the migration history.
 
 ## Onboarding and profiles
 
@@ -73,7 +73,7 @@ Downloads history is reachable from Settings → Storage. With the Marmot test f
 
 Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.
 
-The protected session owns one transcription worker. It admits verified retained voice notes and leases each file only for local processing. SQLite migration `0001_speech_jobs` adds durable jobs to existing baseline v2 databases. Final text, segments and word timings are sealed with AES-GCM using a device-only SecureStore key for the current identity. Clearing all transcriptions deletes that key. The app omits the native transcript cache key for message audio.
+The protected session owns one transcription worker. It admits verified retained voice notes and leases each file only for local processing. Final text, segments and word timings are sealed with AES-GCM using a device-only SecureStore key for the current identity. Clearing all transcriptions deletes that key. The app omits the native transcript cache key for message audio.
 
 Queued work continues across screens while the app is active and unlocked. It pauses for calls, recording, App Lock or app suspension, then resumes from SQLite when eligible. The OS does not schedule recognition while the app is suspended. Check a fresh received voice note by enabling Automatic mode, verifying it stays remote until Download, then waiting for the transcript after leaving the chat. Reopen it and check playback, seeking, speed changes, empty audio and the Storage clear actions. Exercise Hebrew and English transcripts separately.
 

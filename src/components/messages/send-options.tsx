@@ -1,24 +1,20 @@
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
-import { type ComponentRef, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  AccessibilityInfo,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   View,
   useWindowDimensions,
 } from "react-native";
-import Animated, { FadeInUp } from "react-native-reanimated";
 import {
   GlassSheet,
   GlassSheetContent,
   GlassSheetDescription,
   GlassSheetTitle,
 } from "@/components/glassyui/glass-sheet";
-import { GlassSurface } from "@/components/glassyui/glass-surface";
-import { Action, Icon, Ink } from "@/components/ui/kit";
+import { Action, Ink } from "@/components/ui/kit";
 import {
   maxTimeLockDate,
   scheduleUnlock,
@@ -26,114 +22,6 @@ import {
 import { resolveLanguage } from "@/i18n";
 import { formatDateTime } from "@/i18n/format";
 import { useTheme } from "@/theme";
-
-export type SendMenuAnchor = {
-  x: number;
-  y: number;
-  width: number;
-  available: number;
-};
-
-export function SpecialSendMenu({
-  anchor,
-  rtl,
-  reducedMotion,
-  onClose,
-  onOpenLater,
-}: {
-  anchor: SendMenuAnchor;
-  rtl: boolean;
-  reducedMotion: boolean;
-  onClose: () => void;
-  onOpenLater: () => void;
-}) {
-  const { t } = useTranslation("messages");
-  const { colors } = useTheme();
-  const menuItem = useRef<ComponentRef<typeof Pressable>>(null);
-  useEffect(() => {
-    if (menuItem.current)
-      AccessibilityInfo.sendAccessibilityEvent(menuItem.current, "focus");
-  }, []);
-  const width = Math.min(248, anchor.available - 16);
-  const x = rtl ? anchor.x : anchor.x + anchor.width - width;
-  const options = [
-    {
-      key: "openLater",
-      label: t("openLater"),
-      hint: t("openLaterHint"),
-      icon: "history",
-      onPress: onOpenLater,
-    },
-  ] satisfies {
-    key: string;
-    label: string;
-    hint: string;
-    icon: React.ComponentProps<typeof Icon>["name"];
-    onPress: () => void;
-  }[];
-  return (
-    <View
-      style={styles.layer}
-      pointerEvents="box-none"
-      onAccessibilityEscape={onClose}
-    >
-      <Pressable
-        style={StyleSheet.absoluteFill}
-        accessible={false}
-        onPress={onClose}
-      />
-      <Animated.View
-        entering={reducedMotion ? undefined : FadeInUp.duration(160)}
-        style={[
-          styles.menu,
-          {
-            width,
-            left: Math.max(8, Math.min(x, anchor.available - width - 8)),
-            bottom: anchor.y + 8,
-          },
-        ]}
-      >
-        <GlassSurface
-          preset="overlay"
-          elevation="raised"
-          style={styles.menuSurface}
-        >
-          {options.map(({ key, label, hint, icon, onPress }, index) => (
-            <Pressable
-              key={key}
-              ref={index === 0 ? menuItem : undefined}
-              accessibilityRole="menuitem"
-              accessibilityLabel={label}
-              accessibilityHint={hint}
-              onAccessibilityEscape={onClose}
-              onPress={onPress}
-              style={({ pressed }) => [
-                styles.menuItem,
-                rtl && styles.rowRtl,
-                pressed && { backgroundColor: colors.accentSoft },
-              ]}
-            >
-              <View
-                style={[
-                  styles.menuIcon,
-                  { backgroundColor: colors.accentSoft },
-                ]}
-              >
-                <Icon name={icon} size={21} color={colors.accent} />
-              </View>
-              <View style={styles.menuText}>
-                <Ink style={styles.strong}>{label}</Ink>
-                <Ink kind="caption" muted>
-                  {hint}
-                </Ink>
-              </View>
-            </Pressable>
-          ))}
-        </GlassSurface>
-      </Animated.View>
-    </View>
-  );
-}
 
 const quickChoices = [
   ["openInFive", 5],
@@ -328,25 +216,6 @@ export function OpenLaterSheet({
 }
 
 const styles = StyleSheet.create({
-  layer: { ...StyleSheet.absoluteFill, zIndex: 5 },
-  menu: { position: "absolute" },
-  menuSurface: { borderRadius: 20 },
-  menuItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 10,
-    borderRadius: 20,
-  },
-  rowRtl: { flexDirection: "row-reverse" },
-  menuIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  menuText: { flex: 1, gap: 2 },
   strong: { fontWeight: "700" },
   sheet: { gap: 12, paddingTop: 4, paddingBottom: 2 },
   choices: { flexDirection: "row", flexWrap: "wrap", gap: 6 },

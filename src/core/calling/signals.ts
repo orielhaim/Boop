@@ -7,7 +7,7 @@ const endpoint = z.string().regex(/^[0-9A-Za-z]{20}$/);
 const offerId = z.string().regex(/^[0-9A-Za-z]{20}$/);
 const rtcHeader = { peerId: endpoint, offerId };
 const description = z.string().min(1).max(12_000);
-export const rtcOffer = z.strictObject({ ...rtcHeader, offer: description });
+const rtcOffer = z.strictObject({ ...rtcHeader, offer: description });
 export type RtcOffer = z.infer<typeof rtcOffer>;
 export const rtcPayload = z.union([
   rtcOffer,
@@ -22,7 +22,7 @@ export type RtcPayload = z.infer<typeof rtcPayload>;
 // Application-specific inner rumor. Only kind 1059 envelopes are published.
 export const callSignalKind = 24880;
 const time = z.number().int().nonnegative();
-export const callGroupId = z.string().regex(/^(?:[a-f0-9]{2}){1,256}$/u);
+const callGroupId = z.string().regex(/^(?:[a-f0-9]{2}){1,256}$/u);
 const base = {
   version: z.literal(1),
   callId: opaqueId,
@@ -33,7 +33,7 @@ const base = {
   expiresAt: time,
 };
 
-export const callSignal = z.discriminatedUnion("type", [
+const callSignal = z.discriminatedUnion("type", [
   z.strictObject({
     ...base,
     type: z.literal("call.invite"),

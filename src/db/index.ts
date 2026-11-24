@@ -6,7 +6,7 @@ import {
   deleteDatabaseAsync,
   openDatabaseSync,
 } from "expo-sqlite";
-import migrations from "./migrations/bundle";
+import migrations from "./migrations/migrations.js";
 import * as schema from "./schema";
 
 export type Database = Awaited<ReturnType<typeof openDatabase>>;

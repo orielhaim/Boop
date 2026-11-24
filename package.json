@@ -13,7 +13,6 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@shopify/flash-list": "2.3.2",
     "@trystero-p2p/core": "0.27.0",
     "blossom-client-sdk": "5.2.1",
     "dayjs": "^1.11.23",
@@ -59,6 +58,7 @@
     "expo-video": "~58.0.14",
     "htmlparser2": "^12.0.0",
     "i18next": "^27.2.7",
+    "immer": "^11.2.10",
     "nostr-tools": "^2.26.1",
     "react": "19.3.0",
     "react-i18next": "^18.0.3",
@@ -75,7 +75,7 @@
     "react-native-safe-area-context": "^5.11.1",
     "react-native-screen-transitions": "4.2.0",
     "react-native-screens": "~4.30.1",
-    "react-native-skia": "^3.11.0",
+    "react-native-skia": "^3.11.1",
     "react-native-sortables": "1.10.1",
     "react-native-svg": "15.16.0",
     "react-native-vision-camera": "^5.2.4",
@@ -89,6 +89,7 @@
   "devDependencies": {
     "@types/bun": "^1.4.5",
     "@types/react": "~19.3.0",
+    "babel-plugin-inline-import": "^3.0.0",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.0",
     "eslint-config-expo": "^58.0.4",
@@ -101,7 +102,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "check": "bun fmt --check . && bun run lint && bun run typecheck",
-    "db:generate": "drizzle-kit generate && bun scripts/bundle-migrations.ts"
+    "db:generate": "drizzle-kit generate"
   },
   "private": true,
   "patchedDependencies": {

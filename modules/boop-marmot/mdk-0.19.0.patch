@@ -1090,39 +1090,3 @@ index a2df2df..9a77e38 100644
 +    app.rebuild_message_timeline_for_group(&group).unwrap();
 +    verify();
 +}
-diff --git a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
-index 1eb2080..ab41708 100644
---- a/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
-+++ b/crates/storage-sqlite/src/base/migrations/0218_retired_agent_text_streams.rs
-@@ -12,7 +12,8 @@ pub(crate) fn apply(tx: &Transaction<'_>) -> StorageResult<()> {
-         r#"
- DROP TABLE IF EXISTS agent_stream_starts;
- DROP TABLE IF EXISTS agent_stream_publisher_sequences;
--DELETE FROM message_timeline WHERE kind = 1200;
-+-- Boop control messages remain available from app_events only.
-+DELETE FROM message_timeline WHERE kind IN (1200, 24884, 24885);
- ALTER TABLE message_timeline DROP COLUMN agent_stream_json;
- "#,
-     )
-@@ -33,9 +34,13 @@ mod tests {
-             INSERT INTO account_groups(group_id_hex, endpoint, updated_at) VALUES ('11', 'fixture', 0);
-             INSERT INTO app_events(group_id_hex,message_id_hex,direction,sender,plaintext,kind,tags_json,recorded_at,received_at)
-             VALUES ('11','start','received','agent','',1200,'[["stream","aa"]]',1,1),
-+                   ('11','call','received','agent','',24884,'[]',1,1),
-+                   ('11','support','received','agent','',24885,'[]',1,1),
-                    ('11','final','received','agent','done',9,'[["stream","aa"],["stream-start","start"]]',2,2);
-             INSERT INTO message_timeline(group_id_hex,message_id_hex,direction,sender,plaintext,kind,tags_json,timeline_at,received_at,agent_stream_json,reactions_json)
-             VALUES ('11','start','received','agent','',1200,'[["stream","aa"]]',1,1,'{"status":"started"}','{"by_emoji":{},"user_reactions":[]}'),
-+                   ('11','call','received','agent','',24884,'[]',1,1,NULL,'{"by_emoji":{},"user_reactions":[]}'),
-+                   ('11','support','received','agent','',24885,'[]',1,1,NULL,'{"by_emoji":{},"user_reactions":[]}'),
-                    ('11','final','received','agent','done',9,'[["stream","aa"],["stream-start","start"]]',2,2,'{"status":"finalized"}','{"by_emoji":{},"user_reactions":[]}');
-             INSERT INTO agent_stream_starts(group_id_hex,message_id_hex,sender,stream_id_hex,tags_json,started_at,received_at)
-             VALUES ('11','start','agent','aa','[]',1,1);
-@@ -85,6 +90,6 @@ mod tests {
-         let sources: i64 = conn
-             .query_row("SELECT count(*) FROM app_events", [], |row| row.get(0))
-             .unwrap();
--        assert_eq!(sources, 2);
-+        assert_eq!(sources, 4);
-     }
- }
