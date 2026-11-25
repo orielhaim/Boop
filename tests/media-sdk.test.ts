@@ -184,13 +184,15 @@ test("only enabled, compatible role candidates receive a PUT, and MIME/size reje
       {
         sha256,
         async request(path, options) {
-          requests.push(`${options.method ?? "GET"} ${path}`);
-          if (path === `${second}/${hash}.bin`) return new Response(bytes);
-          if (path.startsWith(first))
+          const { method = "GET" } = options;
+          requests.push(`${method} ${path}`);
+          if (method === "GET" && path === `${second}/${hash}.bin`)
+            return new Response(bytes);
+          if (method === "HEAD" && path === `${first}/upload`)
             return new Response(null, { status: rejection });
-          if (options.method === "HEAD")
-            return new Response(null, { status: 200 });
           expect(path).toBe(`${second}/upload`);
+          if (method === "HEAD") return new Response(null, { status: 200 });
+          expect(method).toBe("PUT");
           expect(options.body).toEqual(bytes);
           return descriptor(second, { type: "image/jpeg" });
         },

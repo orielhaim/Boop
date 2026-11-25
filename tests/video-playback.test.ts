@@ -250,7 +250,27 @@ test("local captions parse VTT and SRT timecodes, preserve multiline Hebrew and 
   expect(subtitleAt(webvtt, 1.5)).toBe("שלום\nשורה שנייה");
   expect(subtitleAt(webvtt, 2)).toBeUndefined();
   const srt = readSubtitles(
-    utf8("1\r\n01:00:00,100 --> 01:00:02,000\r\nHello &amp; goodbye\r\n"),
+    utf8(
+      '1\r\n01:00:00,100 --> 01:00:02,000\r\n<font color="#ffffff">Hello</font> &amp; goodbye\r\n',
+    ),
   );
   expect(subtitleAt(srt, 3601)).toBe("Hello & goodbye");
+});
+
+test("local captions decode entities once and preserve unknown or malformed markup as text", () => {
+  const cues = readSubtitles(
+    new TextEncoder().encode(
+      "WEBVTT\n\n00:01.000 --> 00:04.000\n" +
+        "<v Narrator><c.emphasis><b>שלום</b></c></v><00:02.000>\n" +
+        "1 < 2 &amp; 3 > 2\n" +
+        "&lt;i&gt;literal&lt;/i&gt; &amp;lt;\n" +
+        "<custom>label</custom>\n" +
+        "<cus<i>tom>\n" +
+        "<i",
+    ),
+  );
+  expect(subtitleAt(cues, 2)).toBe(
+    "שלום\n1 < 2 & 3 > 2\n<i>literal</i> &lt;\n" +
+      "<custom>label</custom>\n<cus<i>tom>\n<i",
+  );
 });

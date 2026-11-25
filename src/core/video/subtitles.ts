@@ -46,6 +46,34 @@ function timestamp(value: string) {
   );
 }
 
+const subtitleFormattingTag =
+  /^<(?:\/?(?:b|i|u|s|ruby|rt)|\/(?:c|v|lang|font)|c(?:\.[^\s.<>]+)*|(?:v|lang|font)(?:[ \t]+[^<>]*)?)>$/i;
+
+function cueText(payload: string) {
+  // Cue text goes directly into React Native Text. Interpret only subtitle
+  // formatting and entities, and leave other angle-bracket text intact.
+  return payload
+    .replace(/<(?=[/A-Za-z\d])[^>\n]*>?|&(?:lt|gt|amp|nbsp);/g, (token) => {
+      switch (token) {
+        case "&lt;":
+          return "<";
+        case "&gt;":
+          return ">";
+        case "&amp;":
+          return "&";
+        case "&nbsp;":
+          return " ";
+        default:
+          return token.endsWith(">") &&
+            (subtitleFormattingTag.test(token) ||
+              timestamp(token.slice(1, -1)) !== undefined)
+            ? ""
+            : token;
+      }
+    })
+    .trim();
+}
+
 export function readSubtitles(bytes: Uint8Array) {
   if (bytes.length > subtitleByteLimit) return [];
   const blocks = decode(bytes)
@@ -61,17 +89,7 @@ export function readSubtitles(bytes: Uint8Array) {
     if (!range) continue;
     const start = timestamp(range[1]);
     const end = timestamp(range[2]);
-    const text = lines
-      .slice(index + 1)
-      .join("\n")
-      .replace(/<[^>\n]*>/g, "")
-      .replace(/&(?:lt|gt|amp|nbsp);/g, (entity) => {
-        if (entity === "&lt;") return "<";
-        if (entity === "&gt;") return ">";
-        if (entity === "&nbsp;") return " ";
-        return "&";
-      })
-      .trim();
+    const text = cueText(lines.slice(index + 1).join("\n"));
     if (
       start === undefined ||
       end === undefined ||
