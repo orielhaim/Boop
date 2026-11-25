@@ -1,0 +1,19 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.boop'
+version = '1.0.0'
+
+android {
+  namespace 'app.boop.plugins'
+  defaultConfig {
+    consumerProguardFiles 'plugins.pro'
+  }
+}
+
+dependencies {
+  api 'com.google.android.play:feature-delivery:2.1.0'
+  implementation 'com.getkeepsafe.relinker:relinker:1.4.5'
+}

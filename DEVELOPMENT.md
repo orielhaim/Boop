@@ -69,6 +69,22 @@ Pause, Cancel and Remove use persisted user intents until native acknowledgment.
 
 Downloads history is reachable from Settings → Storage. With the Marmot test fixture, confirm zero binary requests before Download and verify resumed ciphertext and retained plaintext after retry. Sortables owns drag and edge scrolling for pending rows. Run `bun test tests/downloads.test.ts tests/blossom-downloads.test.ts` for queue, persistence, protocol validation and fallback regressions.
 
+### Android plugin delivery
+
+The Expo config plugin registers the `torrents` on-demand feature and installs SplitCompat in the generated application and activity. The base application owns the Play installation bridge and JNI declarations. The feature owns the Rust library. Install `cargo-ndk` 4.1.2 and the Rust targets for the selected Android ABIs. Gradle uses the configured NDK and builds the feature with `Cargo.lock`.
+
+Build from the project root and use bundletool to test the install flow locally. Substitute the bundletool JAR path and the connected emulator ID.
+
+```sh
+bunx expo prebuild --clean --platform android --no-install
+cd android
+./gradlew :app:bundleDebug -PreactNativeArchitectures=x86_64
+java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/debug/app-debug.aab --output=boop-local.apks --local-testing --connected-device --ks=app/debug.keystore --ks-key-alias=androiddebugkey --ks-pass=pass:android --key-pass=pass:android
+java -jar bundletool.jar install-apks --apks=boop-local.apks
+```
+
+Inspect the AAB and APK set before installing. Only the torrents ABI split should contain `libboop_torrent.so`. Connect the development client to Metro and open **Settings → Plugins → Install**. The installed state checks the split and the JNI ABI handshake. Compare the application process ID before and after installation to check that delivery needed no restart. A debug APK sideload without the APK set has no local delivery source. A local APK set exercises SplitCompat and the install flow without testing production Play eligibility or deferred uninstall.
+
 ### Voice transcription
 
 Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.

@@ -46,3 +46,6 @@ example
 /modules/boop-marmot/android/build/
 /modules/boop-storage/android/build/
 /modules/boop-theme-snapshot/android/build/
+/modules/boop-plugins/android/build/
+/extensions/torrents/android/build/
+/extensions/torrents/rust/target/
