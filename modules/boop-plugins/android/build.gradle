@@ -14,6 +14,7 @@ android {
 }
 
 dependencies {
+  implementation 'com.facebook.react:react-android'
   api 'com.google.android.play:feature-delivery:2.1.0'
   implementation 'com.getkeepsafe.relinker:relinker:1.4.5'
 }

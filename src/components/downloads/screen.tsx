@@ -2,8 +2,10 @@ import { useAudioActions } from "@/components/audio/actions";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { audioFile, type Track } from "@/core/audio/types";
 import { LinearGradient } from "expo-linear-gradient";
+import { Directory, File } from "expo-file-system";
 import { useNetworkState } from "expo-network";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
+import { shareAsync } from "expo-sharing";
 import {
   memo,
   useCallback,
@@ -17,6 +19,7 @@ import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import Animated, { useAnimatedRef } from "react-native-reanimated";
 import Sortable from "react-native-sortables";
+import { useStore } from "zustand";
 import { useAppPreferences } from "@/stores/preferences";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import {
@@ -34,7 +37,10 @@ import {
   isPending,
   type DownloadItem,
 } from "@/core/downloads/types";
-import { openLocalAttachment } from "@/core/media/open-local-attachment";
+import {
+  localMediaUri,
+  openLocalAttachment,
+} from "@/core/media/open-local-attachment";
 import { openDownloadedVideo } from "@/core/video/open";
 import { videoFile } from "@/core/video/types";
 import { formatBytes } from "@/i18n/format";
@@ -53,12 +59,21 @@ const DownloadRow = memo(function DownloadRow({
   offline: boolean;
 }) {
   const dialog = useDialog();
-  const { downloads } = useLocal();
+  const { downloads, torrents } = useLocal();
   const audio = useAudioActions();
   const { t: playback } = useTranslation("audio");
   const job = useSyncExternalStore(
     downloads.subscribe,
     () => downloads.get(initial.id) ?? initial,
+  );
+  const torrent = job.kind === "provider" && job.provider === "torrents";
+  const pluginReady = useStore(
+    torrents.state,
+    (state) =>
+      !torrent ||
+      (state.delivery?.kind === "installed" &&
+        state.enabled &&
+        !state.loadFailed),
   );
   const { t, i18n } = useTranslation("downloads");
   const { colors } = useTheme();
@@ -143,6 +158,46 @@ const DownloadRow = memo(function DownloadRow({
     });
   }
 
+  async function exportFile(action: "external" | "share" | "save") {
+    const directory =
+      action === "save"
+        ? await Directory.pickDirectoryAsync().catch(() => undefined)
+        : undefined;
+    if (action === "save" && !directory) return;
+    const retired = Promise.withResolvers<void>();
+    let valid = true;
+    const release = downloads.holdForPlayback(job, () => {
+      valid = false;
+      return retired.promise;
+    });
+    if (!release) throw new Error("DownloadUnavailable");
+    try {
+      await downloads.open(job.id, async (file) => {
+        if (!valid) return;
+        if (action === "external") await openLocalAttachment(file, true);
+        else if (action === "share") {
+          await shareAsync(localMediaUri(file.path), {
+            mimeType: file.type,
+            dialogTitle: file.name,
+          });
+        } else if (directory) {
+          const output = directory.createFile(file.name, file.type);
+          try {
+            await new File(localMediaUri(file.path)).copy(output, {
+              overwrite: true,
+            });
+          } catch (error) {
+            if (output.exists) output.delete();
+            throw error;
+          }
+        }
+      });
+    } finally {
+      release();
+      retired.resolve();
+    }
+  }
+
   const completed = job.state === "completed";
   const icon = track
     ? "audio"
@@ -154,9 +209,11 @@ const DownloadRow = memo(function DownloadRow({
   const status =
     state === "completed"
       ? null
-      : job.state === "failed" && job.issue
-        ? t(job.issue)
-        : t(state);
+      : unfinished && !pluginReady
+        ? t("pluginPaused")
+        : job.state === "failed" && job.issue
+          ? t(job.issue)
+          : t(state);
   const primary = completed
     ? ({ icon: "continue", label: t("open"), run: open } as const)
     : job.state === "active" || canReorder(job)
@@ -244,21 +301,38 @@ const DownloadRow = memo(function DownloadRow({
       ) : (
         <View style={styles.info}>{summary}</View>
       )}
-      {completed && track && (
+      {completed && (track || torrent) && (
         <ActionMenu
-          label={playback("trackActions", { title: track.title })}
+          label={playback("trackActions", { title: job.name })}
           actions={[
-            { id: "play", title: playback("playNow") },
-            { id: "next", title: playback("playNext") },
-            { id: "add", title: playback("addQueue") },
-            ...(!track.voice
+            ...(track
+              ? [
+                  { id: "play", title: playback("playNow") },
+                  { id: "next", title: playback("playNext") },
+                  { id: "add", title: playback("addQueue") },
+                ]
+              : []),
+            ...(!track?.voice
               ? [{ id: "external", title: playback("external") }]
+              : []),
+            ...(torrent
+              ? [
+                  { id: "share", title: t("shareFile") },
+                  { id: "save", title: t("saveFile") },
+                ]
               : []),
           ]}
           onSelect={(id) => {
-            if (id === "play" || id === "external")
+            if (
+              torrent &&
+              (id === "share" || id === "save" || id === "external")
+            ) {
+              void exportFile(id).catch(() =>
+                dialog.show({ title: t("actionFailed"), tone: "error" }),
+              );
+            } else if (track && (id === "play" || id === "external"))
               void audio.open(track, id === "play" ? "internal" : "external");
-            else audio.queue(track, id === "next");
+            else if (track) audio.queue(track, id === "next");
           }}
         >
           <View style={styles.button}>
@@ -266,12 +340,27 @@ const DownloadRow = memo(function DownloadRow({
           </View>
         </ActionMenu>
       )}
-      {!completed && primary && (
+      {unfinished && !pluginReady ? (
         <RowButton
-          icon={primary.icon}
-          label={primary.label}
-          onPress={primary.run}
+          icon="plugins"
+          label={t("pluginSettings")}
+          onPress={() =>
+            router.push(
+              torrents.state.getState().delivery?.kind === "installed"
+                ? torrents.descriptor.settingsRoute
+                : "/settings/plugins",
+            )
+          }
         />
+      ) : (
+        !completed &&
+        primary && (
+          <RowButton
+            icon={primary.icon}
+            label={primary.label}
+            onPress={primary.run}
+          />
+        )
       )}
       <RowButton
         icon={unfinished ? "hangup" : "trash"}

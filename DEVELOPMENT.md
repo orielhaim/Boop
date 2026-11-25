@@ -83,7 +83,29 @@ java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/debug/app-
 java -jar bundletool.jar install-apks --apks=boop-local.apks
 ```
 
-Inspect the AAB and APK set before installing. Only the torrents ABI split should contain `libboop_torrent.so`. Connect the development client to Metro and open **Settings → Plugins → Install**. The installed state checks the split and the JNI ABI handshake. Compare the application process ID before and after installation to check that delivery needed no restart. A debug APK sideload without the APK set has no local delivery source. A local APK set exercises SplitCompat and the install flow without testing production Play eligibility or deferred uninstall.
+Inspect the AAB and APK set before installing. Only the torrents ABI split should contain `libboop_torrent.so`. Connect the development client to Metro and tap **Install** next to Torrents in **Settings → Plugins**. After delivery, open the Torrents row. The enable switch becomes available once Boop verifies the JNI ABI. Compare the application process ID before and after installation to check that delivery needed no restart. A debug APK sideload without the APK set has no local delivery source. A local APK set exercises SplitCompat and the install flow without testing production Play eligibility or deferred uninstall.
+
+### Torrents
+
+The Plugin Host registers first-party code shipped with Boop. Its scoped contracts limit what a provider receives. They do not isolate this code at the operating-system level. The host matches bounded, authenticated conversation content before it dispatches to a registered provider. Chat Kit composes the resulting cards with the normal attachment and preview views. The Android Markdown projection keeps magnet destinations out of ordinary link handling.
+
+Google Play installs the feature for the device. Boop stores activation and magnet resolution preferences per identity. On tap is the default. Automatic resolution applies to eligible visible messages in a focused, foreground, unlocked conversation. Metadata resolution never admits a file transfer. Resolutions share a request by v1 infohash. Boop seals validated metadata in account SQLite and keeps up to 64 entries and 8 MiB of sealed data, including metadata pinned by retained download records.
+
+The shared DownloadManager admits transfers and persists job intents. It admits one file at a time per torrent, while independent torrents can use the normal queue capacity. Backgrounding or locking Boop stops native work and preserves checkpoints. Explicitly disabling Torrents pauses its jobs. Enabling it leaves those jobs paused until Resume. Android also stops the runtime when the React Activity backgrounds. Disabling the plugin shuts down its runtime. Android can leave the native library mapped until the process exits.
+
+The feature uses librqbit 9.1.0 with Rust TLS and upload disabled at compile time and runtime. It supports v1 magnets and the v1 part of hybrid torrents. It uses public DHT, trackers and TCP peer connections. LAN discovery and peer listeners are disabled. The patch sources under `extensions/torrents/rust/patches` enforce the address policy at the actual connection boundary. Tracker redirects and DNS lookups use the same policy. The engine validates metadata and filesystem paths before opening its private staging area. It publishes verified files atomically without copying the payload, and Boop can open completed files after the plugin is disabled.
+
+From the repository root, run the native checks and the relevant JavaScript tests:
+
+```sh
+cargo fmt --manifest-path extensions/torrents/rust/Cargo.toml --check
+cargo clippy --locked --manifest-path extensions/torrents/rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path extensions/torrents/rust/Cargo.toml
+cargo test --locked --manifest-path extensions/torrents/rust/Cargo.toml --lib --features torrent-test-fixture
+bun test tests/plugins.test.ts tests/downloads.test.ts tests/blossom-downloads.test.ts
+```
+
+Use `:app:bundleRelease` to check the minified release AAB. Check the R8 seeds for the `TorrentNative` JNI methods and run the NDK's `llvm-readelf -lW` on the feature library for each 64-bit ABI. Verify that its load segments have 16 KiB alignment. Use `zipalign -c -P 16 -v 4` on the generated feature APK. Production install, confirmation and physical removal require a Play-installed build. Local delivery does not exercise those Play Store decisions.
 
 ### Voice transcription
 

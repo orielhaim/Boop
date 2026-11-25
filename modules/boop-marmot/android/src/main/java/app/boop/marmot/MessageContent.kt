@@ -50,9 +50,12 @@ private fun MarkdownInlineFfi.document(): Document = when (this) {
 }
 
 private fun link(url: String, classification: MarkdownLinkDestinationKindFfi, children: List<Document>): Document =
-  node("link", children = children) + if (classification in setOf(MarkdownLinkDestinationKindFfi.WEB, MarkdownLinkDestinationKindFfi.CONTACT)) {
-    mapOf("destination" to url)
-  } else emptyMap()
+  node("link", children = children) + when {
+    url.length <= 4096 && url.startsWith("magnet:?", ignoreCase = true) -> mapOf("pluginDestination" to url)
+    classification == MarkdownLinkDestinationKindFfi.WEB ||
+      classification == MarkdownLinkDestinationKindFfi.CONTACT -> mapOf("destination" to url)
+    else -> emptyMap()
+  }
 
 private fun node(kind: String, text: String? = null, children: List<Document>? = null): Document = when {
   children == null && text == null -> mapOf("kind" to kind)

@@ -60,6 +60,7 @@ export function SettingsDescription({ children }: { children: ReactNode }) {
 export function ListRow({
   title,
   detail,
+  detailLines = 2,
   value,
   icon,
   onPress,
@@ -78,6 +79,7 @@ export function ListRow({
 }: {
   title: string;
   detail?: string;
+  detailLines?: number;
   value?: string;
   icon?: ComponentProps<typeof Icon>["name"];
   onPress?: () => void;
@@ -99,7 +101,7 @@ export function ListRow({
     <>
       <Ink kind="rowTitle">{title}</Ink>
       {detail && (
-        <Ink kind="description" muted numberOfLines={2}>
+        <Ink kind="description" muted numberOfLines={detailLines}>
           {detail}
         </Ink>
       )}

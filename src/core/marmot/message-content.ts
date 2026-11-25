@@ -41,6 +41,7 @@ const contentNode = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("link"),
     destination: text.optional(),
+    pluginDestination: text.max(4096).optional(),
     get children(): z.ZodArray<typeof contentNode> {
       return z.array(contentNode);
     },

@@ -127,6 +127,7 @@ import { conversationRoute } from "./marmot-inbox";
 import { MarmotLocked } from "./marmot-locked";
 import { useOpenLater } from "./use-open-later";
 import { MarmotLink } from "./marmot-link";
+import { PluginEmbeds } from "@/components/plugins/embeds";
 import {
   ConversationSearch,
   ForwardMessage,
@@ -2843,25 +2844,51 @@ function MarmotConversationContent({
                       rtl={kit.rtl}
                     />
                   );
+                const pluginEmbeds =
+                  row?.sourceId &&
+                  !row.invalidationStatus &&
+                  (row.eventKind === 9 || row.eventKind === 1111) &&
+                  keepChatWindow &&
+                  !locked &&
+                  !blocked &&
+                  !snapshot?.invited &&
+                  !privacy.isBlocked(row.sender) &&
+                  (row.expiresAt == null ||
+                    row.expiresAt * 1000 > Date.now()) &&
+                  row.text.length <= 16_384 &&
+                  row.text.toLowerCase().includes("magnet:?") ? (
+                    <PluginEmbeds
+                      key={`${row.id}:${row.sourceId}`}
+                      group={id}
+                      message={row.id}
+                      event={row.sourceId}
+                      text={row.text}
+                      content={row.content}
+                      eligible={focused && foreground && visible.has(row.id)}
+                    />
+                  ) : null;
                 if (videoUpload || row?.attachments.length)
                   return keepChatWindow && !locked && !blocked ? (
-                    <MarmotAttachments
-                      group={id}
-                      conversation={title}
-                      row={row}
-                      upload={videoUpload}
-                      message={currentMessage}
-                      presentation={presentation}
-                      gallery={gallery}
-                      foreground={focused && foreground}
-                      visible={
-                        row !== undefined &&
-                        focused &&
-                        foreground &&
-                        visible.has(row.id)
-                      }
-                      timestampBackdrop={timestampBackdrop}
-                    />
+                    <>
+                      <MarmotAttachments
+                        group={id}
+                        conversation={title}
+                        row={row}
+                        upload={videoUpload}
+                        message={currentMessage}
+                        presentation={presentation}
+                        gallery={gallery}
+                        foreground={focused && foreground}
+                        visible={
+                          row !== undefined &&
+                          focused &&
+                          foreground &&
+                          visible.has(row.id)
+                        }
+                        timestampBackdrop={timestampBackdrop}
+                      />
+                      {pluginEmbeds}
+                    </>
                   ) : null;
                 return row &&
                   (row.eventKind === 9 || row.eventKind === 1111) ? (
@@ -2878,6 +2905,7 @@ function MarmotConversationContent({
                         !privacy.isBlocked(row.sender)
                       }
                     />
+                    {pluginEmbeds}
                     {currentMessage.originalText && (
                       <Action
                         size="sm"

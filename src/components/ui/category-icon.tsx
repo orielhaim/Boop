@@ -12,6 +12,7 @@ export const settingsCategories = [
   "identity",
   "privacy",
   "connections",
+  "plugins",
   "about",
 ] as const;
 
@@ -49,6 +50,10 @@ const categories = {
   connections: {
     icon: "connection",
     colors: ["#79B5C6", "#3B758C"],
+  },
+  plugins: {
+    icon: "plugins",
+    colors: ["#BEA8E1", "#7955AC"],
   },
   about: {
     icon: "info",

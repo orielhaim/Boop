@@ -1,4 +1,6 @@
-<manifest xmlns:dist="http://schemas.android.com/apk/distribution">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:dist="http://schemas.android.com/apk/distribution">
+  <application android:hasCode="false" />
   <dist:module dist:title="@string/boop_feature_torrents">
     <dist:delivery>
       <dist:on-demand />

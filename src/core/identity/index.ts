@@ -1,6 +1,8 @@
 import { NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { getRandomBytesAsync } from "expo-crypto";
+import { Directory, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { removeAccountDatabase, type Database } from "@/db";
 import { preference, setPreference } from "@/db/queries";
@@ -108,6 +110,20 @@ export async function accountDownloadKey(account: string) {
 }
 
 export async function removeLocalAccount(account: string) {
+  const stored = await SecureStore.getItemAsync(downloadSlot(account), options);
+  if (stored && /^[a-f0-9]{64}$/u.test(stored)) {
+    const key = hexToBytes(stored);
+    try {
+      const files = new Directory(
+        Paths.document,
+        "torrent-downloads",
+        bytesToHex(sha256(key)),
+      );
+      if (files.exists) files.delete();
+    } finally {
+      key.fill(0);
+    }
+  }
   await Promise.all([
     SecureStore.deleteItemAsync(downloadSlot(account), options),
     SecureStore.deleteItemAsync(speechKeySlot(account), options),

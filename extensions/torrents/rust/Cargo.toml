@@ -7,8 +7,36 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+torrent-test-fixture = ["librqbit/test-loopback"]
+
 [dependencies]
+base64 = "=0.22.1"
 jni = "=0.22.4"
+librqbit = { version = "=9.1.0", default-features = false, features = [
+  "disable-upload",
+  "rust-tls",
+] }
+librqbit-core = { version = "=9.1.0", default-features = false }
+serde_json = "=1.0.149"
+tokio = { version = "=1.49.0", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
+tokio-util = { version = "=0.7.17", features = ["rt"] }
+url = "=2.5.9"
+
+[patch.crates-io]
+librqbit = { path = "patches/librqbit" }
+librqbit-core = { path = "patches/librqbit-core" }
+librqbit-dht = { path = "patches/librqbit-dht" }
+librqbit-tracker-comms = { path = "patches/librqbit-tracker-comms" }
 
 [profile.release]
 lto = "thin"

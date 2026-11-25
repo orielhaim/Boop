@@ -33,6 +33,7 @@ import { FileIcon } from "phosphor-react-native/src/icons/File";
 import { FingerprintIcon } from "phosphor-react-native/src/icons/Fingerprint";
 import { FlagIcon } from "phosphor-react-native/src/icons/Flag";
 import { GearIcon } from "phosphor-react-native/src/icons/Gear";
+import { PuzzlePieceIcon } from "phosphor-react-native/src/icons/PuzzlePiece";
 import { GlobeIcon } from "phosphor-react-native/src/icons/Globe";
 import { HardDriveIcon } from "phosphor-react-native/src/icons/HardDrive";
 import { HeadphonesIcon } from "phosphor-react-native/src/icons/Headphones";
@@ -125,6 +126,7 @@ const icons = {
   info: InfoIcon,
   warning: WarningCircleIcon,
   settings: GearIcon,
+  plugins: PuzzlePieceIcon,
   star: StarIcon,
   favorite: StarIcon,
   outgoing: ArrowUpRightIcon,

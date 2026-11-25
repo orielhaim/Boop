@@ -775,6 +775,7 @@ export function createDownloadManager({
       clearTimeout(timer);
       clearTimeout(progressTimer);
       await Promise.allSettled([
+        retirePlayback(),
         ...[...running.values()].map(({ done }) => done),
         ...commands.values(),
         recovery,
