@@ -5,10 +5,10 @@ import { Children, forwardRef } from "react";
 import { Platform, StyleSheet, Text, View, type ViewProps } from "react-native";
 import { useGlassTheme } from "./glass-provider";
 import { resolveGlassMaterial } from "./lib/material";
-import { radius } from "@/theme/tokens";
+import { mediaMaterial, radius } from "@/theme/tokens";
 
 export type SurfacePreset =
-  "subtle" | "standard" | "prominent" | "control" | "overlay";
+  "subtle" | "standard" | "prominent" | "control" | "overlay" | "cinematic";
 
 export type SurfaceElevation = "none" | "base" | "raised";
 
@@ -41,6 +41,7 @@ const BLUR_INTENSITY: Record<SurfacePreset, number> = {
   standard: 70,
   prominent: 90,
   overlay: 90,
+  cinematic: 28,
 };
 
 /**
@@ -65,10 +66,11 @@ export const GlassSurface = forwardRef<
     ref,
   ) => {
     const { colors, preferences } = useGlassTheme();
+    const cinematic = preset === "cinematic";
     const material = resolveGlassMaterial(
       preferences.reduceTransparency,
       Boolean(blurTarget),
-      translucentFallback,
+      translucentFallback || cinematic,
     );
     const borderRadius =
       StyleSheet.flatten(style)?.borderRadius ?? radius.control;
@@ -77,8 +79,10 @@ export const GlassSurface = forwardRef<
       borderCurve: "continuous",
     } as const;
     const lens = translucentFallback ? colors.lens : undefined;
-    const rim = lens?.rim ?? colors.rim;
-    const rimHighlight = lens?.glint ?? colors.rimHighlight;
+    const rim = cinematic ? mediaMaterial.rim : (lens?.rim ?? colors.rim);
+    const rimHighlight = cinematic
+      ? mediaMaterial.glint
+      : (lens?.glint ?? colors.rimHighlight);
 
     return (
       <View
@@ -86,8 +90,11 @@ export const GlassSurface = forwardRef<
         style={[
           corners,
           elevation !== "none" && {
-            boxShadow:
-              elevation === "raised" ? colors.shadowRaised : colors.shadow,
+            boxShadow: cinematic
+              ? mediaMaterial.shadow
+              : elevation === "raised"
+                ? colors.shadowRaised
+                : colors.shadow,
           },
           style,
         ]}
@@ -96,8 +103,10 @@ export const GlassSurface = forwardRef<
         {material === "liquid" ? (
           <GlassView
             style={[StyleSheet.absoluteFill, corners, styles.layer]}
-            colorScheme={preferences.theme}
-            glassEffectStyle={preset === "subtle" ? "clear" : "regular"}
+            colorScheme={cinematic ? "dark" : preferences.theme}
+            glassEffectStyle={
+              cinematic || preset === "subtle" ? "clear" : "regular"
+            }
             tintColor={tint}
           />
         ) : null}
@@ -115,9 +124,11 @@ export const GlassSurface = forwardRef<
                 style={StyleSheet.absoluteFill}
                 intensity={BLUR_INTENSITY[preset]}
                 tint={
-                  preferences.theme === "dark"
-                    ? "systemUltraThinMaterialDark"
-                    : "systemUltraThinMaterialLight"
+                  cinematic
+                    ? "default"
+                    : preferences.theme === "dark"
+                      ? "systemUltraThinMaterialDark"
+                      : "systemUltraThinMaterialLight"
                 }
                 blurTarget={Platform.OS === "android" ? blurTarget : undefined}
                 blurMethod={
@@ -127,22 +138,24 @@ export const GlassSurface = forwardRef<
                 }
               />
             )}
-            <View
-              style={[
-                StyleSheet.absoluteFill,
-                tint
-                  ? { backgroundColor: tint, opacity: 0.92 }
-                  : {
-                      backgroundColor:
-                        lens?.frost ??
-                        (preset === "overlay"
-                          ? colors.overlaySurface
-                          : preset === "prominent"
-                            ? colors.glassFill.tinted
-                            : colors.glassFill.clear),
-                    },
-              ]}
-            />
+            {(!cinematic || tint) && (
+              <View
+                style={[
+                  StyleSheet.absoluteFill,
+                  tint
+                    ? { backgroundColor: tint, opacity: 0.92 }
+                    : {
+                        backgroundColor:
+                          lens?.frost ??
+                          (preset === "overlay"
+                            ? colors.overlaySurface
+                            : preset === "prominent"
+                              ? colors.glassFill.tinted
+                              : colors.glassFill.clear),
+                      },
+                ]}
+              />
+            )}
             <View
               style={[
                 StyleSheet.absoluteFill,
@@ -161,8 +174,10 @@ export const GlassSurface = forwardRef<
               corners,
               styles.layer,
               {
-                backgroundColor: tint ?? colors.opaqueSurface,
-                borderColor: colors.border,
+                backgroundColor:
+                  tint ??
+                  (cinematic ? mediaMaterial.opaque : colors.opaqueSurface),
+                borderColor: cinematic ? mediaMaterial.rim : colors.border,
                 borderWidth: StyleSheet.hairlineWidth,
               },
             ]}
@@ -175,7 +190,11 @@ export const GlassSurface = forwardRef<
           ) : (
             <Text
               style={{
-                color: tint ? colors.accentForeground : colors.foreground,
+                color: cinematic
+                  ? mediaMaterial.ink
+                  : tint
+                    ? colors.accentForeground
+                    : colors.foreground,
               }}
             >
               {child}

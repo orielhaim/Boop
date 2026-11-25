@@ -76,6 +76,8 @@ import { VideoCameraIcon } from "phosphor-react-native/src/icons/VideoCamera";
 import { VideoCameraSlashIcon } from "phosphor-react-native/src/icons/VideoCameraSlash";
 import { WarningCircleIcon } from "phosphor-react-native/src/icons/WarningCircle";
 import { ArrowClockwiseIcon } from "phosphor-react-native/src/icons/ArrowClockwise";
+import { ArrowCounterClockwiseIcon } from "phosphor-react-native/src/icons/ArrowCounterClockwise";
+import { SunIcon } from "phosphor-react-native/src/icons/Sun";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import { ArchiveIcon } from "phosphor-react-native/src/icons/Archive";
@@ -143,6 +145,8 @@ const icons = {
   openExternal: ArrowSquareOutIcon,
   report: FlagIcon,
   refresh: ArrowClockwiseIcon,
+  rewind: ArrowCounterClockwiseIcon,
+  brightness: SunIcon,
   play: PlayIcon,
   storage: HardDriveIcon,
   audio: HeadphonesIcon,

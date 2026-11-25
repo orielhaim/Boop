@@ -77,6 +77,7 @@ export default function VideoPlayerRoute() {
         dialog.show({ title: t("settings.openFailed"), tone: "error" }),
       );
   };
+  const subtitleManagerAvailable = canExport || subtitles.tracks.length > 0;
   return (
     <VideoViewer
       key={current.id}
@@ -131,8 +132,19 @@ export default function VideoPlayerRoute() {
       }
       advancedGestures={preferences.advancedGestures}
       seekInterval={preferences.seekInterval}
-      subtitleOptions={(tracks, close) => (
+      subtitleValue={
+        subtitles.selection.kind === "external"
+          ? selectedExternal(subtitles)?.name
+          : subtitles.selection.kind === "embedded"
+            ? subtitles.selection.track.label ||
+              subtitles.selection.track.name ||
+              subtitles.selection.track.language
+            : undefined
+      }
+      canManageSubtitles={subtitleManagerAvailable}
+      subtitleOptions={(tracks, screen) => (
         <SubtitleOptions
+          screen={screen}
           state={subtitles}
           embedded={tracks}
           appearance={captionAppearance}
@@ -147,7 +159,6 @@ export default function VideoPlayerRoute() {
           }
           setOffset={(offset) => video.subtitleOffset(player, offset)}
           setAppearance={(appearance) => video.captionAppearance(appearance)}
-          close={close}
           onError={() =>
             void dialog.show({
               title: t("viewer.subtitleFailed"),
@@ -158,7 +169,7 @@ export default function VideoPlayerRoute() {
       )}
       subtitleOverlay={
         subtitles
-          ? (controlsVisible) => {
+          ? (controlsVisible, bounds) => {
               const track = selectedExternal(subtitles);
               return track && subtitles.rendering === "fallback" ? (
                 <Captions
@@ -167,6 +178,7 @@ export default function VideoPlayerRoute() {
                   appearance={captionAppearance}
                   offset={subtitles.offset}
                   controlsVisible={controlsVisible}
+                  bounds={bounds}
                 />
               ) : null;
             }

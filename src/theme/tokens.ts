@@ -143,6 +143,22 @@ export const callMaterial = {
   focus: "#ACC0FF",
 } as const;
 
+export const mediaMaterial = {
+  canvas: "#07080C",
+  ink: "#F8FAFF",
+  secondary: "#CBD4E6",
+  accent: "#CAE0FF",
+  opaque: "#1B2130",
+  rim: "rgba(224, 236, 255, 0.25)",
+  glint: "rgba(238, 245, 255, 0.34)",
+  rail: "rgba(226, 235, 255, 0.33)",
+  buffered: "rgba(226, 235, 255, 0.59)",
+  pressed: "rgba(225, 237, 255, 0.16)",
+  clear: "rgba(7, 8, 12, 0)",
+  shade: "rgba(7, 8, 12, 0.80)",
+  shadow: "0px 8px 24px -6px rgba(0, 0, 0, 0.64)",
+} as const;
+
 export type GlassTone =
   "neutral" | "blue" | "green" | "orange" | "red" | "purple";
 

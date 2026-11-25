@@ -5,7 +5,7 @@ import { useStore } from "zustand";
 import { videoOrigin } from "@/core/video/types";
 import { useLocal } from "@/services/local-context";
 import { audioNavigationScene } from "@/components/audio/mini-player";
-import { FloatingVideo } from "./viewer";
+import { FloatingVideo } from "./floating";
 import { Captions } from "./captions";
 import { selectedExternal } from "@/core/video/subtitles/tracks";
 
@@ -48,6 +48,7 @@ export function VideoFrame({ children }: { children: ReactNode }) {
   const path = usePathname();
   const presentation = current?.presentation;
   const source = current?.source;
+  const player = current?.player;
   const external =
     current?.subtitles.rendering === "fallback"
       ? selectedExternal(current.subtitles)
@@ -70,18 +71,18 @@ export function VideoFrame({ children }: { children: ReactNode }) {
       {children}
       {current?.presentation === "floating" &&
         path !== "/video-player" &&
-        current.player && (
+        player && (
           <FloatingVideo
-            player={current.player}
+            player={player}
             background={current.background}
-            captions={
+            captions={(controlsVisible) =>
               external && (
                 <Captions
-                  player={current.player}
+                  player={player}
                   track={external}
                   offset={current.subtitles.offset}
                   appearance={captionAppearance}
-                  controlsVisible
+                  controlsVisible={controlsVisible}
                   compact
                 />
               )

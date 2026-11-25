@@ -25,6 +25,52 @@ const presetColors = {
 >;
 const fontSizes = { small: 16, default: 20, large: 26 };
 
+function captionInk(
+  appearance: CaptionAppearance,
+  compact: boolean,
+): TextStyle {
+  const { text, background } = presetColors[appearance.preset];
+  const size = fontSizes[appearance.size];
+  return {
+    color: text,
+    backgroundColor: background,
+    fontSize: compact ? Math.min(15, size * 0.63) : size,
+    paddingHorizontal: compact ? 3 : 8,
+    paddingVertical: compact ? 0 : 3,
+  };
+}
+
+export function CaptionSample({
+  appearance,
+  text,
+  compact = false,
+}: {
+  appearance: CaptionAppearance;
+  text: string;
+  compact?: boolean;
+}) {
+  return (
+    <Text
+      numberOfLines={2}
+      style={[
+        styles.text,
+        styles.sample,
+        captionInk(appearance, compact),
+        appearance.preset === "clear" && styles.shadow,
+      ]}
+    >
+      {text}
+    </Text>
+  );
+}
+
+export type CaptionBounds = {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+};
+
 function alignment(align: CueLayout["align"]): TextStyle["textAlign"] {
   if (align === "start") return I18nManager.isRTL ? "right" : "left";
   if (align === "end") return I18nManager.isRTL ? "left" : "right";
@@ -49,6 +95,7 @@ export function Captions({
   offset,
   appearance,
   controlsVisible,
+  bounds,
   compact = false,
 }: {
   player: VideoPlayer;
@@ -56,6 +103,7 @@ export function Captions({
   offset: number;
   appearance: CaptionAppearance;
   controlsVisible: boolean;
+  bounds?: CaptionBounds;
   compact?: boolean;
 }) {
   return (
@@ -67,6 +115,7 @@ export function Captions({
       appearance={appearance}
       compact={compact}
       controlsVisible={controlsVisible}
+      bounds={bounds}
     />
   );
 }
@@ -77,6 +126,7 @@ function CaptionTimeline({
   offset,
   appearance,
   controlsVisible,
+  bounds,
   compact,
 }: {
   player: VideoPlayer;
@@ -84,6 +134,7 @@ function CaptionTimeline({
   offset: number;
   appearance: CaptionAppearance;
   controlsVisible: boolean;
+  bounds?: CaptionBounds;
   compact: boolean;
 }) {
   const insets = useSafeAreaInsets();
@@ -104,10 +155,6 @@ function CaptionTimeline({
       ? current.frame
       : undefined;
   if (!frame?.cues.length) return null;
-  const colors = presetColors[appearance.preset];
-  const fontSize = compact
-    ? Math.min(15, fontSizes[appearance.size] * 0.63)
-    : fontSizes[appearance.size];
   const preserveStyle = appearance.preset === "source";
   const groups = captionGroups(
     frame.cues,
@@ -119,13 +166,13 @@ function CaptionTimeline({
       style={[
         styles.viewport,
         compact
-          ? { left: 4, right: 4, top: 4, bottom: controlsVisible ? 29 : 7 }
-          : {
+          ? { left: 4, right: 4, top: controlsVisible ? 51 : 4, bottom: 7 }
+          : (bounds ?? {
               left: insets.left + 16,
               right: insets.right + 16,
-              top: insets.top + (controlsVisible ? 52 : 16),
-              bottom: insets.bottom + (controlsVisible ? 122 : 20),
-            },
+              top: insets.top + 16,
+              bottom: insets.bottom + 20,
+            }),
         appearance.position === "top" && styles.top,
       ]}
     >
@@ -167,14 +214,8 @@ function CaptionTimeline({
                 maxFontSizeMultiplier={compact ? 1.4 : undefined}
                 style={[
                   styles.text,
-                  {
-                    fontSize,
-                    color: colors.text,
-                    textAlign: alignment(layout?.align),
-                    backgroundColor: colors.background,
-                    paddingHorizontal: compact ? 3 : 8,
-                    paddingVertical: compact ? 0 : 3,
-                  },
+                  captionInk(appearance, compact),
+                  { textAlign: alignment(layout?.align) },
                   appearance.preset === "clear" && styles.shadow,
                 ]}
               >
@@ -237,6 +278,7 @@ const styles = StyleSheet.create((theme) => ({
     writingDirection: "auto",
     overflow: "hidden",
   },
+  sample: { textAlign: "center" },
   annotation: { fontSize: 12, fontStyle: "italic" },
   shadow: {
     textShadowColor: "#000",
