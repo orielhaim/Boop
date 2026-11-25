@@ -108,7 +108,13 @@ import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { videoFile } from "@/core/video/types";
 import { localMediaUri } from "@/core/media/open-local-attachment";
 import { contactByKey } from "@/db/queries";
-import { removeOpenedMessage } from "@/db/open-later";
+import {
+  openLaterDraftKey,
+  readOpenLaterSubmission,
+  removeOpenedMessage,
+  removeOpenLaterSubmission,
+  saveOpenLaterSubmission,
+} from "@/db/open-later";
 import { namespaces } from "@/i18n";
 import { useChatPresentation, useLocal } from "@/services/local-context";
 import { radius, space } from "@/theme";
@@ -136,7 +142,8 @@ import {
 } from "./marmot-message-tools";
 import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
 import { useConversationWindow } from "./marmot-window";
-import { OpenLaterSheet } from "./send-options";
+import { OpenLaterTray } from "./open-later-tray";
+import { SendMenu } from "./send-menu";
 import { useMessageTranslations } from "./use-message-translations";
 import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
 import { useMentionMembers } from "./use-mention-members";
@@ -237,7 +244,21 @@ type ChatMessage = IMessage & {
   direction: "incoming" | "outgoing";
   originalText?: string;
   singleVideo?: boolean;
+  openLaterPreview?: number;
 };
+
+type OpenLaterSend = {
+  token: string;
+  draftKey: string;
+  requestedAt: number;
+  createdAt: number;
+  replyMessage: ChatMessage["replyMessage"];
+  failed?: true;
+};
+
+function openLaterRowKey(token: string) {
+  return `open-later:${token}`;
+}
 
 type PreparedMessageEntry = {
   context: readonly unknown[];
@@ -443,15 +464,13 @@ function MarmotConversationContent({
   >(undefined);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const composerRef = useRef<ComponentRef<typeof TextInput>>(null);
-  const [later, setLater] = useState(false);
-  const [laterError, setLaterError] = useState<string>();
-  const laterSubmission = useRef<
-    | ReturnType<
-        typeof retryableSubmission<Promise<{ body: string; token: string }>>
-      >
-    | undefined
-  >(undefined);
+  const [later, setLater] = useState<number | null>(null);
+  const [laterRetryAt, setLaterRetryAt] = useState<number>();
+  const [laterSends, setLaterSends] = useState<readonly OpenLaterSend[]>([]);
   const laterSending = useRef(false);
+  useLayoutEffect(() => {
+    if (!focused || !foreground || locked) setLater(null);
+  }, [focused, foreground, locked]);
   const [visibility, setVisibility] = useState<{
     generation: string;
     ids: ReadonlySet<string>;
@@ -642,12 +661,14 @@ function MarmotConversationContent({
     Boolean(
       focused &&
       foreground &&
+      !locked &&
       snapshot?.canSend &&
       !snapshot.invited &&
       !blocked,
     ),
     hidden,
     blockState,
+    navigation.isFocused,
   );
   const messages = useMemo(() => {
     const blocked = (key: string) =>
@@ -656,6 +677,7 @@ function MarmotConversationContent({
     const omitted = new Set(hidden);
     const played = new Set(listened);
     const names = new Map(people?.map((person) => [person.id, person.name]));
+    const loaded = new Map(rows?.map((row) => [row.id, row]));
     for (const contact of contacts)
       if (contact.name) names.set(contact.publicKey, contact.name);
     const user = (key: string) => ({ _id: key, name: names.get(key) });
@@ -680,7 +702,11 @@ function MarmotConversationContent({
         const eventName =
           row.system?.name ||
           (subject && !blocked(subject) && names.get(subject));
-        const quote = row.replyPreview;
+        const quote =
+          row.replyPreview ??
+          (row.eventKind === timeLockKind && row.replyTo
+            ? loaded.get(row.replyTo)
+            : undefined);
         const visibleQuote =
           quote && !blocked(quote.sender) && !omitted.has(quote.id)
             ? quote
@@ -715,7 +741,10 @@ function MarmotConversationContent({
             : undefined;
         const message: ChatMessage = {
           _id: row.id,
-          rowKey: outgoingVideoKey,
+          rowKey:
+            row.eventKind === timeLockKind && row.sender === self && row.token
+              ? openLaterRowKey(row.token)
+              : outgoingVideoKey,
           direction: row.sender === self ? "outgoing" : "incoming",
           createdAt: row.sentAt * 1_000,
           user: { _id: row.sender, name: sender },
@@ -768,11 +797,15 @@ function MarmotConversationContent({
                   ? deletionLabel(visibleQuote.deletionSource)
                   : visibleQuote.invalidationStatus
                     ? t("messages:unavailableQuote")
-                    : quoteText(
-                        visibleQuote.content,
-                        visibleQuote.text,
-                        mentionNames,
-                      ),
+                    : visibleQuote.eventKind === timeLockKind
+                      ? t("messages:lockedMessage")
+                      : visibleQuote.content
+                        ? quoteText(
+                            visibleQuote.content,
+                            visibleQuote.text,
+                            mentionNames,
+                          )
+                        : visibleQuote.text,
                 user: user(visibleQuote.sender),
               }
             : missingQuote
@@ -966,6 +999,29 @@ function MarmotConversationContent({
       },
     ];
   }, [groupCreatedAt, id, self, showGroupCreation, t, translated.displayed]);
+  const localLaterSends = laterSends.filter(
+    ({ token }) =>
+      !rows?.some((row) => row.sender === self && row.token === token),
+  );
+  if (localLaterSends.length !== laterSends.length)
+    setLaterSends(localLaterSends);
+  const withOpenLater: ChatMessage[] = localLaterSends.length
+    ? [
+        ...localLaterSends.map((send): ChatMessage => ({
+          _id: openLaterRowKey(send.token),
+          rowKey: openLaterRowKey(send.token),
+          user: { _id: self },
+          text: "",
+          createdAt: send.createdAt,
+          direction: "outgoing",
+          pending: !send.failed,
+          isFailed: Boolean(send.failed),
+          openLaterPreview: send.requestedAt,
+          replyMessage: send.replyMessage,
+        })),
+        ...timeline,
+      ]
+    : timeline;
   const withVoice: ChatMessage[] =
     showVoice && voice
       ? [
@@ -978,9 +1034,9 @@ function MarmotConversationContent({
             pending: voice.phase !== "failed",
             isFailed: voice.phase === "failed",
           },
-          ...timeline,
+          ...withOpenLater,
         ]
-      : timeline;
+      : withOpenLater;
   const withConfirmedVideo =
     outgoingVideo && videoUploadId && !showVideo
       ? withVoice.map((entry) =>
@@ -1596,52 +1652,122 @@ function MarmotConversationContent({
     );
   }
 
-  async function sendLater(time: number) {
-    const text = (composer ?? snapshot?.draft?.text ?? "").trim();
-    if (!canDispatch() || !text || busy || laterSending.current) return;
+  async function sendLater(time: number, retry?: OpenLaterSend) {
+    const draft = composer ?? snapshot?.draft?.text ?? "";
+    const text = draft.trim();
+    if (
+      !isCurrent() ||
+      !canDispatch() ||
+      !canCompose ||
+      !text ||
+      busy ||
+      laterSending.current
+    )
+      return;
+    const previousReply = reply;
+    const target = previousReply?._id ?? snapshot?.draft?.replyTo ?? null;
+    const draftKey = openLaterDraftKey(text, target);
+    if (retry && retry.draftKey !== draftKey) return;
+    const saved = readOpenLaterSubmission(db, id, draftKey);
+    const token = saved?.token ?? retry?.token ?? randomUUID();
+    const requestedAt = saved?.time ?? time;
+    const pending: OpenLaterSend = {
+      token,
+      requestedAt,
+      draftKey,
+      createdAt: retry?.createdAt ?? Date.now(),
+      replyMessage: previousReply
+        ? {
+            _id: previousReply._id,
+            user: previousReply.user,
+            text: previousReply.text,
+          }
+        : undefined,
+    };
+    const revision = draftWriteRevision.current;
+    const writes = draftWrites.current;
     laterSending.current = true;
     setBusy(true);
-    setLaterError(undefined);
+    setLater(null);
+    setComposer("");
+    composerValue.current = "";
+    setReply(null);
+    setLaterSends((sends) => [
+      pending,
+      ...sends.filter(
+        (send) =>
+          send.token !== token && !(send.failed && send.draftKey === draftKey),
+      ),
+    ]);
+    let accepted = false;
     try {
-      const target = reply?._id ?? null;
-      const key = JSON.stringify([text, time, target]);
-      const request = retryableSubmission(
-        laterSubmission.current,
-        key,
-        async () => ({
-          body: JSON.stringify(await encryptTimeLock(text, time)),
-          token: randomUUID(),
-        }),
-      );
-      laterSubmission.current = request;
-      if (!canDispatch()) return;
-      let submission: { body: string; token: string };
-      try {
-        submission = await request.value;
-      } catch (reason) {
-        if (laterSubmission.current === request)
-          laterSubmission.current = undefined;
-        throw reason;
+      // Let the pending bubble and tray exit reach the screen before local encryption.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      await writes;
+      if (!isCurrent() || !canDispatch())
+        throw new Error("conversation-unavailable");
+      const body =
+        saved?.body ?? JSON.stringify(await encryptTimeLock(text, requestedAt));
+      if (!isCurrent() || !canDispatch())
+        throw new Error("conversation-unavailable");
+      if (!saved) {
+        saveOpenLaterSubmission(db, id, {
+          draftKey,
+          time: requestedAt,
+          body,
+          token,
+        });
       }
-      if (!canDispatch()) return;
-      await marmot.sendSpecial(
-        id,
-        timeLockKind,
-        submission.body,
-        target,
-        submission.token,
-      );
-      if (laterSubmission.current === request)
-        laterSubmission.current = undefined;
-      saveDraft("", null);
-      setReply(null);
-      setLater(false);
+      await marmot.sendSpecial(id, timeLockKind, body, target, token);
+      accepted = true;
+      if (!isCurrent()) return;
+      if (draftWriteRevision.current === revision) {
+        saveDraft("", null);
+        await draftWrites.current;
+      }
+      if (isCurrent() && !deferredDraft.current)
+        removeOpenLaterSubmission(db, id, token);
     } catch {
-      setLaterError(t("messages:openSendError"));
+      if (!isCurrent() || accepted) return;
+      setLaterSends((sends) =>
+        sends.map((send) =>
+          send.token === token ? { ...send, failed: true } : send,
+        ),
+      );
+      if (draftWriteRevision.current === revision) {
+        setComposer(draft);
+        composerValue.current = draft;
+        setReply(previousReply);
+      }
     } finally {
       laterSending.current = false;
       setBusy(false);
     }
+  }
+
+  function openLaterPicker() {
+    if (
+      !isCurrent() ||
+      !canDispatch() ||
+      !canCompose ||
+      busy ||
+      !draftText.trim()
+    )
+      return;
+    Keyboard.dismiss();
+    setLaterRetryAt(
+      readOpenLaterSubmission(
+        db,
+        id,
+        openLaterDraftKey(
+          draftText.trim(),
+          reply?._id ?? snapshot?.draft?.replyTo ?? null,
+        ),
+      )?.time,
+    );
+    setLater(Date.now());
   }
 
   function openGroupDetails() {
@@ -1691,7 +1817,7 @@ function MarmotConversationContent({
     ...(!peer && canSend
       ? [{ id: "poll", title: t("messages:marmot.newPoll") }]
       : []),
-    ...(canSend && (composer ?? snapshot.draft?.text)?.trim()
+    ...(canCompose && (composer ?? snapshot.draft?.text)?.trim()
       ? [{ id: "openLater", title: t("messages:openLater") }]
       : []),
   ];
@@ -1714,7 +1840,7 @@ function MarmotConversationContent({
         break;
       }
       case "openLater":
-        if (canDispatch()) setLater(true);
+        openLaterPicker();
         break;
     }
   }
@@ -2248,7 +2374,23 @@ function MarmotConversationContent({
                         }}
                       />
                     )}
-                    <InputToolbar {...props} />
+                    <InputToolbar
+                      {...props}
+                      renderSend={
+                        props.editMessage ||
+                        !canCompose ||
+                        !focused ||
+                        !foreground ||
+                        locked
+                          ? props.renderSend
+                          : (sendProps) => (
+                              <SendMenu
+                                {...sendProps}
+                                onOpenLater={openLaterPicker}
+                              />
+                            )
+                      }
+                    />
                   </>
                 ) : blocked ? (
                   <Ink>
@@ -2547,6 +2689,8 @@ function MarmotConversationContent({
                     },
                   ];
                 const row = message.row;
+                if (message.openLaterPreview !== undefined)
+                  return defaults.filter(({ key }) => key === "retry");
                 if (!row || row.deleted || row.system) return [];
                 const forwardable = [9, 1111, locationKind].includes(
                   row.eventKind,
@@ -2717,7 +2861,14 @@ function MarmotConversationContent({
               onRetryMessage={
                 canSend
                   ? (message) => {
-                      if (
+                      const laterSend = localLaterSends.find(
+                        (send) =>
+                          send.failed &&
+                          message._id === openLaterRowKey(send.token),
+                      );
+                      if (laterSend)
+                        void sendLater(laterSend.requestedAt, laterSend);
+                      else if (
                         voice?.phase === "failed" &&
                         message._id === `voice-upload:${voice.token}`
                       )
@@ -2734,7 +2885,12 @@ function MarmotConversationContent({
               reply={{
                 isEnabled: canSend,
                 message: reply,
-                onReply: setReply,
+                onReply: (message) =>
+                  setReply(
+                    message?.row?.eventKind === timeLockKind
+                      ? { ...message, text: t("messages:lockedMessage") }
+                      : message,
+                  ),
                 onClear: () => setReply(null),
                 onPress: (target) => moveTo(String(target._id)),
               }}
@@ -2811,6 +2967,17 @@ function MarmotConversationContent({
                   );
                 const row = currentMessage?.row;
                 if (!currentMessage || row?.deleted) return null;
+                if (currentMessage.openLaterPreview !== undefined)
+                  return (
+                    <MarmotLocked
+                      state={{
+                        kind: "locked",
+                        requestedAt: currentMessage.openLaterPreview,
+                      }}
+                      rtl={kit.rtl}
+                      outgoing
+                    />
+                  );
                 const ownsVideoPreview =
                   outgoingVideo &&
                   videoUploadId &&
@@ -2860,6 +3027,7 @@ function MarmotConversationContent({
                       state={openLater.states?.get(row.id)}
                       retry={() => openLater.retry(row.id)}
                       rtl={kit.rtl}
+                      outgoing={row.sender === self}
                     />
                   );
                 if (videoUpload || row?.attachments.length)
@@ -2941,15 +3109,12 @@ function MarmotConversationContent({
               canSend={canDispatch}
             />
           )}
-          {later && (
-            <OpenLaterSheet
-              open
-              onCancel={() => setLater(false)}
+          {focused && foreground && !locked && canSend && (
+            <OpenLaterTray
+              openedAt={later}
+              onCancel={() => setLater(null)}
               onSend={(time) => void sendLater(time)}
-              busy={busy}
-              error={laterError}
-              colorScheme={kit.colorScheme}
-              rtl={kit.rtl}
+              retryAt={laterRetryAt}
             />
           )}
         </>

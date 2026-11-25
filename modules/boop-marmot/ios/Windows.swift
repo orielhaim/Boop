@@ -328,6 +328,16 @@ private func historySource(_ source: HistoryImportProvenanceFfi?) -> String? {
   }
 }
 
+private func applicationReply(kind: UInt64, tags: [[String]]) -> String? {
+  guard kind == 24881 else { return nil }
+  let replies = tags.filter { tag in
+    tag.count == 4 && tag[0] == "e" && tag[2].isEmpty && tag[3] == "reply"
+      && tag[1].utf8.count == 64
+      && tag[1].utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+  }
+  return replies.count == 1 ? replies.first?[1] : nil
+}
+
 private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
   let selected = snapshot.header.selected
   let peer = selected.titleSource == .peerProfile || selected.titleSource == .peerFallback ? selected.peerId : nil
@@ -377,12 +387,14 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
         "sentAt": Double(row.timelineAt),
         "expiresAt": bridgeValue(row.retentionExpiresAt.map(Double.init)),
         "eventKind": Double(row.kind),
-        "replyTo": bridgeValue(row.replyToMessageIdHex),
+        "replyTo": bridgeValue(row.replyToMessageIdHex ?? applicationReply(kind: row.kind, tags: row.tags.map(\.values))),
         "thread": bridgeValue(row.thread.map { ["root": $0.rootMessageIdHex, "parent": $0.parentMessageIdHex] }),
         "replyPreview": bridgeValue(row.replyPreview.map { preview -> Document in
-          ["id": preview.messageIdHex, "sender": preview.sender, "text": preview.plaintext,
+          ["id": preview.messageIdHex, "sender": preview.sender, "eventKind": Double(preview.kind),
+           "text": preview.kind == 24881 ? "" : preview.plaintext,
            "deleted": preview.deleted, "deletionSource": wireName(preview.deletionSource),
-           "invalidationStatus": bridgeValue(preview.invalidationStatus), "content": messageContent(preview.contentTokens),
+           "invalidationStatus": bridgeValue(preview.invalidationStatus),
+           "content": bridgeValue(preview.kind == 24881 ? nil : messageContent(preview.contentTokens)),
            "expiresAt": bridgeValue(preview.retentionExpiresAt.map(Double.init)), "mentions": message.references.replyMentions]
         }),
         "mentions": message.references.mentions,

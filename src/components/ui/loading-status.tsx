@@ -4,7 +4,13 @@ import { Ink } from "@/components/ui/kit";
 import { MorphLoader } from "@/components/ui/organisms/morph-loader";
 import { space } from "@/theme";
 
-export function LoadingStatus({ label }: { label: string }) {
+export function LoadingStatus({
+  label,
+  color,
+}: {
+  label: string;
+  color?: string;
+}) {
   return (
     <View
       accessible
@@ -13,8 +19,12 @@ export function LoadingStatus({ label }: { label: string }) {
       accessibilityState={{ busy: true }}
       style={styles.row}
     >
-      <MorphLoader />
-      <Ink kind="caption" muted style={styles.label}>
+      <MorphLoader color={color} />
+      <Ink
+        kind="caption"
+        muted
+        style={[styles.label, color ? { color } : undefined]}
+      >
         {label}
       </Ink>
     </View>

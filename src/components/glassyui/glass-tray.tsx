@@ -90,6 +90,7 @@ type GlassTrayProps = ViewProps & {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialScreen: string;
+  showHeader?: boolean;
   backLabel?: string;
   closeLabel?: string;
   onCoverageChange?: (coverage: TrayCoverage) => void;
@@ -112,6 +113,7 @@ const resize = LinearTransition.springify()
 export function GlassTray({
   children,
   initialScreen,
+  showHeader = true,
   onOpenChange,
   open,
   backLabel,
@@ -245,6 +247,7 @@ export function GlassTray({
 
   const landscape = width > height && width >= 660;
   const direction = history.direction * (rtl ? -1 : 1);
+  const transitioning = Boolean(previous) && !reduce;
   const scrim = useAnimatedStyle(() => ({ opacity: show.get() }));
   const panel = useAnimatedStyle(() => ({
     transform: [
@@ -256,7 +259,7 @@ export function GlassTray({
     opacity: show.get(),
   }));
   const nextPage = useAnimatedStyle(() => {
-    const progress = !previous || reduce ? 1 : slide.get();
+    const progress = transitioning ? slide.get() : 1;
     return {
       opacity: progress,
       transform: [
@@ -363,33 +366,37 @@ export function GlassTray({
                   <View style={styles.handle} />
                 </View>
               </GestureDetector>
-              <View style={[styles.header, { direction: rtl ? "rtl" : "ltr" }]}>
-                {navigation.canGoBack && (
+              {showHeader && (
+                <View
+                  style={[styles.header, { direction: rtl ? "rtl" : "ltr" }]}
+                >
+                  {navigation.canGoBack && (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={backLabel ?? t("back")}
+                      onPress={pop}
+                      style={styles.button}
+                    >
+                      <Icon name="back" size={22} />
+                    </Pressable>
+                  )}
+                  <Text
+                    accessibilityRole="header"
+                    style={styles.title}
+                    numberOfLines={2}
+                  >
+                    {active.props.title}
+                  </Text>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={backLabel ?? t("back")}
-                    onPress={pop}
+                    accessibilityLabel={closeLabel ?? t("closeSheet")}
+                    onPress={close}
                     style={styles.button}
                   >
-                    <Icon name="back" size={22} />
+                    <Icon name="close" size={20} />
                   </Pressable>
-                )}
-                <Text
-                  accessibilityRole="header"
-                  style={styles.title}
-                  numberOfLines={2}
-                >
-                  {active.props.title}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={closeLabel ?? t("closeSheet")}
-                  onPress={close}
-                  style={styles.button}
-                >
-                  <Icon name="close" size={20} />
-                </Pressable>
-              </View>
+                </View>
+              )}
               <View style={styles.body}>
                 {previous && !reduce && (
                   <Animated.View

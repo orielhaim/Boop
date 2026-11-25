@@ -494,6 +494,54 @@ class MarmotRelayTest {
     }
   }
 
+  @Test fun openLaterDeliversOnceWithReplyContextInDirectAndGroupChats() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "open-later-${UUID.randomUUID()}")
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    val carol = Client(File(root, "carol"), relay, null)
+    val clients = listOf(alice, bob, carol)
+    try {
+      for (client in clients) {
+        client.start()
+        await("${client.directory.name} KeyPackage publication") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      verifyOpenLaterDelivery(alice, listOf(bob), direct)
+
+      val group = checkNotNull(alice.kit.createGroupDetailed(
+        alice.key, "Open Later fixture", listOf(bob.key, carol.key), null,
+      ).created).groupIdHex
+      bob.accept(group)
+      carol.accept(group)
+      verifyOpenLaterDelivery(alice, listOf(bob, carol), group)
+    } finally {
+      for (client in clients.asReversed()) client.close()
+      root.deleteRecursively()
+    }
+    Unit
+  }
+
+  private suspend fun verifyOpenLaterDelivery(sender: Client, recipients: List<Client>, group: String) {
+    val parentText = "Open Later reply target"
+    val parent = sender.kit.sendTextWithClientToken(sender.key, group, parentText, UUID.randomUUID().toString())
+    for (recipient in recipients) recipient.receives(group, sender.key, parentText)
+    val body = """{"v":1,"sealed":"opaque-open-later-fixture"}"""
+    val token = UUID.randomUUID().toString()
+    val tags = listOf(listOf("e", parent.messageIdHex, "", "reply"))
+    val accepted = sender.kit.submitCustomEventWithClientToken(sender.key, group, 24881uL, tags, body, token)
+    val retried = sender.kit.submitCustomEventWithClientToken(sender.key, group, 24881uL, tags, body, token)
+    assertEquals(accepted.messageIdHex, retried.messageIdHex)
+    for (recipient in recipients) {
+      recipient.receivesApplicationEvent(group, sender.key, 24881uL, body, accepted.messageIdHex, parent.messageIdHex)
+    }
+  }
+
   private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
     val lastRead = recipient.kit.timelineMessages(recipient.key, latestTimeline(group)).messages.last()
     val marked = recipient.kit.markTimelineMessageRead(recipient.key, group, lastRead.messageIdHex)
@@ -987,6 +1035,35 @@ class MarmotRelayTest {
       await("decryption on ${directory.name} for fixture message '$text'") {
         kit.messages(key, group, 40u, null).any { it.sender == sender && it.plaintext == text }
       }
+    }
+
+    suspend fun receivesApplicationEvent(
+      group: String, sender: String, kind: ULong, body: String, messageId: String, replyTo: String? = null,
+    ) {
+      val query = TimelineMessageQueryFfi(group, null, null, null, null, cursorGroupId = null,
+        before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
+      await("application event kind $kind on ${directory.name}") {
+        val received = kit.timelineMessages(key, query).messages.singleOrNull {
+          it.sender == sender && it.kind == kind && it.plaintext == body
+        }
+        if (received == null) false else {
+          assertEquals(messageId, received.messageIdHex)
+          if (replyTo != null) assertEquals(
+            listOf(listOf("e", replyTo, "", "reply")),
+            received.tags.filter { it.values.firstOrNull() == "e" }.map { it.values },
+          )
+          true
+        }
+      }
+      val window = ConversationWindow(kit.openConversationWindow(
+        key, group, ConversationOpenModeFfi.LATEST, null, 40u, 15_000u,
+      ))
+      try {
+        val projected = (window.initial()?.get("messages") as List<*>).filterIsInstance<Map<*, *>>()
+          .single { it["id"] == messageId }
+        assertEquals(body, projected["text"])
+        assertEquals(replyTo, projected["replyTo"])
+      } finally { window.stop() }
     }
   }
 

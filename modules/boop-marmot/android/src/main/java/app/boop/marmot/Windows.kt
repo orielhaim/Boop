@@ -268,6 +268,14 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
   },
 )
 
+private val applicationReplyId = Regex("[0-9a-f]{64}")
+
+private fun applicationReply(kind: ULong, tags: List<List<String>>): String? =
+  if (kind == 24881uL) tags.singleOrNull { tag ->
+    tag.size == 4 && tag[0] == "e" && tag[2].isEmpty() && tag[3] == "reply" &&
+      applicationReplyId.matches(tag[1])
+  }?.get(1) else null
+
 private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "kind" to "conversation",
   "generation" to snapshot.revision.generation,
@@ -312,12 +320,14 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       "sentAt" to row.timelineAt.toDouble(),
       "expiresAt" to row.retentionExpiresAt?.toDouble(),
       "eventKind" to row.kind.toInt(),
-      "replyTo" to row.replyToMessageIdHex,
+      "replyTo" to (row.replyToMessageIdHex ?: applicationReply(row.kind, row.tags.map { it.values })),
       "thread" to row.thread?.let { mapOf("root" to it.rootMessageIdHex, "parent" to it.parentMessageIdHex) },
       "replyPreview" to row.replyPreview?.let {
-        mapOf("id" to it.messageIdHex, "sender" to it.sender, "text" to it.plaintext,
+        mapOf("id" to it.messageIdHex, "sender" to it.sender, "eventKind" to it.kind.toDouble(),
+          "text" to if (it.kind == 24881uL) "" else it.plaintext,
           "deleted" to it.deleted, "deletionSource" to it.deletionSource.name.lowercase(),
-          "invalidationStatus" to it.invalidationStatus, "content" to it.contentTokens.document(),
+          "invalidationStatus" to it.invalidationStatus,
+          "content" to it.contentTokens.takeUnless { _ -> it.kind == 24881uL }?.document(),
           "expiresAt" to it.retentionExpiresAt?.toDouble(), "mentions" to message.references.replyMentions)
       },
       "mentions" to message.references.mentions,

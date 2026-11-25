@@ -5,11 +5,16 @@ import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
+  openLaterDraftKey,
   purgeExpiredOpenedMessages,
   readOpenedMessage,
+  readOpenLaterSubmission,
   removeOpenedMessage,
+  removeOpenLaterSubmission,
   saveOpenedMessage,
+  saveOpenLaterSubmission,
 } from "../src/db/open-later";
 import { setPreference } from "../src/db/queries";
 import * as schema from "../src/db/schema";
@@ -99,6 +104,45 @@ test("opened plaintext survives a SQLite reopen and is removed on delete or expi
   }
 });
 
+test("an uncertain send reuses the same ciphertext and client token after reopening the account", () => {
+  const directory = mkdtempSync(join(tmpdir(), "boop-open-later-send-"));
+  const path = join(directory, "account.db");
+  const group = "test-group";
+  const target = "test-reply";
+  const draftKey = openLaterDraftKey(body, target);
+  const submission = {
+    draftKey,
+    time: historical.requestedAt,
+    body: JSON.stringify(historical),
+    token: randomUUID(),
+  };
+  try {
+    {
+      using sqlite = new Database(path);
+      initializeTestDatabase(sqlite);
+      saveOpenLaterSubmission(drizzle(sqlite, { schema }), group, submission);
+    }
+    using sqlite = new Database(path);
+    const db = drizzle(sqlite, { schema });
+    expect(readOpenLaterSubmission(db, group, draftKey)).toEqual(submission);
+    expect(
+      readOpenLaterSubmission(db, group, openLaterDraftKey(body, null)),
+    ).toBeNull();
+    expect(readOpenLaterSubmission(db, "other-group", draftKey)).toBeNull();
+    expect(
+      JSON.stringify(sqlite.query("SELECT value FROM settings").all()),
+    ).not.toContain(body);
+    removeOpenLaterSubmission(db, group, randomUUID());
+    expect(readOpenLaterSubmission(db, group, draftKey)?.token).toBe(
+      submission.token,
+    );
+    removeOpenLaterSubmission(db, group, submission.token);
+    expect(readOpenLaterSubmission(db, group, draftKey)).toBeNull();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("conversation open resolves every due loaded message, adds pages, and reopens cached messages offline", async () => {
   let clock = roundTime - 1;
   const text = JSON.stringify(historical);
@@ -127,12 +171,12 @@ test("conversation open resolves every due loaded message, adds pages, and reope
   ];
   const locked = createOpenLaterResolver({ ...options, open });
   locked.scan(recent);
-  clock = roundTime;
   locked.scan(recent);
   expect(fetches).toBe(0);
   expect(states.get("offscreen")?.kind).toBe("locked");
   locked.stop();
 
+  clock = roundTime;
   const opened = createOpenLaterResolver({ ...options, open });
   opened.scan(recent);
   opened.scan([...recent, { id: "older", text }]);
@@ -156,6 +200,76 @@ test("conversation open resolves every due loaded message, adds pages, and reope
   expect(states.get("offscreen")).toEqual({ kind: "opened", text: body });
   expect(states.has("expired")).toBe(false);
   reopened.stop();
+});
+
+test("an open conversation wakes at the beacon round without a new message", async () => {
+  let allowed = true;
+  let state: OpenLaterState | undefined;
+  let fetches = 0;
+  const startsAt = performance.now() + 30;
+  const clock = () => Math.floor(roundTime + performance.now() - startsAt);
+  const message = { id: "group-locked", text: JSON.stringify(historical) };
+  const resolver = createOpenLaterResolver({
+    now: clock,
+    read: () => null,
+    save: (_, decoded) => expect(decoded).toBe(body),
+    allowed: () => allowed,
+    publish: (states) => {
+      state = states.get(message.id);
+    },
+    open: createTimeLockOpener(undefined, async () => {
+      expect(clock()).toBeGreaterThanOrEqual(roundTime);
+      fetches++;
+      return beacon;
+    }),
+  });
+  try {
+    resolver.scan([message]);
+    expect(state?.kind).toBe("locked");
+    expect(fetches).toBe(0);
+    await waitFor(() => state?.kind === "opened");
+    expect(state).toEqual({ kind: "opened", text: body });
+    expect(fetches).toBe(1);
+    allowed = false;
+    resolver.scan([message]);
+    expect(state).toBeUndefined();
+  } finally {
+    resolver.stop();
+  }
+});
+
+test("leaving a conversation or losing access before its deadline prevents a beacon fetch", async () => {
+  let allowed = true;
+  let calls = 0;
+  let state: OpenLaterState | undefined;
+  const startsAt = performance.now() + 30;
+  const options = {
+    now: () => Math.floor(roundTime + performance.now() - startsAt),
+    read: () => null,
+    save: () => {},
+    allowed: () => allowed,
+    publish: (states: ReadonlyMap<string, OpenLaterState>) => {
+      state = states.get("locked");
+    },
+    open: async () => {
+      calls++;
+      return body;
+    },
+  };
+  const leaving = createOpenLaterResolver(options);
+  const revoked = createOpenLaterResolver(options);
+  const rows = [{ id: "locked", text: JSON.stringify(historical) }];
+  leaving.scan(rows);
+  leaving.stop();
+  revoked.scan(rows);
+  expect(state?.kind).toBe("locked");
+  allowed = false;
+  try {
+    await waitFor(() => state === undefined);
+    expect(calls).toBe(0);
+  } finally {
+    revoked.stop();
+  }
 });
 
 test("Open Later errors wait for explicit retry and authorization loss discards completions", async () => {
@@ -343,6 +457,13 @@ test("rejects wrong rounds and signatures before using the decryption key", asyn
     randomness: Buffer.from(digest).toString("hex"),
   }));
   await expect(wrongSignature(historical)).rejects.toMatchObject({
+    code: "verification",
+  });
+  const wrongRandomness = createTimeLockOpener(cache, async () => ({
+    ...beacon,
+    randomness: "00".repeat(32),
+  }));
+  await expect(wrongRandomness(historical)).rejects.toMatchObject({
     code: "verification",
   });
   expect(cached).toBe(false);

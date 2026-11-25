@@ -1,5 +1,6 @@
 import type { BlockedUsers } from "@/core/marmot/blocked-users";
 import { useLayoutEffect, useRef, useState } from "react";
+import { AppState } from "react-native";
 import type { MarmotConversation, MarmotWindow } from "@/core/marmot/native";
 import {
   createOpenLaterResolver,
@@ -22,6 +23,7 @@ export function useOpenLater(
   active: boolean,
   hidden: readonly string[],
   blockState: ReturnType<BlockedUsers["snapshot"]>,
+  isFocused: () => boolean,
 ) {
   const { db, isCurrent, lock, privacy } = useLocal();
   const resolver = useRef<ReturnType<typeof createOpenLaterResolver>>(null);
@@ -42,6 +44,8 @@ export function useOpenLater(
         const app = lock.getState();
         if (
           status.status !== "ready" ||
+          AppState.currentState !== "active" ||
+          !isFocused() ||
           !app.active ||
           app.locked ||
           !isCurrent()
@@ -69,14 +73,15 @@ export function useOpenLater(
       omitted.clear();
       resolver.current = null;
     };
-  }, [active, db, hidden, isCurrent, lock, privacy, window]);
+  }, [active, db, hidden, isCurrent, isFocused, lock, privacy, window]);
 
   useLayoutEffect(() => {
     const rows = snapshot?.messages.filter(
       (row) => row.eventKind === timeLockKind,
     );
     for (const row of rows ?? []) {
-      if (row.deleted) removeOpenedMessage(db, row.id);
+      if (row.deleted || row.invalidationStatus)
+        removeOpenedMessage(db, row.id);
     }
     resolver.current?.scan(rows ?? []);
   }, [active, blockState, db, hidden, snapshot, window]);

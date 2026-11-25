@@ -4,6 +4,8 @@
   "componentsDir": "src/components/kinetik",
   "libDir": "src/lib/kinetik",
   "installed": {
-    "count-badge": "1.0.0"
+    "count-badge": "1.0.0",
+    "month-calendar": "1.0.0",
+    "time-wheel": "1.0.0"
   }
 }

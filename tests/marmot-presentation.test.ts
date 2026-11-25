@@ -67,6 +67,7 @@ test("keeps independent conversation semantics and uint64 retention", () => {
       id: "thread-parent",
       sender: "author",
       text: "",
+      eventKind: 9,
       content,
       deleted: true,
       deletionSource: "admin",

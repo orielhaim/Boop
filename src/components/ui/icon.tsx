@@ -14,6 +14,7 @@ import { BackspaceIcon } from "phosphor-react-native/src/icons/Backspace";
 import { BellIcon } from "phosphor-react-native/src/icons/Bell";
 import { BellSlashIcon } from "phosphor-react-native/src/icons/BellSlash";
 import { BroadcastIcon } from "phosphor-react-native/src/icons/Broadcast";
+import { CalendarBlankIcon } from "phosphor-react-native/src/icons/CalendarBlank";
 import { CameraIcon } from "phosphor-react-native/src/icons/Camera";
 import { CameraRotateIcon } from "phosphor-react-native/src/icons/CameraRotate";
 import { CaretDownIcon } from "phosphor-react-native/src/icons/CaretDown";
@@ -104,6 +105,7 @@ import { useTheme } from "@/theme";
 const icons = {
   phone: PhoneIcon,
   chat: ChatCircleIcon,
+  calendar: CalendarBlankIcon,
   invitations: EnvelopeIcon,
   person: UserCircleIcon,
   people: UsersIcon,
