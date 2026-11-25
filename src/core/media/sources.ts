@@ -4,7 +4,7 @@ import { marmot } from "@/core/marmot/native";
 import type { DownloadManager } from "@/core/downloads/manager";
 import type { DownloadFile } from "@/core/downloads/transport";
 import { sourceId } from "@/core/downloads/types";
-import type { MediaHandle, MediaSource } from "./source";
+import type { LocalMediaHandle, MediaHandle, MediaSource } from "./source";
 import { waitForDownload } from "./download";
 import { waitForMediaAuthority } from "./authorization";
 import { localMediaUri } from "./open-local-attachment";
@@ -12,6 +12,7 @@ import { localMediaUri } from "./open-local-attachment";
 export type AcquireOptions = {
   signal: AbortSignal;
   download: boolean;
+  progressive?: boolean;
   invalidate(): void;
 };
 
@@ -39,6 +40,11 @@ export function createMediaSources<T extends MediaSource>({
     return new File(directory, track.file);
   };
 
+  function acquire(
+    track: T,
+    options: AcquireOptions & { progressive?: false },
+  ): Promise<LocalMediaHandle>;
+  function acquire(track: T, options: AcquireOptions): Promise<MediaHandle>;
   async function acquire(
     track: T,
     options: AcquireOptions,
@@ -159,6 +165,57 @@ export function createMediaSources<T extends MediaSource>({
           if (!authorized()) throw new Error("MediaUnavailable");
           file = lease;
         } else {
+          if (
+            options.progressive &&
+            downloads.canStream(source) &&
+            downloads.get(id)?.state !== "completed"
+          ) {
+            if (!canDownload()) throw new Error("MediaUnavailable");
+            if (options.download) {
+              if (downloads.get(id)?.state === "paused") downloads.resume(id);
+              else downloads.enqueue(source);
+            }
+            unpin = downloads.holdForPlayback(
+              source,
+              () => {
+                options.invalidate();
+                return retired.promise;
+              },
+              true,
+            );
+            if (!unpin) throw new Error("MediaUnavailable");
+            const result = await downloads.openProgressive(
+              source,
+              options.signal,
+            );
+            if (result.kind === "progressive") {
+              releaseFile = result.read.release;
+              check();
+              unsubscribe = downloads.subscribe(() => {
+                const job = downloads.get(id);
+                if (
+                  !job ||
+                  job.intent === "remove" ||
+                  job.intent === "cancel" ||
+                  job.state === "cancelled"
+                )
+                  options.invalidate();
+              });
+              return {
+                ...result.read,
+                kind: "progressive",
+                sourceId: id,
+                mimeType: source.type,
+                expiresAt,
+                cancelReads: result.read.release,
+                release,
+              };
+            }
+            if (result.kind !== "completed")
+              throw new Error("MediaUnavailable");
+            unpin();
+            unpin = undefined;
+          }
           if (downloads.get(id)?.state !== "completed") await download();
           let local: DownloadFile | undefined;
           await downloads.open(id, async (value) => {
@@ -184,7 +241,13 @@ export function createMediaSources<T extends MediaSource>({
         });
       }
       check();
-      return { file, uri: localMediaUri(file.path), expiresAt, release };
+      return {
+        kind: "local",
+        file,
+        uri: localMediaUri(file.path),
+        expiresAt,
+        release,
+      };
     } catch (error) {
       await release();
       throw error;

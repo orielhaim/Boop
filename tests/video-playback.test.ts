@@ -13,8 +13,42 @@ const clip = (id: string): VideoSource => ({
   file: { name: id + ".mp4", path: "/" + id, type: "video/mp4" },
 });
 
+test("progressive playback revokes blocking reads before releasing the decoder and keeps exports closed", async () => {
+  const events: string[] = [];
+  const { video, actions } = fixture(
+    async () => ({
+      kind: "progressive",
+      uri: "boop-media://test",
+      sourceId: "stream",
+      size: 300,
+      mimeType: "video/mp4",
+      expiresAt: null,
+      async cancelReads() {
+        events.push("read-cancelled");
+      },
+      async release() {
+        events.push("file-unpinned");
+      },
+    }),
+    events,
+  );
+  expect(await video.open(clip("stream"), { progressive: true })).toBe(true);
+  const first = video.store.getState().current;
+  expect(first).toMatchObject({ progressive: true, canExport: false });
+  expect(await video.open(clip("stream"), { progressive: true })).toBe(true);
+  expect(video.store.getState().current?.player).toBe(first?.player);
+  expect(actions).toEqual(["load", "play"]);
+  await video.close();
+  expect(actions.slice(-3)).toEqual([
+    "read-cancelled",
+    "decoder closed",
+    "file-unpinned",
+  ]);
+});
+
 test("opening waits for co-selected subtitles before exposing or starting playback", async () => {
   const { video, actions } = fixture(async () => ({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,
@@ -47,6 +81,7 @@ test("opening waits for co-selected subtitles before exposing or starting playba
 
 test("protected videos never read co-selected subtitles, and a replaced session cannot import them", async () => {
   const { video } = fixture(async (source) => ({
+    kind: "local",
     file: { name: source.title, path: "/video", type: "video/mp4" },
     uri: "file:///video",
     expiresAt: source.title === "protected" ? Date.now() + 30_000 : null,
@@ -86,8 +121,8 @@ test("protected videos never read co-selected subtitles, and a replaced session 
 
 function fixture(
   acquire: Parameters<typeof createVideoController>[0]["acquire"],
+  actions: string[] = [],
 ) {
-  const actions: string[] = [];
   const video = createVideoController({
     acquire,
     engine() {
@@ -142,6 +177,7 @@ function fixture(
 test("minimize and expand preserve the player and close the decoder before releasing the lease", async () => {
   const source = clip("a");
   const { video, actions } = fixture(async () => ({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,
@@ -177,6 +213,7 @@ test("a late source is released without creating another decoder after a rapid s
       return slow.promise;
     }
     return {
+      kind: "local",
       file: { name: "b", path: "/b", type: "video/mp4" },
       uri: "file:///b",
       expiresAt: null,
@@ -187,6 +224,7 @@ test("a late source is released without creating another decoder after a rapid s
   await started.promise;
   expect(await video.open(clip("b"))).toBe(true);
   slow.resolve({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,
@@ -203,6 +241,7 @@ test("a late source is released without creating another decoder after a rapid s
 
 test("App Lock retires native playback and restores the covered video at the same position after unlock", async () => {
   const { video, actions } = fixture(async () => ({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,
@@ -231,6 +270,7 @@ test("App Lock retires native playback and restores the covered video at the sam
 
 test("floating in-app playback stays attached through system PiP and an early exit callback", async () => {
   const { video, actions } = fixture(async () => ({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,
@@ -253,6 +293,7 @@ test("floating in-app playback stays attached through system PiP and an early ex
 
 test("in-app-only PiP pauses in the background and Off removes the floating player", async () => {
   const { video, actions } = fixture(async () => ({
+    kind: "local",
     file: { name: "a", path: "/a", type: "video/mp4" },
     uri: "file:///a",
     expiresAt: null,

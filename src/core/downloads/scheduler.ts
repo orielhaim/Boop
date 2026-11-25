@@ -1,6 +1,6 @@
 import { canReorder, torrentsSource, type DownloadItem } from "./types";
 
-function contentKey(job: DownloadItem) {
+export function contentKey(job: DownloadItem) {
   if (job.kind === "provider") {
     const torrent = torrentsSource.safeParse(job);
     if (torrent.success) return `torrent:${torrent.data.payload.torrentId}`;
@@ -18,6 +18,7 @@ export function selectDownloads(
   occupied: ReadonlySet<string>,
   capacity: number,
   now: number,
+  priority: ReadonlySet<string> = new Set(),
 ) {
   const ready: DownloadItem[] = [];
   const hashes = new Set(
@@ -27,7 +28,12 @@ export function selectDownloads(
       .filter(Boolean),
   );
   let wakeAt = Infinity;
-  for (const job of ordered) {
+  const candidates = priority.size
+    ? [...ordered].sort(
+        (a, b) => Number(priority.has(b.id)) - Number(priority.has(a.id)),
+      )
+    : ordered;
+  for (const job of candidates) {
     const hash = contentKey(job);
     if (job.expiresAt !== null && job.expiresAt > now)
       wakeAt = Math.min(wakeAt, job.expiresAt);

@@ -1272,6 +1272,10 @@ export const he = {
   },
   downloads: {
     pluginPaused: "יש להפעיל את תוסף הטורנטים כדי להמשיך בהורדה.",
+    play: "ניגון",
+    playAndDownload: "ניגון והורדה",
+    resumeAndPlay: "המשך הורדה וניגון",
+    retryAndPlay: "ניסיון חוזר וניגון",
     pluginSettings: "הגדרות טורנטים",
     shareFile: "שיתוף קובץ",
     saveFile: "שמירה לתיקייה",

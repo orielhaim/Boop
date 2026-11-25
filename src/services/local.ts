@@ -498,6 +498,11 @@ async function start() {
       scope: downloadScope,
       cache: torrentMetadataCache(db, downloadKey, random),
       canAccess: () => pluginSessionLive && active(),
+      canRunInBackground: () =>
+        pluginSessionLive &&
+        isCurrent() &&
+        !lock.getState().enabled &&
+        !lock.getState().locked,
       readPreference: read,
       writePreference: write,
       pinned: () => retainedTorrentJobs().map((job) => job.payload.torrentId),
@@ -543,6 +548,8 @@ async function start() {
       available: (source) => source.kind !== "marmot" || messagingAvailable(),
       transferAvailable: (source) =>
         source.kind !== "provider" || torrents.canTransfer(),
+      continueInBackground: (source) =>
+        torrentsSource.safeParse(source).success && torrents.canContinue(),
       authorized: (source) =>
         source.kind !== "marmot" ||
         (!blocks.has(source.sender) &&
@@ -797,6 +804,17 @@ async function start() {
       },
       claim: () => ownership.claim("video"),
       release: () => ownership.release("video"),
+      async openCompleted(id, consume) {
+        await downloads.open(id, (file) =>
+          consume({
+            kind: "local",
+            file,
+            uri: localMediaUri(file.path),
+            expiresAt: null,
+            release: () => Promise.resolve(),
+          }),
+        );
+      },
       async handoff({ file, uri }, action, signal) {
         signal.throwIfAborted();
         if (action === "external")
@@ -838,6 +856,10 @@ async function start() {
     });
     ownership.register("audio", audio.suspendPlayback);
     ownership.register("video", () => void video.close());
+    torrents.state.subscribe(({ enabled, delivery, loadFailed }) => {
+      if (!enabled || delivery?.kind !== "installed" || loadFailed)
+        void video.retireProgressive();
+    });
     audio.store.subscribe((next, previous) => {
       if (next.blocked === previous.blocked) return;
       if (next.blocked) ownership.release("audio");

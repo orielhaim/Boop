@@ -71,7 +71,13 @@ export function createTorrentDownloads(
   const root = torrentDirectory(scope);
   const active = new Map<
     string,
-    { abort: AbortController; done: Promise<string>; reserved: number }
+    {
+      abort: AbortController;
+      done: Promise<string>;
+      submitted: Promise<boolean>;
+      requestId: string;
+      reserved: number;
+    }
   >();
   function file(source: TorrentsDownload, suffix = "complete") {
     const { torrentId, fileIndex } = source.payload;
@@ -93,6 +99,33 @@ export function createTorrentDownloads(
     supportedVersions: registration.descriptor.downloadProvider.versions,
     available(source) {
       return torrentsSource.safeParse(source).success;
+    },
+    canStream(source) {
+      return (
+        torrents.canStream() &&
+        torrentsSource.safeParse(source).success &&
+        source.total !== null &&
+        source.total > 0 &&
+        videoFile(source.name, source.type)
+      );
+    },
+    async openProgressive(source, signal) {
+      const task = active.get(sourceId(source));
+      if (!task || source.total === null || signal.aborted) return;
+      const cancelled = Promise.withResolvers<boolean>();
+      const abort = () => cancelled.resolve(false);
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        if (
+          !(await Promise.race([task.submitted, cancelled.promise])) ||
+          signal.aborted ||
+          task.abort.signal.aborted
+        )
+          return;
+        return await torrents.openStream(task.requestId, source.total, signal);
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
     },
     async recover(sources) {
       if (!root.exists) return;
@@ -128,10 +161,10 @@ export function createTorrentDownloads(
     },
     async status(source) {
       const target = torrentsSource.parse(source);
-      return active.has(sourceId(target))
-        ? "downloading"
-        : size(target) !== null
-          ? "ready"
+      return size(target) !== null
+        ? "ready"
+        : active.has(sourceId(target))
+          ? "downloading"
           : "unavailable";
     },
     async transfer(source, progress, signal) {
@@ -151,6 +184,8 @@ export function createTorrentDownloads(
       if (Paths.availableDiskSpace < reserved + selected.size + 64 * 1024 ** 2)
         return "storage_blocked";
       const abort = new AbortController();
+      const requestId = randomUUID();
+      const submitted = Promise.withResolvers<boolean>();
       const abortLocal = () => abort.abort();
       signal.addEventListener("abort", abortLocal, { once: true });
       if (signal.aborted) abortLocal();
@@ -158,7 +193,7 @@ export function createTorrentDownloads(
         .run(
           {
             kind: "start",
-            requestId: randomUUID(),
+            requestId,
             torrentId,
             fileIndex,
             size: selected.size,
@@ -171,11 +206,14 @@ export function createTorrentDownloads(
               received: Math.min(received, selected.size),
               total: selected.size,
             }),
+          () => submitted.resolve(true),
         )
         .then((result) => {
           if (result.kind === "completed")
             return size(target) !== null ? "ready" : "integrity";
           if (result.kind === "failed") {
+            if (result.code === "system_stopped")
+              return size(target) !== null ? "ready" : "system_stopped";
             if (result.code === "storage") return "storage_blocked";
             if (result.code === "integrity") return "integrity";
             if (result.code === "unavailable") return "unavailable";
@@ -183,10 +221,17 @@ export function createTorrentDownloads(
           return "interrupted";
         })
         .finally(() => {
+          submitted.resolve(false);
           signal.removeEventListener("abort", abortLocal);
           active.delete(id);
         });
-      active.set(id, { abort, done, reserved: selected.size });
+      active.set(id, {
+        abort,
+        done,
+        requestId,
+        submitted: submitted.promise,
+        reserved: selected.size,
+      });
       return done;
     },
     async control(source, action) {
@@ -195,17 +240,14 @@ export function createTorrentDownloads(
       task?.abort.abort();
       await task?.done.catch(() => undefined);
       if (action === "pause") return;
-      remove(file(target, "part"));
       if (action === "remove") remove(file(target));
       if (
         !hasSibling(target) &&
-        action === "remove" &&
-        !(await torrents.forget(target.payload.torrentId))
-      )
-        return;
-      if (!hasSibling(target) && action === "remove") {
+        (await torrents.forget(target.payload.torrentId))
+      ) {
         remove(new Directory(root, ".engine", target.payload.torrentId));
-        remove(new Directory(root, target.payload.torrentId));
+        if (action === "remove")
+          remove(new Directory(root, target.payload.torrentId));
       }
     },
     async open(source, consume) {

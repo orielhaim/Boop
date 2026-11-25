@@ -12,10 +12,20 @@ export type TransferProgress = {
 };
 export type DownloadControl = "pause" | "cancel" | "remove";
 export type DownloadFile = { path: string; type: string; name: string };
+export type ProgressiveRead = {
+  uri: string;
+  size: number;
+  release(): Promise<void>;
+};
 
 export type DownloadTransport<S extends DownloadSource = DownloadSource> = {
   available?(source: S): boolean;
   supportedVersions?: readonly number[];
+  canStream?(source: S): boolean;
+  openProgressive?(
+    source: S,
+    signal: AbortSignal,
+  ): Promise<ProgressiveRead | undefined>;
   recover?(sources: S[]): Promise<void>;
   transfer(
     source: S,
@@ -57,6 +67,13 @@ export function downloadTransports(
     return invoke(transport, source);
   }
   return {
+    canStream: (source) =>
+      apply(source, (transport, target) => transport.canStream?.(target)) ??
+      false,
+    openProgressive: async (source, signal) =>
+      apply(source, (transport, target) =>
+        transport.openProgressive?.(target, signal),
+      ),
     available(source) {
       if (source.kind === "marmot") return marmot.available?.(source) ?? true;
       if (source.kind === "http") return blossom.available?.(source) ?? true;

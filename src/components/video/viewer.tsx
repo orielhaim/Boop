@@ -82,6 +82,9 @@ type ViewerProps = {
     bounds: CaptionBounds,
   ) => ReactNode;
   onMemoryWarning?: (listener: () => void) => () => void;
+  progressive?: boolean;
+  transfer?: ReactNode;
+  onRetry?: () => void;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -110,6 +113,9 @@ export function VideoViewer({
   subtitleOptions,
   subtitleOverlay,
   onMemoryWarning,
+  progressive,
+  transfer,
+  onRetry,
   style,
 }: ViewerProps) {
   const { t } = useTranslation("video");
@@ -196,6 +202,7 @@ export function VideoViewer({
     onMemoryWarning,
     scrubbing,
     setScrubbing,
+    allowThumbnails: !progressive,
   });
   useEventListener(player, "playToEnd", () => {
     if (!loop) reveal();
@@ -401,6 +408,7 @@ export function VideoViewer({
               onHeaderHeight={setHeaderHeight}
               onDockHeight={setDockHeight}
               title={title}
+              transfer={transfer}
               state={
                 error
                   ? "error"
@@ -418,6 +426,7 @@ export function VideoViewer({
               live={player.isLive}
               onClose={onClose}
               onExternal={onExternal}
+              onRetry={onRetry}
               onMinimize={ready ? onMinimize : undefined}
               onPictureInPicture={
                 ready && pipSupported ? () => void togglePiP() : undefined

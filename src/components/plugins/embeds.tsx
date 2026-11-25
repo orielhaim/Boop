@@ -11,7 +11,7 @@ import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useStore } from "zustand";
 import { useAudioActions } from "@/components/audio/actions";
-import { Action, Icon, Ink } from "@/components/ui/kit";
+import { Action, Icon, IconButton, Ink } from "@/components/ui/kit";
 import { ListRow } from "@/components/ui/list-group";
 import { useDialog } from "@/components/ui/dialog";
 import { DownloadProgressRing } from "@/components/downloads/progress-ring";
@@ -161,6 +161,30 @@ function TorrentCard({
     }
   }
 
+  async function play(file: TorrentFile) {
+    const signal = mounted.current?.signal;
+    if (!eligible || !signal || !available) return;
+    const source = torrentDownload(infoHash, file);
+    const id = sourceId(source);
+    try {
+      await authorizeTorrent(
+        { group, message, sourceId: event, hash: infoHash },
+        signal,
+        async () => {
+          if (!downloads.get(id)) downloads.enqueue(source);
+        },
+      );
+      if (
+        !signal.aborted &&
+        !(await openDownloadedVideo(id, { allowProgressive: true }))
+      )
+        throw new Error("OpenFailed");
+    } catch {
+      if (!signal.aborted)
+        void dialog.show({ title: t("pluginActionFailed"), tone: "error" });
+    }
+  }
+
   const resolved = typeof resolution === "object" ? resolution : undefined;
   const bytes = (size: number) => formatBytes(size, i18n.language);
   return (
@@ -240,6 +264,7 @@ function TorrentCard({
                     })
                   }
                   onDownload={() => void download([file])}
+                  onPlay={() => void play(file)}
                 />
               ))}
           {page !== null && page > 0 && (
@@ -278,6 +303,7 @@ function TorrentFileRow({
   eligible,
   onToggle,
   onDownload,
+  onPlay,
 }: {
   file: TorrentFile;
   infoHash: string;
@@ -285,6 +311,7 @@ function TorrentFileRow({
   eligible: boolean;
   onToggle(): void;
   onDownload(): void;
+  onPlay(): void;
 }) {
   const { downloads } = useLocal();
   const { t, i18n } = useTranslation("downloads");
@@ -295,7 +322,16 @@ function TorrentFileRow({
   const job = useSyncExternalStore(downloads.subscribe, () =>
     downloads.get(id),
   );
-  const running = job && ["active", "waiting", "queued"].includes(job.state);
+  const running =
+    job &&
+    (job.state === "active" ||
+      job.state === "waiting" ||
+      job.state === "queued");
+  const fraction = job && file.size > 0 ? job.received / file.size : 0;
+  const percent = Math.floor(Math.max(0, Math.min(1, fraction)) * 100);
+  const percentLabel = running
+    ? (percent / 100).toLocaleString(i18n.language, { style: "percent" })
+    : "";
   async function open() {
     if (videoFile(source.name, source.type)) {
       if (!(await openDownloadedVideo(id))) throw new Error("OpenFailed");
@@ -311,6 +347,8 @@ function TorrentFileRow({
     }
   }
   const select = job?.state !== "completed" && !running;
+  const stream =
+    job?.state !== "completed" && !job?.intent && downloads.canStream(source);
   return (
     <ListRow
       title={source.name}
@@ -320,37 +358,80 @@ function TorrentFileRow({
       onPress={select && eligible ? onToggle : undefined}
       showChevron={false}
       trailing={
-        running ? (
-          <DownloadProgressRing
-            fraction={file.size ? job.received / file.size : undefined}
-            indeterminate={!job.received}
-          >
-            <Icon name="download" size={16} />
-          </DownloadProgressRing>
-        ) : (
-          <Action
-            size="sm"
-            variant="ghost"
-            disabled={!eligible}
-            onPress={() => {
-              if (job?.state === "completed") {
-                void open().catch(() =>
-                  dialog.show({ title: t("openFailed"), tone: "error" }),
-                );
-              } else if (job?.state === "paused" || job?.state === "failed") {
-                router.push("/downloads");
-              } else onDownload();
-            }}
-          >
-            {job?.state === "completed"
-              ? t("open")
-              : job?.state === "paused"
-                ? t("paused")
-                : job?.state === "failed"
-                  ? t("failed")
-                  : t("startDownload")}
-          </Action>
-        )
+        <View style={styles.fileActions}>
+          {stream && (
+            <Action
+              size="sm"
+              variant="ghost"
+              disabled={!eligible}
+              onPress={onPlay}
+            >
+              {t(
+                !job
+                  ? "playAndDownload"
+                  : job.state === "paused"
+                    ? "resumeAndPlay"
+                    : job.state === "failed"
+                      ? "retryAndPlay"
+                      : "play",
+              )}
+            </Action>
+          )}
+          {running ? (
+            <View
+              accessible
+              accessibilityRole="progressbar"
+              accessibilityLabel={source.name}
+              accessibilityValue={{ min: 0, max: 100, now: percent }}
+            >
+              <DownloadProgressRing
+                size={46}
+                fraction={fraction}
+                indeterminate={!job.received}
+                spinning={job.state === "active"}
+              >
+                <Ink
+                  kind="badge"
+                  adjustsFontSizeToFit
+                  numberOfLines={1}
+                  style={styles.percent}
+                >
+                  {percentLabel}
+                </Ink>
+              </DownloadProgressRing>
+            </View>
+          ) : !job || job.state === "cancelled" ? (
+            <IconButton
+              icon="download"
+              iconSize={18}
+              label={t("startDownload")}
+              tone="plain"
+              disabled={!eligible}
+              onPress={onDownload}
+            />
+          ) : (
+            <Action
+              size="sm"
+              variant="ghost"
+              disabled={!eligible}
+              onPress={() => {
+                if (job.state === "completed") {
+                  void open().catch(() =>
+                    dialog.show({ title: t("openFailed"), tone: "error" }),
+                  );
+                } else {
+                  router.push("/downloads");
+                }
+              }}
+            >
+              {job.state === "completed"
+                ? t("open")
+                : job.state === "paused"
+                  ? t("paused")
+                  : t("failed")}
+            </Action>
+          )}
+        </View>
       }
     />
   );
@@ -367,6 +448,8 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: StyleSheet.hairlineWidth,
   },
   header: { flexDirection: "row", alignItems: "center", gap: theme.space.sm },
+  fileActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  percent: { fontVariant: ["tabular-nums"] },
   mark: {
     alignItems: "center",
     justifyContent: "center",

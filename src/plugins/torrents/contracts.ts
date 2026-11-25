@@ -57,6 +57,7 @@ export type EngineCommand =
       fileIndex: number;
       size: number;
       metadata: string;
+      allowBackground?: boolean;
     }
   | { kind: "cancel" | "poll" | "stop"; requestId: string }
   | { kind: "forget"; torrentId: string }

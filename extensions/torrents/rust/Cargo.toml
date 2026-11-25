@@ -13,6 +13,7 @@ torrent-test-fixture = ["librqbit/test-loopback"]
 
 [dependencies]
 base64 = "=0.22.1"
+getrandom = "=0.3.4"
 jni = "=0.22.4"
 librqbit = { version = "=9.1.0", default-features = false, features = [
   "disable-upload",

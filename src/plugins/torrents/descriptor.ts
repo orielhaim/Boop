@@ -10,7 +10,7 @@ export const torrents = {
     deliveryModule: "torrents",
     settingsRoute: "/settings/plugins/torrents",
     downloadProvider: { id: "torrents", versions: [1] },
-    capabilities: ["messageEmbed", "downloadTransport"],
+    capabilities: ["messageEmbed", "downloadTransport", "progressiveRead"],
   },
   content: { prefix: "magnet:?", match: matchTorrents },
 } satisfies Plugin<TorrentEmbed>;

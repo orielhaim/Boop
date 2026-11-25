@@ -2,17 +2,20 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ManagedTorrent, Session,
-    SessionOptions, api::TorrentIdOrHash,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, FileStream,
+    ManagedTorrent, Session, SessionOptions, api::TorrentIdOrHash,
 };
 use serde_json::{Value, json};
-use tokio::{runtime::Runtime, time::timeout};
+use tokio::{io::AsyncReadExt, runtime::Runtime, sync::Mutex as AsyncMutex, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 const MAX_REQUEST_BYTES: usize = 768 * 1024;
@@ -22,6 +25,11 @@ const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024 * 1024 * 1024;
 
 static ACCOUNTS: OnceLock<Mutex<HashMap<PathBuf, Arc<Account>>>> = OnceLock::new();
 static COMMAND_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static STREAM_LEASES: OnceLock<Mutex<HashMap<String, Arc<StreamLease>>>> = OnceLock::new();
+static READERS: OnceLock<Mutex<HashMap<u64, Arc<Reader>>>> = OnceLock::new();
+static NEXT_READER_ID: AtomicU64 = AtomicU64::new(1);
+const MAX_NATIVE_READ_BYTES: usize = 64 * 1024;
+const MAX_STREAM_READERS: usize = 64;
 
 struct Account {
     root: PathBuf,
@@ -32,6 +40,7 @@ struct Account {
     active_torrents: Mutex<HashMap<String, String>>,
     peers: Mutex<HashMap<String, Vec<SocketAddr>>>,
     tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    retiring: AtomicBool,
 }
 
 struct Record {
@@ -40,6 +49,45 @@ struct Record {
     handle: Mutex<Option<Arc<ManagedTorrent>>>,
     done: tokio::sync::watch::Sender<bool>,
     torrent_id: Option<String>,
+    file_index: Option<usize>,
+    expected_size: Option<u64>,
+    file_components: Option<Vec<String>>,
+    handle_ready: tokio::sync::watch::Sender<bool>,
+    accepting_streams: AtomicBool,
+    published: AtomicBool,
+}
+
+struct StreamLease {
+    account: Arc<Account>,
+    record: Arc<Record>,
+    file_index: usize,
+    size: u64,
+    closed: AtomicBool,
+}
+
+struct Reader {
+    lease: Arc<StreamLease>,
+    cancel: CancellationToken,
+    state: AsyncMutex<ReaderState>,
+}
+
+struct ReaderState {
+    position: u64,
+    remaining: u64,
+    source: Option<ReaderSource>,
+}
+
+enum ReaderSource {
+    Torrent(FileStream),
+    Local(std::fs::File),
+}
+
+fn stream_leases() -> &'static Mutex<HashMap<String, Arc<StreamLease>>> {
+    STREAM_LEASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn readers() -> &'static Mutex<HashMap<u64, Arc<Reader>>> {
+    READERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn accounts() -> &'static Mutex<HashMap<PathBuf, Arc<Account>>> {
@@ -191,6 +239,7 @@ fn account(root: &str, scope: &str) -> Result<Arc<Account>, Value> {
         active_torrents: Mutex::new(HashMap::new()),
         peers: Mutex::new(HashMap::new()),
         tasks: Mutex::new(HashMap::new()),
+        retiring: AtomicBool::new(false),
     });
     let mut accounts = accounts()
         .lock()
@@ -230,6 +279,27 @@ fn set_state(record: &Record, value: Value) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
 }
 
+fn has_stream_lease(record: &Arc<Record>) -> bool {
+    stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .any(|lease| Arc::ptr_eq(&lease.record, record))
+}
+
+fn stop_stream_admission_if_idle(record: &Record) -> bool {
+    let leases = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let has_lease = leases
+        .values()
+        .any(|lease| std::ptr::eq(Arc::as_ptr(&lease.record), record));
+    if !has_lease {
+        record.accepting_streams.store(false, Ordering::Release);
+    }
+    has_lease
+}
+
 fn join_task(account: &Account, request_id: &str) {
     let handle = account
         .tasks
@@ -243,7 +313,23 @@ fn join_task(account: &Account, request_id: &str) {
 
 fn finish_record(account: &Account, request_id: &str, record: &Record, value: Value) {
     set_state(record, value.clone());
-    if let Some(torrent_id) = &record.torrent_id {
+    let current_record = account
+        .records
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(request_id)
+        .cloned();
+    let keep_handle = current_record.is_some_and(|candidate| has_stream_lease(&candidate));
+    let is_completed = value.get("kind").and_then(Value::as_str) == Some("completed");
+    let completed_handle_retired = is_completed
+        && record
+            .handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none();
+    if (!keep_handle || completed_handle_retired)
+        && let Some(torrent_id) = &record.torrent_id
+    {
         account
             .active_torrents
             .lock()
@@ -260,11 +346,13 @@ fn finish_record(account: &Account, request_id: &str, record: &Record, value: Va
     {
         results.remove(&oldest);
     }
-    account
-        .records
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(request_id);
+    if !keep_handle {
+        account
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(request_id);
+    }
     let _ = record.done.send(true);
 }
 
@@ -337,6 +425,12 @@ fn resolve(account: &Arc<Account>, request: &Value) -> Value {
         handle: Mutex::new(None),
         done: tokio::sync::watch::channel(false).0,
         torrent_id: None,
+        file_index: None,
+        expected_size: None,
+        file_components: None,
+        handle_ready: tokio::sync::watch::channel(false).0,
+        accepting_streams: AtomicBool::new(true),
+        published: AtomicBool::new(false),
     });
     {
         let mut records = account
@@ -415,6 +509,52 @@ fn clean_owned_file(path: &Path) -> Result<(), Value> {
     }
 }
 
+fn clean_staged_file(root: &Path, torrent_id: &str, components: &[String]) {
+    let engine_root = root.join(".engine");
+    let Ok(engine_root) = std::fs::canonicalize(&engine_root) else {
+        return;
+    };
+    if !engine_root.starts_with(root) {
+        return;
+    }
+    let Ok(stage) = std::fs::canonicalize(engine_root.join(torrent_id)) else {
+        return;
+    };
+    if !stage.starts_with(&engine_root) {
+        return;
+    }
+    let mut source = stage.clone();
+    for component in components {
+        source.push(component);
+    }
+    if !std::fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.is_file()) {
+        return;
+    }
+    let Ok(source) = std::fs::canonicalize(source) else {
+        return;
+    };
+    if !source.starts_with(&stage)
+        || !std::fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.is_file())
+    {
+        return;
+    }
+    if std::fs::remove_file(&source).is_err() {
+        return;
+    }
+    let mut parent = source.parent();
+    while let Some(directory) = parent {
+        if directory == stage
+            || !directory.starts_with(&stage)
+            || std::fs::remove_dir(directory).is_err()
+        {
+            break;
+        }
+        parent = directory.parent();
+    }
+    let _ = std::fs::remove_dir(&stage);
+    let _ = std::fs::remove_dir(&engine_root);
+}
+
 fn publish_file(
     root: &Path,
     torrent_id: &str,
@@ -428,14 +568,18 @@ fn publish_file(
     for component in file_components {
         source.push(component);
     }
-    let source = std::fs::canonicalize(source).map_err(|_| failed("incomplete"))?;
-    if !source.starts_with(&stage) {
-        return Err(failed("unsafe_path"));
-    }
     let source_meta = std::fs::symlink_metadata(&source).map_err(|_| failed("incomplete"))?;
     if !source_meta.is_file() || source_meta.len() != expected_size {
         return Err(failed("incomplete"));
     }
+    let source = std::fs::canonicalize(source).map_err(|_| failed("incomplete"))?;
+    if !source.starts_with(&stage) {
+        return Err(failed("unsafe_path"));
+    }
+    #[cfg(unix)]
+    std::fs::File::open(&source)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| failed("publish_failed"))?;
 
     let output_dir = root.join(torrent_id);
     std::fs::create_dir_all(&output_dir).map_err(|_| failed("storage"))?;
@@ -449,14 +593,42 @@ fn publish_file(
         return Err(failed("already_published"));
     }
     clean_owned_file(&part)?;
-    std::fs::hard_link(source, &part).map_err(|_| failed("publish_failed"))?;
-    if let Err(error) = std::fs::rename(&part, &complete) {
-        let _ = std::fs::remove_file(&part);
+    let staged = match std::fs::hard_link(&source, &part) {
+        Ok(()) => &part,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            // Android storage policy can deny hard links. The engine's open
+            // descriptor still reads the same inode after a same-volume move.
+            &source
+        }
+        Err(_) => return Err(failed("publish_failed")),
+    };
+    if let Err(error) = std::fs::rename(staged, &complete) {
+        if staged == &part {
+            let _ = std::fs::remove_file(&part);
+        }
         return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
             failed("already_published")
         } else {
             failed("publish_failed")
         });
+    }
+    #[cfg(unix)]
+    {
+        std::fs::File::open(&output_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| failed("publish_failed"))?;
+        if staged == &source
+            && let Some(parent) = source.parent()
+        {
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| failed("publish_failed"))?;
+        }
     }
     Ok(())
 }
@@ -512,12 +684,76 @@ fn start(account: &Arc<Account>, request: &Value) -> Value {
     if file.len != expected_size {
         return failed("size_mismatch");
     }
+    if let Some(active_request_id) = account
+        .active_torrents
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&torrent_id)
+        .cloned()
+    {
+        let Some(existing) = account
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&active_request_id)
+            .cloned()
+        else {
+            return failed("torrent_busy");
+        };
+        if active_request_id != request_id
+            || existing.file_index != Some(file_index)
+            || existing.expected_size != Some(expected_size)
+        {
+            return failed("torrent_busy");
+        }
+        if existing
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get("kind")
+            .and_then(Value::as_str)
+            == Some("paused")
+        {
+            let Some(handle) = existing
+                .handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+            else {
+                return failed("start_failed");
+            };
+            if account
+                .runtime
+                .block_on(account.session.unpause(&handle))
+                .is_err()
+            {
+                return failed("resume_failed");
+            }
+            let received = handle
+                .stats()
+                .file_progress
+                .get(file_index)
+                .copied()
+                .unwrap_or_default();
+            set_state(
+                &existing,
+                json!({"kind":"progress", "received":received, "torrentId":torrent_id}),
+            );
+        }
+        return json!({"kind":"pending"});
+    }
     let record = Arc::new(Record {
         state: Mutex::new(json!({"kind":"pending"})),
         cancel: CancellationToken::new(),
         handle: Mutex::new(None),
         done: tokio::sync::watch::channel(false).0,
         torrent_id: Some(torrent_id.clone()),
+        file_index: Some(file_index),
+        expected_size: Some(expected_size),
+        file_components: Some(file_components.clone()),
+        handle_ready: tokio::sync::watch::channel(false).0,
+        accepting_streams: AtomicBool::new(true),
+        published: AtomicBool::new(false),
     });
     {
         let mut active = account
@@ -603,6 +839,7 @@ fn start(account: &Arc<Account>, request: &Value) -> Value {
         .handle
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle.clone());
+    let _ = record.handle_ready.send(true);
     set_state(
         &record,
         json!({"kind":"progress", "received":handle.stats().file_progress.get(file_index).copied().unwrap_or_default(), "torrentId":torrent_id}),
@@ -637,17 +874,31 @@ fn start(account: &Arc<Account>, request: &Value) -> Value {
                     expected_size,
                 ) {
                     Ok(()) => {
-                        let _ = session
-                            .delete(TorrentIdOrHash::Id(handle.id()), false)
-                            .await;
-                        finish_record(
-                            &task_account,
-                            &task_request_id,
-                            &task_record,
-                            json!({"kind":"completed"}),
-                        );
+                        task_record.published.store(true, Ordering::Release);
+                        let has_lease = stop_stream_admission_if_idle(&task_record);
+                        let readers_ready = !has_lease
+                            || switch_record_readers_to_published(&task_record).await;
+                        let released = readers_ready
+                            && session
+                                .delete(TorrentIdOrHash::Id(handle.id()), false)
+                                .await
+                                .is_ok();
+                        if released {
+                            *task_record
+                                .handle
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                            clean_staged_file(&root, &torrent_id, &file_components);
+                        }
+                        let result = if released {
+                            json!({"kind":"completed"})
+                        } else {
+                            failed("stream_release_failed")
+                        };
+                        finish_record(&task_account, &task_request_id, &task_record, result);
                     }
                     Err(error) => {
+                        revoke_record_streams(&task_record).await;
                         let _ = session
                             .delete(TorrentIdOrHash::Id(handle.id()), false)
                             .await;
@@ -657,6 +908,7 @@ fn start(account: &Arc<Account>, request: &Value) -> Value {
                 return;
             }
             if matches!(stats.state, librqbit::TorrentStatsState::Error) {
+                revoke_record_streams(&task_record).await;
                 let _ = session
                     .delete(TorrentIdOrHash::Id(handle.id()), false)
                     .await;
@@ -667,6 +919,14 @@ fn start(account: &Arc<Account>, request: &Value) -> Value {
                     failed("download_failed"),
                 );
                 return;
+            }
+            if matches!(stats.state, librqbit::TorrentStatsState::Paused) {
+                set_state(&task_record, json!({"kind":"paused", "torrentId":torrent_id}));
+                tokio::select! {
+                    _ = task_record.cancel.cancelled() => {},
+                    _ = tokio::time::sleep(Duration::from_millis(300)) => {},
+                }
+                continue;
             }
             set_state(
                 &task_record,
@@ -708,6 +968,9 @@ fn cancel(account: &Arc<Account>, request: &Value) -> Value {
             .unwrap_or_else(|| failed("unknown_request"));
     };
     let mut done = record.done.subscribe();
+    if !*done.borrow() && !record.published.load(Ordering::Acquire) {
+        account.runtime.block_on(revoke_record_streams(&record));
+    }
     record.cancel.cancel();
     let completed = account.runtime.block_on(async {
         timeout(Duration::from_secs(30), async {
@@ -780,6 +1043,7 @@ fn forget(account: &Arc<Account>, request: &Value) -> Value {
             return response;
         }
     }
+    revoke_torrent_streams(account, &torrent_id);
     account
         .results
         .lock()
@@ -801,6 +1065,510 @@ fn forget(account: &Arc<Account>, request: &Value) -> Value {
     json!({"kind":"stopped"})
 }
 
+fn open_torrent_stream(
+    root: &str,
+    scope: &str,
+    request_id: &str,
+    size: u64,
+) -> Result<String, Value> {
+    if !valid_request_id(request_id) || size > MAX_FILE_SIZE {
+        return Err(failed("invalid_request"));
+    }
+    let account = cached_account(root, scope)?;
+    if account.retiring.load(Ordering::Acquire) {
+        return Err(failed("account_retiring"));
+    }
+    let record = account
+        .records
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(request_id)
+        .cloned()
+        .ok_or_else(|| failed("unknown_request"))?;
+    let (Some(file_index), Some(expected_size)) = (record.file_index, record.expected_size) else {
+        return Err(failed("not_a_file_download"));
+    };
+    if expected_size != size || !record.accepting_streams.load(Ordering::Acquire) {
+        return Err(failed("stream_unavailable"));
+    }
+    let mut entropy = [0_u8; 32];
+    getrandom::fill(&mut entropy).map_err(|_| failed("secure_random_unavailable"))?;
+    let token = entropy
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let lease = Arc::new(StreamLease {
+        account,
+        record,
+        file_index,
+        size,
+        closed: AtomicBool::new(false),
+    });
+    let mut leases = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if lease.account.retiring.load(Ordering::Acquire)
+        || !lease.record.accepting_streams.load(Ordering::Acquire)
+    {
+        return Err(failed("stream_unavailable"));
+    }
+    leases.insert(token.clone(), lease);
+    Ok(format!("boop-media://{token}"))
+}
+
+fn token_from_uri(uri_or_token: &str) -> Result<&str, Value> {
+    let token = uri_or_token
+        .strip_prefix("boop-media://")
+        .unwrap_or(uri_or_token);
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failed("invalid_stream_token"));
+    }
+    Ok(token)
+}
+
+fn open_reader(uri_or_token: &str, position: i64, length: i64) -> Result<u64, Value> {
+    let token = token_from_uri(uri_or_token)?;
+    if position < 0 || length < -1 {
+        return Err(failed("invalid_range"));
+    }
+    let lease_map = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lease = lease_map
+        .get(token)
+        .cloned()
+        .filter(|lease| !lease.closed.load(Ordering::Acquire))
+        .ok_or_else(|| failed("stream_unavailable"))?;
+    let position = position as u64;
+    if position > lease.size {
+        return Err(failed("invalid_range"));
+    }
+    let remaining = if length == -1 {
+        lease.size - position
+    } else {
+        (length as u64).min(lease.size - position)
+    };
+    let reader_id = NEXT_READER_ID.fetch_add(1, Ordering::Relaxed);
+    if reader_id == 0 {
+        return Err(failed("reader_limit"));
+    }
+    let reader = Arc::new(Reader {
+        lease: lease.clone(),
+        cancel: CancellationToken::new(),
+        state: AsyncMutex::new(ReaderState {
+            position,
+            remaining,
+            source: None,
+        }),
+    });
+    let mut active_readers = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if active_readers.len() >= MAX_STREAM_READERS {
+        return Err(failed("reader_limit"));
+    }
+    active_readers.insert(reader_id, reader);
+    drop(active_readers);
+    drop(lease_map);
+    Ok(reader_id)
+}
+
+fn open_published_reader(lease: &StreamLease, position: u64) -> Result<std::fs::File, ()> {
+    let torrent_id = lease.record.torrent_id.as_deref().ok_or(())?;
+    let path = lease
+        .account
+        .root
+        .join(torrent_id)
+        .join(format!("{}.complete", lease.file_index));
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| ())?;
+    if !metadata.is_file() || metadata.len() != lease.size {
+        return Err(());
+    }
+    let path = std::fs::canonicalize(path).map_err(|_| ())?;
+    if !path.starts_with(&lease.account.root) {
+        return Err(());
+    }
+    let mut file = std::fs::File::open(path).map_err(|_| ())?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(position)).map_err(|_| ())?;
+    Ok(file)
+}
+
+fn switch_reader_to_published(reader: &Reader, state: &mut ReaderState) -> Result<(), ()> {
+    if matches!(state.source, Some(ReaderSource::Local(_))) {
+        return Ok(());
+    }
+    let file = open_published_reader(&reader.lease, state.position)?;
+    state.source = Some(ReaderSource::Local(file));
+    Ok(())
+}
+
+async fn read_from_reader(reader: &Reader, output: &mut [u8]) -> Result<usize, ()> {
+    if reader.cancel.is_cancelled() || reader.lease.closed.load(Ordering::Acquire) {
+        return Err(());
+    }
+    let mut state = reader.state.lock().await;
+    if state.source.is_none() {
+        let record = &reader.lease.record;
+        let completed = record.published.load(Ordering::Acquire);
+        if completed {
+            switch_reader_to_published(reader, &mut state)?;
+        }
+    }
+    if state.source.is_none() {
+        let record = &reader.lease.record;
+        let mut ready = record.handle_ready.subscribe();
+        let handle = loop {
+            if let Some(handle) = record
+                .handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+            {
+                break handle;
+            }
+            tokio::select! {
+                _ = reader.cancel.cancelled() => return Err(()),
+                changed = ready.changed() => {
+                    if changed.is_err() {
+                        return Err(());
+                    }
+                }
+            }
+        };
+        let mut stream = tokio::select! {
+            _ = reader.cancel.cancelled() => return Err(()),
+            result = handle.stream(reader.lease.file_index) => result.map_err(|_| ())?,
+        };
+        tokio::select! {
+            _ = reader.cancel.cancelled() => return Err(()),
+            result = tokio::io::AsyncSeekExt::seek(
+                &mut stream,
+                std::io::SeekFrom::Start(state.position),
+            ) => result.map_err(|_| ())?,
+        };
+        state.source = Some(ReaderSource::Torrent(stream));
+    }
+    if state.remaining == 0 || output.is_empty() {
+        return Ok(0);
+    }
+    let limit = output
+        .len()
+        .min(state.remaining.min(usize::MAX as u64) as usize);
+    let completed = reader.lease.record.published.load(Ordering::Acquire);
+    if completed {
+        switch_reader_to_published(reader, &mut state)?;
+    }
+    let result = match state.source.as_mut().ok_or(())? {
+        ReaderSource::Local(file) => {
+            std::io::Read::read(file, &mut output[..limit]).map_err(|_| ())?
+        }
+        ReaderSource::Torrent(stream) => tokio::select! {
+            _ = reader.cancel.cancelled() => return Err(()),
+            result = stream.read(&mut output[..limit]) => result.map_err(|_| ())?,
+        },
+    };
+    if result > 0 {
+        state.position = state.position.saturating_add(result as u64);
+        state.remaining -= result as u64;
+    }
+    Ok(result)
+}
+
+async fn switch_record_readers_to_published(record: &Record) -> bool {
+    let active_readers = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .filter(|reader| std::ptr::eq(Arc::as_ptr(&reader.lease.record), record))
+        .cloned()
+        .collect::<Vec<_>>();
+    for reader in active_readers {
+        let Ok(mut state) =
+            tokio::time::timeout(Duration::from_secs(25), reader.state.lock()).await
+        else {
+            return false;
+        };
+        if reader.cancel.is_cancelled() {
+            state.source.take();
+            continue;
+        }
+        if switch_reader_to_published(&reader, &mut state).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+fn read_reader(reader_id: u64, output: &mut [u8]) -> Result<usize, ()> {
+    if output.len() > MAX_NATIVE_READ_BYTES {
+        return Err(());
+    }
+    let reader = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&reader_id)
+        .cloned()
+        .ok_or(())?;
+    reader
+        .lease
+        .account
+        .runtime
+        .block_on(async {
+            timeout(Duration::from_secs(25), read_from_reader(&reader, output)).await
+        })
+        .map_err(|_| ())?
+}
+
+fn cancel_reader(reader_id: u64) {
+    if let Some(reader) = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&reader_id)
+        .cloned()
+    {
+        reader.cancel.cancel();
+    }
+}
+
+fn take_reader(reader_id: u64) -> Option<Arc<Reader>> {
+    let reader = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&reader_id)?;
+    reader.cancel.cancel();
+    Some(reader)
+}
+
+async fn drain_reader(reader: &Reader) {
+    reader.state.lock().await.source.take();
+}
+
+fn close_reader(reader_id: u64) {
+    if let Some(reader) = take_reader(reader_id) {
+        reader.lease.account.runtime.block_on(drain_reader(&reader));
+    }
+}
+
+async fn close_torrent_stream_async(token: &str) -> Result<(), Value> {
+    let (lease, retire_record) = {
+        let mut leases = stream_leases()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lease = leases
+            .remove(token)
+            .ok_or_else(|| failed("unknown_stream"))?;
+        lease.closed.store(true, Ordering::Release);
+        let is_last_lease = !leases
+            .values()
+            .any(|candidate| Arc::ptr_eq(&candidate.record, &lease.record));
+        let terminal = lease
+            .record
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "completed" || kind == "failed");
+        let retire_record = is_last_lease && terminal;
+        if retire_record {
+            lease
+                .record
+                .accepting_streams
+                .store(false, Ordering::Release);
+        }
+        (lease, retire_record)
+    };
+    let reader_ids = readers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter_map(|(id, reader)| Arc::ptr_eq(&reader.lease, &lease).then_some(*id))
+        .collect::<Vec<_>>();
+    let readers = reader_ids
+        .into_iter()
+        .filter_map(take_reader)
+        .collect::<Vec<_>>();
+    for reader in readers {
+        drain_reader(&reader).await;
+    }
+    if retire_record {
+        retire_completed_record(&lease.account, &lease.record).await;
+    }
+    Ok(())
+}
+
+fn close_torrent_stream(uri_or_token: &str) -> Result<(), Value> {
+    let token = token_from_uri(uri_or_token)?;
+    let account = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(token)
+        .map(|lease| lease.account.clone())
+        .ok_or_else(|| failed("unknown_stream"))?;
+    account.runtime.block_on(close_torrent_stream_async(token))
+}
+
+async fn retire_completed_record(account: &Account, record: &Arc<Record>) {
+    let request_id = account
+        .records
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find_map(|(request_id, current)| Arc::ptr_eq(current, record).then(|| request_id.clone()));
+    let (Some(torrent_id), Some(file_components), Some(request_id)) =
+        (&record.torrent_id, &record.file_components, request_id)
+    else {
+        return;
+    };
+    let handle = record
+        .handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(handle) = handle {
+        if account
+            .session
+            .delete(TorrentIdOrHash::Id(handle.id()), false)
+            .await
+            .is_err()
+        {
+            record.accepting_streams.store(true, Ordering::Release);
+            return;
+        }
+        if record.published.load(Ordering::Acquire) {
+            clean_staged_file(&account.root, torrent_id, file_components);
+        }
+    }
+    account
+        .records
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&request_id);
+    let mut active = account
+        .active_torrents
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if active.get(torrent_id).is_some_and(|id| id == &request_id) {
+        active.remove(torrent_id);
+    }
+}
+
+pub fn open_stream_for_playback(
+    root: &str,
+    scope: &str,
+    request_id: &str,
+    size: u64,
+) -> Result<String, String> {
+    open_torrent_stream(root, scope, request_id, size).map_err(|error| {
+        error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("stream_failed")
+            .to_owned()
+    })
+}
+
+pub fn playback_stream_size(uri_or_token: &str) -> Result<u64, String> {
+    let token = token_from_uri(uri_or_token).map_err(|error| {
+        error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("stream_failed")
+            .to_owned()
+    })?;
+    stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(token)
+        .filter(|lease| !lease.closed.load(Ordering::Acquire))
+        .map(|lease| lease.size)
+        .ok_or_else(|| "stream_unavailable".to_owned())
+}
+
+pub fn playback_stream_completed(uri_or_token: &str) -> bool {
+    let Ok(token) = token_from_uri(uri_or_token) else {
+        return false;
+    };
+    let lease = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(token)
+        .cloned();
+    let Some(lease) = lease.filter(|lease| !lease.closed.load(Ordering::Acquire)) else {
+        return false;
+    };
+    lease
+        .record
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get("kind")
+        .and_then(Value::as_str)
+        == Some("completed")
+}
+
+pub fn open_playback_reader(uri_or_token: &str, position: i64, length: i64) -> Result<u64, String> {
+    open_reader(uri_or_token, position, length).map_err(|error| {
+        error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("stream_failed")
+            .to_owned()
+    })
+}
+
+pub fn read_playback_reader(reader_id: u64, output: &mut [u8]) -> Result<usize, ()> {
+    read_reader(reader_id, output)
+}
+
+pub fn cancel_playback_reader(reader_id: u64) {
+    cancel_reader(reader_id);
+}
+
+pub fn close_playback_reader(reader_id: u64) {
+    close_reader(reader_id);
+}
+
+pub fn close_playback_stream(uri_or_token: &str) -> Result<(), String> {
+    close_torrent_stream(uri_or_token).map_err(|error| {
+        error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("stream_failed")
+            .to_owned()
+    })
+}
+
+fn revoke_torrent_streams(account: &Arc<Account>, torrent_id: &str) {
+    let tokens = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(_, lease)| {
+            Arc::ptr_eq(&lease.account, account)
+                && lease.record.torrent_id.as_deref() == Some(torrent_id)
+        })
+        .map(|(token, _)| token.clone())
+        .collect::<Vec<_>>();
+    for token in tokens {
+        let _ = close_torrent_stream(&token);
+    }
+}
+
+async fn revoke_record_streams(record: &Record) {
+    record.accepting_streams.store(false, Ordering::Release);
+    let tokens: Vec<_> = stream_leases()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(_, lease)| std::ptr::eq(Arc::as_ptr(&lease.record), record))
+        .map(|(token, _)| token.clone())
+        .collect::<Vec<_>>();
+    for token in tokens {
+        let _ = close_torrent_stream_async(&token).await;
+    }
+}
+
 pub fn execute(root: &str, scope: &str, request: &str) -> String {
     if request.len() > MAX_REQUEST_BYTES {
         return failed("request_too_large").to_string();
@@ -818,12 +1586,39 @@ pub fn execute(root: &str, scope: &str, request: &str) -> String {
         Err(error) => return error.to_string(),
     };
     if kind == "shutdown" {
-        let all = accounts()
+        let (all, leases) = {
+            let mut leases = stream_leases()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let all = accounts()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            for account in &all {
+                account.retiring.store(true, Ordering::Release);
+            }
+            let leases = leases.drain().map(|(_, lease)| lease).collect::<Vec<_>>();
+            (all, leases)
+        };
+        for lease in leases {
+            lease.closed.store(true, Ordering::Release);
+        }
+        let active_readers = readers()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .values()
-            .cloned()
+            .drain()
+            .map(|(_, reader)| reader)
             .collect::<Vec<_>>();
+        for reader in active_readers {
+            reader.cancel.cancel();
+            reader
+                .lease
+                .account
+                .runtime
+                .block_on(async { reader.state.lock().await.source.take() });
+        }
         for account in &all {
             {
                 let records = account
@@ -883,6 +1678,12 @@ mod tests {
         fs,
         sync::atomic::{AtomicU64, Ordering},
         time::{Duration, Instant},
+    };
+
+    #[cfg(feature = "torrent-test-fixture")]
+    use super::{
+        cancel_playback_reader, close_playback_reader, close_playback_stream, open_playback_reader,
+        playback_stream_completed, playback_stream_size, read_playback_reader,
     };
 
     #[cfg(feature = "torrent-test-fixture")]
@@ -1034,6 +1835,8 @@ mod tests {
         assert_eq!(files[file_index]["size"], data.len() as u64);
         assert_eq!(seed_handle.stats().uploaded_bytes, 0);
 
+        seeder_runtime.block_on(seeder.pause(&seed_handle)).unwrap();
+        let download_started = Instant::now();
         assert_eq!(
             execute(
                 root,
@@ -1050,6 +1853,73 @@ mod tests {
             ),
             r#"{"kind":"pending"}"#
         );
+        let stream_uri = super::open_stream_for_playback(
+            root,
+            "fixture-account",
+            "download-1",
+            data.len() as u64,
+        )
+        .unwrap();
+        assert!(stream_uri.starts_with("boop-media://"));
+        assert_eq!(
+            playback_stream_size(&stream_uri).unwrap(),
+            data.len() as u64
+        );
+        let blocked_reader =
+            open_playback_reader(&stream_uri, data.len() as i64 - 1024, 1024).unwrap();
+        let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
+        let blocked_thread = std::thread::spawn(move || {
+            let mut blocked_buffer = [0_u8; 1024];
+            cancel_tx
+                .send(read_playback_reader(blocked_reader, &mut blocked_buffer))
+                .unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let cancel_started = Instant::now();
+        cancel_playback_reader(blocked_reader);
+        assert_eq!(
+            cancel_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Err(())
+        );
+        let blocked_read_cancel_elapsed = cancel_started.elapsed();
+        blocked_thread.join().unwrap();
+        close_playback_reader(blocked_reader);
+        let active_after_reader_cancel = serde_json::from_str::<serde_json::Value>(&execute(
+            root,
+            "fixture-account",
+            r#"{"kind":"poll","requestId":"download-1"}"#,
+        ))
+        .unwrap();
+        assert!(matches!(
+            active_after_reader_cancel["kind"].as_str(),
+            Some("progress" | "pending")
+        ));
+        assert_eq!(
+            super::cached_account(root, "fixture-account")
+                .unwrap()
+                .active_torrents
+                .lock()
+                .unwrap()
+                .get(&torrent.info_hash().as_string())
+                .map(String::as_str),
+            Some("download-1")
+        );
+        seeder_runtime
+            .block_on(seeder.unpause(&seed_handle))
+            .unwrap();
+
+        let reader = open_playback_reader(&stream_uri, 4096, 8192).unwrap();
+        let mut streamed = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        let offset_read_started = Instant::now();
+        while streamed.len() < 8192 {
+            let count = read_playback_reader(reader, &mut buffer).unwrap();
+            assert!(count > 0, "stream reached EOF before its requested range");
+            streamed.extend_from_slice(&buffer[..count]);
+        }
+        let offset_read_elapsed = offset_read_started.elapsed();
+        assert_eq!(streamed, data[4096..4096 + 8192]);
+
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let state = serde_json::from_str::<serde_json::Value>(&execute(
@@ -1066,6 +1936,27 @@ mod tests {
             assert!(Instant::now() < deadline, "data transfer timed out");
             std::thread::sleep(Duration::from_millis(50));
         }
+        let completion_elapsed = download_started.elapsed();
+        assert!(playback_stream_completed(&stream_uri));
+        let completed_reader = open_playback_reader(&stream_uri, 20_000, 4096).unwrap();
+        let mut completed_range = Vec::new();
+        let cached_read_started = Instant::now();
+        while completed_range.len() < 4096 {
+            let count = read_playback_reader(completed_reader, &mut buffer).unwrap();
+            assert!(
+                count > 0,
+                "completed reader ended before its requested range"
+            );
+            completed_range.extend_from_slice(&buffer[..count]);
+        }
+        let cached_read_elapsed = cached_read_started.elapsed();
+        assert_eq!(completed_range, data[20_000..24_096]);
+        println!(
+            "progressive fixture timings: blocked read cancel {blocked_read_cancel_elapsed:?}, 8 KiB offset read {offset_read_elapsed:?}, completed local read {cached_read_elapsed:?}, transfer completion {completion_elapsed:?}"
+        );
+        close_playback_reader(completed_reader);
+        close_playback_reader(reader);
+        close_playback_stream(&stream_uri).unwrap();
         let downloaded = Path::new(root)
             .join("fixture-account")
             .join(torrent.info_hash().as_string())

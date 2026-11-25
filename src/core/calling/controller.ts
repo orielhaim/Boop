@@ -992,11 +992,7 @@ export function createCallController({
       void attempt.notifyHangup?.().catch(() => undefined);
       finish(attempt, "failed", "systemInterrupted");
     },
-    async dial(
-      peerKey: string,
-      groupId?: string,
-      onStarted?: (id: string) => void,
-    ) {
+    async dial(peerKey: string, groupId?: string) {
       if (
         active ||
         store.getState().groupLobby ||
@@ -1025,7 +1021,6 @@ export function createCallController({
       };
       callMetric("call_started");
       const attempt = begin(invite, "outgoing");
-      onStarted?.(invite.callId);
       const live = () => available && active === attempt;
       const offer = await prepareInvite(invite, attempt.abort.signal).catch(
         () => null,

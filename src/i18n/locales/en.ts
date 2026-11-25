@@ -1300,6 +1300,10 @@ export const en = {
   },
   downloads: {
     pluginPaused: "Enable Torrents to continue this download.",
+    play: "Play",
+    playAndDownload: "Play & download",
+    resumeAndPlay: "Resume & play",
+    retryAndPlay: "Retry & play",
     pluginSettings: "Torrents settings",
     shareFile: "Share file",
     saveFile: "Save to folder",

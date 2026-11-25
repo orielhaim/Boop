@@ -20,11 +20,13 @@ export function DownloadProgressRing({
   children,
   fraction = 0,
   indeterminate = false,
+  spinning = indeterminate,
   size = 42,
 }: {
   children: ReactNode;
   fraction?: number;
   indeterminate?: boolean;
+  spinning?: boolean;
   size?: number;
 }) {
   const { colors, reduceMotion } = useTheme();
@@ -56,7 +58,7 @@ export function DownloadProgressRing({
 
   useEffect(() => {
     angle.set(0);
-    if (indeterminate && !reduceMotion)
+    if (spinning && !reduceMotion)
       angle.set(
         withRepeat(
           withTiming(360, { duration: 1100, easing: Easing.linear }),
@@ -64,7 +66,7 @@ export function DownloadProgressRing({
         ),
       );
     return () => cancelAnimation(angle);
-  }, [angle, indeterminate, reduceMotion]);
+  }, [angle, spinning, reduceMotion]);
 
   return (
     <View

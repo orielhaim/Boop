@@ -6,7 +6,9 @@ export type PluginDescriptor = {
   deliveryModule?: string;
   settingsRoute?: `/settings/${string}`;
   downloadProvider?: { id: string; versions: readonly number[] };
-  capabilities: readonly ("messageEmbed" | "downloadTransport")[];
+  capabilities: readonly (
+    "messageEmbed" | "downloadTransport" | "progressiveRead"
+  )[];
 };
 
 export type Embed<Renderer extends string = string, Payload = unknown> = {

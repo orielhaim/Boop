@@ -144,7 +144,7 @@ const DownloadRow = memo(function DownloadRow({
       return;
     }
     if (videoFile(job.name, job.type)) {
-      void openDownloadedVideo(job.id)
+      void openDownloadedVideo(job.id, { allowProgressive: true })
         .then((opened) => {
           if (!opened)
             void dialog.show({ title: t("openFailed"), tone: "error" });
@@ -199,6 +199,8 @@ const DownloadRow = memo(function DownloadRow({
   }
 
   const completed = job.state === "completed";
+  const canPlayProgressive =
+    !completed && !job.intent && pluginReady && downloads.canStream(job);
   const icon = track
     ? "audio"
     : job.type.startsWith("video/")
@@ -361,6 +363,19 @@ const DownloadRow = memo(function DownloadRow({
             onPress={primary.run}
           />
         )
+      )}
+      {canPlayProgressive && (
+        <RowButton
+          icon="play"
+          label={t(
+            job.state === "paused"
+              ? "resumeAndPlay"
+              : job.state === "failed"
+                ? "retryAndPlay"
+                : "play",
+          )}
+          onPress={open}
+        />
       )}
       <RowButton
         icon={unfinished ? "hangup" : "trash"}

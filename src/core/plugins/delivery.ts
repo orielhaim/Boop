@@ -28,6 +28,12 @@ const native = requireOptionalNativeModule<{
   uninstall(): Promise<void>;
   load(): Promise<number>;
   execute(scope: string, request: string): Promise<string>;
+  openTorrentStream?(
+    scope: string,
+    requestId: string,
+    size: number,
+  ): Promise<string | null>;
+  closeTorrentStream?(uri: string): Promise<void>;
   addListener(
     event: "onDeliveryChanged",
     listener: () => void,
@@ -42,6 +48,13 @@ export const torrentDelivery = native && {
   uninstall: () => native.uninstall(),
   load: () => native.load(),
   execute: (scope: string, request: string) => native.execute(scope, request),
+  ...(native.openTorrentStream && native.closeTorrentStream
+    ? {
+        openStream: (scope: string, requestId: string, size: number) =>
+          native.openTorrentStream?.(scope, requestId, size),
+        closeStream: (uri: string) => native.closeTorrentStream?.(uri),
+      }
+    : {}),
   subscribe: (listener: () => void) => {
     const subscription = native.addListener("onDeliveryChanged", listener);
     return () => subscription.remove();

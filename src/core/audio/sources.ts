@@ -13,7 +13,10 @@ export function createAudioSources(
 ) {
   const { directory, deviceFile } = sources;
 
-  async function acquire(track: Track, options: AcquireOptions) {
+  async function acquire(
+    track: Track,
+    options: Omit<AcquireOptions, "progressive">,
+  ) {
     const handle = await sources.acquire(track, options);
     const metadata = track.voice
       ? undefined

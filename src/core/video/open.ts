@@ -75,21 +75,30 @@ async function localVideoId(file: File, size: number) {
   }
 }
 
-export async function openDownloadedVideo(id: string) {
+export async function openDownloadedVideo(
+  id: string,
+  { allowProgressive = false, replace = false } = {},
+) {
   const local = await initializeLocal();
   if (local.status !== "ready" || !local.isCurrent()) return false;
   const source = local.downloads.get(id);
   if (
-    source?.state !== "completed" ||
+    !source ||
+    (source.state !== "completed" &&
+      !(allowProgressive && local.downloads.canStream(source))) ||
     source.intent ||
     !videoFile(source.name, source.type)
   )
     return false;
   const torrent = torrentsSource.safeParse(source);
+  const progressive = source.state !== "completed";
   return local.video.open(
     { kind: "attachment", source, title: source.name },
     torrent.success
       ? {
+          progressive,
+          replace,
+          download: progressive,
           relatedSubtitles: async (signal) => {
             const { torrentId, fileIndex } = torrent.data.payload;
             const files = local.torrents.cached(torrentId)?.files;

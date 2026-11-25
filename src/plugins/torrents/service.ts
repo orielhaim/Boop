@@ -37,6 +37,7 @@ export function createTorrents({
   scope,
   cache,
   canAccess,
+  canRunInBackground = () => false,
   readPreference,
   writePreference,
   pinned,
@@ -48,6 +49,7 @@ export function createTorrents({
   scope: string;
   cache: TorrentCache;
   canAccess(): boolean;
+  canRunInBackground?(): boolean;
   readPreference(key: string): string | null;
   writePreference(key: string, value: string): void;
   pinned(): readonly string[];
@@ -79,23 +81,25 @@ export function createTorrents({
   let stop: Promise<void> | undefined;
   let idle: ReturnType<typeof setTimeout> | undefined;
   let commands = 0;
+  const streams = new Set<string>();
   let runtimeSignal: AbortSignal | undefined;
   let deliveryRevision = 0;
   let closing = false;
   let disposed = false;
   let access = canAccess();
-  const canTransfer = () => {
+  const runtimeAllowed = () => {
     const snapshot = state.getState();
     return (
       !disposed &&
       !closing &&
-      canAccess() &&
       !!delivery &&
       snapshot.enabled &&
       !snapshot.loadFailed &&
       snapshot.delivery?.kind === "installed"
     );
   };
+  const canTransfer = () => canAccess() && runtimeAllowed();
+  const canContinue = () => canRunInBackground() && runtimeAllowed();
 
   async function execute(command: EngineCommand): Promise<EngineResult> {
     if (!delivery) throw new Error("TorrentUnavailable");
@@ -170,6 +174,7 @@ export function createTorrents({
     for (const job of resolving.values()) job.abort.abort();
     stop = (async () => {
       try {
+        await Promise.allSettled([...streams].map(closeStream));
         await host.deactivate(torrents.descriptor.id);
         await Promise.allSettled(
           [...resolving.values()].map(({ promise }) => promise),
@@ -181,6 +186,44 @@ export function createTorrents({
       }
     })();
     return stop;
+  }
+
+  function scheduleIdle() {
+    clearTimeout(idle);
+    if (!commands && !streams.size && !closing && !disposed)
+      idle = setTimeout(() => void suspend(), 10_000);
+  }
+
+  async function closeStream(uri: string) {
+    if (!streams.delete(uri)) return;
+    try {
+      await delivery?.closeStream?.(uri);
+    } finally {
+      scheduleIdle();
+    }
+  }
+
+  async function openStream(
+    requestId: string,
+    size: number,
+    signal: AbortSignal,
+  ) {
+    if (signal.aborted || !canTransfer()) return;
+    clearTimeout(idle);
+    commands++;
+    try {
+      const uri = await delivery?.openStream?.(scope, requestId, size);
+      if (!uri) return;
+      streams.add(uri);
+      if (signal.aborted || !canTransfer()) {
+        await closeStream(uri);
+        return;
+      }
+      return { uri, size, release: () => closeStream(uri) };
+    } finally {
+      commands--;
+      scheduleIdle();
+    }
   }
 
   async function ensureRuntime(signal: AbortSignal) {
@@ -202,6 +245,7 @@ export function createTorrents({
     command: Extract<EngineCommand, { kind: "resolve" | "start" }>,
     signal: AbortSignal,
     progress?: (received: number) => void,
+    submitted?: () => void,
   ): Promise<EngineResult> {
     clearTimeout(idle);
     commands++;
@@ -222,10 +266,18 @@ export function createTorrents({
     lifetime.addEventListener("abort", cancel, { once: true });
     try {
       if (signal.aborted || lifetime.aborted) return { kind: "stopped" };
-      let result = await execute(command);
+      const background = command.kind === "start" && canContinue();
+      const authorized = () => canTransfer() || (background && canContinue());
+      let result = await execute(
+        command.kind === "start"
+          ? { ...command, allowBackground: background }
+          : command,
+      );
+      if (result.kind === "pending" || result.kind === "progress")
+        submitted?.();
       while (
         !cancelled &&
-        canTransfer() &&
+        authorized() &&
         (result.kind === "pending" || result.kind === "progress")
       ) {
         if (result.kind === "progress") progress?.(result.received);
@@ -240,13 +292,13 @@ export function createTorrents({
         } finally {
           clearTimeout(timer);
         }
-        if (!cancelled && canTransfer())
+        if (!cancelled && authorized())
           result = await execute({
             kind: "poll",
             requestId: command.requestId,
           });
       }
-      if (cancelled || !canTransfer()) return { kind: "stopped" };
+      if (cancelled || !authorized()) return { kind: "stopped" };
       return result;
     } finally {
       signal.removeEventListener("abort", cancel);
@@ -255,10 +307,8 @@ export function createTorrents({
         kind: command.kind === "start" ? "stop" : "cancel",
         requestId: command.requestId,
       }).catch(() => undefined);
-      if (--commands === 0 && !closing && !disposed) {
-        if (cancelled) void suspend();
-        else idle = setTimeout(() => void suspend(), 10_000);
-      }
+      commands--;
+      scheduleIdle();
     }
   }
 
@@ -341,6 +391,9 @@ export function createTorrents({
     descriptor: torrents.descriptor,
     match: host.match,
     canTransfer,
+    canContinue,
+    canStream: () => !!delivery?.openStream,
+    openStream,
     refresh,
     cached: cache.get,
     readCached(hash: string) {
@@ -409,10 +462,12 @@ export function createTorrents({
     },
     sync() {
       const next = canAccess();
-      if (next === access) return;
+      const changed = next !== access;
       access = next;
-      if (!next) void suspend();
-      else if (delivery && !disposed) void refresh();
+      if (!next) {
+        for (const job of resolving.values()) job.abort.abort();
+        if (!canContinue() && (runtimeSignal || start)) void suspend();
+      } else if (changed && delivery && !disposed) void refresh();
     },
     async forget(torrentId: string) {
       if (stop) await stop;
