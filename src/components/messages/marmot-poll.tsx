@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Modal, View } from "react-native";
+import { View } from "react-native";
 import { GlassInput } from "@/components/glassyui/glass-input";
+import { DialogModal, useDialog } from "@/components/ui/dialog";
 import { PreferenceToggle } from "@/components/ui/list-group";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import { marmot, type MarmotMessage } from "@/core/marmot/native";
@@ -18,8 +19,33 @@ export function MarmotPollComposer({
   cancel: () => void;
   canSend: () => boolean;
 }) {
+  return (
+    <DialogModal
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={cancel}
+    >
+      <MarmotPollComposerContent
+        group={group}
+        cancel={cancel}
+        canSend={canSend}
+      />
+    </DialogModal>
+  );
+}
+
+function MarmotPollComposerContent({
+  group,
+  cancel,
+  canSend,
+}: {
+  group: string;
+  cancel: () => void;
+  canSend: () => boolean;
+}) {
   const { t } = useTranslation(namespaces);
   const error = useMarmotError();
+  const dialog = useDialog();
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState("");
   const [hours, setHours] = useState("");
@@ -58,17 +84,13 @@ export function MarmotPollComposer({
       );
       cancel();
     } catch (reason) {
-      Alert.alert(error(reason));
+      dialog.show({ title: error(reason), tone: "error" });
     } finally {
       setWorking(false);
     }
   }
   return (
-    <Modal
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={cancel}
-    >
+    <>
       <Screen>
         <Ink kind="title">{t("messages:marmot.newPoll")}</Ink>
         <GlassInput
@@ -108,7 +130,7 @@ export function MarmotPollComposer({
           {t("common:cancel")}
         </Action>
       </Screen>
-    </Modal>
+    </>
   );
 }
 
@@ -123,6 +145,7 @@ export function MarmotPoll({
 }) {
   const { t } = useTranslation(namespaces);
   const error = useMarmotError();
+  const dialog = useDialog();
   const [busy, setBusy] = useState(false);
   const poll = row.poll;
   if (!poll) return null;
@@ -138,7 +161,7 @@ export function MarmotPoll({
     try {
       await marmot.vote(group, row.sourceId, selected);
     } catch (reason) {
-      Alert.alert(error(reason));
+      dialog.show({ title: error(reason), tone: "error" });
     } finally {
       setBusy(false);
     }

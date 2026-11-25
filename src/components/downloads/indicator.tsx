@@ -1,14 +1,15 @@
 import { router } from "expo-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, View } from "react-native";
+import { Pressable } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
+import { Icon, tapFeedback } from "@/components/ui/kit";
+import { CountBadge } from "@/components/kinetik/count-badge";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 
@@ -16,7 +17,7 @@ import { DownloadProgressRing } from "./progress-ring";
 
 export function DownloadsIndicator() {
   const { downloads } = useLocal();
-  const { t, i18n } = useTranslation("downloads");
+  const { t } = useTranslation("downloads");
   const { colors, reduceMotion } = useTheme();
   const { count, selected } = useSyncExternalStore(
     downloads.subscribe,
@@ -86,44 +87,33 @@ export function DownloadsIndicator() {
         }}
         style={styles.button}
       >
-        <DownloadProgressRing
-          key={displayed?.id}
-          size={40}
-          fraction={fraction}
-          indeterminate={unknown}
+        <CountBadge
+          count={count > 1 ? count : 0}
+          tone="accent"
+          size="compact"
+          ringColor={colors.background}
+          badgeStyle={styles.badge}
         >
-          <Icon
-            name={
-              finishing
-                ? "check"
-                : paused
-                  ? "pause"
-                  : waiting
-                    ? "refresh"
-                    : "download"
-            }
-            size={18}
-          />
-        </DownloadProgressRing>
-        {count > 1 && (
-          <View
-            style={[
-              styles.badge,
-              {
-                backgroundColor: colors.outgoing,
-                borderColor: colors.background,
-              },
-            ]}
+          <DownloadProgressRing
+            key={displayed?.id}
+            size={40}
+            fraction={fraction}
+            indeterminate={unknown}
           >
-            <Ink
-              style={[styles.count, { color: colors.outgoingInk }]}
-              maxFontSizeMultiplier={1.25}
-            >
-              {new Intl.NumberFormat(i18n.language).format(Math.min(99, count))}
-              {count > 99 ? "+" : ""}
-            </Ink>
-          </View>
-        )}
+            <Icon
+              name={
+                finishing
+                  ? "check"
+                  : paused
+                    ? "pause"
+                    : waiting
+                      ? "refresh"
+                      : "download"
+              }
+              size={18}
+            />
+          </DownloadProgressRing>
+        </CountBadge>
       </Pressable>
     </Animated.View>
   );
@@ -138,21 +128,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   badge: {
-    position: "absolute",
-    top: 1,
-    end: 0,
-    minWidth: 17,
-    height: 17,
-    paddingHorizontal: 2,
-    borderRadius: 9,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  count: {
-    fontSize: 9,
-    fontWeight: "700",
-    lineHeight: 12,
-    fontVariant: ["tabular-nums"],
+    top: -2,
+    end: -3,
   },
 });

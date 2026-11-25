@@ -12,9 +12,10 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useStore } from "zustand";
+import { useDialog } from "@/components/ui/dialog";
 import {
   Action,
   Card,
@@ -39,6 +40,7 @@ export function GroupCallHeaderButton({
   canDispatch: () => boolean;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const start = useContext(GroupCallStartContext);
   return (
     <IconButton
@@ -48,20 +50,20 @@ export function GroupCallHeaderButton({
       disabled={!start || start.disabled}
       onPress={() => {
         if (!start || start.disabled || !canDispatch()) return;
-        Alert.alert(
-          t("messages:marmot.confirmGroupCall"),
-          t("messages:marmot.confirmGroupCallHint"),
-          [
-            { text: t("common:cancel"), style: "cancel" },
+        void dialog.show({
+          title: t("messages:marmot.confirmGroupCall"),
+          message: t("messages:marmot.confirmGroupCallHint"),
+          actions: [
+            { label: t("common:cancel"), tone: "cancel" },
             {
-              text: t("calls:startCall"),
-              onPress: () => {
+              label: t("calls:startCall"),
+              tone: "primary",
+              onSelect: () => {
                 if (canDispatch()) start.onPress();
               },
             },
           ],
-          { cancelable: true },
-        );
+        });
       }}
     />
   );
@@ -81,6 +83,7 @@ export function MarmotActiveCall({
   header?: ReactNode;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { colors } = useTheme();
   const { calling, privacy, lock } = useLocal();
   const state = useStore(calling.store);
@@ -154,8 +157,11 @@ export function MarmotActiveCall({
     if (!unavailable || pending.current !== unavailable.callId) return;
     pending.current = undefined;
     if (!lockState.locked)
-      Alert.alert(t("messages:marmot.groupCallUnavailable"));
-  }, [lockState.locked, t, unavailable]);
+      dialog.show({
+        title: t("messages:marmot.groupCallUnavailable"),
+        tone: "error",
+      });
+  }, [dialog, lockState.locked, t, unavailable]);
 
   const startGroupCall = useCallback(() => {
     const window = discovery.window?.getState();
@@ -175,9 +181,13 @@ export function MarmotActiveCall({
     void calling.startGroup(group).then((started) => {
       if (started)
         pending.current = calling.store.getState().groupLobby?.callId;
-      else Alert.alert(t("messages:marmot.groupCallStartFailed"));
+      else
+        dialog.show({
+          title: t("messages:marmot.groupCallStartFailed"),
+          tone: "error",
+        });
     });
-  }, [calling, discovery.window, group, lock, privacy, roster, t]);
+  }, [calling, dialog, discovery.window, group, lock, privacy, roster, t]);
 
   if (lockState.locked) return null;
   const active =

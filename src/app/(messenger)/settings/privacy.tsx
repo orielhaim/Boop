@@ -2,7 +2,8 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { router } from "expo-router";
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Linking } from "react-native";
+import { Linking } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import {
   ListGroup,
   ListRow,
@@ -19,6 +20,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function Privacy() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { lock, chatPreferences } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const privacy = usePrivacy();
@@ -41,7 +43,10 @@ export default function Privacy() {
     try {
       write();
     } catch {
-      Alert.alert(t("security:privacyWriteFailed"));
+      void dialog.show({
+        title: t("security:privacyWriteFailed"),
+        tone: "error",
+      });
     }
   }
 
@@ -137,10 +142,11 @@ export default function Privacy() {
           value={false}
           onChange={(enabled) => {
             if (enabled) {
-              Alert.alert(
-                t("security:telemetry"),
-                t("security:telemetryDeclined"),
-              );
+              void dialog.show({
+                title: t("security:telemetry"),
+                message: t("security:telemetryDeclined"),
+                tone: "info",
+              });
             }
           }}
         />
@@ -149,7 +155,11 @@ export default function Privacy() {
           icon="info"
           onPress={() => {
             void Linking.openURL("https://boop.orielhaim.com/privacy").catch(
-              () => Alert.alert(t("security:privacyPolicyOpenFailed")),
+              () =>
+                void dialog.show({
+                  title: t("security:privacyPolicyOpenFailed"),
+                  tone: "error",
+                }),
             );
           }}
         />

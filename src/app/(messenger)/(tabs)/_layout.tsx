@@ -11,9 +11,10 @@ import { DirectionalTabs } from "@/components/navigation/directional-tabs";
 import { TabFabVisibility } from "@/components/navigation/tab-fab-visibility";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
 import { Icon, tapFeedback } from "@/components/ui/kit";
+import { CountBadge } from "@/components/kinetik/count-badge";
 import { MorphFab } from "@/components/ui/molecules/morph-fab";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
@@ -76,7 +77,6 @@ function DockNavigator() {
     chatsEnabled,
   );
   const unread = snapshot?.count ?? 0;
-  const badge = unread > 99 ? "99+" : unread || null;
   const messages: GlassTabItem = {
     name: "index",
     label: t("common:chats"),
@@ -88,11 +88,17 @@ function DockNavigator() {
           color={tint}
           weight={tint === colors.accent ? "fill" : "regular"}
         />
-        {badge ? (
-          <View style={[styles.badge, { backgroundColor: colors.danger }]}>
-            <Text style={styles.badgeText}>{badge}</Text>
-          </View>
-        ) : null}
+      </View>
+    ),
+    renderIconOverlay: () => (
+      <View style={{ direction }}>
+        <CountBadge
+          count={unread}
+          size="compact"
+          ringColor={dockMaterial.opaque}
+        >
+          <View style={styles.icon} />
+        </CountBadge>
       </View>
     ),
   };
@@ -193,7 +199,9 @@ function DockNavigator() {
               item={item}
               index={index}
               accessibilityLabel={
-                href === "/" && badge ? `${item.label} (${badge})` : item.label
+                href === "/" && unread > 0
+                  ? `${item.label}, ${t("messages:attentionCount", { count: unread })}`
+                  : item.label
               }
             />
           </TabTrigger>
@@ -284,16 +292,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  badge: {
-    position: "absolute",
-    right: -9,
-    top: -4,
-    minWidth: 15,
-    height: 15,
-    paddingHorizontal: 3,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  badgeText: { color: "#FFFFFF", fontSize: 8, fontWeight: "700" },
 });

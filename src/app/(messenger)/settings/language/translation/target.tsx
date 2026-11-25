@@ -3,7 +3,7 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
 import {
   SettingsDescription,
@@ -22,6 +22,7 @@ import { space } from "@/theme";
 
 export default function TranslationTarget() {
   const { t, i18n } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { db } = useLocal();
   const preferences = useTranslationPreferences(
     db,
@@ -93,7 +94,10 @@ export default function TranslationTarget() {
                   });
                   router.back();
                 } catch {
-                  Alert.alert(t("translation:saveFailed"));
+                  void dialog.show({
+                    title: t("translation:saveFailed"),
+                    tone: "error",
+                  });
                 }
               }}
             />

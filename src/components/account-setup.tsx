@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState } from "react-native";
+import { AppState } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { Action, Ink, Screen } from "@/components/ui/kit";
 import {
   clearSelectedAccount,
@@ -31,6 +32,7 @@ export function AccountSetup({
   complete: () => void;
   reenter: () => void;
 }) {
+  const dialog = useDialog();
   const { t } = useTranslation(namespaces);
   const [snapshot, setSnapshot] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -91,15 +93,16 @@ export function AccountSetup({
     (!snapshot || snapshot.ready);
 
   function discard() {
-    Alert.alert(
-      t("messenger:discardSetup"),
-      t("messenger:discardSetupDetail"),
-      [
-        { text: t("common:cancel"), style: "cancel" },
+    void dialog.show({
+      title: t("messenger:discardSetup"),
+      message: t("messenger:discardSetupDetail"),
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
         {
-          text: t("messenger:discardSetup"),
-          style: "destructive",
-          onPress: () =>
+          label: t("messenger:discardSetup"),
+          tone: "danger",
+          onSelect: () =>
             void perform(async () => {
               if (snapshot && !snapshot.ready) {
                 await marmotAccounts.onboarding(account.key, {
@@ -113,21 +116,22 @@ export function AccountSetup({
             }),
         },
       ],
-    );
+    });
   }
 
   function recover() {
-    Alert.alert(
-      t("messenger:recoverSetup"),
-      t("messenger:recoverSetupDetail"),
-      [
-        { text: t("common:cancel"), style: "cancel" },
+    void dialog.show({
+      title: t("messenger:recoverSetup"),
+      message: t("messenger:recoverSetupDetail"),
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
         {
-          text: t("messenger:recoverSetup"),
-          onPress: () => void run({ action: "recover" }),
+          label: t("messenger:recoverSetup"),
+          onSelect: () => void run({ action: "recover" }),
         },
       ],
-    );
+    });
   }
 
   const steps = {

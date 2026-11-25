@@ -2,7 +2,7 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import Constants from "expo-constants";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { BoopLogo } from "@/components/ui/boop-logo";
 import { Action, Ink, Screen, Section } from "@/components/ui/kit";
@@ -11,6 +11,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 export default function About() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { calling, relays } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const [notice, setNotice] = useState("");
@@ -97,7 +98,11 @@ export default function About() {
                 ]
                   .filter(Boolean)
                   .join("\n\n");
-                Alert.alert(t("settings:callingDiagnostics"), status);
+                void dialog.show({
+                  title: t("settings:callingDiagnostics"),
+                  message: status,
+                  tone: "info",
+                });
               } finally {
                 setChecking(false);
               }

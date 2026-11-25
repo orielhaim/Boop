@@ -1,7 +1,8 @@
 import { router } from "expo-router";
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState } from "react-native";
+import { AppState } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { useLocal } from "@/services/local-context";
 
@@ -14,6 +15,7 @@ export function SpeechStorage({
 }) {
   const { speech, lock } = useLocal();
   const { t, i18n } = useTranslation(["speech", "common"]);
+  const dialog = useDialog();
   useSyncExternalStore(speech.subscribe, speech.snapshot);
   const { bytes, saved, pending } = speech.stats();
   const [clearing, setClearing] = useState(false);
@@ -33,7 +35,9 @@ export function SpeechStorage({
         return;
       setClearing(true);
       void (temporary ? speech.clearTemporary() : speech.clear())
-        .catch(() => Alert.alert(t("failed")))
+        .catch(() => {
+          void dialog.show({ title: t("failed"), tone: "error" });
+        })
         .finally(() => {
           setClearing(false);
           onChange?.();
@@ -41,10 +45,20 @@ export function SpeechStorage({
     };
     if (temporary) run();
     else
-      Alert.alert(t("clear"), t("clearConfirm"), [
-        { text: t("common:cancel"), style: "cancel" },
-        { text: t("clear"), style: "destructive", onPress: run },
-      ]);
+      void dialog.show({
+        title: t("clear"),
+        message: t("clearConfirm"),
+        tone: "danger",
+        dismissible: false,
+        actions: [
+          { label: t("common:cancel"), tone: "cancel" },
+          {
+            label: t("clear"),
+            tone: "danger",
+            onSelect: run,
+          },
+        ],
+      });
   };
   return (
     <ListGroup title={t("storage")}>

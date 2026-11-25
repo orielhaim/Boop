@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Modal, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
@@ -19,6 +19,8 @@ import {
   settingsCategories,
 } from "@/components/ui/category-icon";
 import { Icon, iconNames } from "@/components/ui/icon";
+import { DialogModal, useDialog } from "@/components/ui/dialog";
+import { CountBadge } from "@/components/kinetik/count-badge";
 import {
   Action,
   Empty,
@@ -42,10 +44,10 @@ export default function DesignLabEntry() {
 }
 
 function DesignLab({ close }: { close: () => void }) {
-  const { t } = useTranslation(["settings", "common"]);
-  const [rtl, setRtl] = useState(false);
+  const { t, i18n } = useTranslation(["settings", "common"]);
+  const [rtl, setRtl] = useState(i18n.dir() === "rtl");
   return (
-    <Modal onRequestClose={close} animationType="none">
+    <DialogModal onRequestClose={close} animationType="none">
       <Screen compact topInset>
         <View style={styles.header}>
           <Ink kind="screenTitle" accessibilityRole="header">
@@ -53,10 +55,17 @@ function DesignLab({ close }: { close: () => void }) {
           </Ink>
           <IconButton label={t("common:close")} icon="close" onPress={close} />
         </View>
-        <ListGroup>
-          <PreferenceToggle title="RTL" value={rtl} onChange={setRtl} />
-        </ListGroup>
-        <View style={[styles.catalog, rtl && styles.rtl]}>
+        <View style={[styles.catalog, { direction: rtl ? "rtl" : "ltr" }]}>
+          <ListGroup>
+            <PreferenceToggle
+              title="RTL"
+              value={rtl}
+              onChange={setRtl}
+              rtl={rtl}
+            />
+          </ListGroup>
+          <InteractionDemo rtl={rtl} />
+          <CountBadgeDemo />
           {(["light", "dark"] satisfies ThemeName[]).map((theme) => (
             <View key={theme} style={styles.catalog}>
               <Section>{t(`settings:${theme}`)}</Section>
@@ -128,12 +137,110 @@ function DesignLab({ close }: { close: () => void }) {
           </Action>
         </View>
       </Screen>
-    </Modal>
+    </DialogModal>
+  );
+}
+
+function InteractionDemo({ rtl }: { rtl: boolean }) {
+  const { t } = useTranslation(["settings", "common"]);
+  const dialog = useDialog();
+  const [value, setValue] = useState(true);
+  return (
+    <>
+      <ListGroup title={t("settings:designLabSwitches")}>
+        <PreferenceToggle
+          title={t("settings:designLabSwitchControlled")}
+          value={value}
+          onChange={setValue}
+          rtl={rtl}
+        />
+        <PreferenceToggle
+          title={t("settings:designLabSwitchDisabled")}
+          value={!value}
+          onChange={setValue}
+          disabled
+          rtl={rtl}
+        />
+        <ListRow
+          title={t("settings:designLabSwitchExternal")}
+          onPress={() => setValue((previous) => !previous)}
+        />
+      </ListGroup>
+      <ListGroup title={t("settings:designLabDialogs")}>
+        <ListRow
+          title={t("settings:designLabDialogQueue")}
+          onPress={() => {
+            void dialog.show({
+              title: t("settings:designLabDialogs"),
+              message: t("settings:designLabDialogQueueDetail"),
+            });
+            void dialog.show({ title: t("settings:designLabDialogNext") });
+          }}
+        />
+        <ListRow
+          title={t("settings:designLabDialogConfirm")}
+          onPress={() =>
+            void dialog.show({
+              title: t("settings:designLabDialogConfirm"),
+              message: t("settings:designLabDialogConfirmDetail"),
+              dismissible: false,
+              actions: [
+                { label: t("common:cancel"), tone: "cancel" },
+                { label: t("common:remove"), tone: "danger" },
+              ],
+            })
+          }
+        />
+        <ListRow
+          title={t("settings:designLabDialogFailure")}
+          onPress={() =>
+            void dialog.show({
+              title: t("settings:designLabDialogFailure"),
+              tone: "error",
+              actions: [
+                { label: t("common:cancel"), tone: "cancel" },
+                {
+                  label: t("common:retry"),
+                  async run() {
+                    await new Promise((resolve) => setTimeout(resolve, 700));
+                    throw new Error("Design Lab simulated a failed action");
+                  },
+                },
+              ],
+            })
+          }
+        />
+      </ListGroup>
+    </>
   );
 }
 
 function isTypeRole(role: string): role is keyof typeof themes.light.type {
   return Object.hasOwn(themes.light.type, role);
+}
+
+function CountBadgeDemo() {
+  const { t } = useTranslation(["settings", "messages"]);
+  const [count, setCount] = useState(0);
+  return (
+    <ListGroup title={t("settings:designLabBadge")}>
+      <ListRow
+        title={t("settings:designLabBadgeAdd")}
+        detail={t("messages:unreadCount", { count })}
+        leading={
+          <CountBadge count={count} size="compact">
+            <Icon name="chat" size={26} />
+          </CountBadge>
+        }
+        onPress={() => setCount((value) => value + 1)}
+      />
+      <ListRow
+        title={t("settings:designLabBadgeClear")}
+        disabled={count === 0}
+        onPress={() => setCount(0)}
+      />
+    </ListGroup>
+  );
 }
 
 function MaterialDemo() {
@@ -184,7 +291,6 @@ const styles = StyleSheet.create(({ space, radius }) => ({
     gap: space.md,
   },
   catalog: { gap: space.md },
-  rtl: { direction: "rtl" },
   tile: { minWidth: 72, gap: space.xs, alignItems: "center" },
   tiles: { flexDirection: "row", flexWrap: "wrap", gap: space.md },
   swatch: { height: 36, width: 60, borderRadius: radius.small },

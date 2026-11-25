@@ -1,6 +1,6 @@
 import { useEvent } from "expo";
 import type { VideoPlayer } from "expo-video";
-import { Alert, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { subtitleAt, type LocalCaptions } from "@/core/video/subtitles";
@@ -11,10 +11,12 @@ export function CaptionOptions({
   captions,
   update,
   close,
+  onError,
 }: {
   captions?: LocalCaptions;
   update(captions?: LocalCaptions): void;
   close(): void;
+  onError(): void;
 }) {
   const { t } = useTranslation("video");
   async function pick() {
@@ -23,7 +25,7 @@ export function CaptionOptions({
       const captions = await pickLocalSubtitles();
       if (captions) update(captions);
     } catch {
-      Alert.alert(t("viewer.subtitleFailed"));
+      onError();
     }
   }
   const offset = (amount: number) => {

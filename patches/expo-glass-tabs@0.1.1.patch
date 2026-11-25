@@ -1,5 +1,5 @@
 diff --git a/build/glass-tab-bar.d.ts b/build/glass-tab-bar.d.ts
-index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..ab500af2c3583dfe0c24e075a96115c5da6acfec 100644
+index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..158ef76ac37b9f8f5228f699f4a9577729839d5e 100644
 --- a/build/glass-tab-bar.d.ts
 +++ b/build/glass-tab-bar.d.ts
 @@ -1,6 +1,10 @@
@@ -23,7 +23,16 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..ab500af2c3583dfe0c24e075a96115c5
      /** Opaque-ish background used when liquid glass is unavailable. */
      solidFallback: string;
  };
-@@ -28,16 +34,24 @@ export type GlassTabBarProps = TabListProps & {
+@@ -21,6 +27,8 @@ export type GlassTabItem = {
+         tint: string;
+         size: number;
+     }) => ReactNode;
++    /** Overlay rendered once above the active and inactive icon layers. */
++    renderIconOverlay?: () => ReactNode;
+ };
+ export type GlassTabBarProps = TabListProps & {
+     /** Called when a tab is chosen by tap or scrub release. */
+@@ -28,16 +36,24 @@ export type GlassTabBarProps = TabListProps & {
      theme?: Partial<GlassTabBarTheme>;
      /** Haptic tick while the scrub crosses tab boundaries (iOS). */
      haptics?: boolean;
@@ -52,7 +61,7 @@ index 1ff17b735de13c8c7f3dc13fe5af2520405040a6..ab500af2c3583dfe0c24e075a96115c5
 -//# sourceMappingURL=glass-tab-bar.d.ts.map
 \ No newline at end of file
 diff --git a/build/glass-tab-bar.js b/build/glass-tab-bar.js
-index 420cb04242abe5c71811088fd76bb91090558c5f..942128edd92d1e12bde9ca9937f6d1db18737aad 100644
+index 420cb04242abe5c71811088fd76bb91090558c5f..65d99a3044abdc4351e0cd161e121d8cf1edf6e1 100644
 --- a/build/glass-tab-bar.js
 +++ b/build/glass-tab-bar.js
 @@ -1,17 +1,18 @@
@@ -125,6 +134,13 @@ index 420cb04242abe5c71811088fd76bb91090558c5f..942128edd92d1e12bde9ca9937f6d1db
                                      StyleSheet.absoluteFill,
                                      { backgroundColor: theme.glassTint, borderCurve: 'continuous' },
                                      shapeStyle,
+@@ -246,5 +262,5 @@ export function GlassTabButton({ item, index, isFocused, onPress, ...props }) {
+                                 StyleSheet.absoluteFill,
+                                 { alignItems: 'center', justifyContent: 'center' },
+                                 activeGlyphStyle,
+-                            ], children: _jsx(TabGlyph, { item: item, tint: theme.activeTint }) })] }), _jsx(Animated.Text, { numberOfLines: 1, style: [{ fontSize: 9.5, fontWeight: '600', marginTop: ITEM_GAP }, labelStyle], children: item.label })] }) }));
++                            ], children: _jsx(TabGlyph, { item: item, tint: theme.activeTint }) }), item.renderIconOverlay && _jsx(View, { pointerEvents: "none", style: StyleSheet.absoluteFill, children: item.renderIconOverlay() })] }), _jsx(Animated.Text, { numberOfLines: 1, style: [{ fontSize: 9.5, fontWeight: '600', marginTop: ITEM_GAP }, labelStyle], children: item.label })] }) }));
+ }
 diff --git a/build/index.d.ts b/build/index.d.ts
 index ab4a877c77512c816a8717c1c9ba55e61ad289fd..b5c6d7eb8490f99e14541f97c1736b3797aecdc5 100644
 --- a/build/index.d.ts
@@ -189,7 +205,7 @@ index 50889aeca11be27599dd5e42ef3a7b76125e4f55..f5519a2f4f3c635d100ebe0d8b47d5f2
                  } })] }));
  }
 diff --git a/src/glass-tab-bar.tsx b/src/glass-tab-bar.tsx
-index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ecb5dfda20 100644
+index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..0117253bc261bdb3ed1d82b0073ddd7cb784d2dc 100644
 --- a/src/glass-tab-bar.tsx
 +++ b/src/glass-tab-bar.tsx
 @@ -8,9 +8,12 @@ import {
@@ -235,7 +251,14 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
    /** Opaque-ish background used when liquid glass is unavailable. */
    solidFallback: string;
  };
-@@ -100,6 +105,15 @@ export type GlassTabBarProps = TabListProps & {
+@@ -84,4 +89,6 @@ export type GlassTabItem = {
+   icon?: SymbolViewProps['name'];
+   /** Custom glyph (e.g. a tinted logo image); called once per tint layer. */
+   renderIcon?: (props: { tint: string; size: number }) => ReactNode;
++  /** Overlay rendered once above the active and inactive icon layers. */
++  renderIconOverlay?: () => ReactNode;
+ };
+@@ -100,6 +107,15 @@ export type GlassTabBarProps = TabListProps & {
    theme?: Partial<GlassTabBarTheme>;
    /** Haptic tick while the scrub crosses tab boundaries (iOS). */
    haptics?: boolean;
@@ -251,7 +274,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
  };
  
  /**
-@@ -112,10 +126,18 @@ export function GlassTabBar({
+@@ -112,10 +128,18 @@ export function GlassTabBar({
    onIndexSelected,
    theme: themeOverrides,
    haptics = true,
@@ -271,7 +294,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
    const minimized = useMinimizeState();
    const progress = minimized.progress;
    const slideIndex = useSharedValue(0);
-@@ -258,7 +280,7 @@ export function GlassTabBar({
+@@ -258,7 +282,7 @@ export function GlassTabBar({
      };
    });
  
@@ -280,7 +303,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
    const barContext = useMemo(
      () => ({ slideIndex, isDragging, theme }),
      [slideIndex, isDragging, theme],
-@@ -268,10 +290,11 @@ export function GlassTabBar({
+@@ -268,10 +292,11 @@ export function GlassTabBar({
      <View
        {...props}
        pointerEvents="box-none"
@@ -293,7 +316,7 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
          style={{
            position: 'absolute',
            left: 0,
-@@ -282,10 +305,40 @@ export function GlassTabBar({
+@@ -282,10 +307,40 @@ export function GlassTabBar({
        />
        <View
          pointerEvents="box-none"
@@ -336,6 +359,18 @@ index c0f798ba35d9722d523f0cbe57ea11c8b8773f5c..b0c32d3fdbfa9cfecfb7a321cb66e8ec
                <AnimatedGlassView
                  glassEffectStyle="regular"
                  style={[
+@@ -425,6 +480,11 @@ export function GlassTabButton({
+             ]}>
+             <TabGlyph item={item} tint={theme.activeTint} />
+           </Animated.View>
++          {item.renderIconOverlay && (
++            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
++              {item.renderIconOverlay()}
++            </View>
++          )}
+         </View>
+         {/* Fades out and is clipped by the shrinking box — no layout anim. */}
+         <Animated.Text
 diff --git a/src/index.ts b/src/index.ts
 index 4c84b0ae6684158a7d810e142a38a97e770a42bf..daebae211a2f7afe232854ed16a25eb7419c1632 100644
 --- a/src/index.ts

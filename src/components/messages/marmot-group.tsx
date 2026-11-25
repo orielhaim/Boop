@@ -12,14 +12,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Alert,
-  AppState,
-  FlatList,
-  Pressable,
-  ScrollView,
-  View,
-} from "react-native";
+import { AppState, FlatList, Pressable, ScrollView, View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import { EditableAvatar } from "@/components/avatars/editable-avatar";
 import { usePerson, usePresentedName } from "@/components/people/use-person";
@@ -154,6 +148,7 @@ function cleanImage(file: File | null) {
 
 export function NewMarmotGroup() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const {
     db,
     identity,
@@ -229,8 +224,8 @@ export function NewMarmotGroup() {
   );
 
   function back() {
-    if (busy) return;
-    if (canReturnToPeople) setStep("people");
+    if (status === "creating") return;
+    if (status === "idle" && canReturnToPeople) setStep("people");
     else if (router.canGoBack()) router.back();
     else router.replace("/");
   }
@@ -294,16 +289,19 @@ export function NewMarmotGroup() {
       if (!isCurrent()) return;
       if (result.createdAt)
         chatPreferences.recordGroupCreation(group, result.createdAt);
+      setStatus("created");
       const openGroup = () => {
         if (!isCurrent()) return;
-        setStatus("created");
         disablePrevention();
         router.replace(conversationRoute(group));
       };
       if (unavailable) {
-        Alert.alert(t("messages:marmot.unavailableMembers"), unavailable, [
-          { text: t("common:done"), onPress: openGroup },
-        ]);
+        void dialog.show({
+          title: t("messages:marmot.unavailableMembers"),
+          message: unavailable,
+          dismissible: false,
+          actions: [{ label: t("common:done"), onSelect: openGroup }],
+        });
       } else {
         openGroup();
       }
@@ -334,7 +332,9 @@ export function NewMarmotGroup() {
     <Screen scroll={false} topInset>
       <View style={groupSetupStyles.header}>
         <View style={groupSetupStyles.back}>
-          {!busy && <GlassBackButton onPress={back} elevation="none" />}
+          {status !== "creating" && (
+            <GlassBackButton onPress={back} elevation="none" />
+          )}
         </View>
         <Ink
           kind="heading"
@@ -457,15 +457,23 @@ export function NewMarmotGroup() {
             </Action>
           )}
           {error ? <Ink accessibilityLiveRegion="polite">{error}</Ink> : null}
-          <Action
-            disabled={busy || picker.busy || !name.trim()}
-            variant="prominent"
-            onPress={() => void create()}
-          >
-            {t(
-              busy ? "messages:marmot.creatingGroup" : "messages:marmot.create",
-            )}
-          </Action>
+          {status === "created" ? (
+            <Action variant="prominent" onPress={back}>
+              {t("common:done")}
+            </Action>
+          ) : (
+            <Action
+              disabled={busy || picker.busy || !name.trim()}
+              variant="prominent"
+              onPress={() => void create()}
+            >
+              {t(
+                busy
+                  ? "messages:marmot.creatingGroup"
+                  : "messages:marmot.create",
+              )}
+            </Action>
+          )}
         </ScrollView>
       )}
     </Screen>
@@ -589,6 +597,7 @@ export function MarmotGroupDetailsScreen({
   morph?: string;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { colors } = useTheme();
   const {
     db,
@@ -683,12 +692,15 @@ export function MarmotGroupDetailsScreen({
       const result = await task();
       if (!isCurrent() || lock.getState().locked) return false;
       if (result === "accepted_pending" || result === "completion_unknown") {
-        Alert.alert(t("messages:marmot.pendingCommit"));
+        dialog.show({
+          title: t("messages:marmot.pendingCommit"),
+          tone: "info",
+        });
       } else if (leave) router.back();
       else if (refresh) state.retry();
       return true;
     } catch (reason) {
-      Alert.alert(translateError(reason));
+      dialog.show({ title: translateError(reason), tone: "error" });
       return false;
     } finally {
       setBusy(false);
@@ -701,14 +713,19 @@ export function MarmotGroupDetailsScreen({
     leave = false,
     description?: string,
   ) {
-    Alert.alert(title, description, [
-      { text: t("common:cancel"), style: "cancel" },
-      {
-        text: title,
-        style: "destructive",
-        onPress: () => void update(task, leave),
-      },
-    ]);
+    void dialog.show({
+      title,
+      message: description,
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
+        {
+          label: title,
+          tone: "danger",
+          onSelect: () => void update(task, leave),
+        },
+      ],
+    });
   }
 
   function deleteSharedGroup() {
@@ -728,7 +745,7 @@ export function MarmotGroupDetailsScreen({
       if (privacy.photoPolicy() !== "nobody")
         setLoadedPhoto({ hash: photo, uri });
     } catch (reason) {
-      Alert.alert(translateError(reason));
+      dialog.show({ title: translateError(reason), tone: "error" });
     } finally {
       setBusy(false);
     }
@@ -909,7 +926,10 @@ export function MarmotGroupDetailsScreen({
             invite={(addresses) => {
               const keys = resolveAddresses(addresses, identity.publicKey);
               if (!keys?.length || keys.some(privacy.isBlocked)) {
-                Alert.alert(t("contacts:invalidAddress"));
+                dialog.show({
+                  title: t("contacts:invalidAddress"),
+                  tone: "error",
+                });
                 return;
               }
               void update(async () => {
@@ -922,12 +942,13 @@ export function MarmotGroupDetailsScreen({
                   const pending =
                     disposition === "accepted_pending" ||
                     disposition === "completion_unknown";
-                  Alert.alert(
-                    t("messages:marmot.unavailableMembers"),
-                    pending
+                  dialog.show({
+                    title: t("messages:marmot.unavailableMembers"),
+                    message: pending
                       ? unavailable + "\n" + t("messages:marmot.pendingCommit")
                       : unavailable,
-                  );
+                    tone: pending ? "info" : undefined,
+                  });
                 }
                 return unavailable ? undefined : disposition;
               });

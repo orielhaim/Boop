@@ -25,6 +25,41 @@ inset separators for dense rows and spacing to separate groups. Keep sheets
 and floating controls distinct from matte pages. Keep application text in the
 English and Hebrew message catalogs.
 
+## Dialogs and switches
+
+Use `useDialog()` from `src/components/ui/dialog.tsx` for app messages and
+confirmations. Pass translated titles, messages, and action labels to
+`show()`. It resolves to the zero-based selected action or `undefined` when
+the dialog is dismissed. Give irreversible actions the `danger` tone and
+keep an explicit cancel action. Set `dismissible: false` to require a choice.
+
+Use `onSelect` for actions that leave the dialog, including opening an OS
+prompt or navigating. Use `run(signal)` to keep the dialog open while work
+completes. It disables input while pending, keeps the dialog open on rejection,
+and aborts its signal when the owner goes away. Recheck authorization before
+committing work when an API cannot be canceled. Keep OS-owned prompts native.
+
+The host queues requests in the current window. Screen-scoped requests are
+discarded on blur or unmount. Use `DialogModal` for native windows with
+dialog-producing content, and put the caller under the window's boundary.
+Use `useWindowDialog()` only for handoffs that replace the source route
+before they report a result. App Lock and identity retirement discard
+outstanding requests in every window. The backdrop samples its own window
+through Expo Blur. Reduce Transparency uses a scrim and opaque card.
+
+Use `PreferenceToggle` in grouped settings and `Switch` from
+`src/components/ui/switch.tsx` for a standalone control. They animate the
+controlled value after the parent updates it. Give a standalone switch an
+accessible label and pass the pending state as `disabled` when a setting
+cannot accept concurrent changes. Preference rows that have a separate title
+action expose the switch as its own target.
+
+The dialog progress and switch thumb animations are adapted from Reacticx
+source. They use Boop's tokens, motion, and haptics.
+
+Use `CountBadge` for notification counts on icons or in rows. Its animation
+comes from Kinetik UI. The parent control owns the full accessible count.
+
 ## Theme and materials
 
 The stored preference is a request. The theme switcher captures the outgoing
@@ -46,7 +81,9 @@ and release the blur view.
 
 Open **Settings → Appearance → Design lab** in a development build. The lab
 shows both palettes, text roles, all registered icons, avatar sizes, controls,
-RTL layout, and a scrolling Android blur target. Change the app's theme in
+RTL layout, and a scrolling Android blur target. It also exercises queued
+dialogs, destructive confirmation, asynchronous failure, and switch values
+changed both by touch and by an external action. Change the app's theme in
 Appearance before opening the lab to see the live components in that theme.
 The production entry removes the lab module.
 

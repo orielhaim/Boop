@@ -1,14 +1,15 @@
 import { File } from "expo-file-system";
 import { router, useLocalSearchParams, usePathname } from "expo-router";
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { Alert } from "react-native";
 import { useTranslation } from "react-i18next";
 import { audioFile } from "@/core/audio/types";
 import { openLocalVideo } from "@/core/video/open";
 import { videoFile } from "@/core/video/types";
 import { useLocal } from "@/services/local-context";
+import { useWindowDialog } from "@/components/ui/dialog";
 
 export default function IncomingFileRoute() {
+  const dialog = useWindowDialog();
   const { uri: parameter } = useLocalSearchParams<{ uri?: string }>();
   const uri = typeof parameter === "string" ? parameter : undefined;
   const { lock } = useLocal();
@@ -36,17 +37,17 @@ export default function IncomingFileRoute() {
         return;
       }
       if (!videoFile(name ?? "", type)) {
-        Alert.alert(t("settings.openFailed"));
+        void dialog.show({ title: t("settings.openFailed"), tone: "error" });
         router.replace("/profile");
         return;
       }
       pendingVideo.current = { uri, name, type };
       router.replace("/profile");
     } catch {
-      Alert.alert(t("settings.openFailed"));
+      void dialog.show({ title: t("settings.openFailed"), tone: "error" });
       router.replace("/profile");
     }
-  }, [lockState.active, lockState.locked, t, uri]);
+  }, [dialog, lockState.active, lockState.locked, t, uri]);
 
   useEffect(() => {
     const pending = pendingVideo.current;
@@ -54,10 +55,13 @@ export default function IncomingFileRoute() {
     pendingVideo.current = undefined;
     void openLocalVideo(pending.uri, pending.name, pending.type)
       .then((success) => {
-        if (!success) Alert.alert(t("settings.openFailed"));
+        if (!success)
+          void dialog.show({ title: t("settings.openFailed"), tone: "error" });
       })
-      .catch(() => Alert.alert(t("settings.openFailed")));
-  }, [pathname, t]);
+      .catch(() =>
+        dialog.show({ title: t("settings.openFailed"), tone: "error" }),
+      );
+  }, [dialog, pathname, t]);
 
   return null;
 }

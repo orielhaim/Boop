@@ -8,7 +8,8 @@ import {
 } from "expo-screen-capture";
 import { useCallback, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Platform } from "react-native";
+import { AppState, Platform } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
   SettingsDescription,
@@ -26,6 +27,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function MarmotBackups() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { lock, marmotSession } = useLocal();
   const id = useId();
   const [state, setState] = useState<MarmotBackupState>();
@@ -236,19 +238,21 @@ export default function MarmotBackups() {
           <Action
             disabled={busy}
             onPress={() =>
-              Alert.alert(
-                t("messages:marmot.disableBackups"),
-                t("messages:marmot.previousBackupsRemain"),
-                [
-                  { text: t("common:cancel"), style: "cancel" },
+              void dialog.show({
+                title: t("messages:marmot.disableBackups"),
+                message: t("messages:marmot.previousBackupsRemain"),
+                tone: "danger",
+                dismissible: false,
+                actions: [
+                  { label: t("common:cancel"), tone: "cancel" },
                   {
-                    text: t("common:done"),
-                    style: "destructive",
-                    onPress: () =>
+                    label: t("common:done"),
+                    tone: "danger",
+                    onSelect: () =>
                       void perform(async () => marmot.backupAction("disable")),
                   },
                 ],
-              )
+              })
             }
           >
             {t("messages:marmot.disableBackups")}

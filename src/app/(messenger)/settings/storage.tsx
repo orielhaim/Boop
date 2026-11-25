@@ -7,12 +7,12 @@ import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   Pressable,
   View,
   useWindowDimensions,
 } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import { PieChart } from "react-native-gifted-charts";
 import {
@@ -220,6 +220,7 @@ function Breakdown({ snapshot }: { snapshot: Snapshot }) {
 
 export default function StorageSettings() {
   const { t, i18n } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { colors } = useTheme();
   const {
     identity,
@@ -277,40 +278,50 @@ export default function StorageSettings() {
     !lock.getState().locked;
 
   function confirmClear(key: Clearable) {
-    Alert.alert(t(`storage:clear_${key}`), t(`storage:clearDetail_${key}`), [
-      { text: t("common:cancel"), style: "cancel" },
-      {
-        text: t("storage:clear"),
-        style: "destructive",
-        onPress: () => {
-          if (busy.current || !mayClear()) return;
-          busy.current = true;
-          setClearing(key);
-          void (async () => {
-            try {
-              if (key === "downloads") {
-                await marmotSession.ready();
-                if (!mayClear()) return;
-                audio.clearAttachments();
-                await downloads.clear(marmot.clearDownloads);
-                await speech.reconcile(true);
-              } else if (key === "profileCache") {
-                await marmot.clearAvatarCache(identity.publicKey);
-                avatars.clear();
-              } else {
-                previews.clear();
+    void dialog.show({
+      title: t(`storage:clear_${key}`),
+      message: t(`storage:clearDetail_${key}`),
+      tone: "danger",
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
+        {
+          label: t("storage:clear"),
+          tone: "danger",
+          onSelect: () => {
+            if (busy.current || !mayClear()) return;
+            busy.current = true;
+            setClearing(key);
+            void (async () => {
+              try {
+                if (key === "downloads") {
+                  await marmotSession.ready();
+                  if (!mayClear()) return;
+                  audio.clearAttachments();
+                  await downloads.clear(marmot.clearDownloads);
+                  await speech.reconcile(true);
+                } else if (key === "profileCache") {
+                  await marmot.clearAvatarCache(identity.publicKey);
+                  avatars.clear();
+                } else {
+                  previews.clear();
+                }
+              } catch {
+                if (mayClear())
+                  void dialog.show({
+                    title: t("storage:clearError"),
+                    tone: "error",
+                  });
+              } finally {
+                busy.current = false;
+                setClearing(undefined);
+                if (focused.current) void refresh();
               }
-            } catch {
-              if (mayClear()) Alert.alert(t("storage:clearError"));
-            } finally {
-              busy.current = false;
-              setClearing(undefined);
-              if (focused.current) void refresh();
-            }
-          })();
+            })();
+          },
         },
-      },
-    ]);
+      ],
+    });
   }
 
   const disabled = phase === "loading" || clearing !== undefined;

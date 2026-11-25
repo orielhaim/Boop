@@ -30,7 +30,6 @@ export const QueueSheet = memo(function QueueSheet({
   onOpenChange(open: boolean): void;
 }) {
   const { audio } = useLocal();
-  const { pick } = useAudioActions();
   const { t } = useTranslation("audio");
   const { colors, reduceMotion } = useTheme();
   const current = useStore(
@@ -126,13 +125,21 @@ export const QueueSheet = memo(function QueueSheet({
             )}
           </Animated.ScrollView>
         </GestureHandlerRootView>
-        <Action variant="soft" onPress={() => void pick(true)}>
-          {t("queueDevice")}
-        </Action>
+        <PickAudioForQueue />
       </GlassSheetContent>
     </GlassSheet>
   );
 });
+
+function PickAudioForQueue() {
+  const { t } = useTranslation("audio");
+  const { pick } = useAudioActions();
+  return (
+    <Action variant="soft" onPress={() => void pick(true)}>
+      {t("queueDevice")}
+    </Action>
+  );
+}
 
 const QueueRow = memo(function QueueRow({
   track,

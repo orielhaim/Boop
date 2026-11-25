@@ -74,6 +74,7 @@ import { UserPlusIcon } from "phosphor-react-native/src/icons/UserPlus";
 import { UsersIcon } from "phosphor-react-native/src/icons/Users";
 import { VideoCameraIcon } from "phosphor-react-native/src/icons/VideoCamera";
 import { VideoCameraSlashIcon } from "phosphor-react-native/src/icons/VideoCameraSlash";
+import { WarningCircleIcon } from "phosphor-react-native/src/icons/WarningCircle";
 import { ArrowClockwiseIcon } from "phosphor-react-native/src/icons/ArrowClockwise";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
@@ -120,6 +121,7 @@ const icons = {
   collapse: CaretUpIcon,
   close: XIcon,
   info: InfoIcon,
+  warning: WarningCircleIcon,
   settings: GearIcon,
   star: StarIcon,
   favorite: StarIcon,

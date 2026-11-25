@@ -1,7 +1,7 @@
 import { router } from "expo-router";
 import { File, Paths } from "expo-file-system";
 import { getDocumentAsync } from "expo-document-picker";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { ScreenHeader } from "@/components/navigation/screen-header";
@@ -20,6 +20,7 @@ import { useAudioActions } from "@/components/audio/actions";
 
 export default function PlaybackSettings() {
   const { t } = useTranslation("audio");
+  const dialog = useDialog();
   const { audio, video } = useLocal();
   const { pick } = useAudioActions();
   const prefs = useStore(audio.store, (state) => state.preferences);
@@ -45,12 +46,16 @@ export default function PlaybackSettings() {
           file.name,
           file.mimeType ?? undefined,
         );
-        if (!opened) Alert.alert(videoT("settings.openFailed"));
+        if (!opened)
+          void dialog.show({
+            title: videoT("settings.openFailed"),
+            tone: "error",
+          });
       } finally {
         if (pickerCopy && selected.exists) selected.delete();
       }
     } catch {
-      Alert.alert(videoT("settings.openFailed"));
+      void dialog.show({ title: videoT("settings.openFailed"), tone: "error" });
     }
   }
   return (

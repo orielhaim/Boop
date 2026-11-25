@@ -13,11 +13,12 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useState,
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Modal, View } from "react-native";
+import { AppState, Modal, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -30,6 +31,7 @@ import { OpeningMark, openingPalette } from "@/components/opening/brand";
 import { OpeningButton } from "@/components/opening/controls";
 import { OpeningCurtain } from "@/components/opening/curtain";
 import { glassStackBack } from "@/components/ui/back-button";
+import { DialogBoundary, useDialog } from "@/components/ui/dialog";
 import { Ink } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { IncompatibleDatabaseError } from "@/db";
@@ -80,8 +82,6 @@ type Startup =
     }
   | { phase: "loaded"; data: LocalResult }
   | { phase: "failed"; failure: "database" | "startup" | "identity" };
-
-const subscribeWithoutLock = () => () => {};
 
 function Boot() {
   const { t } = useTranslation(namespaces);
@@ -155,12 +155,30 @@ function Boot() {
   const failed = startup.phase === "failed" ? startup.failure : undefined;
   const covered = !handedOff || (!welcome && !revealed);
   const lock = ready?.lock;
+  const sessionEnded = ready?.sessionEnded;
+  const dialogAccess = useMemo(
+    () => ({
+      subscribe(listener: () => void) {
+        const unwatch = lock?.subscribe(listener);
+        sessionEnded?.addEventListener("abort", listener);
+        return () => {
+          unwatch?.();
+          sessionEnded?.removeEventListener("abort", listener);
+        };
+      },
+      read: () => {
+        const state = lock?.getState();
+        return (
+          !sessionEnded?.aborted &&
+          (!state || !state.enabled || (!state.locked && state.active))
+        );
+      },
+    }),
+    [lock, sessionEnded],
+  );
   const canCapture = useSyncExternalStore(
-    lock?.subscribe ?? subscribeWithoutLock,
-    useCallback(() => {
-      const state = lock?.getState();
-      return !state || !state.enabled || (!state.locked && state.active);
-    }, [lock]),
+    dialogAccess.subscribe,
+    dialogAccess.read,
   );
 
   function restart(welcome?: Extract<LocalResult, { status: "welcome" }>) {
@@ -175,60 +193,64 @@ function Boot() {
       choice={selected}
       animateThemeChanges={!covered && canCapture}
     >
-      <BootSurface>
-        {handedOff && welcome ? (
-          <Onboarding
-            key={startup.phase === "installing" ? attempt - 1 : attempt}
-            data={welcome}
-            initializing={startup.phase === "installing"}
-            onComplete={() => restart(welcome)}
-          />
-        ) : ready || failed ? (
-          <View
-            key={ready ? "session" : "error"}
-            style={styles.root}
-            onLayout={() => setDestinationDrawn(true)}
-            pointerEvents={covered ? "none" : "auto"}
-            accessibilityElementsHidden={covered}
-            importantForAccessibility={covered ? "no-hide-descendants" : "auto"}
-          >
-            {ready ? (
-              <ProtectedApplication data={ready} />
-            ) : (
-              <ScreenInsets padding={space.xxl} style={styles.boot}>
-                <OpeningMark />
-                <Ink
-                  kind="heading"
-                  accessibilityRole="header"
-                  style={styles.center}
-                >
-                  {t(
-                    failed === "database"
-                      ? "errors:databaseBaseline"
-                      : failed === "identity"
-                        ? "messenger:identityMismatch"
-                        : "errors:startup",
-                  )}
-                </Ink>
-                <OpeningButton
-                  primary
-                  label={t("common:retry")}
-                  onPress={() => restart()}
-                />
-              </ScreenInsets>
-            )}
-          </View>
-        ) : null}
-        {covered && (
-          <OpeningCurtain
-            revealing={destinationDrawn && Boolean(ready || failed)}
-            handedOff={handedOff}
-            label={t("common:opening")}
-            onDrawn={handOff}
-            onRevealed={reveal}
-          />
-        )}
-      </BootSurface>
+      <DialogBoundary access={dialogAccess}>
+        <BootSurface>
+          {handedOff && welcome ? (
+            <Onboarding
+              key={startup.phase === "installing" ? attempt - 1 : attempt}
+              data={welcome}
+              initializing={startup.phase === "installing"}
+              onComplete={() => restart(welcome)}
+            />
+          ) : ready || failed ? (
+            <View
+              key={ready ? "session" : "error"}
+              style={styles.root}
+              onLayout={() => setDestinationDrawn(true)}
+              pointerEvents={covered ? "none" : "auto"}
+              accessibilityElementsHidden={covered}
+              importantForAccessibility={
+                covered ? "no-hide-descendants" : "auto"
+              }
+            >
+              {ready ? (
+                <ProtectedApplication data={ready} />
+              ) : (
+                <ScreenInsets padding={space.xxl} style={styles.boot}>
+                  <OpeningMark />
+                  <Ink
+                    kind="heading"
+                    accessibilityRole="header"
+                    style={styles.center}
+                  >
+                    {t(
+                      failed === "database"
+                        ? "errors:databaseBaseline"
+                        : failed === "identity"
+                          ? "messenger:identityMismatch"
+                          : "errors:startup",
+                    )}
+                  </Ink>
+                  <OpeningButton
+                    primary
+                    label={t("common:retry")}
+                    onPress={() => restart()}
+                  />
+                </ScreenInsets>
+              )}
+            </View>
+          ) : null}
+          {covered && (
+            <OpeningCurtain
+              revealing={destinationDrawn && Boolean(ready || failed)}
+              handedOff={handedOff}
+              label={t("common:opening")}
+              onDrawn={handOff}
+              onRevealed={reveal}
+            />
+          )}
+        </BootSurface>
+      </DialogBoundary>
     </GlassProvider>
   );
 }
@@ -261,6 +283,7 @@ function BootSurface({ children }: { children: ReactNode }) {
 }
 
 function ProtectedApplication({ data }: { data: LocalServices }) {
+  const dialog = useDialog();
   const { t, i18n } = useTranslation(namespaces);
   const deviceLanguage = useLocales()[0]?.languageCode;
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
@@ -308,7 +331,11 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
         applying = true;
         void applyLanguage(next).catch(() => {
           applying = false;
-          if (live) Alert.alert(t("settings:languageRestartError"));
+          if (live)
+            void dialog.show({
+              title: t("settings:languageRestartError"),
+              tone: "error",
+            });
         });
       });
     };
@@ -327,7 +354,7 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
       settings.remove();
       appState.remove();
     };
-  }, [calling, db, deviceLanguage, i18n, obscured, state.hasOpened, t]);
+  }, [calling, db, deviceLanguage, dialog, i18n, obscured, state.hasOpened, t]);
 
   if (!state.hasOpened) return <LockScreen lock={lock} state={state} />;
   return (

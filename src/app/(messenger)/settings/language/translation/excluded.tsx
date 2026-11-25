@@ -2,7 +2,7 @@ import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import {
   SettingsDescription,
   ListGroup,
@@ -20,6 +20,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function ExcludedLanguages() {
   const { t, i18n } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { db } = useLocal();
   const language = resolveLanguage(i18n.resolvedLanguage);
   const { excludedSources } = useTranslationPreferences(db, language);
@@ -74,7 +75,10 @@ export default function ExcludedLanguages() {
                 try {
                   toggleExcludedSource(db, language, code);
                 } catch {
-                  Alert.alert(t("translation:saveFailed"));
+                  void dialog.show({
+                    title: t("translation:saveFailed"),
+                    tone: "error",
+                  });
                 }
               }}
             />

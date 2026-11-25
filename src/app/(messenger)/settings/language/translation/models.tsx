@@ -3,7 +3,7 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useLocalSearchParams } from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
@@ -20,6 +20,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function TranslationModels() {
   const { t, i18n } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { translation } = useLocal();
   const { needed } = useLocalSearchParams<{ needed?: string }>();
   const { catalog, downloaded, error, retry } = useTranslationLanguages();
@@ -57,7 +58,10 @@ export default function TranslationModels() {
       if (!(await translation.remove(code)))
         throw new Error("model-not-removed");
     } catch {
-      Alert.alert(t("translation:removeError"));
+      void dialog.show({
+        title: t("translation:removeError"),
+        tone: "error",
+      });
     } finally {
       working.current = false;
       setBusy(undefined);
@@ -84,44 +88,47 @@ export default function TranslationModels() {
             ? undefined
             : () => {
                 if (ready) {
-                  Alert.alert(
-                    t("translation:remove", { language: name }),
-                    undefined,
-                    [
-                      { text: t("common:cancel"), style: "cancel" },
+                  void dialog.show({
+                    title: t("translation:remove", { language: name }),
+                    tone: "danger",
+                    dismissible: false,
+                    actions: [
+                      { label: t("common:cancel"), tone: "cancel" },
                       {
-                        text: t("common:remove"),
-                        style: "destructive",
-                        onPress: () => {
+                        label: t("common:remove"),
+                        tone: "danger",
+                        onSelect: () => {
                           void remove(code);
                         },
                       },
                     ],
-                  );
+                  });
                 } else {
-                  Alert.alert(
-                    t("translation:download", { language: name }),
-                    undefined,
-                    [
-                      { text: t("common:cancel"), style: "cancel" },
+                  void dialog.show({
+                    title: t("translation:download", { language: name }),
+                    dismissible: false,
+                    actions: [
+                      { label: t("common:cancel"), tone: "cancel" },
                       {
-                        text: t("translation:cellular"),
-                        onPress: () => {
+                        label: t("translation:cellular"),
+                        tone: "neutral",
+                        onSelect: () => {
                           void translation
                             .download(code, false)
                             .catch(() => undefined);
                         },
                       },
                       {
-                        text: t("translation:wifi"),
-                        onPress: () => {
+                        label: t("translation:wifi"),
+                        tone: "primary",
+                        onSelect: () => {
                           void translation
                             .download(code, true)
                             .catch(() => undefined);
                         },
                       },
                     ],
-                  );
+                  });
                 }
               }
         }

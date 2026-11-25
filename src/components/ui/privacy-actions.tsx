@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 
@@ -15,6 +15,7 @@ export function useBlockAction(key: string, onBlocked?: () => void) {
     privacy: { blocks },
   } = useLocal();
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const snapshot = useSyncExternalStore(blocks.subscribe, blocks.snapshot);
   const blocked = snapshot.status === "ready" && snapshot.keys.has(key);
   const [pending, setPending] = useState(false);
@@ -27,7 +28,7 @@ export function useBlockAction(key: string, onBlocked?: () => void) {
         onBlocked?.();
       }
     } catch {
-      Alert.alert(t("security:privacyWriteFailed"));
+      dialog.show({ title: t("security:privacyWriteFailed"), tone: "error" });
     } finally {
       setPending(false);
     }
@@ -40,19 +41,19 @@ export function useBlockAction(key: string, onBlocked?: () => void) {
       if (pending || snapshot.status !== "ready") return;
       if (blocked) void change();
       else
-        Alert.alert(
-          t("security:blockConfirm"),
-          t("security:blockHelp"),
-          [
-            { text: t("common:cancel"), style: "cancel" },
+        void dialog.show({
+          title: t("security:blockConfirm"),
+          message: t("security:blockHelp"),
+          dismissible: false,
+          actions: [
+            { label: t("common:cancel"), tone: "cancel" },
             {
-              text: t("security:block"),
-              style: "destructive",
-              onPress: () => void change(),
+              label: t("security:block"),
+              tone: "danger",
+              onSelect: () => void change(),
             },
           ],
-          { cancelable: false },
-        );
+        });
     },
   };
 }

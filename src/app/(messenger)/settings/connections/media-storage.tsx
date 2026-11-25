@@ -1,7 +1,7 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import {
   SettingsDescription,
   ListGroup,
@@ -22,6 +22,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function MediaServers() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { mediaSdk, blossomLists } = useLocal();
   useSyncExternalStore(mediaSdk.subscribe, mediaSdk.revision);
   const config = mediaSdk.snapshot();
@@ -167,16 +168,18 @@ export default function MediaServers() {
       setNotice(t("settings:mediaNoCompatible"));
       return;
     }
-    Alert.alert(
-      t("settings:mediaPublish"),
-      `${t("settings:mediaPublishConfirm")}
+    void dialog.show({
+      title: t("settings:mediaPublish"),
+      message: `${t("settings:mediaPublishConfirm")}
 
 ${origins.join("\n")}`,
-      [
-        { text: t("common:cancel"), style: "cancel" },
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
         {
-          text: t("settings:mediaPublish"),
-          onPress: () => {
+          label: t("settings:mediaPublish"),
+          tone: "primary",
+          onSelect: () => {
             setBusy(true);
             void blossomLists
               .publishBlossomServers(origins)
@@ -204,7 +207,7 @@ ${origins.join("\n")}`,
           },
         },
       ],
-    );
+    });
   }
 
   return (
@@ -349,19 +352,21 @@ ${origins.join("\n")}`,
         <ListRow
           title={t("settings:mediaRestore")}
           onPress={() =>
-            Alert.alert(
-              t("settings:mediaRestore"),
-              t("settings:mediaRestoreDetail"),
-              [
-                { text: t("common:cancel"), style: "cancel" },
+            void dialog.show({
+              title: t("settings:mediaRestore"),
+              message: t("settings:mediaRestoreDetail"),
+              dismissible: false,
+              actions: [
+                { label: t("common:cancel"), tone: "cancel" },
                 {
-                  text: t("settings:mediaRestore"),
-                  onPress: () => {
+                  label: t("settings:mediaRestore"),
+                  tone: "primary",
+                  onSelect: () => {
                     save(recommendedMediaServers());
                   },
                 },
               ],
-            )
+            })
           }
         />
       </ListGroup>

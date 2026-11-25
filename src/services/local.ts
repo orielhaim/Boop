@@ -196,8 +196,8 @@ async function start() {
       };
     }
     const identity = { publicKey: account.key, npub: toNpub(account.key) };
-    let retired = false;
-    const isCurrent = () => !retired;
+    const retirement = new AbortController();
+    const isCurrent = () => !retirement.signal.aborted;
     const active = () =>
       isCurrent() &&
       AppState.currentState === "active" &&
@@ -1061,6 +1061,7 @@ async function start() {
       status: "ready" as const,
       db,
       isCurrent,
+      sessionEnded: retirement.signal,
       initialProfile,
       async replaceIdentity(importToken: string, live: () => boolean) {
         const target = await marmotAccounts.install(
@@ -1077,7 +1078,7 @@ async function start() {
         try {
           copyInstallationPreferences(db, installation);
           selectAccount(installation, target);
-          retired = true;
+          retirement.abort();
           calling.end();
           stopObserving?.();
           await Promise.all([audio.close(), video.drain()]);

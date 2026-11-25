@@ -15,6 +15,7 @@ import { playerPlayback } from "@/core/audio/controller";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { ProfileElement } from "@/components/navigation/profile-elements";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
+import { CountBadge } from "@/components/kinetik/count-badge";
 import {
   Bubble,
   Chat,
@@ -40,8 +41,6 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Alert,
-  type AlertButton,
   AppState,
   BackHandler,
   Image as BackgroundImage,
@@ -53,6 +52,7 @@ import {
   type TextInput,
   View,
 } from "react-native";
+import { type DialogAction, useDialog } from "@/components/ui/dialog";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
@@ -297,6 +297,7 @@ function MarmotConversationContent({
 }: MarmotConversationScreenProps) {
   const blurTarget = useGlassBackdropTarget();
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const navigation = useNavigation();
   const {
     identity,
@@ -817,7 +818,8 @@ function MarmotConversationContent({
     focused && !snapshot?.invited && !blocked,
   );
 
-  const showError = (reason: unknown) => Alert.alert(translateError(reason));
+  const showError = (reason: unknown) =>
+    dialog.show({ title: translateError(reason), tone: "error" });
   function moveTo(message: string, query = "") {
     if (hidden.includes(message)) return;
     setPanel(null);
@@ -1007,11 +1009,12 @@ function MarmotConversationContent({
     const ids = new Set(messageIds);
     const targets = deletionTargets(ids);
     if (!targets) return;
-    const buttons: AlertButton[] = [
-      { text: t("common:cancel"), style: "cancel" },
+    const actions: [DialogAction, ...DialogAction[]] = [
+      { label: t("common:cancel"), tone: "cancel" },
       {
-        text: t("messages:marmot.deleteForMe"),
-        onPress: () => {
+        label: t("messages:marmot.deleteForMe"),
+        tone: "neutral",
+        onSelect: () => {
           void (async () => {
             if (!deletionTargets(ids)) return;
             for (const messageId of ids) {
@@ -1036,10 +1039,10 @@ function MarmotConversationContent({
       },
     ];
     if (canDispatch() && targets.every(canDeleteForEveryone))
-      buttons.push({
-        text: t("messages:marmot.deleteForEveryone"),
-        style: "destructive",
-        onPress: () =>
+      actions.push({
+        label: t("messages:marmot.deleteForEveryone"),
+        tone: "danger",
+        onSelect: () =>
           run(async () => {
             const selected = deletionTargets(ids);
             if (!selected?.every(canDeleteForEveryone)) return;
@@ -1053,7 +1056,11 @@ function MarmotConversationContent({
             }
           }),
       });
-    Alert.alert(t("chatKit:labels.actionDelete"), undefined, buttons);
+    void dialog.show({
+      title: t("chatKit:labels.actionDelete"),
+      dismissible: false,
+      actions,
+    });
   }
 
   const writeDraft = useCallback(
@@ -1088,23 +1095,26 @@ function MarmotConversationContent({
             return;
           }
           deferredDraft.current = draft;
-          Alert.alert(
-            t("messages:updateError"),
-            String(translateError(reason)),
-            [
+          void dialog.show({
+            title: t("messages:updateError"),
+            message: String(translateError(reason)),
+            tone: "error",
+            dismissible: false,
+            actions: [
               {
-                text: t("common:retry"),
-                onPress: () => {
+                label: t("common:retry"),
+                tone: "primary",
+                onSelect: () => {
                   if (draftWriteRevision.current === revision)
                     persistDraft(draft.text, draft.target);
                 },
               },
-              { text: t("common:cancel"), style: "cancel" },
+              { label: t("common:cancel"), tone: "cancel" },
             ],
-          );
+          });
         });
     },
-    [accountRevision, id, isCurrent, marmotSession, t, translateError],
+    [accountRevision, dialog, id, isCurrent, marmotSession, t, translateError],
   );
   function saveDraft(text: string, target: string | null) {
     setComposer(text);
@@ -1291,7 +1301,11 @@ function MarmotConversationContent({
                 : current,
             );
           }),
-        mirrorFailed: () => Alert.alert(t("messages:mediaMirrorFailed")),
+        mirrorFailed: () =>
+          dialog.show({
+            title: t("messages:mediaMirrorFailed"),
+            tone: "error",
+          }),
         signal: controller.signal,
       });
       messageId = accepted?.id;
@@ -1919,6 +1933,17 @@ function MarmotConversationContent({
               }
               forceRTL={kit.rtl}
               firstUnreadMessageId={snapshot.firstUnread ?? undefined}
+              renderPageDownUnreadCount={(count, control) => ({
+                accessibilityLabel:
+                  count > 0
+                    ? `${t("messages:jumpToLatest")}, ${t("messages:unreadCount", { count })}`
+                    : t("messages:jumpToLatest"),
+                content: (
+                  <CountBadge count={count} tone="accent">
+                    {control}
+                  </CountBadge>
+                ),
+              })}
               initialText={snapshot.draft?.text}
               text={composer}
               textInputRef={composerRef}
@@ -2350,7 +2375,10 @@ function MarmotConversationContent({
                               item,
                               action,
                             ).catch(() =>
-                              Alert.alert(t("messages:mediaOpenFailed")),
+                              dialog.show({
+                                title: t("messages:mediaOpenFailed"),
+                                tone: "error",
+                              }),
                             ),
                         });
                       }
@@ -2428,27 +2456,30 @@ function MarmotConversationContent({
                       <Icon name="report" color={color} size={size} />
                     ),
                     onPress: () =>
-                      Alert.alert(
-                        t("messages:marmot.reportMessage"),
-                        t("messages:marmot.reportVisibility"),
-                        [
-                          { text: t("common:cancel"), style: "cancel" },
+                      void dialog.show({
+                        title: t("messages:marmot.reportMessage"),
+                        message: t("messages:marmot.reportVisibility"),
+                        dismissible: false,
+                        actions: [
+                          { label: t("common:cancel"), tone: "cancel" },
                           {
-                            text: t("messages:marmot.reportSpam"),
-                            onPress: () =>
+                            label: t("messages:marmot.reportSpam"),
+                            tone: "primary",
+                            onSelect: () =>
                               run(() =>
                                 marmot.reportMessage(id, row.id, "spam"),
                               ),
                           },
                           {
-                            text: t("messages:marmot.reportOther"),
-                            onPress: () =>
+                            label: t("messages:marmot.reportOther"),
+                            tone: "neutral",
+                            onSelect: () =>
                               run(() =>
                                 marmot.reportMessage(id, row.id, "other"),
                               ),
                           },
                         ],
-                      ),
+                      }),
                   });
                 actions.push({
                   key: "delete",
@@ -2675,6 +2706,7 @@ function MarmotInvitation({
   setBusy: (value: boolean) => void;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { privacy, db, identity, isCurrent, lock } = useLocal();
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const translateError = useMarmotError();
@@ -2728,7 +2760,10 @@ function MarmotInvitation({
         if (!isCurrent() || lock.getState().locked || !inviter) return;
         if (latest.inviter !== inviter) {
           setLoaded(undefined);
-          Alert.alert(t("messages:marmot.inviteGone"));
+          dialog.show({
+            title: t("messages:marmot.inviteGone"),
+            tone: "error",
+          });
           return;
         }
         const permission = privacy.messagePermission(inviter);
@@ -2739,7 +2774,9 @@ function MarmotInvitation({
       if (accept && direct && inviter) privacy.approveInvitation(inviter);
       else if (!accept) router.back();
     })()
-      .catch((reason) => Alert.alert(translateError(reason)))
+      .catch((reason) =>
+        dialog.show({ title: translateError(reason), tone: "error" }),
+      )
       .finally(() => setBusy(false));
   }
   return (

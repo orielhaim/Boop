@@ -1,15 +1,17 @@
 import { useEffect } from "react";
 import { Image } from "expo-image";
 import { router, useNavigation } from "expo-router";
-import { ActivityIndicator, Alert, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import { useStore } from "zustand";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { VideoViewer } from "@/components/video/viewer";
 import { CaptionOptions, Captions } from "@/components/video/captions";
 import { useLocal } from "@/services/local-context";
+import { useDialog } from "@/components/ui/dialog";
 
 export default function VideoPlayerRoute() {
+  const dialog = useDialog();
   const { video } = useLocal();
   const { current, preferences } = useStore(video.store);
   const navigation = useNavigation();
@@ -69,7 +71,9 @@ export default function VideoPlayerRoute() {
   const handoff = (action: "external" | "share" | "save") => {
     void video
       .exportFile(action)
-      .catch(() => Alert.alert(t("settings.openFailed")));
+      .catch(() =>
+        dialog.show({ title: t("settings.openFailed"), tone: "error" }),
+      );
   };
   return (
     <VideoViewer
@@ -132,6 +136,12 @@ export default function VideoPlayerRoute() {
                 captions={captions}
                 update={(value) => video.captions(player, value)}
                 close={close}
+                onError={() =>
+                  void dialog.show({
+                    title: t("viewer.subtitleFailed"),
+                    tone: "error",
+                  })
+                }
               />
             )
           : undefined

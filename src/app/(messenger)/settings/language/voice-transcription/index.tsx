@@ -2,7 +2,8 @@ import type { SpeechAvailability } from "@hzblj/expo-speech";
 import { router } from "expo-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Platform, TextInput, View } from "react-native";
+import { Platform, TextInput, View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { speechLocaleName } from "@/components/messages/voice-transcript";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import {
@@ -20,6 +21,7 @@ import { space, useTheme } from "@/theme";
 
 export default function VoiceTranscriptionSettings() {
   const { speech } = useLocal();
+  const dialog = useDialog();
   const { t, i18n } = useTranslation("speech");
   const { colors } = useTheme();
   useSyncExternalStore(speech.subscribe, speech.snapshot);
@@ -47,7 +49,7 @@ export default function VoiceTranscriptionSettings() {
       speech.setPreferences(update);
       return true;
     } catch {
-      Alert.alert(t("failed"));
+      void dialog.show({ title: t("failed"), tone: "error" });
       return false;
     }
   };

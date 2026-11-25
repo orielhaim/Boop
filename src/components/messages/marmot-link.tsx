@@ -1,7 +1,8 @@
 import { Image } from "expo-image";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState, Linking, View } from "react-native";
+import { AppState, Linking, View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import { router } from "expo-router";
 import { Action, Ink } from "@/components/ui/kit";
@@ -25,6 +26,7 @@ export function MarmotLink({
   eligible: boolean;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { previews, lock, downloads } = useLocal();
   const blob = eligible ? firstBlossomDownload(body, author) : undefined;
   const url = eligible && !blob ? firstPreviewUrl(body) : undefined;
@@ -64,7 +66,10 @@ export function MarmotLink({
             downloads.enqueue(blob);
             router.push("/downloads");
           } catch {
-            Alert.alert(t("downloads:actionFailed"));
+            dialog.show({
+              title: t("downloads:actionFailed"),
+              tone: "error",
+            });
           }
         }}
       >

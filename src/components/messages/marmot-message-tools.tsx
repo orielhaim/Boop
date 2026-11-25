@@ -3,8 +3,9 @@ import { randomUUID } from "expo-crypto";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useDialog } from "@/components/ui/dialog";
 import { Action, Ink, Row } from "@/components/ui/kit";
 import {
   marmot,
@@ -236,6 +237,7 @@ export function MessageEditHistory({
   onClose(): void;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const [history, setHistory] = useState<MarmotEditHistory>();
   const [busy, setBusy] = useState(false);
   const load = useCallback(
@@ -249,12 +251,15 @@ export function MessageEditHistory({
           more: page.more,
         }));
       } catch {
-        Alert.alert(t("messages:editHistoryUnavailable"));
+        dialog.show({
+          title: t("messages:editHistoryUnavailable"),
+          tone: "error",
+        });
       } finally {
         setBusy(false);
       }
     },
-    [group, message, t],
+    [dialog, group, message, t],
   );
   useEffect(() => {
     let active = true;
@@ -264,12 +269,16 @@ export function MessageEditHistory({
         if (active) setHistory(page);
       })
       .catch(() => {
-        if (active) Alert.alert(t("messages:editHistoryUnavailable"));
+        if (active)
+          dialog.show({
+            title: t("messages:editHistoryUnavailable"),
+            tone: "error",
+          });
       });
     return () => {
       active = false;
     };
-  }, [group, message, t]);
+  }, [dialog, group, message, t]);
   const oldest = history?.versions.at(-1);
   return (
     <View style={{ padding: space.sm }}>
@@ -308,6 +317,7 @@ export function ForwardMessage({
   onClose(): void;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { privacy, mediaSdk } = useLocal();
   const open = useCallback(() => marmot.openChatList("chats"), []);
   const { snapshot, window, error } = useMarmotWindow(open);
@@ -351,7 +361,7 @@ export function ForwardMessage({
             item.index,
           );
           if (!file) {
-            Alert.alert(t("messages:marmot.downloadToForward"));
+            dialog.show({ title: t("messages:marmot.downloadToForward") });
             return;
           }
           leases.push(file.lease);
@@ -389,7 +399,11 @@ export function ForwardMessage({
               (!peer || !privacy.isBlocked(peer)),
             signal: abort.signal,
             progress: () => undefined,
-            mirrorFailed: () => Alert.alert(t("messages:mediaMirrorFailed")),
+            mirrorFailed: () =>
+              dialog.show({
+                title: t("messages:mediaMirrorFailed"),
+                tone: "error",
+              }),
           });
       } else if (row.eventKind === 24883) {
         await marmot.sendSpecial(
@@ -407,7 +421,8 @@ export function ForwardMessage({
       tokens.current.delete(destination);
       onClose();
     } catch (reason) {
-      if (!abort.signal.aborted) Alert.alert(translateError(reason));
+      if (!abort.signal.aborted)
+        dialog.show({ title: translateError(reason), tone: "error" });
     } finally {
       await Promise.allSettled(
         leases.map((lease) => marmot.releaseAttachment(lease)),

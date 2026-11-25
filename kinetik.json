@@ -1,0 +1,9 @@
+{
+  "$schema": "https://kinetik-ui.dev/schema/kinetik.json",
+  "registry": "https://kinetik-ui.dev/r",
+  "componentsDir": "src/components/kinetik",
+  "libDir": "src/lib/kinetik",
+  "installed": {
+    "count-badge": "1.0.0"
+  }
+}

@@ -34,8 +34,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { useDialog } from "@/components/ui/dialog";
 import {
-  Alert,
   Modal,
   Platform,
   Pressable,
@@ -190,6 +190,7 @@ export function MarmotAttachments({
   visible: boolean;
 }) {
   const [selected, setSelected] = useState<string>();
+  const dialog = useDialog();
   const { reduceMotion } = useTheme();
   const { identity } = useLocal();
   const { t } = useTranslation("messages");
@@ -234,6 +235,7 @@ export function MarmotAttachments({
           asset && (
             <Attachment
               key={asset.item.index}
+              dialog={dialog}
               asset={asset}
               message={message}
               conversation={conversation}
@@ -274,6 +276,7 @@ export function MarmotAttachments({
                   <GalleryPage
                     {...props}
                     asset={asset}
+                    dialog={dialog}
                     presentation={presentation}
                     foreground={foreground}
                     onPlay={() => setSelected(undefined)}
@@ -317,6 +320,7 @@ export async function exportMarmotAttachment(
 
 function GalleryPage({
   asset,
+  dialog,
   presentation,
   foreground,
   onPlay,
@@ -324,6 +328,7 @@ function GalleryPage({
   ...page
 }: ComponentProps<typeof MediaViewerPage> & {
   asset: Asset;
+  dialog: ReturnType<typeof useDialog>;
   presentation: AttachmentPresentation;
   foreground: boolean;
   onPlay(): void;
@@ -342,6 +347,7 @@ function GalleryPage({
     return (
       <VideoAttachment
         asset={asset}
+        dialog={dialog}
         message={page.message}
         presentation={presentation}
         frame={{ width: page.width, height: page.height, borderRadius: 0 }}
@@ -362,6 +368,7 @@ function GalleryPage({
 }
 
 function Attachment({
+  dialog,
   openPhoto,
   neighbors,
   conversation,
@@ -369,6 +376,7 @@ function Attachment({
   visible,
   ...props
 }: AttachmentProps & {
+  dialog: ReturnType<typeof useDialog>;
   openPhoto: () => void;
   neighbors?: VideoNeighbors;
   conversation: string;
@@ -437,7 +445,14 @@ function Attachment({
     );
   } else if (video) {
     if (props.message.isViewOnce) return null;
-    body = <VideoAttachment {...props} frame={frame} neighbors={neighbors} />;
+    body = (
+      <VideoAttachment
+        {...props}
+        dialog={dialog}
+        frame={frame}
+        neighbors={neighbors}
+      />
+    );
   } else if (isPhoto) {
     body = (
       <View style={[styles.placeholder, frame]}>
@@ -493,7 +508,9 @@ function Attachment({
         onPress={() =>
           void presentation
             .useLocalFile(target, openLocalAttachment)
-            .catch(() => Alert.alert(t("mediaOpenFailed")))
+            .catch(() =>
+              dialog.show({ title: t("mediaOpenFailed"), tone: "error" }),
+            )
         }
       />
     );
@@ -509,12 +526,14 @@ function Attachment({
 
 function VideoAttachment({
   asset,
+  dialog,
   message,
   presentation,
   frame,
   onOpen,
   neighbors,
 }: AttachmentProps & {
+  dialog: ReturnType<typeof useDialog>;
   frame: { width: number; height: number; borderRadius: number };
   onOpen?: () => void;
   neighbors?: VideoNeighbors;
@@ -555,7 +574,10 @@ function VideoAttachment({
         { download: !ready, neighbors },
       );
       if (!opened && presentation.authorize(target) && !transfer && ready)
-        Alert.alert(t("video:settings.openFailed"));
+        dialog.show({
+          title: t("video:settings.openFailed"),
+          tone: "error",
+        });
       else if (opened && !ready) onOpen?.();
     } finally {
       setOpening(false);

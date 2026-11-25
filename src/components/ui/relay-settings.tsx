@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, View } from "react-native";
+import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import {
@@ -10,6 +10,7 @@ import {
   PreferenceToggle,
 } from "@/components/ui/list-group";
 import { Action, Icon, Ink } from "@/components/ui/kit";
+import { useDialog } from "@/components/ui/dialog";
 import { marmotRelays } from "@/core/marmot/native";
 import type { RelayEdit } from "@/core/nostr/account-relays";
 import { relayUrl } from "@/core/nostr/relays";
@@ -44,6 +45,7 @@ const normalize = (url: string) => relayUrl.safeParse(url).data ?? url;
 
 export function RelaySettings() {
   const { t, i18n } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { accountRelays, relays, marmotSession } = useLocal();
   const { colors } = useTheme();
   const {
@@ -107,24 +109,40 @@ export function RelaySettings() {
       return;
     }
     const url = result.data;
-    Alert.alert(
-      t("connections:add"),
-      url,
-      (["general", "inbox", "discovery"] as const).map((list) => ({
-        text: t(`connections:${list}`),
-        async onPress() {
-          if (roles[list].includes(url)) {
-            setInputError(t("connections:duplicate"));
-            return;
-          }
-          if (await change({ list, url, enabled: true })) {
-            setExpanded(url);
-            setInput("");
-          }
+    void dialog.show({
+      title: t("connections:add"),
+      message: url,
+      actions: [
+        {
+          label: t("connections:general"),
+          tone: "neutral",
+          onSelect: () => addTo("general"),
         },
-      })),
-      { cancelable: true },
-    );
+        {
+          label: t("connections:inbox"),
+          tone: "neutral",
+          onSelect: () => addTo("inbox"),
+        },
+        {
+          label: t("connections:discovery"),
+          tone: "neutral",
+          onSelect: () => addTo("discovery"),
+        },
+      ],
+    });
+
+    function addTo(list: "general" | "inbox" | "discovery") {
+      void (async () => {
+        if (roles[list].includes(url)) {
+          setInputError(t("connections:duplicate"));
+          return;
+        }
+        if (await change({ list, url, enabled: true })) {
+          setExpanded(url);
+          setInput("");
+        }
+      })();
+    }
   }
 
   function toggle(
@@ -133,18 +151,20 @@ export function RelaySettings() {
     enabled: boolean,
   ) {
     if (list === "inbox" && !enabled && roles.inbox.length === 1) {
-      Alert.alert(
-        t("connections:disableLast"),
-        t("connections:disableLastHint"),
-        [
-          { text: t("common:cancel"), style: "cancel" },
+      void dialog.show({
+        title: t("connections:disableLast"),
+        message: t("connections:disableLastHint"),
+        dismissible: false,
+        actions: [
+          { label: t("common:cancel"), tone: "cancel" },
           {
-            text: t("connections:disableInbox"),
-            onPress: () =>
+            label: t("connections:disableInbox"),
+            tone: "danger",
+            onSelect: () =>
               void change({ list: "incomingCalls", enabled: false }),
           },
         ],
-      );
+      });
     } else void change({ list, url, enabled });
   }
 
@@ -339,20 +359,22 @@ export function RelaySettings() {
           title={t("connections:restoreDefaults")}
           onPress={() => {
             if (busy || !lists) return;
-            Alert.alert(
-              t("connections:restoreConfirm"),
-              t("connections:restoreHint"),
-              [
-                { text: t("common:cancel"), style: "cancel" },
+            void dialog.show({
+              title: t("connections:restoreConfirm"),
+              message: t("connections:restoreHint"),
+              dismissible: false,
+              actions: [
+                { label: t("common:cancel"), tone: "cancel" },
                 {
-                  text: t("connections:restore"),
-                  onPress: () =>
+                  label: t("connections:restore"),
+                  tone: "primary",
+                  onSelect: () =>
                     void change({
                       list: "restore",
                     }),
                 },
               ],
-            );
+            });
           }}
         />
       </ListGroup>

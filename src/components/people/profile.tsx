@@ -6,7 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Keyboard, Linking, View } from "react-native";
+import { Keyboard, Linking, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AvatarPicker } from "@/components/avatars/picker";
 import {
@@ -17,6 +17,7 @@ import {
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { ProfileElement } from "@/components/navigation/profile-elements";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
+import { useDialog } from "@/components/ui/dialog";
 import {
   ChatProfileBackButton,
   GlassBackButton,
@@ -90,6 +91,7 @@ function ProfileContent({
 }) {
   const onScroll = useMinimizeOnScroll();
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const {
     avatars,
     db,
@@ -654,15 +656,19 @@ function ProfileContent({
                 <ListRow
                   title={t("messenger:removePerson")}
                   onPress={() =>
-                    Alert.alert(t("messenger:removePerson"), undefined, [
-                      { text: t("common:cancel"), style: "cancel" },
-                      {
-                        text: t("messenger:removePerson"),
-                        style: "destructive",
-                        onPress: () =>
-                          write(() => removeContact(db, publicKey)),
-                      },
-                    ])
+                    void dialog.show({
+                      title: t("messenger:removePerson"),
+                      dismissible: false,
+                      actions: [
+                        { label: t("common:cancel"), tone: "cancel" },
+                        {
+                          label: t("messenger:removePerson"),
+                          tone: "danger",
+                          onSelect: () =>
+                            write(() => removeContact(db, publicKey)),
+                        },
+                      ],
+                    })
                   }
                 />
               </>

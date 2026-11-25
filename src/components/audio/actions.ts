@@ -1,12 +1,14 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { AccessibilityInfo, Alert, Platform, ToastAndroid } from "react-native";
+import { AccessibilityInfo, Platform, ToastAndroid } from "react-native";
 import { useStore } from "zustand";
 import { tapFeedback } from "@/components/ui/kit";
+import { useDialog } from "@/components/ui/dialog";
 import { useLocal } from "@/services/local-context";
 import { opensExternally, trackId, type Track } from "@/core/audio/types";
 
 export function useAudioActions() {
+  const dialog = useDialog();
   const { audio, audioSources, lock } = useLocal();
   const { t } = useTranslation("audio");
   const report = useCallback(
@@ -14,9 +16,12 @@ export function useAudioActions() {
       if (lock.getState().locked) return;
       const storage =
         error instanceof Error && error.message === "AudioStorageUnavailable";
-      Alert.alert(t(storage ? "storageUnavailable" : "unavailable"));
+      void dialog.show({
+        title: t(storage ? "storageUnavailable" : "unavailable"),
+        tone: "error",
+      });
     },
-    [lock, t],
+    [dialog, lock, t],
   );
   const open = useCallback(
     async (track: Track, mode?: "internal" | "external", download = false) => {

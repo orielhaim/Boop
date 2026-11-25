@@ -10,7 +10,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, View } from "react-native";
+import { View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { Action, Ink } from "@/components/ui/kit";
 import { priority, type SpeechView } from "@/core/speech/scheduler";
 import type { SpeechSource } from "@/core/speech/types";
@@ -24,6 +25,7 @@ export function useVoiceTranscript(
   local: boolean,
   visible: boolean,
 ) {
+  const dialog = useDialog();
   const { speech } = useLocal();
   const { t, i18n } = useTranslation("speech");
   const router = useRouter();
@@ -59,7 +61,7 @@ export function useVoiceTranscript(
   const busy =
     state === "queued" || state === "preparing" || state === "transcribing";
   const invoke = (work: () => Promise<unknown>) => {
-    void work().catch(() => Alert.alert(t("failed")));
+    void work().catch(() => dialog.show({ title: t("failed"), tone: "error" }));
   };
   function chooseLanguage() {
     invoke(async () => {

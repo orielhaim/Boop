@@ -2,7 +2,8 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, AppState } from "react-native";
+import { AppState } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { marmotErrorCode } from "@/core/marmot/errors";
 import {
@@ -22,6 +23,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function LinkedDevices() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { marmotSession, lock } = useLocal();
   const [snapshot, setSnapshot] = useState<MarmotDeviceState>();
   const [error, setError] = useState(false);
@@ -75,13 +77,14 @@ export default function LinkedDevices() {
       setSnapshot(await read());
       setError(false);
     } catch (error) {
-      Alert.alert(
-        t(
+      void dialog.show({
+        title: t(
           marmotErrorCode(error) === "DeviceLinkPending"
             ? "messages:marmot.deviceLinkPending"
             : "messages:marmot.linkFailed",
         ),
-      );
+        tone: "error",
+      });
     } finally {
       setBusy(false);
     }
@@ -123,18 +126,20 @@ export default function LinkedDevices() {
                   device.current || device.removalPending
                     ? undefined
                     : () =>
-                        Alert.alert(
-                          t("messages:marmot.removeDevice"),
-                          undefined,
-                          [
-                            { text: t("common:cancel"), style: "cancel" },
+                        void dialog.show({
+                          title: t("messages:marmot.removeDevice"),
+                          tone: "danger",
+                          dismissible: false,
+                          actions: [
+                            { label: t("common:cancel"), tone: "cancel" },
                             {
-                              text: t("common:remove"),
-                              style: "destructive",
-                              onPress: () => void update("remove", device.slot),
+                              label: t("common:remove"),
+                              tone: "danger",
+                              onSelect: () =>
+                                void update("remove", device.slot),
                             },
                           ],
-                        )
+                        })
                 }
               />
             ))}

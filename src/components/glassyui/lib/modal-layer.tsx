@@ -12,7 +12,6 @@ import {
   Animated,
   Easing,
   I18nManager,
-  Modal,
   Pressable,
   Text,
   type ModalProps,
@@ -27,6 +26,7 @@ import {
 } from "react-native-safe-area-context";
 import { useGlassTheme } from "../glass-provider";
 import { Icon } from "@/components/ui/icon";
+import { DialogModal } from "@/components/ui/dialog";
 
 /** Arrivals ease out on the library's curve (`--lg-ease-out`); exits ease in. */
 export const LAYER_EASING = {
@@ -130,7 +130,7 @@ export function ModalLayerHost({
   present,
 }: ModalLayerHostProps) {
   return (
-    <Modal
+    <DialogModal
       animationType="none"
       navigationBarTranslucent
       onRequestClose={onRequestClose}
@@ -140,7 +140,7 @@ export function ModalLayerHost({
       visible={present}
     >
       {present ? children : null}
-    </Modal>
+    </DialogModal>
   );
 }
 

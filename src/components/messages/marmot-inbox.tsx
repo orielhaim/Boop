@@ -1,4 +1,5 @@
 import { DownloadsIndicator } from "@/components/downloads/indicator";
+import { CountBadge } from "@/components/kinetik/count-badge";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
@@ -18,11 +19,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
+import { useIdentitySheet } from "@/components/people/identity-sheet";
 import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
@@ -34,9 +36,11 @@ import {
 import { projectMentions } from "@/core/messaging/mentions";
 import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
+import { useDialog } from "@/components/ui/dialog";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
+import { EmptyInbox } from "./empty-inbox";
 import { useMarmotChatLists } from "./marmot-chat-lists";
 import { useMarmotWindow } from "./marmot-window";
 import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
@@ -107,9 +111,11 @@ export function MarmotInbox({
   invitations?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { identity, privacy, chatPreferences, conversations, db } = useLocal();
   const focused = useIsFocused();
-  const fabVisibility = useTabFabVisibility();
+  const setChatsFabVisible = useTabFabVisibility()?.setChatsVisible;
+  const showIdentitySheet = useIdentitySheet();
   const privacyRevision = useSyncExternalStore(
     privacy.subscribe,
     privacy.revision,
@@ -247,6 +253,30 @@ export function MarmotInbox({
           : undefined;
       return asChat(row, fallback, invitationTitle, preview, emptyPreview);
     });
+  const showEmptyInbox = Boolean(
+    snapshot &&
+    !snapshot.hasMoreAfter &&
+    !search &&
+    !term &&
+    !archived &&
+    !invitations &&
+    chats.every((chat) => chat.isArchived),
+  );
+  const updateFab = useCallback(
+    (visible: boolean) => {
+      setChatsFabVisible?.(visible && !showEmptyInbox);
+    },
+    [setChatsFabVisible, showEmptyInbox],
+  );
+  const emptyInbox = showEmptyInbox ? (
+    <EmptyInbox
+      title={t("messages:inboxEmpty")}
+      detail={t("messages:startHint")}
+      actionLabel={kit.labels.chatListNewChat}
+      focused={focused}
+      onAction={() => showIdentitySheet("newConversation")}
+    />
+  ) : undefined;
   const page = () => {
     if (snapshot?.hasMoreAfter)
       void window?.page("forward").catch(() => undefined);
@@ -254,7 +284,10 @@ export function MarmotInbox({
 
   function update(ids: { id: string }[], write: (id: string) => Promise<void>) {
     void Promise.all(ids.map(({ id }) => write(id))).catch(() =>
-      Alert.alert(t("messages:updateConversationsError")),
+      dialog.show({
+        title: t("messages:updateConversationsError"),
+        tone: "error",
+      }),
     );
   }
 
@@ -346,6 +379,8 @@ export function MarmotInbox({
             ) : (
               <ChatSyncNotice />
             )
+          ) : !searching && emptyInbox ? (
+            emptyInbox
           ) : (
             <View style={styles.empty}>
               <QuietState
@@ -377,9 +412,7 @@ export function MarmotInbox({
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")
         }
-        onNewChatVisibilityChange={
-          invitations ? undefined : fabVisibility?.setChatsVisible
-        }
+        onNewChatVisibilityChange={invitations ? undefined : updateFab}
         onPinChats={
           invitations
             ? undefined
@@ -400,7 +433,13 @@ export function MarmotInbox({
         }
         listProps={{
           onViewableItemsChanged,
-          contentContainerStyle: invitations ? undefined : styles.listWithFab,
+          contentContainerStyle: invitations
+            ? undefined
+            : [styles.listWithFab, showEmptyInbox && styles.grow],
+          // Chat Kit inserts a synthetic Archive row when only archived chats exist.
+          ListFooterComponent: chats.length > 0 ? emptyInbox : undefined,
+          ListFooterComponentStyle:
+            emptyInbox && chats.length > 0 ? styles.grow : undefined,
           onScroll: invitations ? undefined : onScroll,
           onEndReached: page,
           ListHeaderComponent:
@@ -446,19 +485,7 @@ export function MarmotInbox({
                   >
                     {t("messages:marmot.invitations")}
                   </Ink>
-                  <View
-                    style={[
-                      styles.invitationBadge,
-                      { backgroundColor: kit.colors.outgoing },
-                    ]}
-                  >
-                    <Ink
-                      kind="caption"
-                      style={{ color: kit.colors.outgoingInk }}
-                    >
-                      {invitationBadge}
-                    </Ink>
-                  </View>
+                  <CountBadge count={invitationCount} tone="accent" />
                 </View>
               </Pressable>
             ) : undefined,
@@ -506,6 +533,12 @@ function MarmotChatCell({
   return (
     <ChatListCell
       {...props}
+      renderUnreadCount={(count) => (
+        <CountBadge
+          count={count}
+          tone={props.chat.isMuted ? "muted" : "danger"}
+        />
+      )}
       chat={{
         ...props.chat,
         avatar: avatar ?? groupAvatar,
@@ -525,6 +558,7 @@ function MarmotChatCell({
 
 const styles = StyleSheet.create({
   listWithFab: { paddingBottom: 88 },
+  grow: { flexGrow: 1 },
   empty: { padding: space.xl },
   syncStatus: {
     alignItems: "center",
@@ -556,14 +590,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   invitationTitle: { flex: 1, fontSize: 16, fontWeight: "500" },
-  invitationBadge: {
-    minWidth: 21,
-    minHeight: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 11,
-    paddingHorizontal: 5,
-  },
 });
 
 function renderDownloadsIndicator() {

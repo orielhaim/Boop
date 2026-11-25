@@ -10,13 +10,8 @@ import * as ScreenCapture from "expo-screen-capture";
 import { shareAsync } from "expo-sharing";
 import { useCallback, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  Platform,
-  View,
-} from "react-native";
+import { ActivityIndicator, AppState, Platform, View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { Action, Ink, layout, Screen } from "@/components/ui/kit";
 import { marmotAccounts } from "@/core/marmot/native";
@@ -37,6 +32,7 @@ const secretInput = {
 
 export default function IdentityKeys() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const exporting = mode === "export";
   const { identity, lock, replaceIdentity } = useLocal();
@@ -252,15 +248,17 @@ export default function IdentityKeys() {
 
   function replace() {
     if (!candidate) return;
-    Alert.alert(
-      t("security:replaceIdentity"),
-      t("security:replacementWarning"),
-      [
-        { text: t("common:cancel"), style: "cancel" },
+    void dialog.show({
+      title: t("security:replaceIdentity"),
+      message: t("security:replacementWarning"),
+      tone: "danger",
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
         {
-          text: t("security:replaceIdentity"),
-          style: "destructive",
-          onPress: () => {
+          label: t("security:replaceIdentity"),
+          tone: "danger",
+          onSelect: () => {
             void perform(async (live) => {
               if (!live()) return;
               const replaced = await replaceIdentity(candidate.token, live);
@@ -272,7 +270,7 @@ export default function IdentityKeys() {
           },
         },
       ],
-    );
+    });
   }
 
   return (

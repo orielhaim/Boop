@@ -1,7 +1,12 @@
 import { Children, type ComponentProps, type ReactNode } from "react";
-import { Platform, Pressable, Switch, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Icon, Ink, Section, tapFeedback } from "@/components/ui/kit";
+import {
+  Switch,
+  SwitchVisual,
+  useSwitchInteraction,
+} from "@/components/ui/switch";
 import { useTheme } from "@/theme";
 
 type Dividers = "none" | "inset" | "full";
@@ -63,6 +68,10 @@ export function ListRow({
   selectionRole = "radio",
   expanded,
   disabled = false,
+  accessibilityRole,
+  accessibilityChecked,
+  onPressIn,
+  onPressOut,
   leading,
   trailing,
   showChevron = true,
@@ -77,6 +86,10 @@ export function ListRow({
   selectionRole?: "radio" | "checkbox";
   expanded?: boolean;
   disabled?: boolean;
+  accessibilityRole?: "button" | "switch";
+  accessibilityChecked?: boolean;
+  onPressIn?: () => void;
+  onPressOut?: () => void;
   leading?: ReactNode;
   trailing?: ReactNode;
   showChevron?: boolean;
@@ -132,8 +145,16 @@ export function ListRow({
   return onPress ? (
     <Pressable
       disabled={disabled}
-      accessibilityRole={selected === undefined ? "button" : selectionRole}
-      accessibilityState={{ disabled, expanded, checked: selected }}
+      accessibilityRole={
+        accessibilityRole ?? (selected === undefined ? "button" : selectionRole)
+      }
+      accessibilityState={{
+        disabled,
+        expanded,
+        checked: accessibilityChecked ?? selected,
+      }}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       onPress={() => {
         tapFeedback();
         onPress();
@@ -160,6 +181,7 @@ export function PreferenceToggle({
   disabled,
   icon,
   onTitlePress,
+  rtl,
 }: {
   title: string;
   detail?: string;
@@ -168,30 +190,37 @@ export function PreferenceToggle({
   disabled?: boolean;
   icon?: ComponentProps<typeof Icon>["name"];
   onTitlePress?: () => void;
+  rtl?: boolean;
 }) {
-  const { colors } = useTheme();
+  const interaction = useSwitchInteraction({
+    checked: value,
+    onCheckedChange: onChange,
+    disabled,
+  });
+  const trailing = onTitlePress ? (
+    <Switch
+      accessibilityLabel={title}
+      checked={value}
+      onCheckedChange={onChange}
+      disabled={disabled}
+      rtl={rtl}
+    />
+  ) : (
+    <SwitchVisual interaction={interaction} rtl={rtl} />
+  );
   return (
     <ListRow
       title={title}
       detail={detail}
       icon={icon}
       onTitlePress={onTitlePress}
-      trailing={
-        <Switch
-          accessibilityLabel={title}
-          value={value}
-          onValueChange={onChange}
-          disabled={disabled}
-          trackColor={{ false: colors.line, true: colors.accent }}
-          thumbColor={
-            Platform.OS === "android"
-              ? value
-                ? colors.onAccent
-                : colors.raised
-              : undefined
-          }
-        />
-      }
+      onPress={onTitlePress ? undefined : interaction.toggle}
+      accessibilityRole="switch"
+      accessibilityChecked={value}
+      disabled={disabled}
+      onPressIn={interaction.onPressIn}
+      onPressOut={interaction.onPressOut}
+      trailing={trailing}
     />
   );
 }

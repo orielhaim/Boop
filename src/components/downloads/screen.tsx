@@ -12,7 +12,8 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import Animated, { useAnimatedRef } from "react-native-reanimated";
 import Sortable from "react-native-sortables";
@@ -51,6 +52,7 @@ const DownloadRow = memo(function DownloadRow({
   handle?: ReactNode;
   offline: boolean;
 }) {
+  const dialog = useDialog();
   const { downloads } = useLocal();
   const audio = useAudioActions();
   const { t: playback } = useTranslation("audio");
@@ -108,7 +110,9 @@ const DownloadRow = memo(function DownloadRow({
           : job.state;
 
   function act(action: "pause" | "cancel" | "remove") {
-    void downloads[action](job.id).catch(() => Alert.alert(t("actionFailed")));
+    void downloads[action](job.id).catch(() =>
+      dialog.show({ title: t("actionFailed"), tone: "error" }),
+    );
   }
 
   const track: Track | undefined = audioFile(job.name, job.type)
@@ -127,14 +131,15 @@ const DownloadRow = memo(function DownloadRow({
     if (videoFile(job.name, job.type)) {
       void openDownloadedVideo(job.id)
         .then((opened) => {
-          if (!opened) Alert.alert(t("openFailed"));
+          if (!opened)
+            void dialog.show({ title: t("openFailed"), tone: "error" });
         })
-        .catch(() => Alert.alert(t("openFailed")));
+        .catch(() => dialog.show({ title: t("openFailed"), tone: "error" }));
       return;
     }
     void downloads.open(job.id, openLocalAttachment).catch(() => {
       void downloads.reconcile();
-      Alert.alert(t("openFailed"));
+      void dialog.show({ title: t("openFailed"), tone: "error" });
     });
   }
 
@@ -167,7 +172,7 @@ const DownloadRow = memo(function DownloadRow({
             try {
               downloads.resume(job.id);
             } catch {
-              Alert.alert(t("actionFailed"));
+              void dialog.show({ title: t("actionFailed"), tone: "error" });
             }
           },
         } as const);
@@ -274,14 +279,19 @@ const DownloadRow = memo(function DownloadRow({
         onPress={() => {
           if (unfinished) act("cancel");
           else if (completed)
-            Alert.alert(t("removeTitle"), t("removeDetail"), [
-              { text: t("cancel", { ns: "common" }), style: "cancel" },
-              {
-                text: t("remove"),
-                style: "destructive",
-                onPress: () => act("remove"),
-              },
-            ]);
+            void dialog.show({
+              title: t("removeTitle"),
+              message: t("removeDetail"),
+              dismissible: false,
+              actions: [
+                { label: t("cancel", { ns: "common" }), tone: "cancel" },
+                {
+                  label: t("remove"),
+                  tone: "danger",
+                  run: () => downloads.remove(job.id),
+                },
+              ],
+            });
           else act("remove");
         }}
       />
@@ -358,6 +368,7 @@ function DownloadSummary({ offline }: { offline: boolean }) {
 }
 
 export function DownloadsScreen() {
+  const dialog = useDialog();
   const { downloads } = useLocal();
   const { t } = useTranslation("downloads");
   const { colors, reduceMotion } = useTheme();
@@ -404,7 +415,7 @@ export function DownloadsScreen() {
       downloads.reorder(id, available[position]?.id);
       if (accessibility) tapFeedback();
     } catch {
-      Alert.alert(t("actionFailed"));
+      void dialog.show({ title: t("actionFailed"), tone: "error" });
     }
   }
 
@@ -419,7 +430,7 @@ export function DownloadsScreen() {
       setLink("");
       setAdding(false);
     } catch {
-      Alert.alert(t("actionFailed"));
+      void dialog.show({ title: t("actionFailed"), tone: "error" });
     }
   }
 

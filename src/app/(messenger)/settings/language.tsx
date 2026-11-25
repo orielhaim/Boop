@@ -4,7 +4,7 @@ import { useLocales } from "expo-localization";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import {
   SettingsDescription,
@@ -38,6 +38,7 @@ const flags = {
 
 export default function LanguageSettings() {
   const { i18n, t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { db, calling } = useLocal();
   const chatsEnabled = useChatsEnabled();
   const deviceLanguage = useLocales()[0]?.languageCode;
@@ -65,21 +66,25 @@ export default function LanguageSettings() {
       return;
     }
     const defer = hasCall();
-    Alert.alert(
-      t("settings:language"),
-      t(defer ? "settings:languageAfterCall" : "settings:languageRestart"),
-      [
-        { text: t("common:cancel"), style: "cancel" },
+    void dialog.show({
+      title: t("settings:language"),
+      message: t(
+        defer ? "settings:languageAfterCall" : "settings:languageRestart",
+      ),
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
         {
-          text: t(
+          label: t(
             defer
               ? "settings:applyAfterCall"
               : "settings:languageRestartButton",
           ),
-          onPress: save,
+          tone: "primary",
+          onSelect: save,
         },
       ],
-    );
+    });
   }
 
   return (

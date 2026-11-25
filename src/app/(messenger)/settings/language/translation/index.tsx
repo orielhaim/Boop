@@ -2,7 +2,8 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import { router } from "expo-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Linking } from "react-native";
+import { Linking } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { GlassPanel } from "@/components/glassyui/glass-panel";
 import {
   SettingsDescription,
@@ -23,6 +24,7 @@ import { space } from "@/theme";
 
 export default function TranslationSettings() {
   const { i18n, t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { db, translation } = useLocal();
   const preferences = useTranslationPreferences(
     db,
@@ -33,21 +35,27 @@ export default function TranslationSettings() {
   const target = catalog?.find(({ code }) => code === preferences.target);
 
   function clear() {
-    Alert.alert(t("translation:clear"), t("translation:clearConfirm"), [
-      { text: t("common:cancel"), style: "cancel" },
-      {
-        text: t("translation:clear"),
-        style: "destructive",
-        onPress: () => {
-          try {
-            translation.clear();
-            setNotice(t("translation:cleared"));
-          } catch {
-            setNotice(t("translation:saveFailed"));
-          }
+    void dialog.show({
+      title: t("translation:clear"),
+      message: t("translation:clearConfirm"),
+      tone: "danger",
+      dismissible: false,
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
+        {
+          label: t("translation:clear"),
+          tone: "danger",
+          onSelect: () => {
+            try {
+              translation.clear();
+              setNotice(t("translation:cleared"));
+            } catch {
+              setNotice(t("translation:saveFailed"));
+            }
+          },
         },
-      },
-    ]);
+      ],
+    });
   }
 
   return (

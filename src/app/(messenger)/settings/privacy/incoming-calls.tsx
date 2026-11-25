@@ -4,7 +4,7 @@ import { useLiveQuery } from "drizzle-orm/expo-sqlite";
 import { router } from "expo-router";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert } from "react-native";
+import { useDialog } from "@/components/ui/dialog";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { Screen } from "@/components/ui/kit";
@@ -15,6 +15,7 @@ import { useLocal } from "@/services/local-context";
 
 export default function IncomingCalls() {
   const { t } = useTranslation(namespaces);
+  const dialog = useDialog();
   const { db } = useLocal();
   const privacy = usePrivacy();
   const query = useMemo(
@@ -44,7 +45,10 @@ export default function IncomingCalls() {
             try {
               privacy.set("calls", value);
             } catch {
-              Alert.alert(t("security:privacyWriteFailed"));
+              void dialog.show({
+                title: t("security:privacyWriteFailed"),
+                tone: "error",
+              });
             }
           }}
         />
