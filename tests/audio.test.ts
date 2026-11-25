@@ -14,8 +14,8 @@ import {
 } from "../src/core/audio/types";
 import { audioPersistence } from "../src/db/audio";
 import { createDownloadManager } from "../src/core/downloads/manager";
-import { waitForDownload } from "../src/core/audio/download";
-import { waitForAudioAuthority } from "../src/core/audio/authorization";
+import { waitForDownload } from "../src/core/media/download";
+import { waitForMediaAuthority } from "../src/core/media/authorization";
 import type { DownloadJob, MarmotDownload } from "../src/core/downloads/types";
 
 const attachment = (
@@ -60,7 +60,7 @@ test("audio waits for conversation authority and abandons the wait when playback
     },
   };
   const signal = new AbortController();
-  const waiting = waitForAudioAuthority(window, signal.signal);
+  const waiting = waitForMediaAuthority(window, signal.signal);
   expect(listeners.size).toBe(1);
   authorityReady = true;
   for (const notify of listeners) notify();
@@ -68,7 +68,7 @@ test("audio waits for conversation authority and abandons the wait when playback
   expect(listeners.size).toBe(0);
 
   authorityReady = false;
-  const cancelled = waitForAudioAuthority(window, signal.signal);
+  const cancelled = waitForMediaAuthority(window, signal.signal);
   signal.abort(new Error("Playback cancelled"));
   await expect(cancelled).rejects.toThrow("Playback cancelled");
   expect(listeners.size).toBe(0);

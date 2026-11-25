@@ -2,8 +2,22 @@ import { createBlockedUsers } from "@/core/marmot/blocked-users";
 import { createAudioController } from "@/core/audio/controller";
 import { createNativePlayback, setupPlayback } from "@/core/audio/engine";
 import { createAudioSources } from "@/core/audio/sources";
-import { speeds, voiceOrigin, type Track } from "@/core/audio/types";
+import { speeds, voiceOrigin } from "@/core/audio/types";
 import { audioPersistence } from "@/db/audio";
+import { videoPersistence } from "@/db/video";
+import { createMediaSources } from "@/core/media/sources";
+import type { MediaSource } from "@/core/media/source";
+import { createPlaybackOwnership } from "@/core/media/playback-ownership";
+import {
+  localMediaUri,
+  openLocalAttachment,
+} from "@/core/media/open-local-attachment";
+import { createVideoController } from "@/core/video/controller";
+import { createVideoEngine } from "@/core/video/engine";
+import { videoImportDirectory } from "@/core/video/import-cache";
+import { pipModes, seekIntervals, type VideoSource } from "@/core/video/types";
+import { shareAsync } from "expo-sharing";
+import { saveToLibraryAsync } from "expo-media-library/legacy";
 import {
   addBatteryStateListener,
   addLowPowerModeListener,
@@ -486,8 +500,8 @@ async function start() {
     });
     const read = (key: string) => preference(db, key);
     const write = (key: string, value: string) => setPreference(db, key, value);
-    const allowed = (track: Track) =>
-      track.kind === "device" ||
+    const allowed = (track: MediaSource) =>
+      track.kind !== "attachment" ||
       ((track.source.expiresAt === null ||
         track.source.expiresAt > Date.now()) &&
         (track.source.kind === "http" ||
@@ -497,23 +511,37 @@ async function start() {
               .hidden(track.source.target[0])
               .includes(track.source.target[1]))));
     let closingAudioAttachments = false;
-    const audioSources = createAudioSources({
+    const mediaSources = createMediaSources({
       scope: downloadScope,
       downloads,
       ready: () => !closingAudioAttachments && messagingAvailable(),
       allowed,
       canDownload: active,
-      canImport: () => !lock.getState().locked,
       blocked: privacy.isBlocked,
-      subscribePrivacy: blocks.subscribe,
+      subscribePrivacy(listener) {
+        const unblock = blocks.subscribe(listener);
+        const unchat = chatPreferences.subscribe(listener);
+        return () => {
+          unblock();
+          unchat();
+        };
+      },
     });
-    const playback = audioPersistence({
+    const audioSources = createAudioSources(
+      mediaSources,
+      () => !lock.getState().locked,
+      allowed,
+    );
+    const persistence = {
       account: identity.publicKey,
       key: downloadKey,
-      random: (size) => getRandomValues(new Uint8Array(size)),
+      random: (size: number) => getRandomValues(new Uint8Array(size)),
       read,
       write,
-    });
+    };
+    const playback = audioPersistence(persistence);
+    const videoPositions = videoPersistence(persistence);
+    const ownership = createPlaybackOwnership();
     const nativePlayback = createNativePlayback();
     const audio = createAudioController({
       saved: playback.load(),
@@ -544,12 +572,94 @@ async function start() {
           speech.availableLocally(track.source.voice, speechPriority.playing);
       },
       genericTitle: () => i18n.t("audio:privateTitle"),
+      claimPlayback: () => ownership.claim("audio"),
+    });
+    try {
+      videoImportDirectory();
+    } catch {
+      // The picker reports an error if cache cleanup still fails on import.
+    }
+    const video = createVideoController({
+      acquire: mediaSources.acquire,
+      engine: createVideoEngine,
+      allowed(source: VideoSource) {
+        return (
+          isCurrent() &&
+          !lock.getState().locked &&
+          (source.kind !== "attachment" ||
+            source.source.kind !== "marmot" ||
+            !closingAudioAttachments) &&
+          allowed(source)
+        );
+      },
+      claim: () => ownership.claim("video"),
+      release: () => ownership.release("video"),
+      async handoff({ file, uri }, action, signal) {
+        signal.throwIfAborted();
+        if (action === "external")
+          await openLocalAttachment(file, true, signal);
+        else if (action === "save")
+          await saveToLibraryAsync(localMediaUri(file.path));
+        else
+          await shareAsync(uri, {
+            mimeType: file.type,
+            dialogTitle: file.name,
+          });
+      },
+      position: videoPositions.get,
+      checkpoint: videoPositions.set,
+      genericTitle: () => i18n.t("video:viewer.title"),
+      listened(source) {
+        if (source.kind === "attachment" && source.source.kind === "marmot") {
+          const [group, message] = source.source.target;
+          chatPreferences.markListened(group, message);
+        }
+      },
+      preferences: {
+        external: read("video.open") === "external",
+        pipMode:
+          pipModes.find((mode) => mode === read("video.pipMode")) ??
+          (read("video.automaticPiP") === "on" ? "system" : "inApp"),
+        advancedGestures: read("video.gestures") !== "off",
+        seekInterval:
+          seekIntervals.find(
+            (value) => String(value) === read("video.seekInterval"),
+          ) ?? 10,
+        rememberPosition: read("video.resume") !== "off",
+        allowBackground: read("video.background") !== "off",
+      },
+      savePreferences(value) {
+        write("video.open", value.external ? "external" : "internal");
+        write("video.pipMode", value.pipMode);
+        write("video.gestures", value.advancedGestures ? "on" : "off");
+        write("video.seekInterval", String(value.seekInterval));
+        write("video.resume", value.rememberPosition ? "on" : "off");
+        write("video.background", value.allowBackground ? "on" : "off");
+        if (!value.rememberPosition) videoPositions.clear();
+      },
+    });
+    ownership.register("audio", audio.suspendPlayback);
+    ownership.register("video", () => void video.close());
+    audio.store.subscribe((next, previous) => {
+      if (next.blocked === previous.blocked) return;
+      if (next.blocked) ownership.release("audio");
+      ownership.interrupt(next.blocked);
     });
     audio.revalidate();
     audio.privacy(lock.getState());
-    lock.subscribe(() => audio.privacy(lock.getState()));
+    video.privacy(lock.getState());
+    lock.subscribe(() => {
+      const state = lock.getState();
+      if (state.locked || (state.enabled && !state.active))
+        void video.privacy(state);
+      audio.privacy(state);
+      if (!state.locked && (!state.enabled || state.active))
+        void video.privacy(state);
+    });
     blocks.subscribe(audio.revalidate);
     chatPreferences.subscribe(audio.revalidate);
+    blocks.subscribe(video.revalidate);
+    chatPreferences.subscribe(video.revalidate);
 
     marmotSession.subscribe(() => {
       if (marmotSession.status() === "ready") closingAudioAttachments = false;
@@ -557,7 +667,7 @@ async function start() {
     beforeAccountClose = async () => {
       closingAudioAttachments = true;
       pendingVoiceNotes.clear();
-      await audio.close();
+      await Promise.all([audio.close(), video.drain()]);
       await Promise.all([
         speech.beforeAccountClose(),
         downloads.beforeAccountClose(),
@@ -803,13 +913,14 @@ async function start() {
         ownSubscription(
           AppState.addEventListener("memoryWarning", speech.memoryWarning),
         );
+        const reclaimMediaMemory = () => {
+          conversations.reclaimMemory();
+          video.memoryWarning();
+        };
         ownSubscription(
           Platform.OS === "android"
-            ? marmot.observeMemoryPressure(conversations.reclaimMemory)
-            : AppState.addEventListener(
-                "memoryWarning",
-                conversations.reclaimMemory,
-              ),
+            ? marmot.observeMemoryPressure(reclaimMediaMemory)
+            : AppState.addEventListener("memoryWarning", reclaimMediaMemory),
         );
         own(
           attachGroupCallLifecycle({
@@ -969,7 +1080,7 @@ async function start() {
           retired = true;
           calling.end();
           stopObserving?.();
-          await audio.close();
+          await Promise.all([audio.close(), video.drain()]);
           await marmotSession.stop();
           await marmotAccounts.signOut(account.key);
           downloadKey.fill(0);
@@ -988,6 +1099,7 @@ async function start() {
       downloads,
       audio,
       audioSources,
+      video,
       observeSession,
       avatars,
       previews,

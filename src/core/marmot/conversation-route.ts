@@ -47,7 +47,11 @@ export function conversationWindowActive(
   routeKey: string,
   group: string,
 ) {
-  if (routes[index]?.name === "audio-player") index--;
+  if (
+    routes[index]?.name === "audio-player" ||
+    routes[index]?.name === "video-player"
+  )
+    index--;
   for (; index >= 0; index--) {
     const route = routes[index];
     if (route.key === routeKey) return true;

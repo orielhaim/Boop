@@ -3,6 +3,21 @@
   "version": "0.1.0-beta.3",
   "main": "./src/entry.ts",
   "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-video",
+          "expo-audio",
+          "expo-intent-launcher"
+        ]
+      },
+      "ios": {
+        "buildFromSource": [
+          "expo-video",
+          "expo-audio"
+        ]
+      }
+    },
     "install": {
       "exclude": [
         "react-native-reanimated",
@@ -32,6 +47,7 @@
     "expo-audio": "~58.0.12",
     "expo-battery": "~58.0.4",
     "expo-blur": "^58.0.6",
+    "expo-brightness": "~58.0.3",
     "expo-build-properties": "~58.0.12",
     "expo-camera": "~58.0.14",
     "expo-clipboard": "~58.0.4",
@@ -48,6 +64,7 @@
     "expo-image-manipulator": "~58.0.16",
     "expo-image-picker": "~58.0.10",
     "expo-intent-launcher": "~58.0.3",
+    "expo-keep-awake": "~58.0.4",
     "expo-linear-gradient": "~58.0.4",
     "expo-linking": "~58.0.17",
     "expo-local-authentication": "~58.0.3",
@@ -57,6 +74,7 @@
     "expo-network": "~58.0.5",
     "expo-router": "~58.0.32",
     "expo-screen-capture": "~58.0.6",
+    "expo-screen-orientation": "~58.0.4",
     "expo-secure-store": "~58.0.3",
     "expo-sharing": "~58.0.23",
     "expo-splash-screen": "~58.0.14",
@@ -66,7 +84,7 @@
     "expo-system-ui": "~58.0.7",
     "expo-video": "~58.0.14",
     "htmlparser2": "^12.0.0",
-    "i18next": "^27.2.7",
+    "i18next": "^27.2.9",
     "immer": "^11.2.10",
     "lru-cache": "11.5.3",
     "nostr-tools": "^2.26.1",
@@ -127,6 +145,7 @@
     "@hzblj/expo-speech@0.4.0": "patches/@hzblj%2Fexpo-speech@0.4.0.patch",
     "react-native-animated-codes@1.0.2": "patches/react-native-animated-codes@1.0.2.patch",
     "expo-audio@58.0.12": "patches/expo-audio@58.0.12.patch",
+    "expo-video@58.0.14": "patches/expo-video@58.0.14.patch",
     "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch",
     "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch"
   }

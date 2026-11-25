@@ -14,10 +14,13 @@ export async function openLocalAttachment(
     name: string;
   },
   excludeBoop = false,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const source = new File(localMediaUri(file.path));
   if (Platform.OS === "android") {
     const { startActivityAsync } = await import("expo-intent-launcher");
+    signal?.throwIfAborted();
     try {
       await startActivityAsync("android.intent.action.VIEW", {
         data: source.contentUri,
@@ -30,5 +33,6 @@ export async function openLocalAttachment(
       // Offer the system sheet when no activity handles this MIME type.
     }
   }
+  signal?.throwIfAborted();
   await shareAsync(source.uri, { mimeType: file.type, dialogTitle: file.name });
 }

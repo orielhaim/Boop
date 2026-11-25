@@ -87,7 +87,8 @@ export function AudioFrame({ children }: { children: ReactNode }) {
     view === "details" || view === "edit" || view === "call"
       ? undefined
       : /^\/chat\/marmot-([a-f0-9]+)$/u.exec(path)?.[1];
-  const eligible = !blocked && showMiniPlayer(track, conversation);
+  const eligible =
+    !blocked && path !== "/video-player" && showMiniPlayer(track, conversation);
   const reserveMini = eligible && phase === "idle";
   const handoff = phase === "handoff";
 
@@ -173,7 +174,8 @@ export function audioNavigationScene({
   children: ReactNode;
   route: { key: string; name?: string; params?: unknown };
 }) {
-  if (route.name === "audio-player") return navigationScene({ children });
+  if (route.name === "audio-player" || route.name === "video-player")
+    return navigationScene({ children });
   const params = route.params;
   const conversation =
     route.name === "chat/[key]" &&

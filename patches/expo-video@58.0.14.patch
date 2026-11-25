@@ -1,0 +1,801 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index dcbcd7a..c44f546 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -26,6 +26,10 @@ dependencies {
+   implementation "androidx.media3:media3-ui:${androidxMedia3Version}"
+   implementation "androidx.media3:media3-datasource-okhttp:${androidxMedia3Version}"
+ 
++  implementation "androidx.media3:media3-inspector:${androidxMedia3Version}"
++  implementation "androidx.media3:media3-effect:${androidxMedia3Version}"
++  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.10.2"
++
+   def fragment_version = "1.8.9"
+   implementation "androidx.fragment:fragment:$fragment_version"
+   implementation "androidx.fragment:fragment-ktx:$fragment_version"
+diff --git a/android/src/main/java/expo/modules/video/VideoModule.kt b/android/src/main/java/expo/modules/video/VideoModule.kt
+index c271134..d60b6af 100644
+--- a/android/src/main/java/expo/modules/video/VideoModule.kt
++++ b/android/src/main/java/expo/modules/video/VideoModule.kt
+@@ -273,7 +273,7 @@ class VideoModule : Module() {
+ 
+       Function("play") { ref: VideoPlayer ->
+         appContext.mainQueue.launch {
+-          ref.player.play()
++          if (ref.allowsPlayback()) ref.player.play()
+         }
+       }
+ 
+@@ -327,6 +327,10 @@ class VideoModule : Module() {
+         replaceImpl(ref, source)
+       }
+ 
++      Function("setPlaybackDeadline") { ref: VideoPlayer, expiresAt: Double? ->
++        appContext.mainQueue.launch { ref.setPlaybackDeadline(expiresAt) }
++      }
++
+       // ExoPlayer automatically offloads loading of the asset onto a different thread so we can keep the same
+       // implementation until `replace` is deprecated and removed.
+       // TODO: @behenate see if we can further reduce load on the main thread
+@@ -343,11 +347,21 @@ class VideoModule : Module() {
+ 
+       Function("replay") { ref: VideoPlayer ->
+         appContext.mainQueue.launch {
+-          ref.player.seekTo(0)
+-          ref.player.play()
++          if (ref.allowsPlayback()) {
++            ref.player.seekTo(0)
++            ref.player.play()
++          }
+         }
+       }
+ 
++      Function("releaseScrubThumbnailExtractor") { ref: VideoPlayer ->
++        appContext.mainQueue.launch { ref.closeScrubExtractor() }
++      }
++
++      AsyncFunction("generateScrubThumbnailAsync") Coroutine { ref: VideoPlayer, seconds: Double ->
++        ref.scrubThumbnail(seconds)
++      }
++
+       AsyncFunction("generateThumbnailsAsync") Coroutine { ref: VideoPlayer, times: List<Duration>, options: VideoThumbnailOptions? ->
+         return@Coroutine ref.toMetadataRetriever().safeUse {
+           val bitmaps = times.map { time ->
+@@ -390,6 +404,10 @@ class VideoModule : Module() {
+     }
+ 
+     appContext.mainQueue.launch {
++      if (!ref.allowsPlayback() && videoSource != null) {
++        promise?.resolve()
++        return@launch
++      }
+       ref.uncommittedSource = videoSource
+       ref.prepare()
+       promise?.resolve()
+diff --git a/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt b/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
+index 1792ff2..be83804 100644
+--- a/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
++++ b/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
+@@ -12,6 +12,8 @@ import androidx.media3.common.util.UnstableApi
+ import expo.modules.kotlin.AppContext
+ import expo.modules.video.PictureInPictureHelperFragment
+ import expo.modules.video.PictureInPictureFragmentListener
++import expo.modules.video.CallPiPActivity
++import expo.modules.video.PictureInPictureEnterException
+ import expo.modules.video.VideoView
+ import expo.modules.video.listeners.VideoManagerListener
+ import expo.modules.video.listeners.VideoViewListener
+@@ -45,20 +47,27 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+     get() = videoViews.mapNotNull { it.get() }
+   private val rootViewChildrenOriginalVisibility = mutableMapOf<Int, Int>()
+   private var isReleased = false
++  private var activePiPView: VideoView? = null
++
++  private val callPiPHost: CallPiPActivity?
++    get() = mainActivity.get() as? CallPiPActivity
+ 
+   init {
+     VideoManager.registerListener(this)
+   }
+ 
+   fun release() {
++    isReleased = true
+     if (isInPiP) {
+-      // VideoView most likely doesn't exist atp
+-      layoutForPiPExit(null)
++      layoutForPiPExit(activePiPView)
++      activePiPView?.onStopPictureInPicture(activePiPView)
++      activePiPView = null
++      isInPiP = false
++      callPiPHost?.releaseVideoPiP()
+     }
+ 
+     videoViews.clear()
+     removePiPHelperFragment()
+-    isReleased = true
+   }
+ 
+   /**
+@@ -66,6 +75,12 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+    * and refreshes PiP parameters such as the rectHint.
+    */
+   private fun findAndSetupPipCandidate() {
++    if (isInPiP) return
++    if (callPiPHost?.isCallPiPReserved() == true || callPiPHost?.isCallPiPOwned() == true || callPiPHost?.isVideoPiPOwned() == true) {
++      currentPiPViewCandidate = WeakReference(null)
++      autoEnterPiP = false
++      return
++    }
+     val newCandidate = findAutoPiPViewCandidate(strongVideoViews)
+     currentPiPViewCandidate = WeakReference(newCandidate)
+ 
+@@ -86,6 +101,10 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+ 
+   fun enterPictureInPicture(videoView: VideoView) {
+     val mainActivity = mainActivity.get() ?: return
++    val owner = callPiPHost
++    if (owner?.isCallPiPReserved() == true || owner?.claimVideoPiP() == false) {
++      throw PictureInPictureEnterException("Call Picture-in-Picture has priority")
++    }
+ 
+     currentPiPViewCandidate = WeakReference(videoView)
+     applyPipParamsForView(videoView)
+@@ -99,6 +118,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   }
+ 
+   private fun applyPipParamsForView(view: VideoView) {
++    if (callPiPHost?.isCallPiPReserved() == true || callPiPHost?.isCallPiPOwned() == true) return
+     mainActivity.get()?.let {
+       applyRectHint(it, calculateRectHint(view.playerView))
+       applyPiPParams(it, autoEnterPiP, view.pipParams.aspectRatio)
+@@ -106,6 +126,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   }
+ 
+   override fun onPiPParamsChanged(videoView: VideoView, oldPiPParams: PiPParams, newPiPParams: PiPParams) {
++    if (isInPiP || callPiPHost?.isCallPiPReserved() == true || callPiPHost?.isCallPiPOwned() == true || callPiPHost?.isVideoPiPOwned() == true) return
+     val pipParamsInfluenceRectHint = pipParamChangeInfluenceRectHint(oldPiPParams, newPiPParams)
+     if (paramChangeInfluencesAutoEnter(oldPiPParams, newPiPParams)) {
+       findAndSetupPipCandidate()
+@@ -119,9 +140,13 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   }
+ 
+   override fun onPictureInPictureStart() {
++    val owner = callPiPHost
++    if (owner?.isCallPiPOwned() == true || owner?.isCallPiPReserved() == true) return
++    if (owner != null && !owner.isVideoPiPOwned() && !owner.claimVideoPiP()) return
+     maybeWarnAboutAutoEnterViews()
+ 
+     val candidate = currentPiPViewCandidate.get()
++    activePiPView = candidate
+     candidate?.let {
+       layoutForPiPEnter(it)
+     }
+@@ -135,17 +160,22 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+ 
+   override fun onPictureInPictureStop() {
+     if (!isInPiP) {
++      callPiPHost?.releaseVideoPiP()
+       return
+     }
+ 
+-    currentPiPViewCandidate.get()?.let {
++    (activePiPView ?: currentPiPViewCandidate.get())?.let {
+       layoutForPiPExit(it)
++      it.onStopPictureInPicture(it)
+     }
+     strongVideoViews.forEach {
+-      it.onStopPictureInPicture(currentPiPViewCandidate.get())
++      if (it != activePiPView) it.onStopPictureInPicture(activePiPView)
+     }
+ 
+     isInPiP = false
++    activePiPView = null
++    callPiPHost?.releaseVideoPiP()
++    if (videoViews.isEmpty()) removePiPHelperFragment()
+   }
+ 
+   override fun onVideoViewRegistered(videoView: VideoView, allVideoViews: Collection<VideoView>) {
+@@ -162,24 +192,38 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   override fun onVideoViewUnregistered(videoView: VideoView, allVideoViews: Collection<VideoView>) {
+     videoViews.retainAll { it.get() != videoView }
+ 
+-    if (videoViews.isEmpty()) {
++    val wasActivePiPView = activePiPView === videoView
++    if (videoViews.isEmpty() && !isInPiP) {
+       removePiPHelperFragment()
+     }
+     videoView.removeVideoViewListener(this)
++    if (wasActivePiPView && isInPiP) return
+     findAndSetupPipCandidate()
+   }
+ 
++  fun onCallPiPReservationChanged() {
++    if (!isReleased && !isInPiP) findAndSetupPipCandidate()
++  }
++
+   override fun onAppBackgrounded() {
++    val callOwnsPriority = callPiPHost?.isCallPiPReserved() == true || callPiPHost?.isCallPiPOwned() == true
+     // At this point a view can know that it will enter PiP only if `enterPictureInPicture` method was called manually on it.
+     // Therefore we know that this view is the source of the PiP notification and it should be chosen as the current PiP candidate.
+-    val enteringVideoView = strongVideoViews.firstOrNull { it.pipParams.willEnter }
++    val enteringVideoView = if (callOwnsPriority) null else strongVideoViews.firstOrNull { it.pipParams.willEnter }
+ 
+     // If pictureInPicture wasn't started manually we need to elect a view to enter PiP.
+-    val candidate = enteringVideoView ?: findAutoPiPViewCandidate(strongVideoViews)
++    val candidate = if (callOwnsPriority) null else enteringVideoView ?: findAutoPiPViewCandidate(strongVideoViews)
+     currentPiPViewCandidate = WeakReference(candidate)
+ 
+-    candidate?.let {
+-      applyPipParamsForView(candidate)
++    if (callOwnsPriority) {
++      autoEnterPiP = false
++    } else if (candidate != null && callPiPHost?.isVideoPiPOwned() != true && callPiPHost?.claimVideoPiP() == false) {
++      currentPiPViewCandidate = WeakReference(null)
++      autoEnterPiP = false
++    } else {
++      candidate?.let {
++        applyPipParamsForView(candidate)
++      }
+     }
+ 
+     // We receive this event before any info on app entering PiP
+@@ -203,6 +247,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+         it.playerView.useController = it.useNativeControls
+       }
+     }
++    if (!isInPiP) callPiPHost?.releaseVideoPiP()
+   }
+ 
+   private fun addPiPHelperFragment() {
+@@ -228,7 +273,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   }
+ 
+   private fun electAutoPipViewCandidate() {
+-    if (isInPiP) {
++    if (isInPiP || callPiPHost?.isCallPiPReserved() == true || callPiPHost?.isCallPiPOwned() == true || callPiPHost?.isVideoPiPOwned() == true) {
+       return // Keep the current candidate when in PiP
+     }
+     val newCandidate = findAutoPiPViewCandidate(strongVideoViews)
+diff --git a/android/src/main/java/expo/modules/video/managers/VideoManager.kt b/android/src/main/java/expo/modules/video/managers/VideoManager.kt
+index 5f9ad2a..7e647a0 100644
+--- a/android/src/main/java/expo/modules/video/managers/VideoManager.kt
++++ b/android/src/main/java/expo/modules/video/managers/VideoManager.kt
+@@ -166,6 +166,12 @@ object VideoManager {
+     }
+   }
+ 
++  fun onCallPiPReservationChanged() {
++    if (this::pictureInPicture.isInitialized) {
++      pictureInPicture.onCallPiPReservationChanged()
++    }
++  }
++
+   private fun applyKeepAwake() {
+     // Setting `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` would've been more efficient, but
+     // We can't be sure that it won't disable expo-keep-awake enabled when playersRequestingKeepAwake.size >= 1
+diff --git a/android/src/main/java/expo/modules/video/player/PlayerEvent.kt b/android/src/main/java/expo/modules/video/player/PlayerEvent.kt
+index 5fcf3e5..f90bdfa 100644
+--- a/android/src/main/java/expo/modules/video/player/PlayerEvent.kt
++++ b/android/src/main/java/expo/modules/video/player/PlayerEvent.kt
+@@ -143,6 +143,10 @@ sealed class PlayerEvent {
+     override val name = "playToEnd"
+   }
+ 
++  class PlaybackDeadlineExpired : PlayerEvent() {
++    override val name = "playbackDeadlineExpired"
++  }
++
+   data class TargetViewChanged(val newTargetView: VideoView?, val oldTargetView: VideoView?) : PlayerEvent() {
+     override val name = "targetViewChange"
+     override val emitToJS = false
+diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+index 7ccce96..a790e9c 100644
+--- a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
++++ b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+@@ -2,6 +2,8 @@ package expo.modules.video.player
+ 
+ import android.content.Context
+ import android.media.MediaMetadataRetriever
++import android.os.Handler
++import android.os.Looper
+ import androidx.media3.common.C
+ import android.webkit.URLUtil
+ import androidx.annotation.OptIn
+@@ -18,17 +20,23 @@ import androidx.media3.common.Tracks
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.exoplayer.DecoderReuseEvaluation
+ import androidx.media3.exoplayer.DefaultRenderersFactory
++import androidx.media3.effect.Presentation
+ import androidx.media3.exoplayer.ExoPlayer
++import androidx.media3.exoplayer.SeekParameters
++import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
++import androidx.media3.inspector.FrameExtractor
+ import androidx.media3.exoplayer.analytics.AnalyticsListener
+ import androidx.media3.exoplayer.hls.HlsManifest
+ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+ import androidx.media3.session.MediaSession
+ import androidx.media3.ui.PlayerView
++import com.google.common.util.concurrent.ListenableFuture
+ import expo.modules.kotlin.AppContext
+ import expo.modules.kotlin.exception.Exceptions
+ import expo.modules.kotlin.sharedobjects.SharedObject
+ import expo.modules.video.IntervalUpdateClock
+ import expo.modules.video.IntervalUpdateEmitter
++import expo.modules.video.VideoThumbnail
+ import expo.modules.video.VideoView
+ import expo.modules.video.managers.VideoManager
+ import expo.modules.video.delegates.IgnoreSameSet
+@@ -52,9 +60,13 @@ import expo.modules.video.utils.buildBasicMediaSession
+ import kotlinx.coroutines.DelicateCoroutinesApi
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.GlobalScope
++import kotlinx.coroutines.NonCancellable
++import kotlinx.coroutines.guava.await
++import kotlinx.coroutines.withContext
+ import kotlinx.coroutines.launch
+ import java.io.FileInputStream
+ import java.lang.ref.WeakReference
++import kotlin.time.Duration.Companion.milliseconds
+ import kotlin.time.DurationUnit
+ 
+ // https://developer.android.com/guide/topics/media/media3/getting-started/migration-guide#improvements_in_media3
+@@ -78,6 +90,7 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+     .Builder(context, renderersFactory)
+     .apply {
+       setLooper(context.mainLooper)
++      setHandleAudioBecomingNoisy(true)
+       setLoadControl(loadControl)
+       playerBuilderOptions?.seekBackwardIncrement?.let {
+         setSeekBackIncrementMs((it).toLong(DurationUnit.MILLISECONDS).coerceIn(1, 999_000))
+@@ -218,6 +231,98 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+   var isLoadingNewSource = false
+     private set
+ 
++  private val deadlineHandler = Handler(Looper.getMainLooper())
++  private var deadlineGeneration = 0L
++  private var deadlineRunnable: Runnable? = null
++  private var playbackDeadline: Double? = null
++  private var playbackDeadlineExpired = false
++
++  fun setPlaybackDeadline(expiresAt: Double?) {
++    deadlineGeneration += 1
++    val generation = deadlineGeneration
++    deadlineRunnable?.let(deadlineHandler::removeCallbacks)
++    deadlineRunnable = null
++    playbackDeadline = expiresAt
++    if (expiresAt == null) {
++      playbackDeadlineExpired = false
++      return
++    }
++    if (!expiresAt.isFinite()) {
++      expirePlaybackDeadline()
++      return
++    }
++    playbackDeadlineExpired = false
++    val expire = Runnable {
++      if (generation == deadlineGeneration && playbackDeadline == expiresAt) expirePlaybackDeadline()
++    }
++    deadlineRunnable = expire
++    deadlineHandler.postDelayed(expire, (expiresAt - System.currentTimeMillis()).toLong().coerceAtLeast(0))
++  }
++
++  fun allowsPlayback(): Boolean {
++    if (playbackDeadlineExpired) return false
++    val expiresAt = playbackDeadline ?: return true
++    if (System.currentTimeMillis() < expiresAt) return true
++    expirePlaybackDeadline()
++    return false
++  }
++
++  private var scrubExtractor: FrameExtractor? = null
++  private var scrubFrame: ListenableFuture<FrameExtractor.Frame>? = null
++  private val releaseScrubExtractor = Runnable { closeScrubExtractor() }
++
++  fun closeScrubExtractor() {
++    deadlineHandler.removeCallbacks(releaseScrubExtractor)
++    scrubFrame?.cancel(false)
++    scrubFrame = null
++    scrubExtractor?.close()
++    scrubExtractor = null
++  }
++
++  suspend fun scrubThumbnail(seconds: Double): VideoThumbnail {
++    require(seconds.isFinite() && seconds >= 0)
++    val timeMs = (seconds * 1_000).toLong()
++    val (extractor, future) = withContext(Dispatchers.Main.immediate) {
++      check(allowsPlayback())
++      val source = uncommittedSource ?: commitedSource
++      check(source?.drm == null && source?.uri?.scheme in listOf("file", "content"))
++      val extractor = scrubExtractor ?: FrameExtractor.Builder(context, requireNotNull(source).toMediaItem(context))
++        .setSeekParameters(SeekParameters.EXACT)
++        .setMediaCodecSelector(MediaCodecSelector.DEFAULT)
++        .setEffects(listOf(Presentation.createForWidthAndHeight(184, 104, Presentation.LAYOUT_SCALE_TO_FIT)))
++        .build()
++        .also { scrubExtractor = it }
++      deadlineHandler.removeCallbacks(releaseScrubExtractor)
++      extractor to extractor.getFrame(timeMs).also { scrubFrame = it }
++    }
++    try {
++      val frame = future.await()
++      return withContext(Dispatchers.Main.immediate) {
++        check(allowsPlayback() && scrubExtractor === extractor)
++        VideoThumbnail(frame.bitmap, timeMs.milliseconds, frame.presentationTimeMs.milliseconds)
++      }
++    } finally {
++      withContext(NonCancellable + Dispatchers.Main.immediate) {
++        if (scrubFrame === future) {
++          scrubFrame = null
++          deadlineHandler.postDelayed(releaseScrubExtractor, 1_200)
++        }
++      }
++    }
++  }
++
++  private fun expirePlaybackDeadline() {
++    if (playbackDeadlineExpired) return
++    playbackDeadlineExpired = true
++    closeScrubExtractor()
++    deadlineRunnable = null
++    player.pause()
++    player.clearMediaItems()
++    uncommittedSource = null
++    commitedSource = null
++    sendEvent(PlayerEvent.PlaybackDeadlineExpired())
++  }
++
+   var currentVideoTrack: VideoTrack? = null
+     private set(value) {
+       val old = field
+@@ -393,6 +498,9 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+ 
+   @kotlin.OptIn(DelicateCoroutinesApi::class)
+   override fun close() {
++    deadlineGeneration += 1
++    deadlineRunnable?.let(deadlineHandler::removeCallbacks)
++    deadlineRunnable = null
+     // Releases the listeners from VideoPlayerKeepAwake
+     keepScreenOnWhilePlaying = false
+ 
+@@ -413,6 +521,7 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+     // Run on global scope (not appContext.mainQueue) so that reloading doesn't cancel the release process
+     // https://github.com/expo/expo/blob/cdf592a7fea56fc01b0149e9b2e5dbd294bcdc4c/packages/expo-modules-core/android/src/main/java/expo/modules/kotlin/AppContext.kt#L277-L279
+     GlobalScope.launch(Dispatchers.Main) {
++      closeScrubExtractor()
+       firstFrameEventGenerator.release()
+       player.removeListener(playerListener)
+       player.removeAnalyticsListener(analyticsListener)
+@@ -443,6 +552,11 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+   }
+ 
+   fun prepare() {
++    closeScrubExtractor()
++    if (!allowsPlayback()) {
++      player.clearMediaItems()
++      return
++    }
+     availableVideoTracks = listOf()
+     currentVideoTrack = null
+ 
+diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
+index cd40efa..e5c65ff 100644
+--- a/build/VideoPlayer.types.d.ts
++++ b/build/VideoPlayer.types.d.ts
+@@ -253,6 +253,8 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+      * Pauses the player.
+      */
+     pause(): void;
++    /** Stops playback and clears the current item at the given Unix timestamp in milliseconds. */
++    setPlaybackDeadline(expiresAt: number | null): void;
+     /**
+      * Replaces the current source with a new one.
+      *
+@@ -285,6 +287,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+      * @platform ios
+      */
+     generateThumbnailsAsync(times: number | number[], options?: VideoThumbnailOptions): Promise<VideoThumbnail[]>;
++
++    /** @platform android */
++    generateScrubThumbnailAsync?(time: number): Promise<VideoThumbnail>;
++    /** @platform android */
++    releaseScrubThumbnailExtractor?(): void;
+ }
+ /**
+  * Additional options for video thumbnails generation.
+diff --git a/build/VideoPlayerEvents.types.d.ts b/build/VideoPlayerEvents.types.d.ts
+index 9c7eaea..5a0a70c 100644
+--- a/build/VideoPlayerEvents.types.d.ts
++++ b/build/VideoPlayerEvents.types.d.ts
+@@ -27,6 +27,8 @@ export type VideoPlayerEvents = {
+      * Handler for an event emitted when the player plays to the end of the current source.
+      */
+     playToEnd(): void;
++    /** Emitted after the native player has stopped and cleared its source at the deadline. */
++    playbackDeadlineExpired(): void;
+     /**
+      * Handler for an event emitted in a given interval specified by the `timeUpdateEventInterval`.
+      */
+diff --git a/ios/VideoManager.swift b/ios/VideoManager.swift
+index f60b131..0f9dd93 100644
+--- a/ios/VideoManager.swift
++++ b/ios/VideoManager.swift
+@@ -12,6 +12,7 @@ class VideoManager {
+ 
+   private static var managerQueue = DispatchQueue(label: "com.expo.video.manager.managerQueue")
+   private var mediaServicesResetObserver: NSObjectProtocol?
++  private var routeChangeObserver: NSObjectProtocol?
+   private var videoViews = NSHashTable<VideoView>.weakObjects()
+   private let videoPlayers = SynchronizedHashTable<VideoPlayer>(weakObjects: true)
+ 
+@@ -30,12 +31,31 @@ class VideoManager {
+     ) { [weak self] _ in
+       self?.onMediaServicesWereReset()
+     }
++    routeChangeObserver = NotificationCenter.default.addObserver(
++      forName: AVAudioSession.routeChangeNotification,
++      object: AVAudioSession.sharedInstance(),
++      queue: .main
++    ) { [weak self] notification in
++      self?.pausePlayersForDisconnectedRoute(notification)
++    }
+   }
+ 
+   deinit {
+     if let mediaServicesResetObserver {
+       NotificationCenter.default.removeObserver(mediaServicesResetObserver)
+     }
++    if let routeChangeObserver {
++      NotificationCenter.default.removeObserver(routeChangeObserver)
++    }
++  }
++
++  private func pausePlayersForDisconnectedRoute(_ notification: Notification) {
++    guard
++      let reasonRaw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
++      AVAudioSession.RouteChangeReason(rawValue: reasonRaw) == .oldDeviceUnavailable
++    else { return }
++
++    videoPlayers.allObjects.filter(\.isPlaying).forEach { $0.ref.pause() }
+   }
+ 
+   func register(videoPlayer: VideoPlayer) {
+diff --git a/ios/VideoModule.swift b/ios/VideoModule.swift
+index a34afc4..f8dd169 100644
+--- a/ios/VideoModule.swift
++++ b/ios/VideoModule.swift
+@@ -338,7 +338,7 @@ public final class VideoModule: Module {
+       }
+ 
+       Function("play") { player in
+-        player.ref.play()
++        if player.allowsPlayback() { player.ref.play() }
+       }
+ 
+       Function("pause") { player in
+@@ -350,6 +350,10 @@ public final class VideoModule: Module {
+         try player.replaceCurrentItem(with: videoSource)
+       }
+ 
++      Function("setPlaybackDeadline") { (player, expiresAt: Double?) in
++        player.setPlaybackDeadline(expiresAt)
++      }
++
+       AsyncFunction("replaceAsync") { (player, source: Either<String, VideoSource>?) in
+         let videoSource = parseSource(source: source)
+         try await player.replaceCurrentItem(with: videoSource)
+@@ -362,8 +366,10 @@ public final class VideoModule: Module {
+       }
+ 
+       Function("replay") { player in
+-        player.seeker.seek(to: CMTime.zero)
+-        player.ref.play()
++        if player.allowsPlayback() {
++          player.seeker.seek(to: CMTime.zero)
++          player.ref.play()
++        }
+       }
+ 
+       AsyncFunction("generateThumbnailsAsync") { (player: VideoPlayer, times: [CMTime]?, options: VideoThumbnailOptions?) -> [VideoThumbnail] in
+diff --git a/ios/VideoPlayer.swift b/ios/VideoPlayer.swift
+index 3c2fde4..4c60612 100644
+--- a/ios/VideoPlayer.swift
++++ b/ios/VideoPlayer.swift
+@@ -14,6 +14,9 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   lazy var seeker: VideoPlayerSeeker = VideoPlayerSeeker(player: self)
+   private var tracksLoadingTask: Task<(), Never>?
+   private let didRelease = Mutex(false)
++  private var playbackDeadlineGeneration = 0
++  private var playbackDeadlineExpired = false
++  private var playbackDeadline: Double?
+ 
+   var loop = false
+   var audioMixingMode: AudioMixingMode = .auto {
+@@ -205,6 +208,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func replaceCurrentItem(with videoSource: VideoSource?) throws {
++    guard videoSource == nil || allowsPlayback() else {
++      clearCurrentItem()
++      return
++    }
+     dangerousPropertiesStore.ownerIsReplacing = true
+     videoSourceLoader.cancelCurrentTask()
+     guard
+@@ -235,6 +242,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       guard let self, !self.hasBeenReleased else {
+         return
+       }
++      guard videoSource == nil || self.allowsPlayback() else {
++        self.clearCurrentItem()
++        return
++      }
+       self.ref.replaceCurrentItem(with: playerItem)
+       self.dangerousPropertiesStore.ownerIsReplacing = false
+       self.dangerousPropertiesStore.applyProperties(to: self)
+@@ -245,6 +256,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+    * Replaces the current item, while loading the AVAsset on a different thread. The synchronous version can lock the main thread for extended periods of time.
+    */
+   func replaceCurrentItem(with videoSource: VideoSource?) async throws {
++    guard videoSource == nil || allowsPlayback() else {
++      clearCurrentItem()
++      return
++    }
+     guard let videoSource, videoSource.uri != nil else {
+       clearCurrentItem()
+       return
+@@ -272,6 +287,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       guard let self, !self.hasBeenReleased else {
+         return
+       }
++      guard self.allowsPlayback() else {
++        self.clearCurrentItem()
++        return
++      }
+       self.ref.replaceCurrentItem(with: playerItem)
+       dangerousPropertiesStore.ownerIsReplacing = false
+       dangerousPropertiesStore.applyProperties(to: self)
+@@ -330,6 +349,48 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+     return
+   }
+ 
++  func setPlaybackDeadline(_ expiresAt: Double?) {
++    playbackDeadlineGeneration += 1
++    let generation = playbackDeadlineGeneration
++    playbackDeadline = expiresAt
++    guard let expiresAt else {
++      playbackDeadlineExpired = false
++      return
++    }
++    guard expiresAt.isFinite else {
++      expirePlaybackDeadline()
++      return
++    }
++    playbackDeadlineExpired = false
++    let delay = max(0, expiresAt / 1000 - Date().timeIntervalSince1970)
++    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
++      guard let self,
++        self.playbackDeadlineGeneration == generation,
++        self.playbackDeadline == expiresAt
++      else { return }
++      self.expirePlaybackDeadline()
++    }
++  }
++
++  func allowsPlayback() -> Bool {
++    if playbackDeadlineExpired { return false }
++    guard let playbackDeadline else { return true }
++    guard Date().timeIntervalSince1970 * 1000 < playbackDeadline else {
++      expirePlaybackDeadline()
++      return false
++    }
++    return true
++  }
++
++  private func expirePlaybackDeadline() {
++    guard !playbackDeadlineExpired else { return }
++    playbackDeadlineExpired = true
++    videoSourceLoader.cancelCurrentTask()
++    ref.pause()
++    clearCurrentItem()
++    safeEmit(event: "playbackDeadlineExpired")
++  }
++
+   private func releasePlayer() {
+     let alreadyReleased = didRelease.withLock { didRelease in
+       defer {
+diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
+index 07a2cdf..37f317d 100644
+--- a/src/VideoPlayer.types.ts
++++ b/src/VideoPlayer.types.ts
+@@ -293,6 +293,9 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+    */
+   pause(): void;
+ 
++  /** Stops playback and clears the current item at the given Unix timestamp in milliseconds. */
++  setPlaybackDeadline(expiresAt: number | null): void;
++
+   /**
+    * Replaces the current source with a new one.
+    *
+@@ -332,6 +335,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+     times: number | number[],
+     options?: VideoThumbnailOptions
+   ): Promise<VideoThumbnail[]>;
++
++  /** @platform android */
++  generateScrubThumbnailAsync?(time: number): Promise<VideoThumbnail>;
++  /** @platform android */
++  releaseScrubThumbnailExtractor?(): void;
+ }
+ 
+ /**
+diff --git a/src/VideoPlayer.web.tsx b/src/VideoPlayer.web.tsx
+index 6b5083e..4e49390 100644
+--- a/src/VideoPlayer.web.tsx
++++ b/src/VideoPlayer.web.tsx
+@@ -90,6 +90,8 @@ export default class VideoPlayerWeb
+   _playbackRate: number = 1.0;
+   _preservesPitch: boolean = true;
+   _status: VideoPlayerStatus = 'idle';
++  private playbackDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
++  private playbackDeadlineExpired = false;
+   _error: PlayerError | null = null;
+   _timeUpdateLoop: ReturnType<typeof setTimeout> | null = null;
+   _timeUpdateEventInterval: number = 0;
+@@ -310,6 +312,7 @@ export default class VideoPlayerWeb
+   }
+ 
+   play(): void {
++    if (this.playbackDeadlineExpired) return;
+     this._mountedVideos.forEach((video) => {
+       video.play();
+     });
+@@ -321,7 +324,27 @@ export default class VideoPlayerWeb
+     });
+   }
+ 
++  setPlaybackDeadline(expiresAt: number | null): void {
++    if (this.playbackDeadlineTimer) clearTimeout(this.playbackDeadlineTimer);
++    this.playbackDeadlineTimer = undefined;
++    if (expiresAt === null) {
++      this.playbackDeadlineExpired = false;
++      return;
++    }
++    this.playbackDeadlineExpired = false;
++    const expire = () => {
++      if (this.playbackDeadlineExpired) return;
++      this.playbackDeadlineExpired = true;
++      this.replace(null);
++      this.emit('playbackDeadlineExpired');
++    };
++    const delay = expiresAt - Date.now();
++    if (delay <= 0) expire();
++    else this.playbackDeadlineTimer = setTimeout(expire, delay);
++  }
++
+   replace(source: VideoSource): void {
++    if (source !== null && this.playbackDeadlineExpired) return;
+     this._mountedVideos.forEach((video) => {
+       const uri = getSourceUri(source);
+       video.pause();
+@@ -353,6 +376,7 @@ export default class VideoPlayerWeb
+   }
+ 
+   replay(): void {
++    if (this.playbackDeadlineExpired) return;
+     this._mountedVideos.forEach((video) => {
+       video.currentTime = 0;
+       video.play();
+diff --git a/src/VideoPlayerEvents.types.ts b/src/VideoPlayerEvents.types.ts
+index c53b082..a64bbdf 100644
+--- a/src/VideoPlayerEvents.types.ts
++++ b/src/VideoPlayerEvents.types.ts
+@@ -41,6 +41,9 @@ export type VideoPlayerEvents = {
+    */
+   playToEnd(): void;
+ 
++  /** Emitted after the native player has stopped and cleared its source at the deadline. */
++  playbackDeadlineExpired(): void;
++
+   /**
+    * Handler for an event emitted in a given interval specified by the `timeUpdateEventInterval`.
+    */

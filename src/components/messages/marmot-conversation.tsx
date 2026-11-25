@@ -115,7 +115,7 @@ import { conversationMaterials, useChatAppearance } from "./appearance";
 import { GroupCallHeaderButton, MarmotActiveCall } from "./marmot-active-call";
 import {
   audioTrackForMessage,
-  conversationPhotos,
+  conversationMedia,
   MarmotAttachments,
   exportMarmotAttachment,
 } from "./marmot-attachments";
@@ -783,7 +783,7 @@ function MarmotConversationContent({
     ),
   );
   const gallery = useMemo(
-    () => conversationPhotos(id, messages),
+    () => conversationMedia(id, messages),
     [id, messages],
   );
   useEffect(() => {

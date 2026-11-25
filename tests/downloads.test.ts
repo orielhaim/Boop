@@ -74,6 +74,50 @@ test("a retained attachment lease cannot escape when account policy becomes unav
   }
 });
 
+test("removing a completed download waits for its playback lease to retire", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const release = Promise.withResolvers<void>();
+  const retired = Promise.withResolvers<void>();
+  let removed = false;
+  const retained = source("playing");
+  const manager = createDownloadManager({
+    store,
+    eligible: () => true,
+    authorized: () => true,
+    transport: {
+      transfer: async () => "ready",
+      status: async () => "ready",
+      async control(_source, action) {
+        if (action === "remove") removed = true;
+      },
+    },
+  });
+  const stop = manager.start();
+  try {
+    manager.enqueue(retained);
+    await tick();
+    expect(manager.get(id("playing"))?.state).toBe("completed");
+    const unpin = manager.holdForPlayback(retained, async () => {
+      retired.resolve();
+      await release.promise;
+      unpin?.();
+    });
+    expect(unpin).toBeDefined();
+    const removing = manager.remove(id("playing"));
+    await retired.promise;
+    expect(removed).toBe(false);
+    expect(manager.holdForPlayback(retained, async () => {})).toBeUndefined();
+    release.resolve();
+    await removing;
+    expect(removed).toBe(true);
+    expect(manager.get(id("playing"))).toBeUndefined();
+  } finally {
+    release.resolve();
+    stop();
+  }
+});
+
 function fixture(sqlite: Database) {
   initializeTestDatabase(sqlite);
   const db = drizzle(sqlite, { schema });

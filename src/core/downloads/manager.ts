@@ -58,6 +58,7 @@ export function createDownloadManager({
       ]),
   );
   const listeners = new Set<() => void>();
+  const playback = new Map<string, Set<() => Promise<void>>>();
   const running = new Map<
     string,
     { abort: AbortController; done: Promise<void> }
@@ -93,6 +94,14 @@ export function createDownloadManager({
   const usable = (job: DownloadSource) =>
     !(job.kind === "marmot" && marmotClosing) && available(job);
   const runningSession = () => phase !== "stopped";
+
+  async function retirePlayback(id?: string) {
+    const consumers =
+      id === undefined
+        ? [...playback.values()].flatMap((set) => [...set])
+        : [...(playback.get(id) ?? [])];
+    await Promise.allSettled(consumers.map((retire) => retire()));
+  }
 
   function summarize(): { selected: DownloadItem | undefined; count: number } {
     const pending = snapshot.filter(isPending);
@@ -373,6 +382,7 @@ export function createDownloadManager({
   ) {
     const job = jobs.get(id);
     if (!job) return;
+    if (action === "remove") await retirePlayback(id);
     const run = running.get(id);
     if (job.kind === "marmot" && run && wait) {
       run.abort.abort();
@@ -668,6 +678,26 @@ export function createDownloadManager({
           await consume(file);
       });
     },
+    holdForPlayback(source: DownloadSource, retire: () => Promise<void>) {
+      const id = sourceId(source);
+      const job = jobs.get(id);
+      if (
+        !eligible() ||
+        clearing ||
+        !usable(source) ||
+        !allowed(source) ||
+        job?.intent === "remove" ||
+        (source.kind === "http" && job?.state !== "completed")
+      )
+        return;
+      const consumers = playback.get(id) ?? new Set();
+      consumers.add(retire);
+      playback.set(id, consumers);
+      return () => {
+        consumers.delete(retire);
+        if (!consumers.size) playback.delete(id);
+      };
+    },
     resume,
     pause: (id: string) => control(id, "pause"),
     cancel: (id: string) => control(id, "cancel"),
@@ -710,6 +740,7 @@ export function createDownloadManager({
       if (clearing) return clearing;
       clearing = Promise.resolve()
         .then(async () => {
+          await retirePlayback();
           await Promise.all(
             read().map((job) =>
               control(job.id, job.kind === "http" ? "remove" : "cancel"),

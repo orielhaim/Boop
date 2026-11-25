@@ -34,6 +34,8 @@ import {
   type DownloadItem,
 } from "@/core/downloads/types";
 import { openLocalAttachment } from "@/core/media/open-local-attachment";
+import { openDownloadedVideo } from "@/core/video/open";
+import { videoFile } from "@/core/video/types";
 import { formatBytes } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
@@ -120,6 +122,14 @@ const DownloadRow = memo(function DownloadRow({
   function open() {
     if (track) {
       void audio.open(track);
+      return;
+    }
+    if (videoFile(job.name, job.type)) {
+      void openDownloadedVideo(job.id)
+        .then((opened) => {
+          if (!opened) Alert.alert(t("openFailed"));
+        })
+        .catch(() => Alert.alert(t("openFailed")));
       return;
     }
     void downloads.open(job.id, openLocalAttachment).catch(() => {

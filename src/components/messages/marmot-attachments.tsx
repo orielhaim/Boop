@@ -15,13 +15,16 @@ import {
   MediaViewerPage,
   MessageFile,
   MessageImage,
-  MessageVideo,
   VideoTransferOverlay,
 } from "@kesha-antonov/react-native-chat";
 import { Directory, File } from "expo-file-system";
 import { Image } from "expo-image";
 import { saveToLibraryAsync } from "expo-media-library/legacy";
 import { shareAsync } from "expo-sharing";
+import { VideoView, type VideoPlayer } from "expo-video";
+import { useEvent } from "expo";
+import Transition from "react-native-screen-transitions";
+import { useStore } from "zustand";
 import {
   type ComponentProps,
   useCallback,
@@ -35,11 +38,13 @@ import {
   Alert,
   Modal,
   Platform,
+  Pressable,
+  ActivityIndicator,
   View,
   useWindowDimensions,
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { Ink } from "@/components/ui/kit";
+import { Icon, Ink } from "@/components/ui/kit";
 import {
   attachmentKey,
   type AttachmentPresentation,
@@ -48,7 +53,10 @@ import {
 import type { MarmotMessage } from "@/core/marmot/native";
 import { speechSource } from "@/core/speech/service";
 import type { SpeechSource } from "@/core/speech/types";
-import { formatDuration } from "@/i18n/format";
+import { formatBytes, formatDuration } from "@/i18n/format";
+import { mediaId } from "@/core/media/source";
+import { videoFile, videoOrigin } from "@/core/video/types";
+import type { VideoNeighbors } from "@/core/video/controller";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { useVoiceTranscript } from "./voice-transcript";
@@ -60,7 +68,7 @@ type AttachmentProps = {
   message: IMessage;
   presentation: AttachmentPresentation;
 };
-type GalleryPhoto = { asset: Asset; message: IMessage };
+type GalleryItem = { asset: Asset; message: IMessage };
 
 export function audioTrackForMessage(
   source: MarmotDownload,
@@ -83,23 +91,29 @@ export function audioTrackForMessage(
   };
 }
 
-export function conversationPhotos(
+export function conversationMedia(
   group: string,
   messages: readonly (IMessage & { row?: MarmotMessage })[],
 ) {
-  const photos: GalleryPhoto[] = [];
+  const items: GalleryItem[] = [];
   for (const message of [...messages].reverse()) {
     const row = message.row;
-    if (!row?.sourceId || row.deleted || row.invalidationStatus) continue;
+    if (
+      !row?.sourceId ||
+      row.deleted ||
+      row.invalidationStatus ||
+      message.isViewOnce
+    )
+      continue;
     for (const item of acceptedAttachments(row)) {
-      if (photo(item))
-        photos.push({
+      if (photo(item) || (!item.round && videoFile(item.name, item.type)))
+        items.push({
           asset: { item, target: [group, row.id, row.sourceId, item.index] },
           message,
         });
     }
   }
-  return photos;
+  return items;
 }
 
 function useAttachment({ asset, message, presentation }: AttachmentProps) {
@@ -171,11 +185,11 @@ export function MarmotAttachments({
   row: MarmotMessage;
   message: IMessage;
   presentation: AttachmentPresentation;
-  gallery: GalleryPhoto[];
+  gallery: GalleryItem[];
   foreground: boolean;
   visible: boolean;
 }) {
-  const [selected, setSelected] = useState<number>();
+  const [selected, setSelected] = useState<string>();
   const { reduceMotion } = useTheme();
   const { identity } = useLocal();
   const { t } = useTranslation("messages");
@@ -194,13 +208,20 @@ export function MarmotAttachments({
     }
     return indexed;
   }, [group, identity.publicKey, message.isViewOnce, row]);
-  const galleryIndex =
-    selected === undefined
-      ? -1
-      : gallery.findIndex(
-          ({ asset }) =>
-            asset.target[1] === row.id && asset.item.index === selected,
-        );
+  const galleryIndex = gallery.findIndex(
+    ({ asset }) => attachmentKey(asset.target) === selected,
+  );
+
+  function neighbors(index: number): VideoNeighbors | undefined {
+    if (index < 0) return;
+    const previous = gallery[index - 1];
+    const next = gallery[index + 1];
+    return {
+      previous:
+        previous && (() => setSelected(attachmentKey(previous.asset.target))),
+      next: next && (() => setSelected(attachmentKey(next.asset.target))),
+    };
+  }
   return (
     <View style={styles.stack}>
       {row.attachments.map((item) => {
@@ -219,7 +240,14 @@ export function MarmotAttachments({
               presentation={presentation}
               foreground={foreground}
               visible={visible}
-              openPhoto={() => setSelected(asset.item.index)}
+              openPhoto={() => setSelected(attachmentKey(asset.target))}
+              neighbors={neighbors(
+                gallery.findIndex(
+                  (entry) =>
+                    attachmentKey(entry.asset.target) ===
+                    attachmentKey(asset.target),
+                ),
+              )}
             />
           )
         );
@@ -248,6 +276,8 @@ export function MarmotAttachments({
                     asset={asset}
                     presentation={presentation}
                     foreground={foreground}
+                    onPlay={() => setSelected(undefined)}
+                    neighbors={neighbors(props.index)}
                   />
                 )
               );
@@ -289,11 +319,15 @@ function GalleryPage({
   asset,
   presentation,
   foreground,
+  onPlay,
+  neighbors,
   ...page
 }: ComponentProps<typeof MediaViewerPage> & {
   asset: Asset;
   presentation: AttachmentPresentation;
   foreground: boolean;
+  onPlay(): void;
+  neighbors?: VideoNeighbors;
 }) {
   const { key, state, uri, shown } = useAttachment({
     asset,
@@ -301,8 +335,20 @@ function GalleryPage({
     message: page.message,
   });
   useEffect(() => {
-    if (foreground && state.kind === "cached") presentation.prepare(key);
-  }, [foreground, key, presentation, state.kind]);
+    if (foreground && photo(asset.item) && state.kind === "cached")
+      presentation.prepare(key);
+  }, [asset.item, foreground, key, presentation, state.kind]);
+  if (videoFile(asset.item.name, asset.item.type))
+    return (
+      <VideoAttachment
+        asset={asset}
+        message={page.message}
+        presentation={presentation}
+        frame={{ width: page.width, height: page.height, borderRadius: 0 }}
+        onOpen={onPlay}
+        neighbors={neighbors}
+      />
+    );
   if (uri)
     return <MediaViewerPage {...page} message={{ ...shown, image: uri }} />;
   return (
@@ -317,12 +363,14 @@ function GalleryPage({
 
 function Attachment({
   openPhoto,
+  neighbors,
   conversation,
   foreground,
   visible,
   ...props
 }: AttachmentProps & {
   openPhoto: () => void;
+  neighbors?: VideoNeighbors;
   conversation: string;
   foreground: boolean;
   visible: boolean;
@@ -333,40 +381,41 @@ function Attachment({
     presentation,
   } = props;
   const { state, key, uri, shown } = useAttachment(props);
-  const { identity, calling } = useLocal();
+  const { identity } = useLocal();
   const transcript = useVoiceTranscript(
     source,
     state.kind === "cached" || state.kind === "local",
     visible,
   );
-  const call = useSyncExternalStore(
-    calling.store.subscribe,
-    calling.store.getState,
-  ).call;
-  const callActive = Boolean(call && call.phase !== "ended");
   const { width, height } = useWindowDimensions();
   const position =
     props.message.user._id === identity.publicKey ? "right" : "left";
   const isPhoto = photo(item);
-  const video = item.type.startsWith("video/");
+  const video = videoFile(item.name, item.type);
   const audio = audioFile(item.name, item.type);
   const round = video && item.round === true;
   const visualWidth = round
     ? Math.min(width, height) * 0.54
     : Math.min(width * 0.67, 300);
+  const dimensions = /^(\d{1,5})x(\d{1,5})$/u.exec(item.dimensions ?? "");
+  const ratio = dimensions ? Number(dimensions[1]) / Number(dimensions[2]) : 0;
+  const videoWidth =
+    ratio > 0 && Number.isFinite(ratio)
+      ? Math.min(visualWidth, Math.min(height * 0.5, 380) * ratio)
+      : visualWidth;
   const frame = {
-    width: visualWidth,
-    height: round ? visualWidth : posterSize(item, visualWidth),
+    width: video && !round ? videoWidth : visualWidth,
+    height: round
+      ? visualWidth
+      : video && ratio > 0 && Number.isFinite(ratio)
+        ? videoWidth / ratio
+        : posterSize(item, visualWidth),
     borderRadius: round ? visualWidth / 2 : 16,
   };
   useEffect(() => {
-    if (
-      foreground &&
-      state.kind === "cached" &&
-      (isPhoto || (!callActive && video))
-    )
+    if (foreground && state.kind === "cached" && isPhoto)
       presentation.prepare(key);
-  }, [callActive, foreground, isPhoto, key, presentation, state.kind, video]);
+  }, [foreground, isPhoto, key, presentation, state.kind]);
   const progress = state.kind === "downloading";
   const notice =
     state.kind === "failed"
@@ -386,19 +435,10 @@ function Attachment({
         onOpen={openPhoto}
       />
     );
-  } else if (video && uri && !callActive) {
-    body = (
-      <MessageVideo
-        currentMessage={{
-          ...shown,
-          video: uri,
-          videoNote: round,
-        }}
-        position={position}
-        videoStyle={round ? undefined : frame}
-      />
-    );
-  } else if (isPhoto || video) {
+  } else if (video) {
+    if (props.message.isViewOnce) return null;
+    body = <VideoAttachment {...props} frame={frame} neighbors={neighbors} />;
+  } else if (isPhoto) {
     body = (
       <View style={[styles.placeholder, frame]}>
         <Poster item={item} />
@@ -467,10 +507,210 @@ function Attachment({
   );
 }
 
+function VideoAttachment({
+  asset,
+  message,
+  presentation,
+  frame,
+  onOpen,
+  neighbors,
+}: AttachmentProps & {
+  frame: { width: number; height: number; borderRadius: number };
+  onOpen?: () => void;
+  neighbors?: VideoNeighbors;
+}) {
+  const { video } = useLocal();
+  const { t, i18n } = useTranslation(["video", "messages", "audio"]);
+  const { reduceMotion } = useTheme();
+  const { item, target } = asset;
+  const { key, state, shown } = useAttachment({ asset, message, presentation });
+  const inline = useStore(video.store, ({ current }) =>
+    current?.presentation === "inline" && mediaId(current.source) === key
+      ? current.player
+      : undefined,
+  );
+  const [opening, setOpening] = useState(false);
+  const ready = state.kind === "cached" || state.kind === "local";
+  const busy =
+    opening || state.kind === "checking" || state.kind === "preparing";
+  const transfer = state.kind === "downloading";
+  const label = ready ? t("video:viewer.play") : t("audio:download");
+
+  const play = async () => {
+    const source = presentation.authorize(target);
+    if (!source || busy) return;
+    setOpening(true);
+    if (ready) onOpen?.();
+    try {
+      const opened = await video.open(
+        {
+          kind: "attachment",
+          source,
+          title: item.name,
+          round: item.round,
+          duration: item.duration,
+          dimensions: item.dimensions,
+          thumbhash: item.thumbhash,
+        },
+        { download: !ready, neighbors },
+      );
+      if (!opened && presentation.authorize(target) && !transfer && ready)
+        Alert.alert(t("video:settings.openFailed"));
+      else if (opened && !ready) onOpen?.();
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <Transition.Boundary
+      id={videoOrigin(target)}
+      enabled={!item.round && !reduceMotion && !onOpen}
+      style={[styles.placeholder, frame]}
+    >
+      {inline ? (
+        <InlineVideo player={inline} item={item} />
+      ) : (
+        <>
+          <Poster item={item} />
+          {transfer ? (
+            <VideoTransferOverlay message={shown} />
+          ) : (
+            <Pressable
+              style={styles.videoAction}
+              accessibilityRole="button"
+              accessibilityLabel={label}
+              accessibilityState={{ busy, disabled: busy }}
+              disabled={busy}
+              onPress={() => void play()}
+            >
+              <View style={styles.videoBadge}>
+                {busy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Icon
+                    name={
+                      ready
+                        ? "play"
+                        : state.kind === "failed"
+                          ? "refresh"
+                          : "download"
+                    }
+                    size={24}
+                    color="#fff"
+                  />
+                )}
+              </View>
+            </Pressable>
+          )}
+        </>
+      )}
+      {(item.duration != null ||
+        (item.size != null && !ready && !item.round)) && (
+        <Ink kind="caption" style={styles.duration}>
+          {[
+            item.duration == null ? undefined : formatDuration(item.duration),
+            item.size == null || ready || item.round
+              ? undefined
+              : formatBytes(item.size, i18n.language),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </Ink>
+      )}
+    </Transition.Boundary>
+  );
+}
+
+function InlineVideo({ player, item }: { player: VideoPlayer; item: Item }) {
+  const { video } = useLocal();
+  useEffect(
+    () => () => {
+      if (video.store.getState().current?.player === player) void video.close();
+    },
+    [player, video],
+  );
+  const [firstFrame, setFirstFrame] = useState(false);
+  const { isPlaying } = useEvent(player, "playingChange", {
+    isPlaying: player.playing,
+  });
+  const { currentTime } = useEvent(player, "timeUpdate", {
+    currentTime: player.currentTime,
+    bufferedPosition: 0,
+    currentLiveTimestamp: null,
+    currentOffsetFromLive: null,
+  });
+  const { t } = useTranslation("video");
+  return (
+    <>
+      <VideoView
+        player={player}
+        nativeControls={false}
+        surfaceType="textureView"
+        contentFit="cover"
+        style={StyleSheet.absoluteFill}
+        onFirstFrameRender={() => setFirstFrame(true)}
+      />
+      {!firstFrame && <Poster item={item} />}
+      <Pressable
+        style={styles.videoAction}
+        accessibilityRole="button"
+        accessibilityLabel={t(isPlaying ? "viewer.pause" : "viewer.play")}
+        onPress={() => {
+          if (isPlaying) player.pause();
+          else if (player.currentTime >= player.duration) player.replay();
+          else player.play();
+        }}
+      >
+        {!isPlaying && (
+          <View style={styles.videoBadge}>
+            <Icon name="play" size={24} color="#fff" />
+          </View>
+        )}
+      </Pressable>
+      {firstFrame && player.duration > 0 && (
+        <View pointerEvents="none" style={styles.inlineTrack}>
+          <View
+            style={[
+              styles.inlineProgress,
+              {
+                width: `${Math.min(100, (100 * currentTime) / player.duration)}%`,
+              },
+            ]}
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   stack: { gap: space.xs, padding: space.xs },
   item: { gap: space.xs },
   placeholder: { backgroundColor: "#333438", overflow: "hidden" },
+  videoAction: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoBadge: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0009",
+  },
+  inlineTrack: {
+    position: "absolute",
+    start: "17%",
+    end: "17%",
+    bottom: 20,
+    height: 3,
+    backgroundColor: "#fff5",
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  inlineProgress: { height: 3, backgroundColor: "#fff" },
   duration: {
     position: "absolute",
     bottom: 8,

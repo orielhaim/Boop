@@ -35,10 +35,15 @@ module.exports = function withSystemCalling(config) {
   config = withMainActivity(config, (mod) => {
     if (mod.modResults.language !== "kt")
       throw new Error("Boop system calling requires a Kotlin MainActivity.");
+    mod.modResults.contents = mod.modResults.contents.replace(
+      /class MainActivity : ReactActivity\(\) \{/,
+      "class MainActivity : ReactActivity(), expo.modules.video.CallPiPActivity {",
+    );
     mod.modResults.contents = mergeContents({
       tag: "boop-system-pip",
       src: mod.modResults.contents,
-      anchor: /class MainActivity : ReactActivity\(\) \{/,
+      anchor:
+        /class MainActivity : ReactActivity\(\)(?:, expo\.modules\.video\.CallPiPActivity)? \{/,
       offset: 1,
       comment: "//",
       newSrc: `  override fun onPictureInPictureModeChanged(active: Boolean, config: android.content.res.Configuration) {
@@ -51,6 +56,18 @@ module.exports = function withSystemCalling(config) {
     if (Build.VERSION.SDK_INT >= 35 && state.isTransitioningToPip)
       com.oney.WebRTCModule.SystemCallPip.transitioning(this)
   }
+
+  override fun isCallPiPReserved() = com.oney.WebRTCModule.SystemCallPip.isCallPiPReserved()
+
+  override fun isCallPiPOwned() = com.oney.WebRTCModule.SystemCallPip.isCallPiPOwned()
+
+  override fun isVideoPiPOwned() = com.oney.WebRTCModule.SystemCallPip.isVideoPiPOwned()
+
+  override fun claimVideoPiP() = com.oney.WebRTCModule.SystemCallPip.claimVideoPiP()
+
+  override fun releaseVideoPiP() = com.oney.WebRTCModule.SystemCallPip.releaseVideoPiP(this)
+
+  override fun onCallPiPReservationChanged() = expo.modules.video.managers.VideoManager.onCallPiPReservationChanged()
 `,
     }).contents;
     return mod;

@@ -1,4 +1,4 @@
-import { PlaybackDownloadCancelled } from "./download";
+import { PlaybackDownloadCancelled } from "@/core/media/download";
 import { immer } from "zustand/middleware/immer";
 import { createStore } from "zustand/vanilla";
 import {
@@ -27,6 +27,7 @@ export type AudioStatus = {
 };
 export type AudioHandle = {
   uri: string;
+  expiresAt?: number | null;
   metadata?: Metadata;
   release(): Promise<void>;
 };
@@ -104,6 +105,7 @@ type Dependencies = {
   allowed(track: Track): boolean;
   listened(track: Track): void;
   genericTitle(): string;
+  claimPlayback?(): boolean;
 };
 
 export function createAudioController(deps: Dependencies) {
@@ -313,6 +315,7 @@ export function createAudioController(deps: Dependencies) {
   }
 
   function restoreMusic(shouldResume = resumeMusic) {
+    if (shouldResume && deps.claimPlayback?.() === false) return false;
     const parked = suspended;
     const player = parked?.engine;
     const { pausedMusic, blocked } = get();
@@ -428,7 +431,8 @@ export function createAudioController(deps: Dependencies) {
           if (activeSession === session) stop();
         },
       },
-      track.kind === "attachment" ? track.source.expiresAt : null,
+      source.expiresAt ??
+        (track.kind === "attachment" ? track.source.expiresAt : null),
       isolated,
     );
     if (!valid(session)) {
@@ -463,7 +467,8 @@ export function createAudioController(deps: Dependencies) {
   }
 
   async function load(track: Track, position: number, download: boolean) {
-    if (get().blocked || !eligible(track)) return false;
+    if (get().blocked || !eligible(track) || deps.claimPlayback?.() === false)
+      return false;
     detach(!download);
     const session = newSession(track);
     activeSession = session;
@@ -579,7 +584,8 @@ export function createAudioController(deps: Dependencies) {
   async function play(input: Track, download = false) {
     const track = trackSchema.parse(input);
     handoff?.abort();
-    if (get().blocked || !eligible(track)) return false;
+    if (get().blocked || !eligible(track) || deps.claimPlayback?.() === false)
+      return false;
     if (get().preparingVoice === trackId(track)) return true;
     cancelVoice();
     const parked = get().pausedMusic;
@@ -777,20 +783,25 @@ export function createAudioController(deps: Dependencies) {
       return;
     }
     set({ blocked });
-    if (blocked) {
-      handoff?.abort();
-      cancelVoice();
-      resumeMusic = false;
-      // Remove the native media session as well, so remote Play cannot bypass a call.
-      detach();
-      releaseSuspended();
-      set(({ current }) => {
-        if (!current) return;
-        current.phase = "paused";
-        current.metadata = undefined;
-      });
-      persist();
-    }
+    if (blocked) suspendPlayback();
+  }
+
+  function suspendPlayback() {
+    handoff?.abort();
+    cancelVoice();
+    resumeMusic = false;
+    const position = activeSession?.engine?.snapshot().position;
+    // Remove the native session so remote Play cannot bypass a call or video.
+    detach();
+    releaseSuspended();
+    set(({ current }) => {
+      if (!current) return;
+      current.phase = "paused";
+      current.metadata = undefined;
+      if (position !== undefined && Number.isFinite(position) && position >= 0)
+        current.position = position;
+    });
+    persist();
   }
 
   return {
@@ -804,6 +815,7 @@ export function createAudioController(deps: Dependencies) {
     invalidate,
     persist,
     toggle,
+    suspendPlayback,
     player: {
       toggle() {
         if (suspended) restoreMusic(true);
@@ -820,7 +832,8 @@ export function createAudioController(deps: Dependencies) {
       },
     },
     external(track: Track, open: (signal: AbortSignal) => Promise<void>) {
-      if (get().blocked || !eligible(track)) return Promise.resolve();
+      if (get().blocked || !eligible(track) || deps.claimPlayback?.() === false)
+        return Promise.resolve();
       handoff?.abort();
       cancelVoice();
       const token = new AbortController();

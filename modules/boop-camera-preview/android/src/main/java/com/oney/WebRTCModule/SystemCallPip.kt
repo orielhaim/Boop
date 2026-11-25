@@ -16,12 +16,40 @@ object SystemCallPip {
   private var host: WeakReference<Activity>? = null
   private var view: BoopCameraPreviewView? = null
   private var pipCallId: String? = null
+  private var videoPiPOwned = false
+  private var callPiPReservation = false
 
   private fun supported(activity: Activity) =
     activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
   private fun eligible() = stream != null &&
     SystemCallSession.current?.let { it.answeredAt > 0 && !it.privateMode } == true
+
+  fun isCallPiPReserved() = pipCallId != null || (eligible() && !videoPiPOwned)
+
+  fun isCallPiPOwned() = pipCallId != null
+
+  fun isVideoPiPOwned() = videoPiPOwned
+
+  fun claimVideoPiP(): Boolean {
+    if (isCallPiPReserved()) return false
+    videoPiPOwned = true
+    return true
+  }
+
+  fun releaseVideoPiP(activity: Activity) {
+    if (!videoPiPOwned) return
+    videoPiPOwned = false
+    updateReservation(activity)
+    refresh(activity)
+  }
+
+  private fun updateReservation(activity: Activity) {
+    val reserved = isCallPiPReserved()
+    if (callPiPReservation == reserved) return
+    callPiPReservation = reserved
+    (activity as? expo.modules.video.CallPiPActivity)?.onCallPiPReservationChanged()
+  }
 
   private fun params(activity: Activity): PictureInPictureParams {
     val content = activity.findViewById<ViewGroup>(android.R.id.content)
@@ -40,35 +68,40 @@ object SystemCallPip {
   internal fun refresh(activity: Activity) {
     if (!supported(activity) || activity.isDestroyed) return
     host = WeakReference(activity)
+    updateReservation(activity)
+    if (videoPiPOwned || (pipCallId == null && !eligible())) return
     runCatching { activity.setPictureInPictureParams(params(activity)) }
     if (activity.isInPictureInPictureMode) {
-      if (eligible()) show(activity)
-      else leave(activity)
+      if (pipCallId != null && eligible()) show(activity)
+      else if (pipCallId != null) leave(activity)
     }
   }
 
   fun transitioning(activity: Activity) {
-    if (eligible()) show(activity)
+    if (!videoPiPOwned && eligible()) show(activity)
   }
 
   fun modeChanged(activity: Activity, active: Boolean) {
     if (active) {
+      if (videoPiPOwned) return
       val id = SystemCallSession.current?.id
       if (id != null && eligible()) {
         show(activity)
         pipCallId = id
         SystemCallSession.emit("pip-enter", id)
-      } else leave(activity)
+      } else if (pipCallId != null) leave(activity)
     } else {
-      hide()
       val id = pipCallId ?: return
       pipCallId = null
+      hide()
       // A stopped Activity is being hidden/closed. An expanded PiP can resume
       // the same Activity, with the controller and its navigation untouched.
       activity.window.decorView.post {
         val kind = if (activity.isFinishing || activity.isDestroyed) "pip-close" else "pip-exit"
         SystemCallSession.emit(kind, id)
       }
+      updateReservation(activity)
+      refresh(activity)
     }
   }
 
@@ -109,6 +142,8 @@ object SystemCallPip {
     val id = pipCallId
     pipCallId = null
     if (id != null) SystemCallSession.emit("pip-close", id)
+    videoPiPOwned = false
+    callPiPReservation = false
     host = null
   }
 

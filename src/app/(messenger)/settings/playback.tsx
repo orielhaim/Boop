@@ -1,19 +1,58 @@
 import { router } from "expo-router";
+import { File, Paths } from "expo-file-system";
+import { getDocumentAsync } from "expo-document-picker";
+import { Alert } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { ListGroup, ListRow } from "@/components/ui/list-group";
+import {
+  ListGroup,
+  ListRow,
+  PreferenceToggle,
+} from "@/components/ui/list-group";
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
+import { openLocalVideo } from "@/core/video/open";
 import { speeds } from "@/core/audio/types";
+import { pipModes, seekIntervals } from "@/core/video/types";
 import { useLocal } from "@/services/local-context";
 import { useAudioActions } from "@/components/audio/actions";
 
 export default function PlaybackSettings() {
   const { t } = useTranslation("audio");
-  const { audio } = useLocal();
+  const { audio, video } = useLocal();
   const { pick } = useAudioActions();
   const prefs = useStore(audio.store, (state) => state.preferences);
+  const videoPrefs = useStore(video.store, (state) => state.preferences);
+  const { t: videoT } = useTranslation("video");
+  async function pickVideo() {
+    try {
+      const result = await getDocumentAsync({
+        type: ["video/*"],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const file = result.assets[0];
+      if (!file) return;
+      const selected = new File(file.uri);
+      const cachePrefix = Paths.cache.uri.endsWith("/")
+        ? Paths.cache.uri
+        : `${Paths.cache.uri}/`;
+      const pickerCopy = file.uri.startsWith(cachePrefix);
+      try {
+        const opened = await openLocalVideo(
+          file.uri,
+          file.name,
+          file.mimeType ?? undefined,
+        );
+        if (!opened) Alert.alert(videoT("settings.openFailed"));
+      } finally {
+        if (pickerCopy && selected.exists) selected.delete();
+      }
+    } catch {
+      Alert.alert(videoT("settings.openFailed"));
+    }
+  }
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings")} />}>
       <ListGroup>
@@ -38,6 +77,56 @@ export default function PlaybackSettings() {
           onChange={(voiceSpeed) => audio.preferences({ voiceSpeed })}
         />
       </ListGroup>
+      <ListGroup title={videoT("settings.title")}>
+        <SettingsMenuRow
+          title={videoT("settings.openWith")}
+          value={videoPrefs.external ? "external" : "internal"}
+          options={[
+            { value: "internal", label: videoT("settings.internal") },
+            { value: "external", label: videoT("settings.externalApp") },
+          ]}
+          onChange={(value) =>
+            video.preferences({ external: value === "external" })
+          }
+        />
+        <SettingsMenuRow
+          title={videoT("settings.seekInterval")}
+          value={videoPrefs.seekInterval}
+          options={seekIntervals.map((value) => ({
+            value,
+            label: videoT("settings.seconds", { count: value }),
+          }))}
+          onChange={(seekInterval) => video.preferences({ seekInterval })}
+        />
+        <SettingsMenuRow
+          title={videoT("settings.pip.title")}
+          value={videoPrefs.pipMode}
+          options={pipModes.map((value) => ({
+            value,
+            label: videoT(`settings.pip.${value}`),
+          }))}
+          onChange={(pipMode) => video.preferences({ pipMode })}
+        />
+        <PreferenceToggle
+          title={videoT("settings.advancedGestures")}
+          value={videoPrefs.advancedGestures}
+          onChange={(advancedGestures) =>
+            video.preferences({ advancedGestures })
+          }
+        />
+        <PreferenceToggle
+          title={videoT("settings.rememberPosition")}
+          value={videoPrefs.rememberPosition}
+          onChange={(rememberPosition) =>
+            video.preferences({ rememberPosition })
+          }
+        />
+        <PreferenceToggle
+          title={videoT("settings.allowBackground")}
+          value={videoPrefs.allowBackground}
+          onChange={(allowBackground) => video.preferences({ allowBackground })}
+        />
+      </ListGroup>
       <ListGroup>
         <ListRow
           icon="audio"
@@ -48,6 +137,11 @@ export default function PlaybackSettings() {
           icon="file"
           title={t("openDevice")}
           onPress={() => void pick()}
+        />
+        <ListRow
+          icon="camera"
+          title={videoT("settings.openDevice")}
+          onPress={() => void pickVideo()}
         />
       </ListGroup>
     </Screen>

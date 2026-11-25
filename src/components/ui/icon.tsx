@@ -8,6 +8,7 @@ import { ArrowDownLeftIcon } from "phosphor-react-native/src/icons/ArrowDownLeft
 import { ArrowLeftIcon } from "phosphor-react-native/src/icons/ArrowLeft";
 import { ArrowRightIcon } from "phosphor-react-native/src/icons/ArrowRight";
 import { ArrowSquareOutIcon } from "phosphor-react-native/src/icons/ArrowSquareOut";
+import { ArrowsOutSimpleIcon } from "phosphor-react-native/src/icons/ArrowsOutSimple";
 import { ArrowUpRightIcon } from "phosphor-react-native/src/icons/ArrowUpRight";
 import { BackspaceIcon } from "phosphor-react-native/src/icons/Backspace";
 import { BellIcon } from "phosphor-react-native/src/icons/Bell";
@@ -22,6 +23,7 @@ import { CaretUpIcon } from "phosphor-react-native/src/icons/CaretUp";
 import { ChatCircleIcon } from "phosphor-react-native/src/icons/ChatCircle";
 import { CheckIcon } from "phosphor-react-native/src/icons/Check";
 import { ClockCounterClockwiseIcon } from "phosphor-react-native/src/icons/ClockCounterClockwise";
+import { ClosedCaptioningIcon } from "phosphor-react-native/src/icons/ClosedCaptioning";
 import { CopyIcon } from "phosphor-react-native/src/icons/Copy";
 import { DotsThreeIcon } from "phosphor-react-native/src/icons/DotsThree";
 import { DotsSixVerticalIcon } from "phosphor-react-native/src/icons/DotsSixVertical";
@@ -47,6 +49,7 @@ import { PaletteIcon } from "phosphor-react-native/src/icons/Palette";
 import { PhoneIcon } from "phosphor-react-native/src/icons/Phone";
 import { PhoneDisconnectIcon } from "phosphor-react-native/src/icons/PhoneDisconnect";
 import { PhoneXIcon } from "phosphor-react-native/src/icons/PhoneX";
+import { PictureInPictureIcon } from "phosphor-react-native/src/icons/PictureInPicture";
 import { PencilSimpleIcon } from "phosphor-react-native/src/icons/PencilSimple";
 import { ImagesIcon } from "phosphor-react-native/src/icons/Images";
 import { PlayIcon } from "phosphor-react-native/src/icons/Play";
@@ -62,6 +65,7 @@ import { ShuffleIcon } from "phosphor-react-native/src/icons/Shuffle";
 import { SkipBackIcon } from "phosphor-react-native/src/icons/SkipBack";
 import { SkipForwardIcon } from "phosphor-react-native/src/icons/SkipForward";
 import { SpeakerHighIcon } from "phosphor-react-native/src/icons/SpeakerHigh";
+import { SpeakerSlashIcon } from "phosphor-react-native/src/icons/SpeakerSlash";
 import { StarIcon } from "phosphor-react-native/src/icons/Star";
 import { ScanIcon } from "phosphor-react-native/src/icons/Scan";
 import { TrashIcon } from "phosphor-react-native/src/icons/Trash";
@@ -155,6 +159,10 @@ const icons = {
   cameraOff: VideoCameraSlashIcon,
   cameraSwitch: CameraRotateIcon,
   speaker: SpeakerHighIcon,
+  speakerOff: SpeakerSlashIcon,
+  captions: ClosedCaptioningIcon,
+  fullscreen: ArrowsOutSimpleIcon,
+  pictureInPicture: PictureInPictureIcon,
   history: ClockCounterClockwiseIcon,
   timedLock: LockKeyIcon,
   fingerprint: FingerprintIcon,

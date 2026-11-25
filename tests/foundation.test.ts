@@ -110,10 +110,12 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "chat/[key]",
     "connect",
     "downloads",
+    "incoming-file",
     "person/[key]",
     "profile-photo/[key]",
     "requests",
     "settings",
+    "video-player",
   ]);
   expect(
     messenger?.children

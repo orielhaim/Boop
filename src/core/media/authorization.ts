@@ -5,7 +5,7 @@ type AuthorityWindow = Pick<
   "getState" | "subscribe"
 >;
 
-export function waitForAudioAuthority(
+export function waitForMediaAuthority(
   window: AuthorityWindow,
   signal: AbortSignal,
 ) {

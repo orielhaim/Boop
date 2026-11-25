@@ -10,7 +10,12 @@
     "ios": {
       "bundleIdentifier": "app.boop.mobile",
       "infoPlist": {
-        "CFBundleAllowMixedLocalizations": true
+        "CFBundleAllowMixedLocalizations": true,
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ]
       }
     },
     "android": {
@@ -32,6 +37,16 @@
             {
               "scheme": "content",
               "mimeType": "audio/*"
+            }
+          ]
+        },
+        {
+          "action": "VIEW",
+          "category": ["DEFAULT"],
+          "data": [
+            {
+              "scheme": "content",
+              "mimeType": "video/*"
             }
           ]
         }
@@ -150,7 +165,14 @@
         }
       ],
       "expo-asset",
-      "expo-video",
+      ["expo-screen-orientation", { "initialOrientation": "PORTRAIT_UP" }],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ],
       [
         "expo-location",
         {

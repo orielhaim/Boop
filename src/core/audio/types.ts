@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { sourceId, sourceSchema } from "@/core/downloads/types";
+import { sourceSchema } from "@/core/downloads/types";
+import { mediaId } from "@/core/media/source";
 
 const metadata = {
   title: z.string(),
@@ -21,8 +22,7 @@ export const trackSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type Track = z.infer<typeof trackSchema>;
-export const trackId = (track: Track) =>
-  track.kind === "attachment" ? sourceId(track.source) : track.file;
+export const trackId = mediaId;
 
 export function voiceOrigin(track: Track | undefined) {
   return track?.voice &&

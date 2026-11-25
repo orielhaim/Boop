@@ -126,7 +126,7 @@ class BoopMarmotModule : Module() {
     }
 
     AsyncFunction("listAccounts") Coroutine { general: List<String>, discovery: List<String>, mediaOrigin: String? ->
-      withRuntime(general, discovery, mediaOrigin, start = false) { kit ->
+      withRuntime(general, discovery, mediaOrigin, reconfigure = false, start = false) { kit ->
         kit.listAccounts().filter { it.localSigning }.map {
           mapOf("key" to it.accountIdHex, "signedOut" to it.signedOut, "unlinked" to it.unlinked,
             "readiness" to if (kit.onboardingRecoveryRequired(it.accountIdHex)) "recovery_required" else kit.accountSetupReadiness(it.accountIdHex).name.lowercase())
@@ -1487,30 +1487,40 @@ class BoopMarmotModule : Module() {
     marmotRuntime = null
     runtimeConfiguration = null
     runtimeStarted = false
-    try { kit.shutdownAndClose() } finally { kit.close() }
+    try {
+      withContext(NonCancellable) { kit.shutdownAndClose() }
+    } finally {
+      try { kit.close() } finally { runtimeOwner.unlock(this) }
+    }
   }
 
-  private fun makeRuntime(configuration: RuntimeConfiguration): Marmot {
+  private suspend fun makeRuntime(configuration: RuntimeConfiguration): Marmot {
     val context = appContext.reactContext ?: throw problem("ContextUnavailable")
-    initializeBindings(context)
-    val kit = Marmot.newWithConfiguration(
-      File(context.noBackupFilesDir, "marmot-accounts").canonicalPath,
-      (configuration.general + configuration.discovery).distinct(),
-      MarmotOptions(
-        clientName = "Boop", devicePlatform = "Android",
-        attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
-        acquirePublicAvatars = false,
-        deployment = marmotDeploymentNeutral().copy(
-          keychainService = "app.boop.accounts",
-          discoveryIndexerRelays = configuration.discovery,
-          groupImageEndpoint = configuration.mediaOrigin,
-          newGroupMediaEndpoints = listOfNotNull(configuration.mediaOrigin),
+    runtimeOwner.lock(this)
+    try {
+      initializeBindings(context)
+      val kit = Marmot.newWithConfiguration(
+        File(context.noBackupFilesDir, "marmot-accounts").canonicalPath,
+        (configuration.general + configuration.discovery).distinct(),
+        MarmotOptions(
+          clientName = "Boop", devicePlatform = "Android",
+          attachmentAcquisitionMode = AttachmentAcquisitionModeFfi.HOST_MANAGED,
+          acquirePublicAvatars = false,
+          deployment = marmotDeploymentNeutral().copy(
+            keychainService = "app.boop.accounts",
+            discoveryIndexerRelays = configuration.discovery,
+            groupImageEndpoint = configuration.mediaOrigin,
+            newGroupMediaEndpoints = listOfNotNull(configuration.mediaOrigin),
+          ),
         ),
-      ),
-    )
-    runtimeConfiguration = configuration
-    marmotRuntime = kit
-    return kit
+      )
+      runtimeConfiguration = configuration
+      marmotRuntime = kit
+      return kit
+    } catch (error: Throwable) {
+      runtimeOwner.unlock(this)
+      throw error
+    }
   }
 
   private suspend fun pauseRuntime() {
@@ -1611,6 +1621,8 @@ class BoopMarmotModule : Module() {
   }
 
   companion object {
+    // Expo can create the next module while the previous module drains asynchronously.
+    private val runtimeOwner = Mutex()
     private val HEX = Regex("[a-f0-9]{64}")
     private const val MAX_GROUP_IMAGE = 4 * 1024 * 1024
     private var initialized = false

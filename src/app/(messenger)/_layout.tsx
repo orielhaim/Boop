@@ -1,7 +1,4 @@
-import {
-  AudioFrame,
-  audioNavigationScene,
-} from "@/components/audio/mini-player";
+import { AudioFrame } from "@/components/audio/mini-player";
 import {
   BlankStack,
   type BlankStackNavigationOptions,
@@ -15,6 +12,7 @@ import {
   profileMorphParam,
 } from "@/core/marmot/conversation-route";
 import { useChatsEnabled } from "@/services/local-context";
+import { VideoFrame, videoNavigationScene } from "@/components/video/host";
 
 const audioPlayerOptions: BlankStackNavigationOptions = {
   gestureEnabled: false,
@@ -44,60 +42,66 @@ export default function MessengerLayout() {
 
   return (
     <AudioFrame>
-      <BlankStack screenOptions={push} screenLayout={audioNavigationScene}>
-        <BlankStack.Screen name="(tabs)" />
-        <BlankStack.Screen name="settings" />
-        <BlankStack.Screen name="downloads" />
-        <BlankStack.Screen
-          name="audio-player"
-          options={
-            reduceMotion
-              ? {
-                  ...audioPlayerOptions,
-                  transitionSpec: {
-                    open: { duration: 0 },
-                    close: { duration: 0 },
-                  },
-                }
-              : audioPlayerOptions
-          }
-        />
-        <BlankStack.Screen
-          name="person/[key]"
-          options={({ route }) =>
-            profileMorphParam(route.params) ? profileMorph : detail
-          }
-        />
-        <BlankStack.Screen
-          name="profile-photo/[key]"
-          options={{
-            ...media,
-            overlayShown: true,
-            overlay: ProfilePhotoControls,
-          }}
-        />
-        <BlankStack.Screen name="connect" options={modal} />
-        <BlankStack.Screen name="add-contact" options={modal} />
-        <BlankStack.Protected guard={chats}>
+      <VideoFrame>
+        <BlankStack screenOptions={push} screenLayout={videoNavigationScene}>
+          <BlankStack.Screen name="(tabs)" />
+          <BlankStack.Screen name="settings" />
+          <BlankStack.Screen name="downloads" />
           <BlankStack.Screen
-            name="chat/[key]"
-            options={({ route }) => {
-              const params = route.params;
-              if (params && "view" in params && params.view === "details")
-                return profileMorphParam(params) ? profileMorph : detail;
-              if (params && "view" in params && params.view === "edit")
-                return { ...push, gestureEnabled: false };
-              if (params && "key" in params && params.key === "new-group")
-                return { ...push, gestureEnabled: false };
-              // Hidden BlankStack scenes disconnect effects, including the live chat window.
-              if (marmotChatScene(route)?.kind === "conversation")
-                return { ...push, inactiveBehavior: "keep" };
-              return push;
+            name="video-player"
+            options={{ ...media, gestureEnabled: false }}
+          />
+          <BlankStack.Screen
+            name="audio-player"
+            options={
+              reduceMotion
+                ? {
+                    ...audioPlayerOptions,
+                    transitionSpec: {
+                      open: { duration: 0 },
+                      close: { duration: 0 },
+                    },
+                  }
+                : audioPlayerOptions
+            }
+          />
+          <BlankStack.Screen
+            name="person/[key]"
+            options={({ route }) =>
+              profileMorphParam(route.params) ? profileMorph : detail
+            }
+          />
+          <BlankStack.Screen
+            name="profile-photo/[key]"
+            options={{
+              ...media,
+              overlayShown: true,
+              overlay: ProfilePhotoControls,
             }}
           />
-          <BlankStack.Screen name="requests" />
-        </BlankStack.Protected>
-      </BlankStack>
+          <BlankStack.Screen name="connect" options={modal} />
+          <BlankStack.Screen name="add-contact" options={modal} />
+          <BlankStack.Protected guard={chats}>
+            <BlankStack.Screen
+              name="chat/[key]"
+              options={({ route }) => {
+                const params = route.params;
+                if (params && "view" in params && params.view === "details")
+                  return profileMorphParam(params) ? profileMorph : detail;
+                if (params && "view" in params && params.view === "edit")
+                  return { ...push, gestureEnabled: false };
+                if (params && "key" in params && params.key === "new-group")
+                  return { ...push, gestureEnabled: false };
+                // Hidden BlankStack scenes disconnect effects, including the live chat window.
+                if (marmotChatScene(route)?.kind === "conversation")
+                  return { ...push, inactiveBehavior: "keep" };
+                return push;
+              }}
+            />
+            <BlankStack.Screen name="requests" />
+          </BlankStack.Protected>
+        </BlankStack>
+      </VideoFrame>
     </AudioFrame>
   );
 }
