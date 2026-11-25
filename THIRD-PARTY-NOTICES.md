@@ -24,3 +24,7 @@ Boop adapts source from [Reacticx](https://reacticx.com/docs/license) and [Kinet
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+## librqbit
+
+Boop's optional Torrents feature uses modified [rqbit 9.1.0](https://github.com/ikatson/rqbit), copyright 2021 Igor Katson. See the [Apache License 2.0](extensions/torrents/rust/LICENSE.librqbit).
