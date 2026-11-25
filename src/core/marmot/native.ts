@@ -43,6 +43,11 @@ const avatarAsset = z.object({
 });
 export type MarmotAvatarAsset = z.infer<typeof avatarAsset>;
 
+const chatMute = z.object({
+  muted: z.boolean(),
+  mutedUntilMs: z.number().int().nonnegative().nullish(),
+});
+
 const chatRow = z.object({
   id: z.string(),
   title: z.string().nullish(),
@@ -54,7 +59,7 @@ const chatRow = z.object({
   membership: z.string(),
   invited: z.boolean(),
   pinned: z.boolean(),
-  muted: z.boolean(),
+  ...chatMute.shape,
   archived: z.boolean(),
   unread: z.number().nonnegative(),
   mentioned: z.boolean(),
@@ -151,7 +156,7 @@ const groupDetails = z.object({
   pendingLeave: z.boolean(),
   leaveBlocked: z.boolean(),
   createdAt: z.number().nullish(),
-  muted: z.boolean(),
+  ...chatMute.shape,
   archived: z.boolean(),
   canEdit: z.boolean(),
   lifecycle: groupLifecycle,
@@ -787,8 +792,10 @@ type Bridge = {
   ): Promise<void>;
   markRead(group: string, id: string): Promise<void>;
   setArchived(group: string, archived: boolean): Promise<void>;
-  setPinned(group: string, pinned: boolean): Promise<void>;
-  setMuted(group: string, muted: boolean): Promise<void>;
+  setPinned(groups: string[], pinned: boolean): Promise<void>;
+  reorderPinnedChats(visibleOrder: string[]): Promise<void>;
+  setChatMuted(group: string, until: number | null): Promise<void>;
+  clearChatMuted(group: string): Promise<void>;
   watchBlockedUsers(owner: string, id: string): Promise<void>;
   setBlocked(owner: string, key: string, blocked: boolean): Promise<unknown>;
   retryConversation(group: string): Promise<void>;
@@ -1654,9 +1661,13 @@ export const marmot = {
   markRead: (group: string, id: string) => native().markRead(group, id),
   setArchived: (group: string, archived: boolean) =>
     native().setArchived(group, archived),
-  setPinned: (group: string, pinned: boolean) =>
-    native().setPinned(group, pinned),
-  setMuted: (group: string, muted: boolean) => native().setMuted(group, muted),
+  setPinned: (groups: string[], pinned: boolean) =>
+    native().setPinned(groups, pinned),
+  reorderPinnedChats: (visibleOrder: string[]) =>
+    native().reorderPinnedChats(visibleOrder),
+  setChatMuted: (group: string, until: number | null) =>
+    native().setChatMuted(group, until),
+  clearChatMuted: (group: string) => native().clearChatMuted(group),
   retryConversation: (group: string) => native().retryConversation(group),
   createPoll: (
     group: string,

@@ -1060,14 +1060,17 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("setArchived") { (group: String, archived: Bool) async throws in
       try await self.withAccount { _ = try await $0.setGroupArchived(accountRef: $1, groupIdHex: group, archived: archived) }
     }
-    AsyncFunction("setPinned") { (group: String, pinned: Bool) async throws in
-      try await self.withAccount { _ = try $0.setChatPinned(accountRef: $1, groupIdHex: group, pinned: pinned) }
+    AsyncFunction("setPinned") { (groups: [String], pinned: Bool) async throws in
+      try await protocolCall { try await self.runtime.setPinned(groups, pinned) }
     }
-    AsyncFunction("setMuted") { (group: String, muted: Bool) async throws in
-      try await self.withAccount { kit, account in
-        if muted { _ = try kit.setChatMuted(accountRef: account, groupIdHex: group, mutedUntilMs: nil) }
-        else { _ = try kit.clearChatMuted(accountRef: account, groupIdHex: group) }
-      }
+    AsyncFunction("reorderPinnedChats") { (visibleOrder: [String]) async throws in
+      try await protocolCall { try await self.runtime.reorderPinnedChats(visibleOrder) }
+    }
+    AsyncFunction("setChatMuted") { (group: String, until: Int64?) async throws in
+      try await self.withAccount { _ = try $0.setChatMuted(accountRef: $1, groupIdHex: group, mutedUntilMs: until) }
+    }
+    AsyncFunction("clearChatMuted") { (group: String) async throws in
+      try await self.withAccount { _ = try $0.clearChatMuted(accountRef: $1, groupIdHex: group) }
     }
     AsyncFunction("watchBlockedUsers") { (owner: String, id: String) async throws in
       try await self.withObservation(id) {
@@ -1412,6 +1415,30 @@ private actor Runtime {
     let current = try account()
     activeCalls += 1
     return current
+  }
+
+  func setPinned(_ groups: [String], _ pinned: Bool) throws {
+    let account = try account()
+    for group in groups.reversed() {
+      _ = try account.kit.setChatPinned(accountRef: account.key, groupIdHex: group, pinned: pinned)
+    }
+  }
+
+  func reorderPinnedChats(_ visibleOrder: [String]) throws {
+    let account = try account()
+    let current = try account.kit.chatList(accountRef: account.key, includeArchived: true)
+      .filter { $0.pinned }.map { $0.groupIdHex }
+    let requested = Set(visibleOrder)
+    guard requested.count == visibleOrder.count else { throw problem("InvalidPinOrder") }
+    let currentSet = Set(current)
+    let reordered = visibleOrder.filter { currentSet.contains($0) }
+    // Replace only the slots from this drop. Hidden pins and concurrent new pins keep their places.
+    var merged = current
+    let slots = current.indices.filter { requested.contains(current[$0]) }
+    for (slot, group) in zip(slots, reordered) { merged[slot] = group }
+    if merged != current {
+      _ = try account.kit.setPinnedChatOrder(accountRef: account.key, orderedGroupIds: merged)
+    }
   }
 
   func selectSigner(_ key: String) throws -> Document {

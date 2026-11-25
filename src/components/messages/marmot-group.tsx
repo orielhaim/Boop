@@ -7,6 +7,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -45,6 +46,7 @@ import { useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import { parsePublicKey, toNpub } from "@/core/identity/keys";
 import { blossomServer } from "@/core/media/blossom";
+import { isChatMuted } from "@/core/marmot/chat-mute";
 import {
   marmot,
   type MarmotGroupDetails,
@@ -54,10 +56,12 @@ import {
 } from "@/core/marmot/native";
 import { contactByKey } from "@/db/queries";
 import { contacts } from "@/db/schema";
-import { namespaces } from "@/i18n";
+import { namespaces, resolveLanguage } from "@/i18n";
+import { formatDateTime, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
+import { useChatClock, useMuteDuration } from "./chat-mute";
 import { marmotErrorCode } from "@/core/marmot/errors";
 import { useMarmotWindow } from "./marmot-window";
 import {
@@ -596,8 +600,9 @@ export function MarmotGroupDetailsScreen({
   editing?: boolean;
   morph?: string;
 }) {
-  const { t } = useTranslation(namespaces);
+  const { t, i18n } = useTranslation(namespaces);
   const dialog = useDialog();
+  const chooseMuteDuration = useMuteDuration();
   const { colors } = useTheme();
   const {
     db,
@@ -626,6 +631,25 @@ export function MarmotGroupDetailsScreen({
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
   const state = useMarmotWindow(watch);
   const { details } = state.snapshot ?? {};
+  const muteDeadline = details?.mutedUntilMs;
+  const deadlines = useMemo(
+    () => (muteDeadline == null ? [] : [muteDeadline]),
+    [muteDeadline],
+  );
+  const now = useChatClock(deadlines, Boolean(details));
+  const muted = details != null && isChatMuted(details, now);
+  const muteStatus = muted
+    ? muteDeadline == null
+      ? t("messages:chatMute.mutedForever")
+      : t("messages:chatMute.mutedUntil", {
+          date: isolateText(
+            formatDateTime(
+              muteDeadline,
+              resolveLanguage(i18n.resolvedLanguage),
+            ),
+          ),
+        })
+    : undefined;
   const [chatHeader] = useState(() => {
     const snapshot = morph ? conversations.get(id)?.snapshot : undefined;
     if (snapshot && !snapshot.invited)
@@ -1211,17 +1235,18 @@ export function MarmotGroupDetailsScreen({
         onPress={() => router.push(conversationRoute(id, "media"))}
       />
       <GroupShortcut
-        icon={details.muted ? "bellOff" : "bell"}
-        label={t(details.muted ? "calls:unmute" : "calls:mute")}
+        icon={muted ? "bellOff" : "bell"}
+        label={t(muted ? "calls:unmute" : "calls:mute")}
         description={t(
-          details.muted
+          muted
             ? "messages:marmot.unmuteConversation"
             : "messages:marmot.muteConversation",
         )}
         disabled={busy}
-        onPress={() =>
-          void update(() => marmot.setMuted(id, !details.muted), false, true)
-        }
+        onPress={() => {
+          if (muted) void update(() => marmot.clearChatMuted(id), false, true);
+          else chooseMuteDuration([id], state.retry);
+        }}
       />
     </>
   );
@@ -1417,6 +1442,11 @@ export function MarmotGroupDetailsScreen({
             ) : (
               <GroupShortcuts>{shortcuts}</GroupShortcuts>
             ))}
+          {member && muteStatus && (
+            <Ink kind="caption" muted style={styles.profileCaption}>
+              {muteStatus}
+            </Ink>
+          )}
           {isGroup && roster}
           {notice}
           <ListGroup

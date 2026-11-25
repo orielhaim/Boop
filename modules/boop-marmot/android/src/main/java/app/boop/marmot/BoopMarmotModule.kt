@@ -32,6 +32,7 @@ private const val ATTACHMENT_CANCEL_TIMEOUT_MS = 10_000L
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
   private val shutdownTurn = Mutex()
+  private val chatPins = Mutex()
   private val draftStages = mutableSetOf<String>() // Guarded by uploads.
   private val observer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private data class Observation(val ticket: CompletableJob, val accountScoped: Boolean)
@@ -1242,15 +1243,27 @@ class BoopMarmotModule : Module() {
     AsyncFunction("setArchived") Coroutine { group: String, archived: Boolean ->
       withSession { it.kit.setGroupArchived(it.account, group, archived); Unit }
     }
-    AsyncFunction("setPinned") Coroutine { group: String, pinned: Boolean ->
-      withSession { it.kit.setChatPinned(it.account, group, pinned); Unit }
-    }
-    AsyncFunction("setMuted") Coroutine { group: String, muted: Boolean ->
-      withSession {
-        if (muted) it.kit.setChatMuted(it.account, group, null)
-        else it.kit.clearChatMuted(it.account, group)
-        Unit
+    AsyncFunction("setPinned") Coroutine { groups: List<String>, pinned: Boolean ->
+      withSession { active ->
+        chatPins.withLock {
+          for (group in groups.asReversed()) active.kit.setChatPinned(active.account, group, pinned)
+        }
       }
+    }
+    AsyncFunction("reorderPinnedChats") Coroutine { visibleOrder: List<String> ->
+      withSession { active ->
+        chatPins.withLock {
+          reorderPinnedChats(active.kit, active.account, visibleOrder)
+        }
+      }
+    }
+    AsyncFunction("setChatMuted") Coroutine { group: String, until: Long? ->
+      withSession {
+        it.kit.setChatMuted(it.account, group, until); Unit
+      }
+    }
+    AsyncFunction("clearChatMuted") Coroutine { group: String ->
+      withSession { it.kit.clearChatMuted(it.account, group); Unit }
     }
     AsyncFunction("watchBlockedUsers") Coroutine { owner: String, id: String ->
       withObservation(owner, id) { kit ->

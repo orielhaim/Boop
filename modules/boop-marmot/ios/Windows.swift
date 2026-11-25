@@ -195,6 +195,7 @@ func groupDocument(_ kit: Marmot, _ account: String, _ group: String) async thro
   let policy = snapshot.managementState
   let presented = try await kit.presentedChatListRow(accountRef: account, groupIdHex: group)
   let chat = presented?.row
+  let notifications = try kit.chatNotificationSettings(accountRef: account, groupIdHex: group)
   let actions = Dictionary(policy.memberActions.map { ($0.memberIdHex, $0) }, uniquingKeysWith: { first, _ in first })
   return [
     "id": group, "name": details.group.name, "description": details.group.description,
@@ -210,7 +211,8 @@ func groupDocument(_ kit: Marmot, _ account: String, _ group: String) async thro
     "pendingInvitation": details.group.pendingConfirmation,
     "kind": bridgeValue(chat.map { wireName($0.conversationKind) }),
     "pendingLeave": details.group.leaveRequestPending, "leaveBlocked": details.group.leaveBlocked,
-    "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }), "muted": chat?.muted ?? false,
+    "createdAt": bridgeValue(chat.map { Double($0.conversationCreatedAt) }),
+    "muted": notifications.muted, "mutedUntilMs": bridgeValue(notifications.mutedUntilMs.map(Double.init)),
     "archived": details.group.archived, "canEdit": policy.isSelfAdmin,
     "lifecycle": wireName(policy.lifecycleState),
     "canStepDown": policy.isSelfAdmin && !policy.isLastAdmin,
@@ -301,6 +303,7 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
         "invited": chat.pendingConfirmation,
         "pinned": chat.pinned,
         "muted": chat.muted,
+        "mutedUntilMs": bridgeValue(chat.mutedUntilMs.map(Double.init)),
         "archived": chat.archived,
         "unread": Double(chat.unreadCount),
         "mentioned": chat.unreadMentionCount > 0,

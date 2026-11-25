@@ -494,6 +494,67 @@ class MarmotRelayTest {
     }
   }
 
+  @Test fun chatMutesAndManualPinOrderSurviveRestart() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "chat-management-${UUID.randomUUID()}")
+    val alice = Client(File(root, "alice"), relay, null)
+    val bob = Client(File(root, "bob"), relay, null)
+    try {
+      for (client in listOf(alice, bob)) {
+        client.start()
+        await("${client.directory.name} KeyPackage publication") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY
+        }
+      }
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      bob.accept(direct)
+      suspend fun create(name: String) = checkNotNull(
+        alice.kit.createGroupDetailed(alice.key, name, listOf(bob.key), null).created,
+      ).groupIdHex
+      val first = create("First group")
+      val hidden = create("Hidden from the visible order")
+      val newPin = create("Newly pinned")
+      val removed = create("Unpinned during drag")
+      fun pins() = alice.kit.chatList(alice.key, true).filter { it.pinned }.map { it.groupIdHex }
+
+      for (group in listOf(direct, hidden, first, removed)) alice.kit.setChatPinned(alice.key, group, true)
+      assertEquals(listOf(removed, first, hidden, direct), pins())
+      alice.kit.setChatPinned(alice.key, newPin, true)
+      alice.kit.setChatPinned(alice.key, removed, false)
+      reorderPinnedChats(alice.kit, alice.key, listOf(direct, removed, first))
+      val expected = listOf(newPin, direct, hidden, first)
+      assertEquals(expected, pins())
+      assertTrue(runCatching { reorderPinnedChats(alice.kit, alice.key, listOf(first, first)) }.isFailure)
+      assertEquals(expected, pins())
+
+      val deadline = System.currentTimeMillis() + 3_000
+      assertEquals(deadline, alice.kit.setChatMuted(alice.key, direct, deadline).mutedUntilMs)
+      assertTrue(alice.kit.setChatMuted(alice.key, first, null).muted)
+      assertEquals(deadline.toDouble(), groupDocument(alice.kit, alice.key, direct)["mutedUntilMs"])
+      assertNull(groupDocument(alice.kit, alice.key, first)["mutedUntilMs"])
+      val message = "Incoming message must preserve pinned order"
+      bob.kit.sendTextWithClientToken(bob.key, direct, message, UUID.randomUUID().toString())
+      alice.receives(direct, bob.key, message)
+      assertEquals(expected, pins())
+
+      alice.close()
+      alice.start()
+      assertEquals(expected, pins())
+      await("timed mute expires") { !alice.kit.chatNotificationSettings(alice.key, direct).muted }
+      assertEquals(false, groupDocument(alice.kit, alice.key, direct)["muted"])
+      assertTrue(alice.kit.chatNotificationSettings(alice.key, first).muted)
+      alice.kit.clearChatMuted(alice.key, first)
+      assertFalse(alice.kit.chatNotificationSettings(alice.key, first).muted)
+    } finally {
+      bob.close()
+      alice.close()
+      root.deleteRecursively()
+    }
+    Unit
+  }
+
   @Test fun openLaterDeliversOnceWithReplyContextInDirectAndGroupChats() = runBlocking {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val relay = checkNotNull(InstrumentationRegistry.getArguments().getString("relay"))

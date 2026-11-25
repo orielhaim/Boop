@@ -115,6 +115,7 @@ internal suspend fun groupDocument(kit: Marmot, account: String, group: String):
   val policy = snapshot.managementState
   val presented = kit.presentedChatListRow(account, group)
   val chat = presented?.row
+  val notifications = kit.chatNotificationSettings(account, group)
   val actions = policy.memberActions.associateBy { row -> row.memberIdHex }
   return mapOf(
     "id" to group, "name" to details.group.name, "description" to details.group.description,
@@ -131,7 +132,8 @@ internal suspend fun groupDocument(kit: Marmot, account: String, group: String):
     "pendingInvitation" to details.group.pendingConfirmation,
     "kind" to chat?.conversationKind?.name?.lowercase(),
     "pendingLeave" to details.group.leaveRequestPending, "leaveBlocked" to details.group.leaveBlocked,
-    "createdAt" to chat?.conversationCreatedAt?.toDouble(), "muted" to (chat?.muted ?: false),
+    "createdAt" to chat?.conversationCreatedAt?.toDouble(),
+    "muted" to notifications.muted, "mutedUntilMs" to notifications.mutedUntilMs?.toDouble(),
     "archived" to details.group.archived, "canEdit" to policy.isSelfAdmin,
     "lifecycle" to policy.lifecycleState.name.lowercase(),
     "canStepDown" to (policy.isSelfAdmin && !policy.isLastAdmin),
@@ -247,6 +249,7 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
       "invited" to chat.pendingConfirmation,
       "pinned" to chat.pinned,
       "muted" to chat.muted,
+      "mutedUntilMs" to chat.mutedUntilMs?.toDouble(),
       "archived" to chat.archived,
       "unread" to chat.unreadCount.toDouble(),
       "mentioned" to (chat.unreadMentionCount > 0uL),

@@ -27,6 +27,7 @@ import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility"
 import { useIdentitySheet } from "@/components/people/identity-sheet";
 import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
+import { isChatMuted } from "@/core/marmot/chat-mute";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
 import {
   hasMention,
@@ -40,6 +41,7 @@ import { useDialog } from "@/components/ui/dialog";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 import { useChatAppearance } from "./appearance";
+import { useChatClock, useMuteDuration } from "./chat-mute";
 import { EmptyInbox } from "./empty-inbox";
 import { useMarmotChatLists } from "./marmot-chat-lists";
 import { useMarmotWindow } from "./marmot-window";
@@ -68,6 +70,7 @@ function asChat(
   fallback: string,
   invitationTitle: string,
   preview: string | undefined,
+  now: number,
   emptyPreview?: string,
 ): ChatRow {
   return {
@@ -86,7 +89,7 @@ function asChat(
         ? row.avatarAsset
         : undefined,
     isArchived: row.archived,
-    isMuted: row.muted,
+    isMuted: isChatMuted(row, now),
     isPinned: row.pinned,
     unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
     draft: row.invited ? undefined : (row.draft ?? undefined),
@@ -112,6 +115,7 @@ export function MarmotInbox({
 }) {
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
+  const chooseMuteDuration = useMuteDuration();
   const { identity, privacy, chatPreferences, conversations, db } = useLocal();
   const focused = useIsFocused();
   const setChatsFabVisible = useTabFabVisibility()?.setChatsVisible;
@@ -143,27 +147,17 @@ export function MarmotInbox({
       : archived
         ? archive
         : inbox;
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expires = [
-      ...(snapshot?.rows ?? []),
-      ...(archive.snapshot?.rows ?? []),
-    ].flatMap(({ preview }) =>
-      preview?.expiresAt == null ? [] : [preview.expiresAt * 1000],
-    );
-    function update() {
-      const current = Date.now();
-      setNow(current);
-      const next = Math.min(
-        ...expires.filter((deadline) => deadline > current),
-      );
-      if (Number.isFinite(next))
-        timer = setTimeout(update, Math.min(next - current, 2_147_483_647));
-    }
-    update();
-    return () => clearTimeout(timer);
-  }, [snapshot?.rows, archive.snapshot?.rows]);
+  const deadlines = useMemo(
+    () =>
+      [...(snapshot?.rows ?? []), ...(archive.snapshot?.rows ?? [])].flatMap(
+        ({ preview, mutedUntilMs }) => [
+          ...(preview?.expiresAt == null ? [] : [preview.expiresAt * 1000]),
+          ...(mutedUntilMs == null ? [] : [mutedUntilMs]),
+        ],
+      ),
+    [snapshot?.rows, archive.snapshot?.rows],
+  );
+  const now = useChatClock(deadlines, focused);
   const [inviters, setInviters] = useState<Record<string, string>>();
   const pendingIds = (invitations ? snapshot : pending.snapshot)?.rows
     .map((row) => row.id)
@@ -241,6 +235,7 @@ export function MarmotInbox({
             fallback,
             row.title || t("messages:marmot.invitedBy", { name }),
             undefined,
+            now,
           );
         }
       }
@@ -251,7 +246,7 @@ export function MarmotInbox({
         row.previewSelection === "empty"
           ? t("messages:sayHello")
           : undefined;
-      return asChat(row, fallback, invitationTitle, preview, emptyPreview);
+      return asChat(row, fallback, invitationTitle, preview, now, emptyPreview);
     });
   const showEmptyInbox = Boolean(
     snapshot &&
@@ -282,8 +277,8 @@ export function MarmotInbox({
       void window?.page("forward").catch(() => undefined);
   };
 
-  function update(ids: { id: string }[], write: (id: string) => Promise<void>) {
-    void Promise.all(ids.map(({ id }) => write(id))).catch(() =>
+  function update(task: Promise<unknown>) {
+    void task.catch(() =>
       dialog.show({
         title: t("messages:updateConversationsError"),
         tone: "error",
@@ -351,6 +346,11 @@ export function MarmotInbox({
     >
       <ChatList<ChatRow>
         {...kit}
+        labels={{
+          ...kit.labels,
+          actionPin: t("messages:pinChats"),
+          actionUnpin: t("messages:unpinChats"),
+        }}
         chats={chats}
         user={{ _id: identity.publicKey }}
         isTopInsetApplied={!invitations}
@@ -417,19 +417,40 @@ export function MarmotInbox({
           invitations
             ? undefined
             : (selection, pinned) =>
-                update(selection, (id) => marmot.setPinned(id, pinned))
+                update(
+                  marmot.setPinned(
+                    selection.map(({ id }) => id),
+                    pinned,
+                  ),
+                )
+        }
+        onReorderPinnedChats={
+          invitations || archived || search !== null
+            ? undefined
+            : (order) => update(marmot.reorderPinnedChats(order))
         }
         onMuteChats={
           invitations
             ? undefined
-            : (selection, muted) =>
-                update(selection, (id) => marmot.setMuted(id, muted))
+            : (selection, muted) => {
+                if (muted) chooseMuteDuration(selection.map(({ id }) => id));
+                else
+                  update(
+                    Promise.all(
+                      selection.map(({ id }) => marmot.clearChatMuted(id)),
+                    ),
+                  );
+              }
         }
         onArchiveChats={
           invitations
             ? undefined
             : (selection, value) =>
-                update(selection, (id) => marmot.setArchived(id, value))
+                update(
+                  Promise.all(
+                    selection.map(({ id }) => marmot.setArchived(id, value)),
+                  ),
+                )
         }
         listProps={{
           onViewableItemsChanged,
