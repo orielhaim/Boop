@@ -217,6 +217,29 @@ test("the latest explicit playback request wins, and call or recording interrupt
   expect(ownership.claim("audio")).toBe(true);
 });
 
+test("round notes share playback ownership and a recycled row cannot release the next note", () => {
+  const ownership = createPlaybackOwnership();
+  const stops: string[] = [];
+  ownership.register("audio", () => stops.push("audio"));
+  ownership.register("video", () => stops.push("video"));
+  ownership.claim("audio");
+  const releaseFirst = ownership.claimRoundNote(() => stops.push("first"));
+  const releaseSecond = ownership.claimRoundNote(() => stops.push("second"));
+  if (!releaseFirst || !releaseSecond) throw new Error("Round claim denied");
+  releaseFirst();
+  ownership.claim("video");
+  expect(stops).toEqual(["audio", "second"]);
+
+  const releaseThird = ownership.claimRoundNote(() => stops.push("third"));
+  if (!releaseThird) throw new Error("Round claim denied");
+  releaseSecond();
+  ownership.interrupt(true);
+  expect(ownership.claimRoundNote(() => stops.push("blocked"))).toBe(false);
+  ownership.interrupt(false);
+  releaseThird();
+  expect(stops).toEqual(["audio", "second", "video", "third"]);
+});
+
 test("local captions parse VTT and SRT timecodes, preserve multiline Hebrew and ignore markup", () => {
   const utf8 = (text: string) => new TextEncoder().encode(text);
   const webvtt = readSubtitles(

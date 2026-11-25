@@ -15,16 +15,17 @@ import {
   MediaViewerPage,
   MessageFile,
   MessageImage,
+  MessageVideo,
+  type MessageVideoProps,
+  useTheme as useChatKitTheme,
   VideoTransferOverlay,
 } from "@kesha-antonov/react-native-chat";
 import { Directory, File } from "expo-file-system";
-import { Image } from "expo-image";
+import { Image, type ImageRef } from "expo-image";
+import { BlurTargetView, BlurView } from "expo-blur";
 import { saveToLibraryAsync } from "expo-media-library/legacy";
 import { shareAsync } from "expo-sharing";
-import { VideoView, type VideoPlayer } from "expo-video";
-import { useEvent } from "expo";
 import Transition from "react-native-screen-transitions";
-import { useStore } from "zustand";
 import {
   type ComponentProps,
   useCallback,
@@ -35,26 +36,20 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { useDialog } from "@/components/ui/dialog";
-import {
-  Modal,
-  Platform,
-  Pressable,
-  ActivityIndicator,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { Modal, Platform, View, useWindowDimensions } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Icon, Ink } from "@/components/ui/kit";
+import { useGlassTheme } from "@/components/glassyui/glass-provider";
+import { useGlassBackdropTarget } from "@/components/glassyui/lib/glass-backdrop";
 import {
   attachmentKey,
   type AttachmentPresentation,
   type AttachmentTarget,
 } from "@/core/marmot/attachment-presentation";
-import type { MarmotMessage } from "@/core/marmot/native";
+import type { MarmotMessage, MarmotUpload } from "@/core/marmot/native";
 import { speechSource } from "@/core/speech/service";
 import type { SpeechSource } from "@/core/speech/types";
-import { formatBytes, formatDuration } from "@/i18n/format";
-import { mediaId } from "@/core/media/source";
+import { formatDuration } from "@/i18n/format";
 import { videoFile, videoOrigin } from "@/core/video/types";
 import type { VideoNeighbors } from "@/core/video/controller";
 import { useLocal } from "@/services/local-context";
@@ -69,6 +64,9 @@ type AttachmentProps = {
   presentation: AttachmentPresentation;
 };
 type GalleryItem = { asset: Asset; message: IMessage };
+type RoundNotePlayback = NonNullable<
+  MessageVideoProps<IMessage>["roundNotePlayback"]
+>;
 
 export function audioTrackForMessage(
   source: MarmotDownload,
@@ -116,25 +114,36 @@ export function conversationMedia(
   return items;
 }
 
-function useAttachment({ asset, message, presentation }: AttachmentProps) {
-  const { target, item } = asset;
-  const [group, id, source, index] = target;
-  const key = attachmentKey(target);
+function useAttachment({
+  asset,
+  message,
+  presentation,
+}: Omit<AttachmentProps, "asset"> & { asset?: Asset }) {
+  const [group, id, source, index] = asset?.target ?? [];
+  const item = asset?.item;
+  const key = asset ? attachmentKey(asset.target) : "";
   const subscribe = useCallback(
     (notify: () => void) =>
-      presentation.subscribe([group, id, source, index], notify),
+      group !== undefined &&
+      id !== undefined &&
+      source !== undefined &&
+      index !== undefined
+        ? presentation.subscribe([group, id, source, index], notify)
+        : () => undefined,
     [group, id, index, presentation, source],
   );
   const state = useSyncExternalStore(subscribe, () => presentation.state(key));
   const uri = state.kind === "local" ? localUri(state.lease.path) : undefined;
   const shown: IMessage = {
-    _id: key,
+    _id: key || message._id,
+    rowKey: message.rowKey,
     createdAt: message.createdAt,
     user: message.user,
     text: message.text,
-    duration: item.duration ?? undefined,
+    duration: item?.duration ?? undefined,
+    videoNote: item?.round || undefined,
     isMediaUnread: message.isMediaUnread,
-    waveform: item.waveform?.map((level) => level / 31),
+    waveform: item?.waveform?.map((level) => level / 31),
     isDownloadRequired:
       state.kind === "remote" ||
       state.kind === "failed" ||
@@ -145,7 +154,7 @@ function useAttachment({ asset, message, presentation }: AttachmentProps) {
         ? {
             type: "download",
             progress: state.progress,
-            totalBytes: item.size ?? undefined,
+            totalBytes: item?.size ?? undefined,
           }
         : undefined,
   };
@@ -158,36 +167,127 @@ function posterSize(item: Item, max: number) {
   return Math.max(100, Math.min(max * 1.2, max / (ratio || 1)));
 }
 
-function Poster({ item }: { item: Item }) {
-  return (
+function attachmentNotice(state: ReturnType<typeof useAttachment>["state"]) {
+  if (state.kind === "failed") return "voiceDownloadFailed";
+  if (state.kind === "cancelled") return "voiceDownloadCancelled";
+  if (state.kind === "downloading" && state.verifying) return "mediaVerifying";
+}
+function Poster({
+  item,
+  source,
+  timestampBackdrop,
+}: {
+  item: Pick<Item, "name" | "thumbhash">;
+  source?: ImageRef;
+  timestampBackdrop?: boolean;
+}) {
+  const target = useGlassBackdropTarget();
+  const { preferences } = useGlassTheme();
+  const poster = (
     <Image
       accessibilityLabel={item.name}
       style={StyleSheet.absoluteFill}
-      placeholder={item.thumbhash ? { thumbhash: item.thumbhash } : undefined}
+      source={source}
+      contentFit="cover"
+      placeholder={
+        !source && item.thumbhash ? { thumbhash: item.thumbhash } : undefined
+      }
       placeholderContentFit="cover"
       cachePolicy="none"
     />
   );
+  return timestampBackdrop && target && !preferences.reduceTransparency ? (
+    <BlurTargetView ref={target} style={StyleSheet.absoluteFill}>
+      {poster}
+    </BlurTargetView>
+  ) : (
+    poster
+  );
 }
+
+export function VideoTimestampBackground() {
+  const target = useGlassBackdropTarget();
+  const { preferences } = useGlassTheme();
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {!preferences.reduceTransparency && (
+        <BlurView
+          style={StyleSheet.absoluteFill}
+          intensity={18}
+          tint="dark"
+          blurTarget={
+            Platform.OS === "android" ? (target ?? undefined) : undefined
+          }
+          blurMethod={
+            Platform.OS === "android" && target
+              ? "dimezisBlurViewSdk31Plus"
+              : undefined
+          }
+        />
+      )}
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          preferences.reduceTransparency
+            ? styles.opaqueTimestamp
+            : styles.timestampTint,
+        ]}
+      />
+    </View>
+  );
+}
+
+function useVideoFrame(dimensions?: string | null) {
+  const { width, height } = useWindowDimensions();
+  const theme = useChatKitTheme();
+  const match = /^(\d{1,5})x(\d{1,5})$/u.exec(dimensions ?? "");
+  const ratio = match ? Number(match[1]) / Number(match[2]) : 0;
+  const hasRatio = ratio > 0 && Number.isFinite(ratio);
+  const visualWidth = hasRatio
+    ? Math.min(width * 0.67, 300, Math.min(height * 0.5, 380) * ratio)
+    : Math.min(width * 0.67, 220);
+  return {
+    width: visualWidth,
+    height: hasRatio ? visualWidth / ratio : 140,
+    borderRadius: theme.radii.bubble,
+    margin: 0,
+  };
+}
+
+export type PendingVideoFile = {
+  file: Omit<MarmotUpload, "path">;
+  poster?: ImageRef;
+};
+
+export type VideoUpload = {
+  id: string;
+  files: readonly PendingVideoFile[];
+  progress?: number;
+  retry?: () => void;
+};
 
 export function MarmotAttachments({
   group,
   conversation,
   row,
+  upload,
   message,
   presentation,
   gallery,
   foreground,
   visible,
+  timestampBackdrop,
 }: {
   group: string;
   conversation: string;
-  row: MarmotMessage;
+  row?: MarmotMessage;
+  upload?: VideoUpload;
   message: IMessage;
   presentation: AttachmentPresentation;
   gallery: GalleryItem[];
   foreground: boolean;
   visible: boolean;
+  timestampBackdrop: boolean;
 }) {
   const [selected, setSelected] = useState<string>();
   const dialog = useDialog();
@@ -195,9 +295,9 @@ export function MarmotAttachments({
   const { identity } = useLocal();
   const { t } = useTranslation("messages");
   const assets = useMemo(() => {
-    const source = row.sourceId;
+    const source = row?.sourceId;
     const indexed = new Map<number, Asset>();
-    if (!source) return indexed;
+    if (!row || !source) return indexed;
     for (const item of acceptedAttachments(row)) {
       indexed.set(item.index, {
         item,
@@ -212,6 +312,10 @@ export function MarmotAttachments({
   const galleryIndex = gallery.findIndex(
     ({ asset }) => attachmentKey(asset.target) === selected,
   );
+  const pending = !row?.sourceId ? upload : undefined;
+  const entries = pending
+    ? pending.files.map((_, index) => ({ index, outcome: "accepted" as const }))
+    : (row?.attachments ?? []);
 
   function neighbors(index: number): VideoNeighbors | undefined {
     if (index < 0) return;
@@ -224,13 +328,72 @@ export function MarmotAttachments({
     };
   }
   return (
-    <View style={styles.stack}>
-      {row.attachments.map((item) => {
+    <View
+      style={
+        entries.length === 1 &&
+        (message.videoNote ||
+          Array.from(assets.values()).some(({ item }) =>
+            videoFile(item.name, item.type),
+          ) ||
+          pending?.files.some(({ file }) => videoFile(file.name, file.type)))
+          ? undefined
+          : styles.stack
+      }
+    >
+      {entries.map((item) => {
         if (item.outcome === "rejected")
           return (
             <Ink key={item.index}>{t("marmot.mediaReferenceUnavailable")}</Ink>
           );
         const asset = assets.get(item.index);
+        const preview = upload?.files[item.index];
+        const metadata = asset?.item ?? (pending ? preview?.file : undefined);
+        if (metadata && videoFile(metadata.name, metadata.type)) {
+          if (message.isViewOnce) return null;
+          return (
+            <VideoAttachment
+              key={item.index}
+              asset={asset}
+              message={message}
+              dialog={dialog}
+              metadata={metadata}
+              presentation={presentation}
+              poster={preview?.poster}
+              upload={pending}
+              position={
+                message.user._id === identity.publicKey ? "right" : "left"
+              }
+              foreground={foreground}
+              timestampBackdrop={timestampBackdrop}
+              neighbors={
+                asset &&
+                neighbors(
+                  gallery.findIndex(
+                    (entry) =>
+                      attachmentKey(entry.asset.target) ===
+                      attachmentKey(asset.target),
+                  ),
+                )
+              }
+            />
+          );
+        }
+        if (!asset && preview && pending)
+          return (
+            <MessageFile
+              key={item.index}
+              currentMessage={{
+                ...message,
+                _id: pending.id,
+                transfer:
+                  pending.progress === undefined
+                    ? undefined
+                    : { type: "upload", progress: pending.progress },
+                file: { name: preview.file.name, mimeType: preview.file.type },
+              }}
+              position="right"
+            />
+          );
         return (
           asset && (
             <Attachment
@@ -243,13 +406,6 @@ export function MarmotAttachments({
               foreground={foreground}
               visible={visible}
               openPhoto={() => setSelected(attachmentKey(asset.target))}
-              neighbors={neighbors(
-                gallery.findIndex(
-                  (entry) =>
-                    attachmentKey(entry.asset.target) ===
-                    attachmentKey(asset.target),
-                ),
-              )}
             />
           )
         );
@@ -334,8 +490,9 @@ function GalleryPage({
   onPlay(): void;
   neighbors?: VideoNeighbors;
 }) {
+  const isVideo = videoFile(asset.item.name, asset.item.type);
   const { key, state, uri, shown } = useAttachment({
-    asset,
+    asset: isVideo ? undefined : asset,
     presentation,
     message: page.message,
   });
@@ -343,13 +500,15 @@ function GalleryPage({
     if (foreground && photo(asset.item) && state.kind === "cached")
       presentation.prepare(key);
   }, [asset.item, foreground, key, presentation, state.kind]);
-  if (videoFile(asset.item.name, asset.item.type))
+  if (isVideo)
     return (
       <VideoAttachment
         asset={asset}
-        dialog={dialog}
         message={page.message}
+        metadata={asset.item}
+        dialog={dialog}
         presentation={presentation}
+        foreground={foreground}
         frame={{ width: page.width, height: page.height, borderRadius: 0 }}
         onOpen={onPlay}
         neighbors={neighbors}
@@ -370,7 +529,6 @@ function GalleryPage({
 function Attachment({
   dialog,
   openPhoto,
-  neighbors,
   conversation,
   foreground,
   visible,
@@ -378,7 +536,6 @@ function Attachment({
 }: AttachmentProps & {
   dialog: ReturnType<typeof useDialog>;
   openPhoto: () => void;
-  neighbors?: VideoNeighbors;
   conversation: string;
   foreground: boolean;
   visible: boolean;
@@ -395,44 +552,22 @@ function Attachment({
     state.kind === "cached" || state.kind === "local",
     visible,
   );
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const position =
     props.message.user._id === identity.publicKey ? "right" : "left";
   const isPhoto = photo(item);
-  const video = videoFile(item.name, item.type);
   const audio = audioFile(item.name, item.type);
-  const round = video && item.round === true;
-  const visualWidth = round
-    ? Math.min(width, height) * 0.54
-    : Math.min(width * 0.67, 300);
-  const dimensions = /^(\d{1,5})x(\d{1,5})$/u.exec(item.dimensions ?? "");
-  const ratio = dimensions ? Number(dimensions[1]) / Number(dimensions[2]) : 0;
-  const videoWidth =
-    ratio > 0 && Number.isFinite(ratio)
-      ? Math.min(visualWidth, Math.min(height * 0.5, 380) * ratio)
-      : visualWidth;
+  const visualWidth = Math.min(width * 0.67, 300);
   const frame = {
-    width: video && !round ? videoWidth : visualWidth,
-    height: round
-      ? visualWidth
-      : video && ratio > 0 && Number.isFinite(ratio)
-        ? videoWidth / ratio
-        : posterSize(item, visualWidth),
-    borderRadius: round ? visualWidth / 2 : 16,
+    width: visualWidth,
+    height: posterSize(item, visualWidth),
+    borderRadius: 16,
   };
   useEffect(() => {
     if (foreground && state.kind === "cached" && isPhoto)
       presentation.prepare(key);
   }, [foreground, isPhoto, key, presentation, state.kind]);
-  const progress = state.kind === "downloading";
-  const notice =
-    state.kind === "failed"
-      ? t("voiceDownloadFailed")
-      : state.kind === "cancelled"
-        ? t("voiceDownloadCancelled")
-        : progress && state.verifying
-          ? t("mediaVerifying")
-          : undefined;
+  const notice = attachmentNotice(state);
 
   let body;
   if (isPhoto && uri) {
@@ -441,16 +576,6 @@ function Attachment({
         currentMessage={{ ...shown, image: uri }}
         imageStyle={frame}
         onOpen={openPhoto}
-      />
-    );
-  } else if (video) {
-    if (props.message.isViewOnce) return null;
-    body = (
-      <VideoAttachment
-        {...props}
-        dialog={dialog}
-        frame={frame}
-        neighbors={neighbors}
       />
     );
   } else if (isPhoto) {
@@ -519,7 +644,7 @@ function Attachment({
   return (
     <View style={styles.item}>
       {body}
-      {notice && <Ink kind="caption">{notice}</Ink>}
+      {notice && <Ink kind="caption">{t(notice)}</Ink>}
     </View>
   );
 }
@@ -528,180 +653,175 @@ function VideoAttachment({
   asset,
   dialog,
   message,
+  metadata,
   presentation,
+  poster,
+  upload,
+  position,
+  foreground,
   frame,
   onOpen,
   neighbors,
-}: AttachmentProps & {
+  timestampBackdrop,
+}: Omit<AttachmentProps, "asset"> & {
+  asset?: Asset;
   dialog: ReturnType<typeof useDialog>;
-  frame: { width: number; height: number; borderRadius: number };
+  metadata: Item | PendingVideoFile["file"];
+  poster?: ImageRef;
+  upload?: VideoUpload;
+  position?: "left" | "right";
+  foreground: boolean;
+  frame?: { width: number; height: number; borderRadius: number };
   onOpen?: () => void;
   neighbors?: VideoNeighbors;
+  timestampBackdrop?: boolean;
 }) {
-  const { video } = useLocal();
-  const { t, i18n } = useTranslation(["video", "messages", "audio"]);
+  const { video, roundNotes } = useLocal();
+  const { t, i18n } = useTranslation(["video", "messages", "common"]);
   const { reduceMotion } = useTheme();
-  const { item, target } = asset;
-  const { key, state, shown } = useAttachment({ asset, message, presentation });
-  const inline = useStore(video.store, ({ current }) =>
-    current?.presentation === "inline" && mediaId(current.source) === key
-      ? current.player
-      : undefined,
-  );
+  const { state, shown } = useAttachment({ asset, message, presentation });
+  const target = asset?.target;
+  const [group, id, event, index] = target ?? [];
   const [opening, setOpening] = useState(false);
-  const ready = state.kind === "cached" || state.kind === "local";
+  const previewKey = message.rowKey ?? message._id;
+  const [lastPoster, setLastPoster] = useState<{
+    key: IMessage["_id"];
+    image: ImageRef;
+  }>();
+  if (poster && (lastPoster?.key !== previewKey || lastPoster.image !== poster))
+    setLastPoster({ key: previewKey, image: poster });
+  const preview =
+    poster ?? (lastPoster?.key === previewKey ? lastPoster.image : undefined);
+  const round =
+    "round" in metadata ? metadata.round : metadata.presentation === "round";
+  const ready =
+    state.kind === "cached" ||
+    state.kind === "local" ||
+    (!round &&
+      target !== undefined &&
+      preview !== undefined &&
+      state.kind === "checking");
   const busy =
-    opening || state.kind === "checking" || state.kind === "preparing";
-  const transfer = state.kind === "downloading";
-  const label = ready ? t("video:viewer.play") : t("audio:download");
+    opening ||
+    (target !== undefined &&
+      !ready &&
+      (state.kind === "checking" || state.kind === "preparing"));
+  const videoStyle = useVideoFrame(metadata.dimensions);
+  const duration = Number(metadata.duration);
+  const fraction = upload?.progress;
+  const percent =
+    fraction == null
+      ? undefined
+      : new Intl.NumberFormat(i18n.language, { style: "percent" }).format(
+          Math.floor(fraction * 100) / 100,
+        );
+  const acquire = useCallback<NonNullable<RoundNotePlayback["acquire"]>>(
+    (options) => {
+      if (
+        group === undefined ||
+        id === undefined ||
+        event === undefined ||
+        index === undefined
+      )
+        throw new Error("MediaUnavailable");
+      const source = presentation.authorize([group, id, event, index]);
+      if (!source) throw new Error("MediaUnavailable");
+      return roundNotes.acquire(source, options);
+    },
+    [event, group, id, index, presentation, roundNotes],
+  );
 
-  const play = async () => {
+  async function play() {
+    if (!target || busy || !ready) return;
     const source = presentation.authorize(target);
-    if (!source || busy) return;
+    if (!source) return;
     setOpening(true);
-    if (ready) onOpen?.();
+    onOpen?.();
     try {
       const opened = await video.open(
         {
           kind: "attachment",
           source,
-          title: item.name,
-          round: item.round,
-          duration: item.duration,
-          dimensions: item.dimensions,
-          thumbhash: item.thumbhash,
+          title: metadata.name,
+          duration:
+            Number.isFinite(duration) && duration > 0 ? duration : undefined,
+          dimensions: metadata.dimensions,
+          thumbhash: metadata.thumbhash,
         },
-        { download: !ready, neighbors },
+        { neighbors },
       );
-      if (!opened && presentation.authorize(target) && !transfer && ready)
-        dialog.show({
+      if (!opened && presentation.authorize(target))
+        void dialog.show({
           title: t("video:settings.openFailed"),
           tone: "error",
         });
-      else if (opened && !ready) onOpen?.();
     } finally {
       setOpening(false);
     }
-  };
-  return (
-    <Transition.Boundary
-      id={videoOrigin(target)}
-      enabled={!item.round && !reduceMotion && !onOpen}
-      style={[styles.placeholder, frame]}
-    >
-      {inline ? (
-        <InlineVideo player={inline} item={item} />
-      ) : (
-        <>
-          <Poster item={item} />
-          {transfer ? (
-            <VideoTransferOverlay message={shown} />
-          ) : (
-            <Pressable
-              style={styles.videoAction}
-              accessibilityRole="button"
-              accessibilityLabel={label}
-              accessibilityState={{ busy, disabled: busy }}
-              disabled={busy}
-              onPress={() => void play()}
-            >
-              <View style={styles.videoBadge}>
-                {busy ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Icon
-                    name={
-                      ready
-                        ? "play"
-                        : state.kind === "failed"
-                          ? "refresh"
-                          : "download"
-                    }
-                    size={24}
-                    color="#fff"
-                  />
-                )}
-              </View>
-            </Pressable>
-          )}
-        </>
-      )}
-      {(item.duration != null ||
-        (item.size != null && !ready && !item.round)) && (
-        <Ink kind="caption" style={styles.duration}>
-          {[
-            item.duration == null ? undefined : formatDuration(item.duration),
-            item.size == null || ready || item.round
-              ? undefined
-              : formatBytes(item.size, i18n.language),
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </Ink>
-      )}
-    </Transition.Boundary>
-  );
-}
+  }
 
-function InlineVideo({ player, item }: { player: VideoPlayer; item: Item }) {
-  const { video } = useLocal();
-  useEffect(
-    () => () => {
-      if (video.store.getState().current?.player === player) void video.close();
-    },
-    [player, video],
-  );
-  const [firstFrame, setFirstFrame] = useState(false);
-  const { isPlaying } = useEvent(player, "playingChange", {
-    isPlaying: player.playing,
-  });
-  const { currentTime } = useEvent(player, "timeUpdate", {
-    currentTime: player.currentTime,
-    bufferedPosition: 0,
-    currentLiveTimestamp: null,
-    currentOffsetFromLive: null,
-  });
-  const { t } = useTranslation("video");
+  const notice = target ? attachmentNotice(state) : undefined;
   return (
-    <>
-      <VideoView
-        player={player}
-        nativeControls={false}
-        surfaceType="textureView"
-        contentFit="cover"
-        style={StyleSheet.absoluteFill}
-        onFirstFrameRender={() => setFirstFrame(true)}
-      />
-      {!firstFrame && <Poster item={item} />}
-      <Pressable
-        style={styles.videoAction}
-        accessibilityRole="button"
-        accessibilityLabel={t(isPlaying ? "viewer.pause" : "viewer.play")}
-        onPress={() => {
-          if (isPlaying) player.pause();
-          else if (player.currentTime >= player.duration) player.replay();
-          else player.play();
-        }}
+    <View style={styles.item}>
+      <Transition.Boundary
+        id={
+          target ? videoOrigin(target) : String(message.rowKey ?? message._id)
+        }
+        enabled={target !== undefined && !round && !reduceMotion && !onOpen}
+        style={round || onOpen ? undefined : styles.videoOrigin}
       >
-        {!isPlaying && (
-          <View style={styles.videoBadge}>
-            <Icon name="play" size={24} color="#fff" />
-          </View>
-        )}
-      </Pressable>
-      {firstFrame && player.duration > 0 && (
-        <View pointerEvents="none" style={styles.inlineTrack}>
-          <View
-            style={[
-              styles.inlineProgress,
-              {
-                width: `${Math.min(100, (100 * currentTime) / player.duration)}%`,
-              },
-            ]}
-          />
-        </View>
-      )}
-    </>
+        <MessageVideo
+          currentMessage={{
+            ...shown,
+            _id: upload?.id ?? shown._id,
+            duration:
+              Number.isFinite(duration) && duration > 0 ? duration : undefined,
+            videoNote: round,
+            isDownloadRequired:
+              target !== undefined && shown.isDownloadRequired,
+            transfer:
+              fraction === undefined
+                ? shown.transfer
+                : { type: "upload", progress: fraction },
+          }}
+          position={position}
+          poster={
+            <Poster
+              item={metadata}
+              source={preview}
+              timestampBackdrop={timestampBackdrop}
+            />
+          }
+          videoStyle={round ? undefined : [videoStyle, frame]}
+          onOpen={!round && target ? () => void play() : undefined}
+          isPreparing={busy}
+          isPlaybackDisabled={!ready}
+          roundNotePlayback={
+            round
+              ? {
+                  messageId: message._id,
+                  acquire: foreground && ready ? acquire : undefined,
+                  claim: (stop) =>
+                    Boolean(target && presentation.authorize(target)) &&
+                    roundNotes.claim(stop),
+                }
+              : undefined
+          }
+          uploadProgressLabel={percent}
+          retryAction={
+            upload?.retry && {
+              label: t("common:retry"),
+              icon: <Icon name="refresh" size={22} color="#fff" />,
+              onPress: upload.retry,
+            }
+          }
+          transferAccessibilityLabel={
+            percent == null ? undefined : t("common:cancel") + ", " + percent
+          }
+        />
+      </Transition.Boundary>
+      {notice && <Ink kind="caption">{t(`messages:${notice}`)}</Ink>}
+    </View>
   );
 }
 
@@ -709,30 +829,9 @@ const styles = StyleSheet.create({
   stack: { gap: space.xs, padding: space.xs },
   item: { gap: space.xs },
   placeholder: { backgroundColor: "#333438", overflow: "hidden" },
-  videoAction: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  videoBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#0009",
-  },
-  inlineTrack: {
-    position: "absolute",
-    start: "17%",
-    end: "17%",
-    bottom: 20,
-    height: 3,
-    backgroundColor: "#fff5",
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  inlineProgress: { height: 3, backgroundColor: "#fff" },
+  videoOrigin: { alignSelf: "flex-start" },
+  timestampTint: { backgroundColor: "rgba(0,0,0,0.36)" },
+  opaqueTimestamp: { backgroundColor: "#303035" },
   duration: {
     position: "absolute",
     bottom: 8,

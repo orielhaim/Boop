@@ -794,26 +794,494 @@ index 2abe62fd5ccb4a4fcf904429986f470ce360a088..40bb66a6eee80dcd113d4f289ea7c7cf
    const VideoView = expoVideo.VideoView;
    let t1;
    let t2;
+diff --git a/lib/Bubble/BubbleBody.js b/lib/Bubble/BubbleBody.js
+index b5fa9ff..962040f 100644
+--- a/lib/Bubble/BubbleBody.js
++++ b/lib/Bubble/BubbleBody.js
+@@ -11,2 +11,3 @@ import { BubbleMeta, useTimeSpacer } from './BubbleMeta';
+ import { createBubbleStyles } from './styles';
++import { messageRowKey } from '../MessagesContainer/rowStore';
+ /** The bubble's surface: its gradient or tail, and the tint of a quote-jump flash. */
+@@ -42,3 +43,3 @@ function BubbleSurface(t0) {
+   if ($[0] !== bodyColor || $[1] !== cornerStyle || $[2] !== currentMessage || $[3] !== gradientStops || $[4] !== hasGradient || $[5] !== hasShadow || $[6] !== isGroupedWithNext || $[7] !== shadowColor || $[8] !== tailSide || $[9] !== theme) {
+-    t1 = hasGradient && currentMessage ? <GradientBubbleBackground stops={gradientStops} mode={theme.bubble.outgoingGradientMode} messageId={currentMessage._id} bottomGap={isGroupedWithNext ? theme.spacing.withinGroup : theme.spacing.betweenGroups} cornerStyle={cornerStyle} tailSide={tailSide} /> : tailSide && <BubbleTail side={tailSide} color={bodyColor} shadowColor={hasShadow ? shadowColor : undefined} />;
++    t1 = hasGradient && currentMessage ? <GradientBubbleBackground stops={gradientStops} mode={theme.bubble.outgoingGradientMode} messageId={messageRowKey(currentMessage)} bottomGap={isGroupedWithNext ? theme.spacing.withinGroup : theme.spacing.betweenGroups} cornerStyle={cornerStyle} tailSide={tailSide} /> : tailSide && <BubbleTail side={tailSide} color={bodyColor} shadowColor={hasShadow ? shadowColor : undefined} />;
+     $[0] = bodyColor;
+diff --git a/lib/Bubble/BubbleMeta.js b/lib/Bubble/BubbleMeta.js
+index e513fc7..0f17ae6 100644
+--- a/lib/Bubble/BubbleMeta.js
++++ b/lib/Bubble/BubbleMeta.js
+@@ -324,2 +324,9 @@ export function BubbleMeta(t0) {
+     const t4 = bottomContainerStyle?.[position];
++    if (bubble.mediaTimestampBackground) {
++      return <View style={[styles.mediaMeta, t3, t4, styles.customMediaMeta]} pointerEvents="none">
++        {bubble.mediaTimestampBackground}
++        {renderTime("media")}
++        {renderTicks_0("media")}
++      </View>;
++    }
+     let t5;
+diff --git a/lib/Bubble/layout.js b/lib/Bubble/layout.js
+index f768942..c7aa2ab 100644
+--- a/lib/Bubble/layout.js
++++ b/lib/Bubble/layout.js
+@@ -55,3 +55,3 @@ export function useBubbleLayout(props) {
+   const visualPosition = t0;
+-  const isVideoNote = !!currentMessage?.videoNote && !!currentMessage?.video && !currentMessage?.text;
++  const isVideoNote = !!currentMessage?.videoNote && !currentMessage?.text;
+   const isVoiceNote = !!currentMessage?.audio && !currentMessage?.text && !isVideoNote && !currentMessage?.image && !currentMessage?.video && !currentMessage?.location && !props.renderMessageAudio;
+@@ -104,3 +104,4 @@ export function useBubbleLayout(props) {
+   const isGroupedWithNext = t3;
+-  const isMediaBubble = !currentMessage?.text && (!!currentMessage?.image || !!currentMessage?.video || !!currentMessage?.location);
++  const hasCustomMediaTime = !!props.mediaTimestampBackground && !currentMessage?.text?.trim();
++  const isMediaBubble = hasCustomMediaTime || (!currentMessage?.text && (!!currentMessage?.image || !!currentMessage?.video || !!currentMessage?.location));
+   const hasTail = theme.bubble.hasTail && !isGroupedWithNext && !isVideoNote && !isMediaBubble && !isBigEmoji;
+@@ -108,4 +109,4 @@ export function useBubbleLayout(props) {
+   const near = theme.radii.bubbleGrouped;
+-  const top = isGroupedWithPrevious ? near : outer;
+-  const bottom = hasTail ? 0 : isGroupedWithNext ? near : outer;
++  const top = !hasCustomMediaTime && isGroupedWithPrevious ? near : outer;
++  const bottom = hasTail ? 0 : !hasCustomMediaTime && isGroupedWithNext ? near : outer;
+   let t4;
+@@ -161,2 +162,6 @@ export function useBubbleLayout(props) {
+     }
++    if (hasCustomMediaTime) {
++      t6 = "overlay";
++      break bb1;
++    }
+     if (isBigEmoji && !props.renderTime) {
+diff --git a/lib/Bubble/styles.js b/lib/Bubble/styles.js
+index 31092dd..5887749 100644
+--- a/lib/Bubble/styles.js
++++ b/lib/Bubble/styles.js
+@@ -103,2 +103,6 @@ export const createBubbleStyles = theme => {
+     },
++    customMediaMeta: {
++      backgroundColor: 'transparent',
++      overflow: 'hidden'
++    },
+     mediaMetaEnd: {
+diff --git a/lib/Bubble/types.d.ts b/lib/Bubble/types.d.ts
+index 658bc1f..3fa7687 100644
+--- a/lib/Bubble/types.d.ts
++++ b/lib/Bubble/types.d.ts
+@@ -38,2 +38,4 @@ export interface BubbleProps<TMessage extends IMessage> {
+     bottomContainerStyle?: LeftRightStyle<ViewStyle>;
++    /** Draw a custom background under the timestamp and status on uncaptioned media. */
++    mediaTimestampBackground?: React.ReactNode;
+     tickStyle?: StyleProp<TextStyle>;
+diff --git a/lib/Chat/Chat.js b/lib/Chat/Chat.js
+index 1655f17..cce8061 100644
+--- a/lib/Chat/Chat.js
++++ b/lib/Chat/Chat.js
+@@ -2,2 +2,3 @@ import { c as _c } from "react/compiler-runtime";
+ import React, { createRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
++import { messageRowKey } from '../MessagesContainer/rowStore';
+ import { View } from 'react-native';
+@@ -31,3 +32,3 @@ const EMPTY_MESSAGES = [];
+ export function Chat(props) {
+-  const $ = _c(141);
++  const $ = _c(142);
+   const {
+@@ -165,7 +166,8 @@ export function Chat(props) {
+   let t12;
+-  if ($[21] !== highlightStore || $[22] !== messagesContainerRef) {
++  if ($[21] !== highlightStore || $[22] !== messagesContainerRef || $[141] !== messages) {
+     t11 = () => ({
+       scrollToMessage: (messageId, options) => {
++        const message = messages.find(entry => entry._id === messageId);
+         messagesContainerRef.current?.scrollToKey({
+-          key: String(messageId),
++          key: message ? messageRowKey(message) : String(messageId),
+           animated: options?.animated ?? true,
+@@ -178,3 +180,3 @@ export function Chat(props) {
+     });
+-    t12 = [messagesContainerRef, highlightStore];
++    t12 = [messagesContainerRef, highlightStore, messages];
+     $[21] = highlightStore;
+@@ -183,2 +185,3 @@ export function Chat(props) {
+     $[24] = t12;
++    $[141] = messages;
+   } else {
+diff --git a/lib/Chat/useMessageNavigation.js b/lib/Chat/useMessageNavigation.js
+index 87a57cd..45cba81 100644
+--- a/lib/Chat/useMessageNavigation.js
++++ b/lib/Chat/useMessageNavigation.js
+@@ -3,2 +3,3 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
+ import { createMessageHighlightStore } from '../components/messageHighlight';
++import { messageRowKey } from '../MessagesContainer/rowStore';
+ /**
+@@ -40,7 +41,6 @@ export function useMessageNavigation(t0) {
+     t4 = messageId_0 => {
+-      if (!messagesRef.current.some(message_0 => message_0._id === messageId_0)) {
+-        return;
+-      }
++      const message = messagesRef.current.find(entry => entry._id === messageId_0);
++      if (!message) return;
+       messagesContainerRef.current?.scrollToKey({
+-        key: String(messageId_0),
++        key: messageRowKey(message),
+         animated: true,
+diff --git a/lib/MessageVideo/ManagedRoundNote.js b/lib/MessageVideo/ManagedRoundNote.js
+new file mode 100644
+index 0000000..ac5ac6e
+--- /dev/null
++++ b/lib/MessageVideo/ManagedRoundNote.js
+@@ -0,0 +1,68 @@
++import React, { useLayoutEffect, useState } from 'react';
++import { useIsMessageViewable, useMediaPlaybackController } from '../components/mediaPlayback';
++import { RoundNotePlayer } from './RoundNotePlayer';
++import { expoVideo } from './videoPlayers';
++
++/** Keep the resolved source and native player together for the lifetime of the row. */
++export function ManagedRoundNote({ acquire, fallback, ...props }) {
++  const controller = useMediaPlaybackController();
++  const visible = useIsMessageViewable(props.message.rowKey ?? props.messageId);
++  const shouldPrepare = !controller || visible === true;
++  const [loaded, setLoaded] = useState();
++  useLayoutEffect(() => {
++    if (!shouldPrepare) return;
++    const abort = new AbortController();
++    let handle;
++    let deadline;
++    let closeTask;
++    const player = expoVideo.createVideoPlayer(null);
++    player.muted = true;
++    player.audioMixingMode = 'doNotMix';
++    player.keepScreenOnWhilePlaying = false;
++
++    const invalidate = () => {
++      if (closeTask) return closeTask;
++      abort.abort();
++      player.pause();
++      closeTask = (async () => {
++        try {
++          await loading.catch(() => undefined);
++          await player.replaceAsync(null);
++        } finally {
++          try {
++            deadline?.remove();
++            player.release();
++          } finally {
++            await handle?.release();
++          }
++        }
++      })().catch(() => undefined);
++      return closeTask;
++    };
++    const revoke = () => {
++      setLoaded(current => current?.player === player ? undefined : current);
++      return invalidate();
++    };
++    const loading = Promise.resolve().then(async () => {
++      if (abort.signal.aborted) return;
++      handle = await acquire({ signal: abort.signal, invalidate: revoke });
++      if (abort.signal.aborted) return;
++      if (handle.expiresAt != null) {
++        if (handle.expiresAt <= Date.now() || typeof player.setPlaybackDeadline !== 'function') {
++          throw new Error('Round note deadline unavailable');
++        }
++        deadline = player.addListener('playbackDeadlineExpired', () => {
++          void revoke();
++        });
++        player.setPlaybackDeadline(handle.expiresAt);
++      }
++      await player.replaceAsync({ uri: handle.uri, useCaching: false });
++      if (!abort.signal.aborted) setLoaded({ acquire, player, uri: handle.uri, signal: abort.signal });
++    });
++    void loading.catch(revoke);
++    return () => { void invalidate(); };
++  }, [acquire, shouldPrepare]);
++
++  if (!shouldPrepare || !loaded || loaded.acquire !== acquire || loaded.signal.aborted) return fallback;
++  return <RoundNotePlayer {...props} uri={loaded.uri} ownedPlayer={loaded.player} claim={props.claim && (stop => !loaded.signal.aborted && props.claim(stop))} />;
++}
+diff --git a/lib/MessageVideo/VideoPoster.js b/lib/MessageVideo/VideoPoster.js
+new file mode 100644
+index 0000000..f953b91
+--- /dev/null
++++ b/lib/MessageVideo/VideoPoster.js
+@@ -0,0 +1,38 @@
++import React from 'react';
++import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
++import { useLabels } from '../hooks/useLabels';
++import { MEDIA_BUTTON_SIZE, MEDIA_LOADER_BACKGROUND, MEDIA_LOADER_ICON, MediaInfoPill, ROUND_BUTTON_SIZE } from '../components/MediaLoader';
++import { transferState } from '../components/mediaTransfer';
++import { suppressPressAfterHold } from '../components/messagePress';
++import { RadialProgress } from '../components/RadialProgress';
++import { VideoNoteMeta } from '../components/VideoNoteOverlay';
++import { styles } from './styles';
++import { VideoTransferOverlay } from './VideoTransferOverlay';
++
++export function VideoPoster({ message, poster, style, onOpen, isRound, isOutgoing, isPreparing, isPlaybackDisabled, uploadProgressLabel, transferAccessibilityLabel, retryAction }) {
++  const labels = useLabels();
++  const transferring = !!transferState(message);
++  const duration = message.duration;
++  const action = retryAction?.onPress ?? (isPlaybackDisabled ? undefined : onOpen);
++  return (
++    <View>
++      <View style={[isRound ? styles.note : styles.video, style, { overflow: 'hidden' }]}>
++        <View style={StyleSheet.absoluteFill} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{poster}</View>
++        {!transferring && (isPreparing ? (
++          <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.noteButton]}><ActivityIndicator color={MEDIA_LOADER_ICON} /></View>
++        ) : action ? (
++          <Pressable style={[StyleSheet.absoluteFill, styles.noteButton]} onPress={action} accessibilityRole="button" accessibilityLabel={retryAction?.label ?? labels.video} {...suppressPressAfterHold}>
++            <RadialProgress icon="play" center={retryAction?.icon} size={isRound ? ROUND_BUTTON_SIZE : MEDIA_BUTTON_SIZE} color={MEDIA_LOADER_ICON} backgroundColor={MEDIA_LOADER_BACKGROUND} />
++          </Pressable>
++        ) : null)}
++        <VideoTransferOverlay message={message} inFrame isRound={isRound} progressLabel={uploadProgressLabel} accessibilityLabel={transferAccessibilityLabel} />
++        {!isRound && !transferring && duration > 0 && (
++          <View pointerEvents="none" style={styles.videoPill}>
++            <MediaInfoPill label={`${Math.floor(duration / 60)}:${String(Math.floor(duration % 60)).padStart(2, '0')}`} />
++          </View>
++        )}
++      </View>
++      {isRound && <VideoNoteMeta duration={duration} isWatched={!message.isMediaUnread} isPlaying={false} isOutgoing={!!isOutgoing} />}
++    </View>
++  );
++}
+diff --git a/lib/MessageVideo/useRoundNotePlayback.js b/lib/MessageVideo/useRoundNotePlayback.js
+index 18be0a6..0be1fed 100644
+--- a/lib/MessageVideo/useRoundNotePlayback.js
++++ b/lib/MessageVideo/useRoundNotePlayback.js
+@@ -13,4 +13,4 @@ import { setPlayer } from './videoPlayers';
+  */
+-export const useRoundNotePlayback = t0 => {
+-  const $ = _c(109);
++export const useRoundNotePlayback = (t0, claim) => {
++  const $ = _c(110);
+   const {
+@@ -45,2 +45,3 @@ export const useRoundNotePlayback = t0 => {
+   const rateRef = useRef(1);
++  const releaseClaim = useRef();
+   const total = player.duration || duration || 0;
+@@ -127,2 +128,4 @@ export const useRoundNotePlayback = t0 => {
+     t6 = () => {
++      releaseClaim.current?.();
++      releaseClaim.current = undefined;
+       stopRaf();
+@@ -194,4 +197,10 @@ export const useRoundNotePlayback = t0 => {
+   let t9;
+-  if ($[27] !== onStop || $[28] !== player || $[29] !== playerId || $[30] !== rate || $[31] !== startTicking) {
++  if ($[27] !== onStop || $[28] !== player || $[29] !== playerId || $[30] !== rate || $[31] !== startTicking || $[109] !== claim) {
+     t9 = () => {
++      const release = claim?.(() => {
++        releasePlayback(playerId);
++        onStop('replaced');
++      });
++      if (release === false) return false;
++      releaseClaim.current = release;
+       try {
+@@ -202,3 +211,5 @@ export const useRoundNotePlayback = t0 => {
+       } catch {
+-        return;
++        releaseClaim.current?.();
++        releaseClaim.current = undefined;
++        return false;
+       }
+@@ -208,2 +219,3 @@ export const useRoundNotePlayback = t0 => {
+       startTicking();
++      return true;
+     };
+@@ -215,2 +227,3 @@ export const useRoundNotePlayback = t0 => {
+     $[32] = t9;
++    $[109] = claim;
+   } else {
+@@ -266,4 +279,4 @@ export const useRoundNotePlayback = t0 => {
+       chrome.wrapAlpha.set(0);
++      if (!resume()) return;
+       becomeCurrent();
+-      resume();
+       if (isIncoming && isMediaUnread) {
+@@ -430,2 +443,4 @@ export const useRoundNotePlayback = t0 => {
+       releasePlayback(playerId);
++      releaseClaim.current?.();
++      releaseClaim.current = undefined;
+     };
+diff --git a/lib/MessagesContainer/components/Item/index.js b/lib/MessagesContainer/components/Item/index.js
+index 389c151..f7c09da 100644
+--- a/lib/MessagesContainer/components/Item/index.js
++++ b/lib/MessagesContainer/components/Item/index.js
+@@ -10,3 +10,3 @@ import { isSameDay } from '../../../utils';
+ import { MessageRowConfigContext, useRowSettings } from '../../rowConfig';
+-import { useRowEntry } from '../../rowStore';
++import { messageRowKey, useRowEntry } from '../../rowStore';
+ import { DAY_HANDOFF_OFFSET, dayPositionScreenTop, findDayPosition } from '../dayLayout';
+@@ -216,3 +216,3 @@ const ItemComponent = props => {
+   const unreadSeparator = t4;
+-  const t5 = String(props.currentMessage._id);
++  const t5 = messageRowKey(props.currentMessage);
+   let t6;
+@@ -263,6 +263,7 @@ const MessageRowComponent = t0 => {
+   const entry = useRowEntry(id);
++  const messageId = entry?.message._id;
+   let t1;
+-  if ($[0] !== id) {
+-    t1 = targets => targets.firstUnreadMessageId != null && String(targets.firstUnreadMessageId) === id;
+-    $[0] = id;
++  if ($[0] !== messageId) {
++    t1 = targets => targets.firstUnreadMessageId != null && String(targets.firstUnreadMessageId) === String(messageId);
++    $[0] = messageId;
+     $[1] = t1;
+diff --git a/lib/MessagesContainer/rowStore.js b/lib/MessagesContainer/rowStore.js
+index 4aae41d..e5a32e5 100644
+--- a/lib/MessagesContainer/rowStore.js
++++ b/lib/MessagesContainer/rowStore.js
+@@ -10,1 +10,2 @@ import { isSameDay, isSameGroup } from '../utils';
+ const EMPTY_MESSAGE = Object.freeze({});
++export const messageRowKey = (message) => message.rowKey ?? String(message._id);
+@@ -49,3 +50,3 @@ export class MessageRowStore {
+       }
+-      const id = String(message._id);
++      const id = messageRowKey(message);
+       seen.add(id);
+@@ -138,3 +139,3 @@ export function sameOrder(previous, messages) {
+   if (!previous || previous.length !== messages.length) return messages;
+-  for (let i = 0; i < messages.length; i++) if (previous[i]._id !== messages[i]._id) return messages;
++  for (let i = 0; i < messages.length; i++) if (previous[i]._id !== messages[i]._id || messageRowKey(previous[i]) !== messageRowKey(messages[i])) return messages;
+   return previous;
+diff --git a/lib/MessagesContainer/useDaysPositions.js b/lib/MessagesContainer/useDaysPositions.js
+index 37dcbdc..cd34202 100644
+--- a/lib/MessagesContainer/useDaysPositions.js
++++ b/lib/MessagesContainer/useDaysPositions.js
+@@ -3,2 +3,3 @@ import { useEffect, useMemo } from 'react';
+ import { isSameDay } from '../utils';
++import { messageRowKey } from './rowStore';
+ /** Feeds `daysPositions`, the floating day header's map of where each day starts. */
+@@ -21,3 +22,3 @@ export function useDaysPositions(t0) {
+       if (!previous || !isSameDay(messages[i], previous)) {
+-        ids.push(String(messages[i]._id));
++        ids.push(messageRowKey(messages[i]));
+       }
+diff --git a/lib/MessagesContainer/useListMetrics.js b/lib/MessagesContainer/useListMetrics.js
+index bc0ebd7..8f7c536 100644
+--- a/lib/MessagesContainer/useListMetrics.js
++++ b/lib/MessagesContainer/useListMetrics.js
+@@ -5,2 +5,3 @@ import { CONTENT_PADDING_BOTTOM } from './listState';
+ import { createListCellTransition } from './listTransitions';
++import { messageRowKey } from './rowStore';
+ const LAYOUT_SETTLE_MS = 500;
+@@ -162,3 +163,3 @@ export function useRowsHeight(isListLaidOut, listState, rowsHeight, orderedData)
+       if (lastMessage) {
+-        const lastId = String(lastMessage._id);
++        const lastId = messageRowKey(lastMessage);
+         const position = state.positionByKey(lastId);
+diff --git a/lib/MessagesContainer/useMessageRows.js b/lib/MessagesContainer/useMessageRows.js
+index bdc04ad..6c2efc1 100644
+--- a/lib/MessagesContainer/useMessageRows.js
++++ b/lib/MessagesContainer/useMessageRows.js
+@@ -5,2 +5,2 @@ import { MessageRow } from './components/Item';
+ import { useStableRowConfig } from './rowConfig';
+-import { MessageRowStore, sameOrder } from './rowStore';
++import { MessageRowStore, messageRowKey, sameOrder } from './rowStore';
+@@ -192,3 +192,3 @@ export function useMessageRows(props, sharedValues) {
+   const renderItem = _temp2;
+-  const keyExtractor = _temp3;
++  const keyExtractor = messageRowKey;
+   let t13;
+@@ -215,5 +215,2 @@ export function useMessageRows(props, sharedValues) {
+ }
+-function _temp3(item_0) {
+-  return String(item_0._id);
+-}
+ function _temp2(t0) {
+@@ -222,3 +219,3 @@ function _temp2(t0) {
+   } = t0;
+-  return <MessageRow id={String(item._id)} />;
++  return <MessageRow id={messageRowKey(item)} />;
+ }
+diff --git a/lib/MessagesContainer/viewability.js b/lib/MessagesContainer/viewability.js
+index a30f144..3487349 100644
+--- a/lib/MessagesContainer/viewability.js
++++ b/lib/MessagesContainer/viewability.js
+@@ -6,2 +6,3 @@ import { MediaPlaybackContext } from '../components/mediaPlayback';
+ const ROW_ON_SCREEN_CONFIG = {
++  id: 'chat-kit-visible-messages',
+   itemVisiblePercentThreshold: 0
+@@ -26,3 +27,4 @@ function createViewabilityRelay(initialMediaController, initialConsumer) {
+     }
+-    mediaController?.setViewableMessages(ids);
++    const stableKeys = viewableItems.flatMap(({ item }) => item?.rowKey == null ? [] : [item.rowKey]);
++    mediaController?.setViewableMessages(stableKeys.length ? [...ids, ...stableKeys] : ids);
+     markRowsSeen(ids);
+@@ -72,2 +74,3 @@ export function useViewabilityPairs(listProps, markRowsSeen) {
+             viewabilityConfig: listProps.viewabilityConfig ?? {
++              id: 'chat-kit-consumer-viewability',
+               viewAreaCoveragePercentThreshold: 0
+diff --git a/lib/components/RadialProgress.d.ts b/lib/components/RadialProgress.d.ts
+index 52aaf24..9e3d846 100644
+--- a/lib/components/RadialProgress.d.ts
++++ b/lib/components/RadialProgress.d.ts
+@@ -61,2 +61,4 @@ export interface RadialProgressProps {
+     glyphSize?: number;
++    /** Replaces the glyph and keeps a determinate progress ring fixed at twelve o'clock. */
++    center?: React.ReactNode;
+     style?: StyleProp<ViewStyle>;
+diff --git a/lib/components/RadialProgress.js b/lib/components/RadialProgress.js
+index 03f1e20..05508ae 100644
+--- a/lib/components/RadialProgress.js
++++ b/lib/components/RadialProgress.js
+@@ -549,3 +549,3 @@ function FallbackRing(t0) {
+ export function RadialProgress(t0) {
+-  const $ = _c(58);
++  const $ = _c(61);
+   const {
+@@ -558,3 +558,4 @@ export function RadialProgress(t0) {
+     glyphSize,
+-    style
++    style,
++    center
+   } = t0;
+@@ -677,3 +678,4 @@ export function RadialProgress(t0) {
+   });
+-  const frame = useDerivedValue(() => radialFrame(current.value, next.value, t.value, saved.value, arc.value, rad.value, size, isMini));
++  const hasCenter = center != null;
++  const frame = useDerivedValue(() => radialFrame(current.value, next.value, t.value, saved.value, arc.value, hasCenter ? RAD_OFFSET_START : rad.value, size, isMini));
+   const arrowProps = useAnimatedProps(() => {
+@@ -689,3 +691,3 @@ export function RadialProgress(t0) {
+       d: r_0.cross || "M0 0",
+-      opacity: r_0.crossAlpha
++      opacity: hasCenter ? 0 : r_0.crossAlpha
+     };
+@@ -814,4 +816,4 @@ export function RadialProgress(t0) {
+   let t20;
+-  if ($[46] !== color || $[47] !== frame || $[48] !== isMini || $[49] !== size || $[50] !== strokeWidth) {
+-    t20 = !Svg && <><FallbackRing frame={frame} color={color} width={strokeWidth} size={size} isMini={isMini} />{[0, 1, 2].map(index => <FallbackStroke key={`arrow${index}`} frame={frame} isCross={false} index={index} color={color} width={strokeWidth} />)}{[0, 1].map(index_0 => <FallbackStroke key={`cross${index_0}`} frame={frame} isCross={true} index={index_0} color={color} width={strokeWidth} />)}</>;
++  if ($[46] !== color || $[47] !== frame || $[48] !== isMini || $[49] !== size || $[50] !== strokeWidth || $[58] !== hasCenter) {
++    t20 = !Svg && <><FallbackRing frame={frame} color={color} width={strokeWidth} size={size} isMini={isMini} />{[0, 1, 2].map(index => <FallbackStroke key={`arrow${index}`} frame={frame} isCross={false} index={index} color={color} width={strokeWidth} />)}{!hasCenter && [0, 1].map(index_0 => <FallbackStroke key={`cross${index_0}`} frame={frame} isCross={true} index={index_0} color={color} width={strokeWidth} />)}</>;
+     $[46] = color;
+@@ -822,2 +824,3 @@ export function RadialProgress(t0) {
+     $[51] = t20;
++    $[58] = hasCenter;
+   } else {
+@@ -826,4 +829,4 @@ export function RadialProgress(t0) {
+   let t21;
+-  if ($[52] !== t13 || $[53] !== t14 || $[54] !== t18 || $[55] !== t19 || $[56] !== t20) {
+-    t21 = <View pointerEvents="none" style={t13}>{t14}{t18}{t19}{t20}</View>;
++  if ($[52] !== t13 || $[53] !== t14 || $[54] !== t18 || $[55] !== t19 || $[56] !== t20 || $[59] !== center || $[60] !== hasCenter) {
++    t21 = <View pointerEvents="none" style={t13}>{t14}{!hasCenter && t18}{t19}{t20}{hasCenter && <View style={[StyleSheet.absoluteFill, styles.center]}>{center}</View>}</View>;
+     $[52] = t13;
+@@ -834,2 +837,4 @@ export function RadialProgress(t0) {
+     $[57] = t21;
++    $[59] = center;
++    $[60] = hasCenter;
+   } else {
 diff --git a/lib/MessageVideo/RoundNotePlayer.js b/lib/MessageVideo/RoundNotePlayer.js
-index 69fa2d02a2a1e6af91f4866ef6a7bbf084d916ec..035f118d6685edd8a9303a290e31e47dad7d387c 100644
+index 69fa2d0..5866ec4 100644
 --- a/lib/MessageVideo/RoundNotePlayer.js
 +++ b/lib/MessageVideo/RoundNotePlayer.js
-@@ -6,7 +6,7 @@ import Animated, { runOnJS } from 'react-native-reanimated';
- import { useRaiseToListen } from '../components/earpiece';
- import { isRemoteUri } from '../components/mediaDownload';
+@@ -8,3 +8,3 @@ import { isRemoteUri } from '../components/mediaDownload';
  import { MEDIA_LOADER_BACKGROUND, MEDIA_LOADER_ICON, ROUND_BUTTON_SIZE } from '../components/MediaLoader';
 -import { detachRoundNoteFromRow, releasePlayback, useIsNoteFloating, useNotePlaybackOptions, useReportNoteGrown, useReportNowPlaying } from '../components/mediaPlayback';
 +import { detachRoundNoteFromRow, releasePlayback, useIsNoteFloating, useMediaPlaybackController, useNotePlaybackOptions, useReportNoteGrown, useReportNowPlaying } from '../components/mediaPlayback';
  import { transferState, useMediaTransfer } from '../components/mediaTransfer';
- import { PRESS_HOLD_MS } from '../components/messagePress';
- import { RadialProgress } from '../components/RadialProgress';
-@@ -33,7 +33,23 @@ import { expoVideo, playerTime } from './videoPlayers';
- const ACTIVATE = [{
-   name: 'activate'
+@@ -35,4 +35,21 @@ const ACTIVATE = [{
  }];
 -export const RoundNotePlayer = t0 => {
+-  const $ = _c(140);
 +export function RoundNotePlayer(props) {
 +  const controller = useMediaPlaybackController();
++  if (props.ownedPlayer) return <RoundNoteView {...props} />;
 +  return controller?.getOptions().isFloatingRoundNoteEnabled === false
 +    ? <OwnedRoundNotePlayer {...props} />
 +    : <RoundNoteView {...props} />;
@@ -829,22 +1297,26 @@ index 69fa2d02a2a1e6af91f4866ef6a7bbf084d916ec..035f118d6685edd8a9303a290e31e47d
 +
 +const RoundNoteView = t0 => {
 +  const autoPlay = t0.autoPlay;
-   const $ = _c(140);
++  const $ = _c(143);
    const {
-     uri,
-@@ -80,7 +96,7 @@ export const RoundNotePlayer = t0 => {
-     player,
-     isPlayerLoading,
+@@ -50,5 +67,7 @@ export const RoundNotePlayer = t0 => {
+     isViewOnce: t1,
+-    transcription
++    transcription,
++    poster
+   } = t0;
+   const isViewOnce = t1 === undefined ? false : t1;
++  const [firstFrame, setFirstFrame] = useState(false);
+   const {
+@@ -82,3 +101,3 @@ export const RoundNotePlayer = t0 => {
      bufferProgress
 -  } = useNotePlayer(uri, messageId, isAutoplay, duration);
 +  } = useNotePlayer(uri, messageId, isAutoplay, duration, t0.ownedPlayer);
    let t3;
-   if ($[2] !== message) {
-     t3 = transferState(message);
-@@ -148,6 +164,13 @@ export const RoundNotePlayer = t0 => {
-     playFromStart,
+@@ -149,3 +168,10 @@ export const RoundNotePlayer = t0 => {
      onPress
-   } = useRoundNotePlayback(t4);
+-  } = useRoundNotePlayback(t4);
++  } = useRoundNotePlayback(t4, t0.claim);
 +  const didStart = useRef(false);
 +  useEffect(() => {
 +    if (autoPlay && !didStart.current) {
@@ -853,8 +1325,33 @@ index 69fa2d02a2a1e6af91f4866ef6a7bbf084d916ec..035f118d6685edd8a9303a290e31e47d
 +    }
 +  }, [autoPlay, playFromStart]);
    useReportNoteGrown(messageId, isGrown, timeShift);
-   let t5;
-   if ($[16] !== playerId || $[17] !== reset) {
+@@ -422,4 +448,8 @@ export const RoundNotePlayer = t0 => {
+   let t28;
+-  if ($[75] !== liftEpoch || $[76] !== videoProps || $[77] !== viewPlayer) {
+-    t28 = <VideoView key={liftEpoch} style={StyleSheet.absoluteFill} player={viewPlayer} fullscreenOptions={t27} allowsPictureInPicture={false} nativeControls={false} contentFit="cover" {...videoProps} />;
++  if ($[75] !== liftEpoch || $[76] !== videoProps || $[77] !== viewPlayer || $[140] !== !!poster) {
++    const firstFrameProps = poster ? { onFirstFrameRender: (...args) => {
++      setFirstFrame(true);
++      videoProps?.onFirstFrameRender?.(...args);
++    } } : undefined;
++    t28 = <VideoView key={liftEpoch} style={StyleSheet.absoluteFill} player={viewPlayer} fullscreenOptions={t27} allowsPictureInPicture={false} nativeControls={false} contentFit="cover" {...videoProps} {...firstFrameProps} />;
+     $[75] = liftEpoch;
+@@ -428,2 +458,3 @@ export const RoundNotePlayer = t0 => {
+     $[78] = t28;
++    $[140] = !!poster;
+   } else {
+@@ -460,4 +491,4 @@ export const RoundNotePlayer = t0 => {
+   let t32;
+-  if ($[94] !== t22 || $[95] !== t23 || $[96] !== t24 || $[97] !== t25 || $[98] !== t26 || $[99] !== t28 || $[100] !== t30 || $[101] !== t31) {
+-    t32 = <View accessible={true} onAccessibilityTap={t22} accessibilityActions={ACTIVATE} onAccessibilityAction={t23} accessibilityRole="button" accessibilityState={t24} accessibilityLabel={t25} accessibilityHint={t26} style={StyleSheet.absoluteFill}>{t28}{t30}{t31}</View>;
++  if ($[94] !== t22 || $[95] !== t23 || $[96] !== t24 || $[97] !== t25 || $[98] !== t26 || $[99] !== t28 || $[100] !== t30 || $[101] !== t31 || $[141] !== poster || $[142] !== firstFrame) {
++    t32 = <View accessible={true} onAccessibilityTap={t22} accessibilityActions={ACTIVATE} onAccessibilityAction={t23} accessibilityRole="button" accessibilityState={t24} accessibilityLabel={t25} accessibilityHint={t26} style={StyleSheet.absoluteFill}>{t28}{!firstFrame && poster && <View pointerEvents="none" style={StyleSheet.absoluteFill}>{poster}</View>}{t30}{t31}</View>;
+     $[94] = t22;
+@@ -471,2 +502,4 @@ export const RoundNotePlayer = t0 => {
+     $[102] = t32;
++    $[141] = poster;
++    $[142] = firstFrame;
+   } else {
 diff --git a/lib/MessageVideo/VideoTransferOverlay.d.ts b/lib/MessageVideo/VideoTransferOverlay.d.ts
 index 81ae1efa6a4a02db0381f4144924cd80f63ff903..1c309ca01ff867ebe5d8dca48b9a6f6270ee3944 100644
 --- a/lib/MessageVideo/VideoTransferOverlay.d.ts
@@ -868,60 +1365,124 @@ index 81ae1efa6a4a02db0381f4144924cd80f63ff903..1c309ca01ff867ebe5d8dca48b9a6f62
  //# sourceMappingURL=VideoTransferOverlay.d.ts.map
 \ No newline at end of file
 diff --git a/lib/MessageVideo/VideoTransferOverlay.js b/lib/MessageVideo/VideoTransferOverlay.js
-index 71f7f8b034d1f8f195caabb9232d0a3e64f6a7c7..a4b3f5dbe0751a516e171d45bfd39b0e2159460b 100644
+index 71f7f8b..5653930 100644
 --- a/lib/MessageVideo/VideoTransferOverlay.js
 +++ b/lib/MessageVideo/VideoTransferOverlay.js
-@@ -14,7 +14,7 @@ import { styles } from './styles';
+@@ -2,4 +2,4 @@ import { c as _c } from "react/compiler-runtime";
+ import React, { useState } from 'react';
+-import { Pressable, StyleSheet, View } from 'react-native';
+-import { MEDIA_BUTTON_SIZE, MEDIA_LOADER_BACKGROUND, MEDIA_LOADER_ICON, MediaInfoPill, transferLabel } from '../components/MediaLoader';
++import { Pressable, StyleSheet, Text, View } from 'react-native';
++import { MEDIA_BUTTON_SIZE, MEDIA_LOADER_BACKGROUND, MEDIA_LOADER_ICON, MediaInfoPill, ROUND_BUTTON_SIZE, transferLabel } from '../components/MediaLoader';
+ import { transferState, useMediaTransfer } from '../components/mediaTransfer';
+@@ -14,5 +14,5 @@ import { styles } from './styles';
  export const VideoTransferOverlay = t0 => {
-   const $ = _c(15);
+-  const $ = _c(15);
++  const $ = _c(18);
    const {
 -    message
-+    message, accessibilityLabel
++    message, accessibilityLabel, inFrame, isRound, progressLabel
    } = t0;
-   const mediaTransfer = useMediaTransfer();
-   const state = transferState(message);
-@@ -34,7 +34,7 @@ export const VideoTransferOverlay = t0 => {
-     t1 = $[0];
+@@ -27,7 +27,8 @@ export const VideoTransferOverlay = t0 => {
    }
+-  const label = message.transfer ? transferLabel(state?.progress ?? 0, message.transfer.totalBytes) : null;
++  const label = message.transfer && progressLabel == null ? transferLabel(state?.progress ?? 0, message.transfer.totalBytes) : null;
+   let t1;
+-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
+-    t1 = [StyleSheet.absoluteFill, styles.videoOverlay];
++  if ($[15] !== inFrame) {
++    t1 = [StyleSheet.absoluteFill, inFrame ? styles.noteButton : styles.videoOverlay];
+     $[0] = t1;
++    $[15] = inFrame;
+   } else {
+@@ -36,3 +37,3 @@ export const VideoTransferOverlay = t0 => {
    const t2 = state ? "auto" : "none";
 -  const t3 = state?.icon === "cancel" ? "cancel" : "download video";
 +  const t3 = accessibilityLabel ?? (state?.icon === "cancel" ? "cancel" : "download video");
    let t4;
-   if ($[1] !== mediaTransfer || $[2] !== message) {
-     t4 = () => {
-@@ -73,7 +73,7 @@ export const VideoTransferOverlay = t0 => {
-   }
-   let t9;
+@@ -57,4 +58,4 @@ export const VideoTransferOverlay = t0 => {
+   let t7;
+-  if ($[4] !== t5 || $[5] !== t6) {
+-    t7 = <RadialProgress icon={t5} progress={t6} size={MEDIA_BUTTON_SIZE} color={MEDIA_LOADER_ICON} backgroundColor={MEDIA_LOADER_BACKGROUND} />;
++  if ($[4] !== t5 || $[5] !== t6 || $[16] !== isRound || $[17] !== progressLabel) {
++    t7 = <RadialProgress icon={t5} progress={t6} size={isRound ? ROUND_BUTTON_SIZE : MEDIA_BUTTON_SIZE} color={MEDIA_LOADER_ICON} backgroundColor={MEDIA_LOADER_BACKGROUND} center={state && progressLabel != null ? <Text style={percentStyle}>{progressLabel}</Text> : undefined} />;
+     $[4] = t5;
+@@ -62,2 +63,4 @@ export const VideoTransferOverlay = t0 => {
+     $[6] = t7;
++    $[16] = isRound;
++    $[17] = progressLabel;
+   } else {
+@@ -75,3 +78,3 @@ export const VideoTransferOverlay = t0 => {
    if ($[9] !== t2 || $[10] !== t3 || $[11] !== t4 || $[12] !== t7 || $[13] !== t8) {
 -    t9 = <Pressable style={t1} pointerEvents={t2} accessibilityRole="button" accessibilityLabel={t3} onPress={t4}>{t7}{t8}</Pressable>;
 +    t9 = <Pressable style={t1} pointerEvents={t2} accessibilityRole={state ? "button" : undefined} accessibilityElementsHidden={!state} importantForAccessibility={state ? "yes" : "no-hide-descendants"} accessibilityLabel={state ? t3 : undefined} onPress={t4}>{t7}{t8}</Pressable>;
      $[9] = t2;
-     $[10] = t3;
-     $[11] = t4;
+@@ -87,2 +90,3 @@ export const VideoTransferOverlay = t0 => {
+ };
++const percentStyle = { color: MEDIA_LOADER_ICON, fontSize: 12, fontWeight: '600', fontVariant: ['tabular-nums'] };
+ //# sourceMappingURL=VideoTransferOverlay.js.map
+\ No newline at end of file
 diff --git a/lib/MessageVideo/index.js b/lib/MessageVideo/index.js
-index 8f55708fab33770b32a3c3fee2702fc8753456b9..1a168fb587ce0e7b747c004b65f181f3cbf175a1 100644
+index 8f55708..22bba02 100644
 --- a/lib/MessageVideo/index.js
 +++ b/lib/MessageVideo/index.js
-@@ -18,7 +18,7 @@ export function MessageVideo(t0) {
-     position: t1,
-     containerStyle,
+@@ -13,2 +13,4 @@ import { isExpoVideoAvailable, isRoundNotePlayerAvailable, videoPlayerKey } from
+ import { VideoTransferOverlay } from './VideoTransferOverlay';
++import { ManagedRoundNote } from './ManagedRoundNote';
++import { VideoPoster } from './VideoPoster';
+ export function MessageVideo(t0) {
+@@ -20,3 +22,3 @@ export function MessageVideo(t0) {
      videoStyle,
 -    videoProps
-+    videoProps, autoPlay
++    videoProps, autoPlay, onOpen, poster, isPreparing, isPlaybackDisabled, uploadProgressLabel, transferAccessibilityLabel, retryAction, roundNotePlayback
    } = t0;
-   const position = t1 === undefined ? "left" : t1;
-   const {
-@@ -62,8 +62,8 @@ export function MessageVideo(t0) {
-     t6 = $[6];
-   }
+@@ -32,3 +34,3 @@ export function MessageVideo(t0) {
+   const uri = currentMessage?.video;
+-  if (!uri) {
++  if (!currentMessage || (!uri && !onOpen && !roundNotePlayback && !poster && !currentMessage.transfer)) {
+     return null;
+@@ -51,2 +53,34 @@ export function MessageVideo(t0) {
+   const noteStyle = t3;
++  if (isNote && roundNotePlayback) {
++    const fallback = <VideoPoster message={currentMessage} poster={poster} style={noteStyle} isRound isPreparing={isPreparing} isOutgoing={position === "right"} uploadProgressLabel={uploadProgressLabel} transferAccessibilityLabel={transferAccessibilityLabel} retryAction={retryAction} />;
++    return <View style={[styles.container, styles.noteContainer, position === "right" ? styles.noteRight : styles.noteLeft, containerStyle]}>
++      {!lifted && roundNotePlayback.acquire && isRoundNotePlayerAvailable ? (
++        <ManagedRoundNote
++          key={String(currentMessage._id)}
++          acquire={roundNotePlayback.acquire}
++          claim={roundNotePlayback.claim}
++          fallback={fallback}
++          poster={poster}
++          noteSize={noteSize}
++          playingNoteSize={playingNoteSize}
++          videoProps={videoProps}
++          videoStyle={videoStyle}
++          messageId={roundNotePlayback.messageId}
++          duration={currentMessage.duration}
++          message={currentMessage}
++          isIncoming={position === "left"}
++          isMediaUnread={currentMessage.isMediaUnread}
++          animateAppear={isFreshOutgoingNote(position, currentMessage.createdAt)}
++          transcription={currentMessage.transcription}
++          isViewOnce={!!currentMessage.isViewOnce}
++        />
++      ) : fallback}
++    </View>;
++  }
++  if (!isNote && (onOpen || !uri)) {
++    return <View style={[styles.container, containerStyle]}>
++      <VideoPoster message={currentMessage} poster={poster} style={videoStyle} onOpen={onOpen && (() => onOpen(currentMessage))} isPreparing={isPreparing} isPlaybackDisabled={isPlaybackDisabled} uploadProgressLabel={uploadProgressLabel} transferAccessibilityLabel={transferAccessibilityLabel} retryAction={retryAction} />
++    </View>;
++  }
++  if (!uri) return null;
+   const t4 = isNote && styles.noteContainer;
+@@ -64,4 +98,4 @@ export function MessageVideo(t0) {
    let t7;
 -  if ($[7] !== currentMessage || $[8] !== isNote || $[9] !== lifted || $[10] !== noteSize || $[11] !== noteStyle || $[12] !== playingNoteSize || $[13] !== position || $[14] !== uri || $[15] !== videoProps || $[16] !== videoStyle) {
 -    t7 = isExpoVideoAvailable && (!isNote || isRoundNotePlayerAvailable) ? isNote ? lifted && currentMessage?._id != null ? <MirroredRoundNote uri={uri} videoProps={videoProps} videoStyle={videoStyle} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage._id} isIncoming={position === "left"} controller={lifted} /> : <RoundNotePlayer key={`${String(currentMessage?._id)}:${uri}`} uri={uri} videoProps={videoProps} videoStyle={videoStyle} duration={currentMessage?.duration} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage?._id} isIncoming={position === "left"} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View>{lifted && videoPlayerKey(currentMessage?._id, uri) ? <MirroredInlineVideo uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} /> : <ExpoVideoPlayer uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} />}{currentMessage && <VideoTransferOverlay message={currentMessage} />}</View> : <MediaCard kind="video" uri={uri} position={position} style={[isNote && noteStyle, videoStyle]} />;
 +  if (autoPlay || $[7] !== currentMessage || $[8] !== isNote || $[9] !== lifted || $[10] !== noteSize || $[11] !== noteStyle || $[12] !== playingNoteSize || $[13] !== position || $[14] !== uri || $[15] !== videoProps || $[16] !== videoStyle) {
 +    t7 = isExpoVideoAvailable && (!isNote || isRoundNotePlayerAvailable) ? isNote ? lifted && currentMessage?._id != null ? <MirroredRoundNote uri={uri} videoProps={videoProps} videoStyle={videoStyle} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage._id} isIncoming={position === "left"} controller={lifted} /> : <RoundNotePlayer autoPlay={autoPlay} key={`${String(currentMessage?._id)}:${uri}`} uri={uri} videoProps={videoProps} videoStyle={videoStyle} duration={currentMessage?.duration} noteSize={noteSize} playingNoteSize={playingNoteSize} messageId={currentMessage?._id} isIncoming={position === "left"} isMediaUnread={currentMessage?.isMediaUnread} animateAppear={isFreshOutgoingNote(position, currentMessage?.createdAt)} message={currentMessage} isViewOnce={!!currentMessage?.isViewOnce} transcription={currentMessage?.transcription} /> : <View>{lifted && videoPlayerKey(currentMessage?._id, uri) ? <MirroredInlineVideo uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} /> : <ExpoVideoPlayer autoPlay={autoPlay} uri={uri} style={[styles.video, videoStyle]} videoProps={videoProps} playerKey={videoPlayerKey(currentMessage?._id, uri)} />}{currentMessage && <VideoTransferOverlay message={currentMessage} />}</View> : <MediaCard kind="video" uri={uri} position={position} style={[isNote && noteStyle, videoStyle]} />;
      $[7] = currentMessage;
-     $[8] = isNote;
-     $[9] = lifted;
 diff --git a/lib/MessageVideo/useNotePlayer.js b/lib/MessageVideo/useNotePlayer.js
 index 9f785dd253040679fcae376f13413faab7cfac47..393eec03a037e85fd00c5fa2c840f5aeba2e1c4f 100644
 --- a/lib/MessageVideo/useNotePlayer.js
@@ -960,36 +1521,53 @@ index 9f785dd253040679fcae376f13413faab7cfac47..393eec03a037e85fd00c5fa2c840f5ae
      $[6] = playerKey;
      $[7] = t1;
 diff --git a/lib/Models.d.ts b/lib/Models.d.ts
+index 9047ce2..9ed92eb 100644
 --- a/lib/Models.d.ts
 +++ b/lib/Models.d.ts
-@@ -51,7 +51,7 @@
- /** A document attached to a message (`IMessage.file`), drawn as a file bubble. */
- export interface IMessageFile {
+@@ -1,2 +1,3 @@
+ import { StyleProp, ViewStyle } from 'react-native';
++import type { ReactNode } from 'react';
+ import { IconRenderer } from './Icons';
+@@ -53,3 +54,3 @@ export interface IMessageFile {
      /** Where the file is: a local `file://` path or a remote URL. */
 -    uri: string;
 +    uri?: string;
      /** The file name shown in the bubble, with its extension. */
-     name: string;
-     /** Size in bytes, shown under the name. */
-@@ -186,6 +186,7 @@
-     containerStyle?: StyleProp<ViewStyle>;
-     videoStyle?: StyleProp<ViewStyle>;
+@@ -87,2 +88,4 @@ export interface LinkPreview {
+ export interface IMessage {
++    /** Stable list identity when an optimistic message receives its canonical ID. */
++    rowKey?: string;
+     _id: string | number;
+@@ -188,2 +191,24 @@ export interface MessageVideoProps<TMessage extends IMessage> {
      videoProps?: object;
 +    autoPlay?: boolean;
++    /** Open a regular video from its poster without creating an inline player. */
++    onOpen?: (message: TMessage) => void;
++    /** Content behind the play or transfer controls, such as a thumbnail. */
++    poster?: ReactNode;
++    isPreparing?: boolean;
++    isPlaybackDisabled?: boolean;
++    /** Localized percentage shown inside an upload's progress ring. */
++    uploadProgressLabel?: string;
++    transferAccessibilityLabel?: string;
++    /** Retry a failed transfer from the center of the preview. */
++    retryAction?: { label: string; icon: ReactNode; onPress(): void };
++    /** Optional verified, row-scoped source for a round note. */
++    roundNotePlayback?: {
++        messageId: TMessage['_id'];
++        acquire?: (options: { signal: AbortSignal; invalidate(): Promise<void> }) => Promise<{
++            uri: string;
++            expiresAt: number | null;
++            release(): Promise<void>;
++        }>;
++        claim?: (stop: () => void) => false | (() => void);
++    };
  }
- export interface MessageAudioProps<TMessage extends IMessage> {
-     currentMessage: TMessage;
-@@ -198,6 +199,7 @@
-     currentMessage: TMessage;
-     position?: 'left' | 'right';
+@@ -200,2 +225,3 @@ export interface MessageFileProps<TMessage extends IMessage> {
      containerStyle?: StyleProp<ViewStyle>;
 +    accessibilityHint?: string;
      /** Override opening the file (the system share sheet with `expo-sharing`, else `Linking`). */
-     onPress?: (file: IMessageFile) => void;
- }
-@@ -217,6 +219,13 @@
-  * `expo-audio` peer dependency; when it is absent the mic button is hidden.
-  */
+@@ -219,2 +245,9 @@ export interface MessageLocationProps<TMessage extends IMessage> {
  export interface AudioRecordingProps {
 +    onActiveChange?: (active: boolean) => void;
 +    canUseAudioSession?: () => boolean;
@@ -999,18 +1577,12 @@ diff --git a/lib/Models.d.ts b/lib/Models.d.ts
 +    onDiscardRecording?: (uri: string) => void;
 +    previewAtLimit?: boolean;
      /**
-      * Show the "view once" toggle above the lock while a take is locked.
-      * A take sent with it on arrives in `onSend` with `isViewOnce: true`.
-@@ -254,6 +263,9 @@
-      * off, `true` also falls back to the system camera (`expo-image-picker`) without it.
-      */
+@@ -256,2 +289,5 @@ export interface VideoRecordingProps {
      isEnabled?: boolean;
 +    canUseCapture?: () => boolean;
 +    onDiscardRecording?: (uri: string) => void;
 +    confirmBeforeSend?: boolean;
      /** Max video length in seconds. Default 60. */
-     maxDuration?: number;
-     /** Minimum video length (ms) below which the take is discarded. Default 800. */
 diff --git a/lib/Time.js b/lib/Time.js
 --- a/lib/Time.js
 +++ b/lib/Time.js

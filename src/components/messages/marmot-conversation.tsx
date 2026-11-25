@@ -105,6 +105,7 @@ import {
 } from "@/core/marmot/media-send";
 import { marmotErrorCode } from "@/core/marmot/errors";
 import { sendMarmotAttachment } from "@/core/marmot/send-attachment";
+import { videoFile } from "@/core/video/types";
 import { localMediaUri } from "@/core/media/open-local-attachment";
 import { contactByKey } from "@/db/queries";
 import { removeOpenedMessage } from "@/db/open-later";
@@ -118,6 +119,8 @@ import {
   conversationMedia,
   MarmotAttachments,
   exportMarmotAttachment,
+  type PendingVideoFile,
+  VideoTimestampBackground,
 } from "./marmot-attachments";
 import { useMarmotError } from "./marmot-group";
 import { conversationRoute } from "./marmot-inbox";
@@ -232,6 +235,7 @@ type ChatMessage = IMessage & {
   row?: MarmotMessage;
   direction: "incoming" | "outgoing";
   originalText?: string;
+  singleVideo?: boolean;
 };
 
 type PreparedMessageEntry = {
@@ -269,6 +273,19 @@ type VoiceSend = AttachmentRequest & {
   messageId?: string;
   phase: "uploading" | "accepted" | "failed";
 };
+
+type VideoSend = Omit<VoiceSend, "file" | "duration" | "waveform" | "sizes"> &
+  (
+    | {
+        source: "files";
+        files: (PendingVideoFile & { file: MarmotUpload })[];
+        sizes?: readonly number[];
+      }
+    | { source: "draft"; files: PendingVideoFile[]; sizes: readonly number[] }
+  );
+
+type InlineUpload =
+  { kind: "voice"; message: VoiceSend } | { kind: "video"; message: VideoSend };
 
 function localUpload(uri: string, name: string, type: string): MarmotUpload {
   if (uri.startsWith("/")) return { path: uri, name, type };
@@ -390,6 +407,7 @@ function MarmotConversationContent({
     { kind: "preparing" } | { kind: "uploading"; fraction: number }
   >();
   const [voiceSend, setVoiceSend] = useState<VoiceSend>();
+  const [videoSend, setVideoSend] = useState<VideoSend>();
   const [openedAt] = useState(Date.now);
   useEffect(() => {
     const cancel = () => sendingAttachment.current?.abort();
@@ -685,8 +703,18 @@ function MarmotConversationContent({
         if (prior?.context.every((value, index) => value === context[index]))
           return prior.message;
         const status = row.sender === self ? delivery(row) : undefined;
+        const attachments = acceptedAttachments(row);
+        const attachment =
+          row.attachments.length === 1 ? attachments[0] : undefined;
+        const outgoingVideoKey =
+          row.sender === self &&
+          row.token &&
+          attachments.some((item) => videoFile(item.name, item.type))
+            ? `video-upload:${row.token}`
+            : undefined;
         const message: ChatMessage = {
           _id: row.id,
+          rowKey: outgoingVideoKey,
           direction: row.sender === self ? "outgoing" : "incoming",
           createdAt: row.sentAt * 1_000,
           user: { _id: row.sender, name: sender },
@@ -709,10 +737,22 @@ function MarmotConversationContent({
           sent: status === "published" || status === "received",
           isFailed: status === "failed",
           isEdited: row.edited,
+          videoNote:
+            !row.deleted &&
+            !row.invalidationStatus &&
+            attachment?.round === true,
+          singleVideo:
+            !row.deleted &&
+            !row.invalidationStatus &&
+            Boolean(
+              attachment &&
+              !attachment.round &&
+              videoFile(attachment.name, attachment.type),
+            ),
           isMediaUnread:
             row.sender !== self &&
             unheard &&
-            acceptedAttachments(row).some(
+            attachments.some(
               (item) =>
                 item.type.startsWith("audio/") ||
                 item.round ||
@@ -874,6 +914,32 @@ function MarmotConversationContent({
     );
   if (voiceSend && voiceSend.phase !== "uploading" && !showVoice)
     setVoiceSend(undefined);
+  const recoveredVideo: VideoSend | undefined =
+    pendingMedia?.kind === "ready" && pendingMedia.videoFiles
+      ? {
+          source: "draft",
+          token: pendingMedia.token,
+          createdAt: openedAt,
+          caption: snapshot?.draft?.text ?? null,
+          reply: snapshot?.draft?.replyTo ?? null,
+          files: pendingMedia.videoFiles.map((file) => ({ file })),
+          sizes: pendingMedia.sizes,
+          phase: "failed",
+        }
+      : undefined;
+  const outgoingVideo = videoSend ?? recoveredVideo;
+  const showVideo =
+    outgoingVideo &&
+    !rows?.some(
+      (row) =>
+        row.id === outgoingVideo.messageId ||
+        (row.sender === self && row.token === outgoingVideo.token),
+    );
+  const videoUploadId = outgoingVideo && `video-upload:${outgoingVideo.token}`;
+  const previewRound =
+    outgoingVideo?.files.length === 1 &&
+    outgoingVideo.files[0]?.file.presentation === "round";
+  const previewSingleVideo = outgoingVideo?.files.length === 1 && !previewRound;
   const groupCreatedAt = useMemo(
     () => chatPreferences.groupCreatedAt(id),
     [chatPreferences, id],
@@ -899,7 +965,7 @@ function MarmotConversationContent({
       },
     ];
   }, [groupCreatedAt, id, self, showGroupCreation, t, translated.displayed]);
-  const displayed: ChatMessage[] =
+  const withVoice: ChatMessage[] =
     showVoice && voice
       ? [
           {
@@ -914,6 +980,40 @@ function MarmotConversationContent({
           ...timeline,
         ]
       : timeline;
+  const withConfirmedVideo =
+    outgoingVideo && videoUploadId && !showVideo
+      ? withVoice.map((entry) =>
+          entry.row?.sender === self &&
+          entry.row.token === outgoingVideo.token &&
+          !entry.row.deleted
+            ? {
+                ...entry,
+                rowKey: videoUploadId,
+                createdAt: outgoingVideo.createdAt,
+                videoNote: previewRound,
+                singleVideo: previewSingleVideo,
+              }
+            : entry,
+        )
+      : withVoice;
+  const displayed: ChatMessage[] =
+    showVideo && outgoingVideo && videoUploadId
+      ? [
+          {
+            _id: videoUploadId,
+            rowKey: videoUploadId,
+            user: { _id: self },
+            text: outgoingVideo.caption ?? "",
+            createdAt: outgoingVideo.createdAt,
+            direction: "outgoing",
+            pending: outgoingVideo.phase !== "failed",
+            isFailed: outgoingVideo.phase === "failed",
+            videoNote: previewRound,
+            singleVideo: previewSingleVideo,
+          },
+          ...withVoice,
+        ]
+      : withConfirmedVideo;
   const initialMessage =
     target ?? (snapshot?.firstUnread ? undefined : opening.position?.id);
   const initialMessageIndex = initialMessage
@@ -1261,13 +1361,30 @@ function MarmotConversationContent({
     source: (
       signal: AbortSignal,
     ) => Promise<Parameters<typeof sendMarmotAttachment>[0]["source"]>,
-    message?: VoiceSend,
+    inline?: InlineUpload,
   ) {
     if (!canSendFromWindow() || sendingAttachment.current) return;
     const controller = new AbortController();
     sendingAttachment.current = controller;
     setUpload({ kind: "preparing" });
-    if (message) setVoiceSend({ ...message, phase: "uploading" });
+    if (inline?.kind === "voice")
+      setVoiceSend({ ...inline.message, phase: "uploading" });
+    if (inline?.kind === "video")
+      setVideoSend({ ...inline.message, phase: "uploading" });
+    function updateInline(
+      patch: Partial<Pick<VoiceSend, "sizes" | "messageId" | "phase">>,
+    ) {
+      if (!inline) return;
+      const { token } = inline.message;
+      if (inline.kind === "voice")
+        setVoiceSend((current) =>
+          current?.token === token ? { ...current, ...patch } : current,
+        );
+      else
+        setVideoSend((current) =>
+          current?.token === token ? { ...current, ...patch } : current,
+        );
+    }
     let messageId: string | undefined;
     let unsubscribeForeground: (() => void) | undefined;
     void (async () => {
@@ -1280,10 +1397,10 @@ function MarmotConversationContent({
       unsubscribeForeground = subscribeForeground(() => {
         if (!isForeground()) controller.abort();
       });
-      await draftWrites.current;
-      controller.signal.throwIfAborted();
-      if (!canDispatch()) return;
-      const prepared = await source(controller.signal);
+      const [prepared] = await Promise.all([
+        source(controller.signal),
+        draftWrites.current,
+      ]);
       if (!canDispatch() || controller.signal.aborted) return;
       const accepted = await sendMarmotAttachment({
         sdk: mediaSdk,
@@ -1292,15 +1409,7 @@ function MarmotConversationContent({
         source: prepared,
         allowed: canDispatch,
         progress: (fraction) => setUpload({ kind: "uploading", fraction }),
-        onStaged:
-          message &&
-          ((sizes) => {
-            setVoiceSend((current) =>
-              current?.token === message.token
-                ? { ...current, sizes }
-                : current,
-            );
-          }),
+        onStaged: inline && ((sizes) => updateInline({ sizes })),
         mirrorFailed: () =>
           dialog.show({
             title: t("messages:mediaMirrorFailed"),
@@ -1311,7 +1420,7 @@ function MarmotConversationContent({
       messageId = accepted?.id;
       if (
         accepted &&
-        !message &&
+        inline?.kind !== "voice" &&
         !deferredDraft.current &&
         !controller.signal.aborted
       ) {
@@ -1320,23 +1429,17 @@ function MarmotConversationContent({
       }
     })()
       .catch((reason: unknown) => {
-        if (!message && !controller.signal.aborted) showError(reason);
+        if (!inline && !controller.signal.aborted) showError(reason);
       })
       .finally(() => {
         unsubscribeForeground?.();
         if (sendingAttachment.current === controller) {
           sendingAttachment.current = undefined;
           setUpload(undefined);
-          if (message)
-            setVoiceSend((current) =>
-              current?.token === message.token
-                ? {
-                    ...current,
-                    messageId,
-                    phase: messageId === undefined ? "failed" : "accepted",
-                  }
-                : current,
-            );
+          updateInline({
+            messageId,
+            phase: messageId === undefined ? "failed" : "accepted",
+          });
         }
       });
   }
@@ -1349,30 +1452,24 @@ function MarmotConversationContent({
     )
       return;
     const { file, sizes } = message;
+    const inline = { kind: "voice", message } as const;
     if (sizes)
-      submitAttachment(
-        message,
-        async () => ({ kind: "draft", sizes }),
-        message,
-      );
+      submitAttachment(message, async () => ({ kind: "draft", sizes }), inline);
     else if (file)
       submitAttachment(
         message,
         async () => ({ kind: "files", files: [file], saveDraft: true }),
-        message,
+        inline,
       );
   }
 
-  function discardVoice(message: VoiceSend) {
+  function discardInlineUpload(token: string, discard: () => void) {
     if (busy || sendingAttachment.current || !canDispatch()) return;
     setBusy(true);
     void (async () => {
-      if (
-        pendingMedia?.kind === "ready" &&
-        pendingMedia.token === message.token
-      )
+      if (pendingMedia?.kind === "ready" && pendingMedia.token === token)
         await marmot.discardMediaDraft(id);
-      setVoiceSend(undefined);
+      discard();
     })()
       .catch(showError)
       .finally(() => setBusy(false));
@@ -1380,20 +1477,54 @@ function MarmotConversationContent({
 
   function sendMedia(files: MarmotUpload[], caption?: string) {
     if (!canCompose || !files.length) return;
+    const request = {
+      caption:
+        caption?.trim() || (composer ?? snapshot?.draft?.text)?.trim() || null,
+      reply: reply?._id ?? snapshot?.draft?.replyTo ?? null,
+      token: randomUUID(),
+    };
+    if (files.some((file) => videoFile(file.name, file.type))) {
+      submitVideo({
+        ...request,
+        source: "files",
+        createdAt: Date.now(),
+        files: files.map((file) => ({ file })),
+        phase: "uploading",
+      });
+    } else submitFiles(request, files);
+  }
+
+  function submitVideo(message: VideoSend) {
+    if (
+      busy ||
+      (pendingMedia &&
+        (pendingMedia.kind !== "ready" || pendingMedia.token !== message.token))
+    )
+      return;
+    const inline = { kind: "video", message } as const;
+    const { sizes } = message;
+    if (sizes)
+      submitAttachment(message, async () => ({ kind: "draft", sizes }), inline);
+    else if (message.source === "files")
+      submitFiles(
+        message,
+        message.files.map(({ file }) => file),
+        inline,
+      );
+  }
+
+  function submitFiles(
+    request: AttachmentRequest,
+    files: MarmotUpload[],
+    inline?: Extract<InlineUpload, { kind: "video" }>,
+  ) {
     submitAttachment(
-      {
-        caption:
-          caption?.trim() ||
-          (composer ?? snapshot?.draft?.text)?.trim() ||
-          null,
-        reply: reply?._id ?? snapshot?.draft?.replyTo ?? null,
-        token: randomUUID(),
-      },
+      request,
       async (signal) => {
         const prepared = await Promise.all(
-          files.map(async (file) => {
+          files.map(async (file, index) => {
             signal.throwIfAborted();
-            const video = file.type.startsWith("video/");
+            const video = videoFile(file.name, file.type);
             const audio = file.type.startsWith("audio/");
             const imageFile = file.type.startsWith("image/");
             if (!video && !audio && !imageFile) return file;
@@ -1424,10 +1555,24 @@ function MarmotConversationContent({
               const image = await Image.loadAsync(
                 poster?.uri ?? localMediaUri(file.path),
                 {
-                  maxWidth: 96,
-                  maxHeight: 96,
+                  maxWidth: 144,
+                  maxHeight: 144,
                 },
               );
+              signal.throwIfAborted();
+              if (inline && video)
+                setVideoSend((current) =>
+                  current?.source === "files" && current.token === request.token
+                    ? {
+                        ...current,
+                        files: current.files.map((entry, i) =>
+                          i === index
+                            ? { file: prepared, poster: image }
+                            : entry,
+                        ),
+                      }
+                    : current,
+                );
               return {
                 ...prepared,
                 thumbhash: await Image.generateThumbhashAsync(image),
@@ -1446,6 +1591,7 @@ function MarmotConversationContent({
         );
         return { kind: "files", files: prepared, saveDraft: true };
       },
+      inline,
     );
   }
 
@@ -1792,69 +1938,76 @@ function MarmotConversationContent({
         )}
         {!snapshot.invited && (
           <>
-            {upload && voiceSend?.phase !== "uploading" && (
-              <View style={styles.uploadStatus}>
-                <Ink kind="caption">
-                  {upload.kind === "preparing"
-                    ? t("messages:voiceUpload_checking")
-                    : t("messages:voiceUploadProgress", {
-                        percent: Math.floor(upload.fraction * 100),
-                      })}
-                </Ink>
-                <Action
-                  size="sm"
-                  onPress={() => sendingAttachment.current?.abort()}
-                >
-                  {t("common:cancel")}
-                </Action>
-              </View>
-            )}
-            {!upload && pendingMedia && !recoveredVoice && canSend && (
-              <View style={styles.uploadStatus}>
-                <Ink kind="caption">
-                  {t(
-                    pendingMedia.kind === "ready"
-                      ? "messages:mediaReadyToResume"
-                      : "messages:mediaDraftIncomplete",
+            {upload &&
+              voiceSend?.phase !== "uploading" &&
+              videoSend?.phase !== "uploading" && (
+                <View style={styles.uploadStatus}>
+                  <Ink kind="caption">
+                    {upload.kind === "preparing"
+                      ? t("messages:voiceUpload_checking")
+                      : t("messages:voiceUploadProgress", {
+                          percent: Math.floor(upload.fraction * 100),
+                        })}
+                  </Ink>
+                  <Action
+                    size="sm"
+                    onPress={() => sendingAttachment.current?.abort()}
+                  >
+                    {t("common:cancel")}
+                  </Action>
+                </View>
+              )}
+            {!upload &&
+              pendingMedia &&
+              !recoveredVoice &&
+              (pendingMedia.kind !== "ready" ||
+                pendingMedia.token !== outgoingVideo?.token) &&
+              canSend && (
+                <View style={styles.uploadStatus}>
+                  <Ink kind="caption">
+                    {t(
+                      pendingMedia.kind === "ready"
+                        ? "messages:mediaReadyToResume"
+                        : "messages:mediaDraftIncomplete",
+                    )}
+                  </Ink>
+                  {pendingMedia.kind === "ready" && (
+                    <Action
+                      size="sm"
+                      disabled={busy}
+                      onPress={() =>
+                        submitAttachment(
+                          {
+                            caption: snapshot.draft?.text ?? null,
+                            reply: snapshot.draft?.replyTo ?? null,
+                            token: pendingMedia.token,
+                          },
+                          async () => ({
+                            kind: "draft",
+                            sizes: pendingMedia.sizes,
+                          }),
+                        )
+                      }
+                    >
+                      {t("common:retry")}
+                    </Action>
                   )}
-                </Ink>
-                {pendingMedia.kind === "ready" && (
                   <Action
                     size="sm"
                     disabled={busy}
-                    onPress={() =>
-                      submitAttachment(
-                        {
-                          caption: snapshot.draft?.text ?? null,
-                          reply: snapshot.draft?.replyTo ?? null,
-                          token: pendingMedia.token,
-                        },
-                        async () => ({
-                          kind: "draft",
-                          sizes: pendingMedia.sizes,
-                        }),
-                      )
-                    }
+                    onPress={() => {
+                      if (!canDispatch() || sendingAttachment.current) return;
+                      setBusy(true);
+                      void marmot
+                        .discardMediaDraft(id)
+                        .catch(showError)
+                        .finally(() => setBusy(false));
+                    }}
                   >
-                    {t("common:retry")}
+                    {t("messages:mediaDiscardDraft")}
                   </Action>
-                )}
-                <Action
-                  size="sm"
-                  disabled={busy}
-                  onPress={() => {
-                    if (!canDispatch() || sendingAttachment.current) return;
-                    setBusy(true);
-                    void marmot
-                      .discardMediaDraft(id)
-                      .catch(showError)
-                      .finally(() => setBusy(false));
-                  }}
-                >
-                  {t("messages:mediaDiscardDraft")}
-                </Action>
-              </View>
-            )}
+                </View>
+              )}
             {searching && (
               <ConversationSearch
                 group={id}
@@ -1916,8 +2069,15 @@ function MarmotConversationContent({
               }}
               mediaTransfer={{
                 onDownload: (message) =>
-                  presentation.download(String(message._id)),
-                onCancel: (message) => presentation.cancel(String(message._id)),
+                  presentation.download(String(message._id), false),
+                onCancel: (message) => {
+                  if (
+                    videoSend?.phase === "uploading" &&
+                    message._id === videoUploadId
+                  )
+                    sendingAttachment.current?.abort();
+                  else presentation.cancel(String(message._id));
+                },
               }}
               isGroupChat={!peer}
               renderAvatar={
@@ -1973,10 +2133,22 @@ function MarmotConversationContent({
                 );
               }}
               renderBubble={(props) => {
-                const row = props.currentMessage?.row;
-                return (
+                const message = props.currentMessage;
+                const row = message?.row;
+                const overlayTime =
+                  keepChatWindow &&
+                  !locked &&
+                  !blocked &&
+                  message?.singleVideo &&
+                  !message.isViewOnce &&
+                  !message.text.trim();
+                const bubble = (
                   <Bubble
                     {...props}
+                    isCustomViewBottom={overlayTime || props.isCustomViewBottom}
+                    mediaTimestampBackground={
+                      overlayTime ? <VideoTimestampBackground /> : undefined
+                    }
                     renderTicks={
                       row?.sender === self && delivery(row) === "received"
                         ? () => (
@@ -1990,13 +2162,22 @@ function MarmotConversationContent({
                               <Icon
                                 name="check"
                                 size={10}
-                                color={kit.theme.colors?.outgoingMeta}
+                                color={
+                                  overlayTime
+                                    ? kit.theme.colors?.mediaTimeText
+                                    : kit.theme.colors?.outgoingMeta
+                                }
                               />
                             </View>
                           )
                         : props.renderTicks
                     }
                   />
+                );
+                return overlayTime ? (
+                  <GlassBackdropProvider>{bubble}</GlassBackdropProvider>
+                ) : (
+                  bubble
                 );
               }}
               renderMessageText={(props) => (
@@ -2321,7 +2502,29 @@ function MarmotConversationContent({
                         <Icon name="trash" color={color} size={size} />
                       ),
                       destructive: true,
-                      onPress: () => discardVoice(voice),
+                      onPress: () =>
+                        discardInlineUpload(voice.token, () =>
+                          setVoiceSend(undefined),
+                        ),
+                    },
+                  ];
+                if (
+                  outgoingVideo?.phase === "failed" &&
+                  message._id === videoUploadId
+                )
+                  return [
+                    ...defaults.filter(({ key }) => key === "retry"),
+                    {
+                      key: "discardVideo",
+                      label: t("messages:mediaDiscardDraft"),
+                      icon: ({ color, size }) => (
+                        <Icon name="trash" color={color} size={size} />
+                      ),
+                      destructive: true,
+                      onPress: () =>
+                        discardInlineUpload(outgoingVideo.token, () =>
+                          setVideoSend(undefined),
+                        ),
                     },
                   ];
                 const row = message.row;
@@ -2500,6 +2703,11 @@ function MarmotConversationContent({
                         message._id === `voice-upload:${voice.token}`
                       )
                         submitVoice(voice);
+                      else if (
+                        outgoingVideo?.phase === "failed" &&
+                        message._id === videoUploadId
+                      )
+                        submitVideo(outgoingVideo);
                       else run(() => marmot.retryConversation(id));
                     }
                   : undefined
@@ -2554,7 +2762,11 @@ function MarmotConversationContent({
                   );
                 },
               }}
-              renderCustomView={({ currentMessage }) => {
+              renderCustomView={({
+                currentMessage,
+                mediaTimestampBackground,
+              }) => {
+                const timestampBackdrop = Boolean(mediaTimestampBackground);
                 if (
                   voice &&
                   currentMessage?._id === `voice-upload:${voice.token}`
@@ -2579,9 +2791,34 @@ function MarmotConversationContent({
                     />
                   );
                 const row = currentMessage?.row;
-                if (!row || row.deleted) return null;
+                if (!currentMessage || row?.deleted) return null;
+                const ownsVideoPreview =
+                  outgoingVideo &&
+                  videoUploadId &&
+                  (currentMessage._id === videoUploadId ||
+                    (row?.sender === self &&
+                      row.token === outgoingVideo.token));
+                const videoUpload =
+                  ownsVideoPreview && outgoingVideo && videoUploadId
+                    ? {
+                        id: videoUploadId,
+                        files: outgoingVideo.files,
+                        retry:
+                          outgoingVideo.phase === "failed"
+                            ? () => submitVideo(outgoingVideo)
+                            : undefined,
+                        progress:
+                          outgoingVideo.phase === "accepted"
+                            ? 1
+                            : outgoingVideo.phase === "uploading"
+                              ? upload?.kind === "uploading"
+                                ? upload.fraction
+                                : 0
+                              : undefined,
+                      }
+                    : undefined;
                 const failedVoice =
-                  row.invalidationStatus &&
+                  row?.invalidationStatus &&
                   row.sender === self &&
                   acceptedAttachments(row).find((item) => item.voice);
                 if (failedVoice)
@@ -2594,11 +2831,11 @@ function MarmotConversationContent({
                       retry={() => run(() => marmot.retryConversation(id))}
                     />
                   );
-                if (row.poll)
+                if (row?.poll)
                   return (
                     <MarmotPoll group={id} row={row} canSend={canDispatch} />
                   );
-                if (row.eventKind === timeLockKind)
+                if (row?.eventKind === timeLockKind)
                   return (
                     <MarmotLocked
                       state={openLater.states?.get(row.id)}
@@ -2606,20 +2843,28 @@ function MarmotConversationContent({
                       rtl={kit.rtl}
                     />
                   );
-                return row.attachments.length ? (
-                  keepChatWindow && !locked && !blocked ? (
+                if (videoUpload || row?.attachments.length)
+                  return keepChatWindow && !locked && !blocked ? (
                     <MarmotAttachments
                       group={id}
                       conversation={title}
                       row={row}
+                      upload={videoUpload}
                       message={currentMessage}
                       presentation={presentation}
                       gallery={gallery}
                       foreground={focused && foreground}
-                      visible={focused && foreground && visible.has(row.id)}
+                      visible={
+                        row !== undefined &&
+                        focused &&
+                        foreground &&
+                        visible.has(row.id)
+                      }
+                      timestampBackdrop={timestampBackdrop}
                     />
-                  ) : null
-                ) : row.eventKind === 9 || row.eventKind === 1111 ? (
+                  ) : null;
+                return row &&
+                  (row.eventKind === 9 || row.eventKind === 1111) ? (
                   <>
                     <MarmotLink
                       group={id}

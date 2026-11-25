@@ -1,5 +1,6 @@
 import { marmotErrorCode } from "./errors";
 import type { MarmotConversation, MarmotUpload } from "./native";
+import { videoFile } from "../video/types";
 
 // Expo's native string maps cannot represent undefined values.
 export function mediaUploadArguments(files: readonly MarmotUpload[]) {
@@ -67,10 +68,30 @@ export function pendingMediaDraft(draft: MarmotConversation["draft"]) {
     )
   )
     return { kind: "incomplete" } as const;
+  const videoFiles = files.flatMap((file) =>
+    file.name && file.type
+      ? [
+          {
+            name: file.name,
+            type: file.type,
+            dimensions: file.dimensions ?? undefined,
+            thumbhash: file.thumbhash ?? undefined,
+            duration: file.duration == null ? undefined : String(file.duration),
+            presentation: file.id.endsWith(":round")
+              ? ("round" as const)
+              : undefined,
+          },
+        ]
+      : [],
+  );
   return {
     kind: "ready",
     token,
     sizes: files.map(({ size }) => size),
+    ...(videoFiles.length === files.length &&
+      videoFiles.some(({ name, type }) => videoFile(name, type)) && {
+        videoFiles,
+      }),
     ...(files.length === 1 &&
       first.id === `${token}:1:0:voice` && {
         voice: { duration: first.duration, waveform: first.waveform },

@@ -7,6 +7,8 @@ import { audioPersistence } from "@/db/audio";
 import { videoPersistence } from "@/db/video";
 import { createMediaSources } from "@/core/media/sources";
 import type { MediaSource } from "@/core/media/source";
+import type { AcquireOptions } from "@/core/media/sources";
+import type { MarmotDownload } from "@/core/downloads/types";
 import { createPlaybackOwnership } from "@/core/media/playback-ownership";
 import {
   localMediaUri,
@@ -542,6 +544,47 @@ async function start() {
     const playback = audioPersistence(persistence);
     const videoPositions = videoPersistence(persistence);
     const ownership = createPlaybackOwnership();
+    const roundNoteLeases = new Set<() => Promise<void>>();
+    const roundNotes = {
+      async acquire(
+        source: MarmotDownload,
+        options: Pick<AcquireOptions, "signal"> & {
+          invalidate(): Promise<void>;
+        },
+      ) {
+        if (!active() || closingAudioAttachments)
+          throw new Error("MediaUnavailable");
+        roundNoteLeases.add(options.invalidate);
+        try {
+          const handle = await mediaSources.acquire(
+            { kind: "attachment", source },
+            { ...options, download: false },
+          );
+          return {
+            ...handle,
+            async release() {
+              try {
+                await handle.release();
+              } finally {
+                roundNoteLeases.delete(options.invalidate);
+              }
+            },
+          };
+        } catch (error) {
+          roundNoteLeases.delete(options.invalidate);
+          throw error;
+        }
+      },
+      claim(stop: () => void) {
+        return active() && ownership.claimRoundNote(stop);
+      },
+    };
+    function retireRoundNotes() {
+      ownership.stopRoundNote();
+      return Promise.allSettled(
+        [...roundNoteLeases].map((dispose) => dispose()),
+      );
+    }
     const nativePlayback = createNativePlayback();
     const audio = createAudioController({
       saved: playback.load(),
@@ -609,12 +652,6 @@ async function start() {
       position: videoPositions.get,
       checkpoint: videoPositions.set,
       genericTitle: () => i18n.t("video:viewer.title"),
-      listened(source) {
-        if (source.kind === "attachment" && source.source.kind === "marmot") {
-          const [group, message] = source.source.target;
-          chatPreferences.markListened(group, message);
-        }
-      },
       preferences: {
         external: read("video.open") === "external",
         pipMode:
@@ -650,6 +687,7 @@ async function start() {
     video.privacy(lock.getState());
     lock.subscribe(() => {
       const state = lock.getState();
+      if (state.locked || !state.active) void retireRoundNotes();
       if (state.locked || (state.enabled && !state.active))
         void video.privacy(state);
       audio.privacy(state);
@@ -667,7 +705,7 @@ async function start() {
     beforeAccountClose = async () => {
       closingAudioAttachments = true;
       pendingVoiceNotes.clear();
-      await Promise.all([audio.close(), video.drain()]);
+      await Promise.all([audio.close(), video.drain(), retireRoundNotes()]);
       await Promise.all([
         speech.beforeAccountClose(),
         downloads.beforeAccountClose(),
@@ -1081,7 +1119,7 @@ async function start() {
           retirement.abort();
           calling.end();
           stopObserving?.();
-          await Promise.all([audio.close(), video.drain()]);
+          await Promise.all([audio.close(), video.drain(), retireRoundNotes()]);
           await marmotSession.stop();
           await marmotAccounts.signOut(account.key);
           downloadKey.fill(0);
@@ -1101,6 +1139,7 @@ async function start() {
       audio,
       audioSources,
       video,
+      roundNotes,
       observeSession,
       avatars,
       previews,

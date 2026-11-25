@@ -208,6 +208,10 @@ const conversationMetadata = windowRevision.extend({
           z.object({
             id: z.string(),
             size: z.number().int().positive(),
+            name: z.string().optional(),
+            type: z.string().optional(),
+            dimensions: z.string().nullish(),
+            thumbhash: z.string().nullish(),
             duration: z.number().positive().nullish(),
             waveform: z
               .array(z.number().int().min(0).max(31))

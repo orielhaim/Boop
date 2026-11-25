@@ -355,6 +355,8 @@ private func project(_ snapshot: ConversationWindowSnapshotFfi) -> Document {
       ["text": draft.content, "replyTo": bridgeValue(draft.replyToMessageIdHex),
         "attachments": draft.mediaAttachments.map { item -> Document in
           ["id": item.id, "size": Double(item.plaintextSize),
+            "name": item.fileName, "type": item.mediaType,
+            "dimensions": bridgeValue(item.dim), "thumbhash": bridgeValue(item.thumbhash),
             "duration": bridgeValue(item.durationSeconds),
             "waveform": item.waveformSamples.prefix(64).map { Int((min(1, max(0, $0)) * 31).rounded(.toNearestOrEven)) }]
         }]

@@ -290,6 +290,8 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
   "draft" to snapshot.draft.draft?.let { draft ->
     mapOf("text" to draft.content, "replyTo" to draft.replyToMessageIdHex, "attachments" to draft.mediaAttachments.map { item ->
       mapOf("id" to item.id, "size" to item.plaintextSize.toDouble(),
+        "name" to item.fileName, "type" to item.mediaType,
+        "dimensions" to item.dim, "thumbhash" to item.thumbhash,
         "duration" to item.durationSeconds,
         "waveform" to item.waveformSamples.take(64).map { kotlin.math.round(it.coerceIn(0.0, 1.0) * 31).toInt() })
     })

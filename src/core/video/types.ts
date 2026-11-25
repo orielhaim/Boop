@@ -9,7 +9,6 @@ export type VideoSource = (
   duration?: number;
   dimensions?: string | null;
   thumbhash?: string | null;
-  round?: boolean;
 };
 
 export const seekIntervals = [5, 10, 15, 30] as const;

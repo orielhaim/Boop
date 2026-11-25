@@ -140,3 +140,37 @@ test("a staged recording keeps its metadata and original send token for inline r
     }),
   ).toEqual({ kind: "ready", token, sizes: [300] });
 });
+
+test("a staged video restores its inline preview without requiring the original file", () => {
+  const token = "00000000-0000-4000-8000-000000000000";
+  expect(
+    pendingMediaDraft({
+      text: "caption",
+      attachments: [
+        {
+          id: `${token}:1:0:round`,
+          size: 1234,
+          name: "video-note.mp4",
+          type: "video/mp4",
+          dimensions: "320x320",
+          thumbhash: "poster",
+          duration: 8,
+        },
+      ],
+    }),
+  ).toEqual({
+    kind: "ready",
+    token,
+    sizes: [1234],
+    videoFiles: [
+      {
+        name: "video-note.mp4",
+        type: "video/mp4",
+        dimensions: "320x320",
+        thumbhash: "poster",
+        duration: "8",
+        presentation: "round",
+      },
+    ],
+  });
+});

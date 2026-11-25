@@ -6,7 +6,7 @@ import type { createVideoEngine } from "./engine";
 import type { VideoPreferences, VideoSource } from "./types";
 import type { LocalCaptions } from "./subtitles";
 
-export type VideoPresentation = "full" | "floating" | "inline";
+export type VideoPresentation = "full" | "floating";
 export type VideoNeighbors = { previous?: () => void; next?: () => void };
 
 type SessionView = {
@@ -59,7 +59,6 @@ export function createVideoController(deps: {
   savePreferences(value: VideoPreferences): void;
   position(id: string): number;
   checkpoint(id: string, seconds: number): void;
-  listened?(source: VideoSource): void;
   genericTitle(): string;
 }) {
   const store = createStore<{
@@ -92,7 +91,6 @@ export function createVideoController(deps: {
     if (
       !player ||
       !store.getState().preferences.rememberPosition ||
-      source.round ||
       session.handle?.expiresAt !== null
     )
       return;
@@ -180,8 +178,7 @@ export function createVideoController(deps: {
       options.dispose?.();
       return false;
     }
-    const external =
-      !restore && !source.round && store.getState().preferences.external;
+    const external = !restore && store.getState().preferences.external;
     if (
       current &&
       mediaId(current.view.source) === mediaId(source) &&
@@ -189,7 +186,7 @@ export function createVideoController(deps: {
       !(external && current.view.canExport)
     ) {
       options.dispose?.();
-      if (!source.round) present("full");
+      present("full");
       return true;
     }
     const retired = close();
@@ -203,7 +200,7 @@ export function createVideoController(deps: {
       view: {
         id: ++sessionId,
         source,
-        presentation: source.round ? "inline" : "full",
+        presentation: "full",
         background: false,
         allowPiP: false,
         allowBackground: false,
@@ -235,7 +232,7 @@ export function createVideoController(deps: {
       }
       session.handle = handle;
       if (!valid(session) || !foreground) return false;
-      const canExport = handle.expiresAt === null && !source.round;
+      const canExport = handle.expiresAt === null;
       if (external && canExport) {
         await exportFile("external");
         return true;
@@ -253,7 +250,6 @@ export function createVideoController(deps: {
         );
       }
       let initialized = false;
-      let listened = false;
       const start = () => {
         if (
           initialized ||
@@ -268,7 +264,6 @@ export function createVideoController(deps: {
           if (Number.isFinite(restore.position))
             player.currentTime = Math.min(restore.position, player.duration);
         } else if (
-          !source.round &&
           handle.expiresAt === null &&
           store.getState().preferences.rememberPosition
         ) {
@@ -288,21 +283,12 @@ export function createVideoController(deps: {
         player.addListener("playToEnd", () => {
           if (!valid(session) || player.loop) return;
           session.completed = true;
-          if (source.round) {
-            void close();
-            return;
-          }
           checkpoint(session);
         }),
         player.addListener("playingChange", ({ isPlaying }) => {
           if (!valid(session)) return;
-          if (isPlaying) {
-            session.completed = false;
-            if (source.round && !listened) {
-              listened = true;
-              deps.listened?.(source);
-            }
-          } else if (initialized) checkpoint(session);
+          if (isPlaying) session.completed = false;
+          else if (initialized) checkpoint(session);
         }),
         player.addListener("timeUpdate", () => {
           if (
@@ -350,8 +336,7 @@ export function createVideoController(deps: {
       !session ||
       !valid(session) ||
       !foreground ||
-      session.handle?.expiresAt !== null ||
-      session.view.source.round
+      session.handle?.expiresAt !== null
     )
       return;
     session.engine?.player.pause();
@@ -364,9 +349,9 @@ export function createVideoController(deps: {
     }
   }
 
-  function present(presentation: Exclude<VideoPresentation, "inline">) {
+  function present(presentation: VideoPresentation) {
     const session = current;
-    if (!session || !valid(session) || session.view.source.round) return;
+    if (!session || !valid(session)) return;
     if (
       presentation === "floating" &&
       store.getState().preferences.pipMode === "off"
@@ -514,8 +499,7 @@ export function createVideoController(deps: {
         if (!session.pip && !session.view.background) {
           if (
             session.view.allowPiP &&
-            store.getState().preferences.pipMode === "system" &&
-            session.view.presentation !== "inline"
+            store.getState().preferences.pipMode === "system"
           )
             pauseIfStillBackgrounded(session);
           else session.view.player?.pause();
