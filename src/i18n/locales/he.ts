@@ -105,16 +105,7 @@ export const he = {
     creating: "הזהות החדשה נשמרת…",
     importing: "הזהות המיובאת נשמרת…",
     people: "אנשים",
-    find: "חיפוש אנשים",
     searchHint: "שם, כתובת ציבורית או מזהה Nostr",
-    noPeople:
-      "אפשר למצוא אנשים לפי הכתובת הציבורית שלהם או לסרוק את קוד ה־QR שלהם.",
-    saved: "אנשים שמורים",
-    recent: "שיחות אחרונות",
-    results: "תוצאות מממסרים",
-    searchUnavailable:
-      "החיפוש אינו זמין. עדיין אפשר לפתוח כתובת ציבורית ישירות.",
-    noResults: "לא נמצאו תוצאות. אפשר לנסות כתובת ציבורית או חיפוש אחר.",
     savePerson: "שמירה לאנשים",
     removePerson: "הסרה מאנשים",
     nickname: "כינוי מקומי (לא חובה)",
@@ -848,7 +839,6 @@ export const he = {
       "טעינת פרטי הקישור עשויה ליצור קשר עם טראקרים, צומתי DHT ועמיתים. הם יכולים לראות את כתובת ה־IP ואת הטורנט שביקשת. Boop מוריד קבצים רק לפי בחירה שלך.",
     torrentStorage: "אחסון",
     torrentClearCache: "ניקוי מטמון פרטי טורנטים",
-    torrentManageFiles: "ניהול קבצים שהורדו",
     torrentPublicTransfer: "קישור BitTorrent ציבורי",
     torrentPluginSettings: "הגדרות התוסף",
     torrentResolving: "טוען פרטי קישור…",
@@ -866,7 +856,6 @@ export const he = {
     torrentPolicy: {
       onTap: "בלחיצה",
       automatic: "אוטומטית",
-      never: "אף פעם",
     },
     pluginPercent: "{{progress}}%",
     pluginInstall: "התקנה",

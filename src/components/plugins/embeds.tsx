@@ -44,8 +44,7 @@ export function PluginEmbeds({
   eligible: boolean;
 }) {
   const { torrents } = useLocal();
-  const policy = useStore(torrents.state, (state) => state.policy);
-  if (!torrents.supported || policy === "never") return null;
+  if (!torrents.supported) return null;
   const embeds = torrents.match({
     text: pluginMessageText(text, content),
     eligible: true,

@@ -10,7 +10,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { useStore } from "zustand";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { usePluginAction } from "@/components/plugins/settings-action";
-import { Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
+import { Ink, Screen, tapFeedback } from "@/components/ui/kit";
 import {
   ListGroup,
   ListRow,
@@ -41,11 +41,6 @@ export default function Plugins() {
   let onPress: (() => void) | undefined;
 
   switch (delivery?.kind) {
-    case "installed":
-    case "pendingRemoval":
-      label = t("torrents");
-      onPress = () => router.push(torrents.descriptor.settingsRoute);
-      break;
     case "notInstalled":
     case "failed":
       label =
@@ -100,34 +95,39 @@ export default function Plugins() {
           detail={t("torrentsDescription")}
           detailLines={0}
           icon="plugins"
+          onPress={
+            canOpen
+              ? () => router.push(torrents.descriptor.settingsRoute)
+              : undefined
+          }
           trailing={
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={label}
-              accessibilityState={{ busy, disabled: busy || !onPress }}
-              accessible={Boolean(onPress)}
-              disabled={busy || !onPress}
-              onPress={() => {
-                tapFeedback();
-                onPress?.();
-              }}
-              style={({ pressed }) => [
-                styles.action,
-                { width: 76 * fontScale },
-                onPress && !canOpen && styles.pill,
-                pressed && styles.pressed,
-              ]}
-            >
-              {canOpen ? (
-                <Icon name="next" size={17} color={colors.muted} />
-              ) : text ? (
-                <Ink kind="control" style={styles.label}>
-                  {text}
-                </Ink>
-              ) : torrents.supported ? (
-                <ActivityIndicator size="small" color={colors.muted} />
-              ) : null}
-            </Pressable>
+            canOpen ? undefined : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                accessibilityState={{ busy, disabled: busy || !onPress }}
+                accessible={Boolean(onPress)}
+                disabled={busy || !onPress}
+                onPress={() => {
+                  tapFeedback();
+                  onPress?.();
+                }}
+                style={({ pressed }) => [
+                  styles.action,
+                  { width: 76 * fontScale },
+                  onPress && styles.pill,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {text ? (
+                  <Ink kind="control" style={styles.label}>
+                    {text}
+                  </Ink>
+                ) : torrents.supported ? (
+                  <ActivityIndicator size="small" color={colors.muted} />
+                ) : null}
+              </Pressable>
+            )
           }
         />
       </ListGroup>

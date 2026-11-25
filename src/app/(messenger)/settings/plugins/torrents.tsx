@@ -1,4 +1,3 @@
-import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -108,11 +107,6 @@ export default function TorrentSettings() {
               setCleared((version) => version + 1);
             })
           }
-        />
-        <ListRow
-          title={t("torrentManageFiles")}
-          icon="storage"
-          onPress={() => router.push("/downloads")}
         />
       </ListGroup>
     </Screen>

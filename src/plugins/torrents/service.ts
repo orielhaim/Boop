@@ -11,7 +11,7 @@ import {
 import { torrents } from "./descriptor";
 import type { Magnet } from "./magnets";
 
-export const resolutionPolicies = ["onTap", "automatic", "never"] as const;
+export const resolutionPolicies = ["onTap", "automatic"] as const;
 type ResolutionPolicy = (typeof resolutionPolicies)[number];
 type Resolution = TorrentSummary | "resolving" | "failed" | undefined;
 
@@ -62,10 +62,7 @@ export function createTorrents({
     active: false,
     loadFailed: false,
     enabled: readPreference("torrentsEnabled") === "true",
-    policy:
-      defaultPolicy === "automatic" || defaultPolicy === "never"
-        ? defaultPolicy
-        : "onTap",
+    policy: defaultPolicy === "automatic" ? "automatic" : "onTap",
   }));
   const entries = new Map<string, Resolution>();
   const listeners = new Map<string, Set<() => void>>();
@@ -314,8 +311,7 @@ export function createTorrents({
 
   async function resolve(magnet: Magnet, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (!canTransfer() || state.getState().policy === "never")
-      throw new Error("TorrentUnavailable");
+    if (!canTransfer()) throw new Error("TorrentUnavailable");
     const hash = magnet.infoHash;
     const cached = cache.get(hash);
     if (cached) {
@@ -455,9 +451,6 @@ export function createTorrents({
     enable,
     policy(policy: ResolutionPolicy) {
       writePreference("torrentResolution", policy);
-      if (policy === "never") {
-        for (const job of resolving.values()) job.abort.abort();
-      }
       state.setState({ policy });
     },
     sync() {
