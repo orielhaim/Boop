@@ -3,7 +3,7 @@ import type { VideoPlayer } from "expo-video";
 import { createPlaybackOwnership } from "@/core/media/playback-ownership";
 import type { MediaHandle } from "@/core/media/source";
 import { createVideoController } from "@/core/video/controller";
-import { readSubtitles, subtitleAt } from "@/core/video/subtitles";
+import type { SubtitleInput } from "@/core/video/subtitles/tracks";
 import type { VideoSource } from "@/core/video/types";
 
 const clip = (id: string): VideoSource => ({
@@ -11,6 +11,77 @@ const clip = (id: string): VideoSource => ({
   id,
   title: id,
   file: { name: id + ".mp4", path: "/" + id, type: "video/mp4" },
+});
+
+test("opening waits for co-selected subtitles before exposing or starting playback", async () => {
+  const { video, actions } = fixture(async () => ({
+    file: { name: "a", path: "/a", type: "video/mp4" },
+    uri: "file:///a",
+    expiresAt: null,
+    async release() {},
+  }));
+  const loaderEntered = Promise.withResolvers<void>();
+  const selected = Promise.withResolvers<SubtitleInput[]>();
+  const opening = video.open(clip("a"), {
+    relatedSubtitles() {
+      loaderEntered.resolve();
+      return selected.promise;
+    },
+  });
+  await loaderEntered.promise;
+  expect(video.store.getState().current?.player).toBeUndefined();
+  expect(actions).toEqual(["load"]);
+  selected.resolve([
+    {
+      name: "a.srt",
+      bytes: new TextEncoder().encode(
+        "1\n00:00:01,000 --> 00:00:04,000\nCaption",
+      ),
+    },
+  ]);
+  expect(await opening).toBe(true);
+  expect(video.store.getState().current?.subtitles.tracks).toHaveLength(1);
+  expect(actions).toEqual(["load", "play"]);
+  await video.close();
+});
+
+test("protected videos never read co-selected subtitles, and a replaced session cannot import them", async () => {
+  const { video } = fixture(async (source) => ({
+    file: { name: source.title, path: "/video", type: "video/mp4" },
+    uri: "file:///video",
+    expiresAt: source.title === "protected" ? Date.now() + 30_000 : null,
+    async release() {},
+  }));
+  let reads = 0;
+  await video.open(clip("protected"), {
+    async relatedSubtitles() {
+      reads++;
+      return [];
+    },
+  });
+  expect(reads).toBe(0);
+  const protectedPlayer = video.store.getState().current?.player;
+  expect(protectedPlayer).toBeDefined();
+  if (!protectedPlayer) throw new Error("Expected player");
+  expect(video.subtitleImportSignal(protectedPlayer)).toBeUndefined();
+
+  await video.open(clip("other"));
+  const player = video.store.getState().current?.player;
+  if (!player) throw new Error("Expected current player");
+  const signal = video.subtitleImportSignal(player);
+  expect(signal?.aborted).toBe(false);
+  await video.close();
+  expect(signal?.aborted).toBe(true);
+  expect(
+    video.addSubtitles(player, [
+      {
+        name: "other.srt",
+        bytes: new TextEncoder().encode(
+          "1\n00:00:01,000 --> 00:00:04,000\nLate",
+        ),
+      },
+    ]),
+  ).toBe(0);
 });
 
 function fixture(
@@ -238,39 +309,4 @@ test("round notes share playback ownership and a recycled row cannot release the
   ownership.interrupt(false);
   releaseThird();
   expect(stops).toEqual(["audio", "second", "video", "third"]);
-});
-
-test("local captions parse VTT and SRT timecodes, preserve multiline Hebrew and ignore markup", () => {
-  const utf8 = (text: string) => new TextEncoder().encode(text);
-  const webvtt = readSubtitles(
-    utf8(
-      "WEBVTT\n\n00:01.010 --> 00:02.000 align:center\nשלום\n<i>שורה שנייה</i>\n",
-    ),
-  );
-  expect(subtitleAt(webvtt, 1.5)).toBe("שלום\nשורה שנייה");
-  expect(subtitleAt(webvtt, 2)).toBeUndefined();
-  const srt = readSubtitles(
-    utf8(
-      '1\r\n01:00:00,100 --> 01:00:02,000\r\n<font color="#ffffff">Hello</font> &amp; goodbye\r\n',
-    ),
-  );
-  expect(subtitleAt(srt, 3601)).toBe("Hello & goodbye");
-});
-
-test("local captions decode entities once and preserve unknown or malformed markup as text", () => {
-  const cues = readSubtitles(
-    new TextEncoder().encode(
-      "WEBVTT\n\n00:01.000 --> 00:04.000\n" +
-        "<v Narrator><c.emphasis><b>שלום</b></c></v><00:02.000>\n" +
-        "1 < 2 &amp; 3 > 2\n" +
-        "&lt;i&gt;literal&lt;/i&gt; &amp;lt;\n" +
-        "<custom>label</custom>\n" +
-        "<cus<i>tom>\n" +
-        "<i",
-    ),
-  );
-  expect(subtitleAt(cues, 2)).toBe(
-    "שלום\n1 < 2 & 3 > 2\n<i>literal</i> &lt;\n" +
-      "<custom>label</custom>\n<cus<i>tom>\n<i",
-  );
 });

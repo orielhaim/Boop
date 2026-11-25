@@ -1,0 +1,14 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+
+[V4+ Styles]
+Format: Name, PrimaryColour, BackColour, Bold, Italic, Underline, BorderStyle, Alignment
+Style: Default,&H000033FF,&H00000000,-1,0,0,3,2
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:05.00,Default,,0,0,0,,{\an7\pos(160,90)}שלום{\i1}\Nالعربية, welcome
+Dialogue: 1,0:00:02.00,0:00:04.00,Default,,0,0,0,,{\k25}first {\k50}second
+Dialogue: 2,0:00:02.00,0:00:04.00,Default,,0,0,0,,{\p1}m 0 0 l 100 100{\p0}text

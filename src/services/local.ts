@@ -4,7 +4,7 @@ import { createNativePlayback, setupPlayback } from "@/core/audio/engine";
 import { createAudioSources } from "@/core/audio/sources";
 import { speeds, voiceOrigin } from "@/core/audio/types";
 import { audioPersistence } from "@/db/audio";
-import { videoPersistence } from "@/db/video";
+import { captionPersistence, videoPersistence } from "@/db/video";
 import { createMediaSources } from "@/core/media/sources";
 import type { MediaSource } from "@/core/media/source";
 import type { AcquireOptions } from "@/core/media/sources";
@@ -651,6 +651,7 @@ async function start() {
       },
       position: videoPositions.get,
       checkpoint: videoPositions.set,
+      captionPreferences: captionPersistence(persistence),
       genericTitle: () => i18n.t("video:viewer.title"),
       preferences: {
         external: read("video.open") === "external",

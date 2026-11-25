@@ -6,6 +6,8 @@ import { videoOrigin } from "@/core/video/types";
 import { useLocal } from "@/services/local-context";
 import { audioNavigationScene } from "@/components/audio/mini-player";
 import { FloatingVideo } from "./viewer";
+import { Captions } from "./captions";
+import { selectedExternal } from "@/core/video/subtitles/tracks";
 
 function VideoCoveredScene({ children }: { children: ReactNode }) {
   const { video } = useLocal();
@@ -42,10 +44,14 @@ export function videoNavigationScene(
 
 export function VideoFrame({ children }: { children: ReactNode }) {
   const { video } = useLocal();
-  const { current, preferences } = useStore(video.store);
+  const { current, preferences, captionAppearance } = useStore(video.store);
   const path = usePathname();
   const presentation = current?.presentation;
   const source = current?.source;
+  const external =
+    current?.subtitles.rendering === "fallback"
+      ? selectedExternal(current.subtitles)
+      : undefined;
 
   useEffect(() => {
     if (presentation !== "full" || path === "/video-player") return;
@@ -68,6 +74,18 @@ export function VideoFrame({ children }: { children: ReactNode }) {
           <FloatingVideo
             player={current.player}
             background={current.background}
+            captions={
+              external && (
+                <Captions
+                  player={current.player}
+                  track={external}
+                  offset={current.subtitles.offset}
+                  appearance={captionAppearance}
+                  controlsVisible
+                  compact
+                />
+              )
+            }
             allowPiP={current.allowPiP && preferences.pipMode === "system"}
             onPictureInPictureChange={(active) => {
               if (current.player)

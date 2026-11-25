@@ -14,10 +14,10 @@ index dcbcd7a..c44f546 100644
    implementation "androidx.fragment:fragment:$fragment_version"
    implementation "androidx.fragment:fragment-ktx:$fragment_version"
 diff --git a/android/src/main/java/expo/modules/video/VideoModule.kt b/android/src/main/java/expo/modules/video/VideoModule.kt
-index c271134..d60b6af 100644
+index f353cc8..33623db 100644
 --- a/android/src/main/java/expo/modules/video/VideoModule.kt
 +++ b/android/src/main/java/expo/modules/video/VideoModule.kt
-@@ -273,7 +273,7 @@ class VideoModule : Module() {
+@@ -273,7 +273,7 @@
  
        Function("play") { ref: VideoPlayer ->
          appContext.mainQueue.launch {
@@ -26,42 +26,52 @@ index c271134..d60b6af 100644
          }
        }
  
-@@ -327,6 +327,10 @@ class VideoModule : Module() {
-         replaceImpl(ref, source)
-       }
+@@ -325,6 +325,10 @@
  
-+      Function("setPlaybackDeadline") { ref: VideoPlayer, expiresAt: Double? ->
-+        appContext.mainQueue.launch { ref.setPlaybackDeadline(expiresAt) }
+       Function("replace") { ref: VideoPlayer, source: Either<Uri, VideoSource>? ->
+         replaceImpl(ref, source)
 +      }
 +
++      Function("setPlaybackDeadline") { ref: VideoPlayer, expiresAt: Double? ->
++        appContext.mainQueue.launch { ref.setPlaybackDeadline(expiresAt) }
+       }
+ 
        // ExoPlayer automatically offloads loading of the asset onto a different thread so we can keep the same
-       // implementation until `replace` is deprecated and removed.
-       // TODO: @behenate see if we can further reduce load on the main thread
-@@ -343,11 +347,21 @@ class VideoModule : Module() {
+@@ -334,6 +338,10 @@
+         replaceImpl(ref, source, promise)
+       }
+ 
++      AsyncFunction("setExternalSubtitle") Coroutine { ref: VideoPlayer, vtt: String? ->
++        ref.setExternalSubtitle(vtt)
++      }
++
+       Function("seekBy") { ref: VideoPlayer, seekTime: Double ->
+         appContext.mainQueue.launch {
+           val seekPos = ref.player.currentPosition + (seekTime * 1000).toLong()
+@@ -343,9 +351,19 @@
  
        Function("replay") { ref: VideoPlayer ->
          appContext.mainQueue.launch {
 -          ref.player.seekTo(0)
 -          ref.player.play()
+-        }
 +          if (ref.allowsPlayback()) {
 +            ref.player.seekTo(0)
 +            ref.player.play()
 +          }
-         }
-       }
- 
++        }
++      }
++
 +      Function("releaseScrubThumbnailExtractor") { ref: VideoPlayer ->
 +        appContext.mainQueue.launch { ref.closeScrubExtractor() }
 +      }
 +
 +      AsyncFunction("generateScrubThumbnailAsync") Coroutine { ref: VideoPlayer, seconds: Double ->
 +        ref.scrubThumbnail(seconds)
-+      }
-+
+       }
+ 
        AsyncFunction("generateThumbnailsAsync") Coroutine { ref: VideoPlayer, times: List<Duration>, options: VideoThumbnailOptions? ->
-         return@Coroutine ref.toMetadataRetriever().safeUse {
-           val bitmaps = times.map { time ->
-@@ -390,6 +404,10 @@ class VideoModule : Module() {
+@@ -390,6 +408,10 @@
      }
  
      appContext.mainQueue.launch {
@@ -289,10 +299,10 @@ index 5fcf3e5..f90bdfa 100644
      override val name = "targetViewChange"
      override val emitToJS = false
 diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
-index 7ccce96..a790e9c 100644
+index e32598a..862ccda 100644
 --- a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
 +++ b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
-@@ -2,6 +2,8 @@ package expo.modules.video.player
+@@ -2,6 +2,8 @@
  
  import android.content.Context
  import android.media.MediaMetadataRetriever
@@ -301,7 +311,7 @@ index 7ccce96..a790e9c 100644
  import androidx.media3.common.C
  import android.webkit.URLUtil
  import androidx.annotation.OptIn
-@@ -18,17 +20,23 @@ import androidx.media3.common.Tracks
+@@ -18,17 +20,23 @@
  import androidx.media3.common.util.UnstableApi
  import androidx.media3.exoplayer.DecoderReuseEvaluation
  import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -325,7 +335,7 @@ index 7ccce96..a790e9c 100644
  import expo.modules.video.VideoView
  import expo.modules.video.managers.VideoManager
  import expo.modules.video.delegates.IgnoreSameSet
-@@ -52,9 +60,13 @@ import expo.modules.video.utils.buildBasicMediaSession
+@@ -52,9 +60,15 @@
  import kotlinx.coroutines.DelicateCoroutinesApi
  import kotlinx.coroutines.Dispatchers
  import kotlinx.coroutines.GlobalScope
@@ -333,13 +343,15 @@ index 7ccce96..a790e9c 100644
 +import kotlinx.coroutines.guava.await
 +import kotlinx.coroutines.withContext
  import kotlinx.coroutines.launch
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.withTimeoutOrNull
  import java.io.FileInputStream
  import java.lang.ref.WeakReference
 +import kotlin.time.Duration.Companion.milliseconds
  import kotlin.time.DurationUnit
  
  // https://developer.android.com/guide/topics/media/media3/getting-started/migration-guide#improvements_in_media3
-@@ -78,6 +90,7 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+@@ -78,6 +92,7 @@
      .Builder(context, renderersFactory)
      .apply {
        setLooper(context.mainLooper)
@@ -347,15 +359,20 @@ index 7ccce96..a790e9c 100644
        setLoadControl(loadControl)
        playerBuilderOptions?.seekBackwardIncrement?.let {
          setSeekBackIncrementMs((it).toLong(DurationUnit.MILLISECONDS).coerceIn(1, 999_000))
-@@ -218,6 +231,98 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+@@ -217,6 +232,194 @@
+ 
    var isLoadingNewSource = false
      private set
- 
++
 +  private val deadlineHandler = Handler(Looper.getMainLooper())
 +  private var deadlineGeneration = 0L
 +  private var deadlineRunnable: Runnable? = null
 +  private var playbackDeadline: Double? = null
 +  private var playbackDeadlineExpired = false
++  private var externalSubtitleVtt: String? = null
++  private var externalSubtitleGeneration = 0L
++  private var pendingExternalSubtitleListener: Player.Listener? = null
++  private var pendingExternalSubtitleCompletion: CompletableDeferred<Boolean>? = null
 +
 +  fun setPlaybackDeadline(expiresAt: Double?) {
 +    deadlineGeneration += 1
@@ -377,6 +394,96 @@ index 7ccce96..a790e9c 100644
 +    }
 +    deadlineRunnable = expire
 +    deadlineHandler.postDelayed(expire, (expiresAt - System.currentTimeMillis()).toLong().coerceAtLeast(0))
++  }
++
++  suspend fun setExternalSubtitle(vtt: String?) {
++    withContext(Dispatchers.Main.immediate) {
++      check(allowsPlayback()) { "Playback deadline has expired" }
++      val source = commitedSource ?: uncommittedSource ?: throw IllegalStateException("Video source is not set")
++      val newVtt = vtt?.takeIf { it.isNotEmpty() }
++      if (uncommittedSource === source) {
++        commitedSource = source
++        uncommittedSource = null
++      }
++      if (newVtt == externalSubtitleVtt) {
++        if (newVtt == null) return@withContext
++        val externalTrack = subtitles.availableSubtitleTracks.firstOrNull {
++          it.id == VideoPlayerSubtitles.EXTERNAL_SUBTITLE_ID
++        }
++        if (externalTrack != null && subtitles.currentSubtitleTrack?.id != externalTrack.id) {
++          subtitles.currentSubtitleTrack = externalTrack
++        }
++        if (subtitles.currentSubtitleTrack?.id == VideoPlayerSubtitles.EXTERNAL_SUBTITLE_ID) return@withContext
++      }
++
++      pendingExternalSubtitleListener?.let(player::removeListener)
++      pendingExternalSubtitleCompletion?.complete(true)
++      val position = player.currentPosition
++      val selectedAudioId = audioTracks.currentAudioTrack?.id
++      val mediaSource = source.toMediaSource(context, newVtt)
++        ?: throw IllegalStateException("Video source is not available")
++      val generation = ++externalSubtitleGeneration
++      val completion = CompletableDeferred<Boolean>()
++      pendingExternalSubtitleCompletion = completion
++      externalSubtitleVtt = newVtt
++      subtitles.externalSubtitleRequested = newVtt != null
++
++      val listener = object : Player.Listener {
++        private var positionRestored = false
++        private var audioRestored = selectedAudioId == null
++
++        private fun finishIfReady() {
++          if (generation != externalSubtitleGeneration || player.playbackState != Player.STATE_READY) return
++          if (!allowsPlayback() || commitedSource !== source) {
++            completion.complete(false)
++            return
++          }
++          if (!positionRestored) {
++            player.seekTo(position)
++            positionRestored = true
++          }
++          selectedAudioId?.let { id ->
++            val track = audioTracks.availableAudioTracks.firstOrNull { it.id == id } ?: return
++            audioTracks.currentAudioTrack = track
++            if (audioTracks.currentAudioTrack?.id != id) return
++            audioRestored = true
++          }
++          if (!audioRestored) return
++          if (newVtt != null && subtitles.currentSubtitleTrack?.id != VideoPlayerSubtitles.EXTERNAL_SUBTITLE_ID) return
++          completion.complete(true)
++        }
++
++        override fun onPlaybackStateChanged(playbackState: Int) = finishIfReady()
++        override fun onTracksChanged(tracks: Tracks) = finishIfReady()
++        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
++          if (mediaItem == null && (!allowsPlayback() || commitedSource !== source)) completion.complete(false)
++        }
++        override fun onPlayerError(error: PlaybackException) {
++          completion.complete(false)
++        }
++      }
++      pendingExternalSubtitleListener = listener
++      player.addListener(listener)
++      try {
++        closeScrubExtractor()
++        player.setMediaSource(mediaSource, position)
++        player.prepare()
++        val attached = withTimeoutOrNull(15_000) { completion.await() } ?: false
++        if (!attached) {
++          throw IllegalStateException("External subtitle track could not be selected")
++        }
++      } catch (error: Throwable) {
++        if (generation == externalSubtitleGeneration) {
++          externalSubtitleVtt = null
++          subtitles.externalSubtitleRequested = false
++        }
++        throw error
++      } finally {
++        player.removeListener(listener)
++        if (pendingExternalSubtitleListener === listener) pendingExternalSubtitleListener = null
++        if (pendingExternalSubtitleCompletion === completion) pendingExternalSubtitleCompletion = null
++      }
++    }
 +  }
 +
 +  fun allowsPlayback(): Boolean {
@@ -434,6 +541,8 @@ index 7ccce96..a790e9c 100644
 +  private fun expirePlaybackDeadline() {
 +    if (playbackDeadlineExpired) return
 +    playbackDeadlineExpired = true
++    cancelExternalSubtitleAttachment()
++    externalSubtitleVtt = null
 +    closeScrubExtractor()
 +    deadlineRunnable = null
 +    player.pause()
@@ -442,21 +551,22 @@ index 7ccce96..a790e9c 100644
 +    commitedSource = null
 +    sendEvent(PlayerEvent.PlaybackDeadlineExpired())
 +  }
-+
+ 
    var currentVideoTrack: VideoTrack? = null
      private set(value) {
-       val old = field
-@@ -393,6 +498,9 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+@@ -393,6 +596,11 @@
  
    @kotlin.OptIn(DelicateCoroutinesApi::class)
    override fun close() {
++    cancelExternalSubtitleAttachment()
++    externalSubtitleVtt = null
 +    deadlineGeneration += 1
 +    deadlineRunnable?.let(deadlineHandler::removeCallbacks)
 +    deadlineRunnable = null
      // Releases the listeners from VideoPlayerKeepAwake
      keepScreenOnWhilePlaying = false
  
-@@ -413,6 +521,7 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+@@ -413,6 +621,7 @@
      // Run on global scope (not appContext.mainQueue) so that reloading doesn't cancel the release process
      // https://github.com/expo/expo/blob/cdf592a7fea56fc01b0149e9b2e5dbd294bcdc4c/packages/expo-modules-core/android/src/main/java/expo/modules/kotlin/AppContext.kt#L277-L279
      GlobalScope.launch(Dispatchers.Main) {
@@ -464,7 +574,7 @@ index 7ccce96..a790e9c 100644
        firstFrameEventGenerator.release()
        player.removeListener(playerListener)
        player.removeAnalyticsListener(analyticsListener)
-@@ -443,6 +552,11 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+@@ -443,11 +652,20 @@
    }
  
    fun prepare() {
@@ -476,11 +586,41 @@ index 7ccce96..a790e9c 100644
      availableVideoTracks = listOf()
      currentVideoTrack = null
  
+     val newSource = uncommittedSource
+-    val mediaSource = newSource?.toMediaSource(context)
++    if (newSource != null && commitedSource != null && newSource !== commitedSource) {
++      cancelExternalSubtitleAttachment()
++      externalSubtitleVtt = null
++    }
++    val mediaSource = newSource?.toMediaSource(context, externalSubtitleVtt)
+ 
+     mediaSource?.let {
+       player.setMediaSource(it)
+@@ -460,6 +678,19 @@
+       player.prepare()
+       isLoadingNewSource = false
+     }
++  }
++
++  private fun cancelExternalSubtitleAttachment() {
++    externalSubtitleGeneration += 1
++    pendingExternalSubtitleCompletion?.complete(false)
++    pendingExternalSubtitleCompletion = null
++    externalSubtitleVtt = null
++    val listener = pendingExternalSubtitleListener
++    pendingExternalSubtitleListener = null
++    if (listener != null) {
++      appContext?.mainQueue?.launch { player.removeListener(listener) }
++    }
++    subtitles.externalSubtitleRequested = false
+   }
+ 
+   private fun applyPitchCorrection(playbackParameters: PlaybackParameters): PlaybackParameters {
 diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
-index cd40efa..e5c65ff 100644
+index 88fb930..f49bd4d 100644
 --- a/build/VideoPlayer.types.d.ts
 +++ b/build/VideoPlayer.types.d.ts
-@@ -253,6 +253,8 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+@@ -253,6 +253,8 @@
       * Pauses the player.
       */
      pause(): void;
@@ -489,7 +629,21 @@ index cd40efa..e5c65ff 100644
      /**
       * Replaces the current source with a new one.
       *
-@@ -285,6 +287,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+@@ -268,6 +270,13 @@
+      * > On Android and Web, this method is equivalent to `replace`.
+      */
+     replaceAsync(source: VideoSource): Promise<void>;
++    /**
++     * Attaches a normalized WebVTT subtitle track supplied in memory, or clears the external track.
++     * Resolves after Android has loaded and selected the external track. Rebuilding the media item
++     * may briefly rebuffer playback. The external track uses `EXTERNAL_SUBTITLE_TRACK_ID`.
++     * @platform android
++     */
++    setExternalSubtitle?(vtt: string | null): Promise<void>;
+     /**
+      * Seeks the playback by the given number of seconds. The time to which the player seeks may differ from the specified requested time for efficiency,
+      * depending on the encoding and what is currently buffered by the player. Use this function to implement playback controls that seek by specific amount of time,
+@@ -285,6 +294,11 @@
       * @platform ios
       */
      generateThumbnailsAsync(times: number | number[], options?: VideoThumbnailOptions): Promise<VideoThumbnail[]>;
@@ -501,6 +655,16 @@ index cd40efa..e5c65ff 100644
  }
  /**
   * Additional options for video thumbnails generation.
+@@ -513,7 +527,8 @@
+ export type AudioMixingMode = 'mixWithOthers' | 'duckOthers' | 'auto' | 'doNotMix';
+ export type SubtitleTrack = {
+     /**
+-     * A string used by `expo-video` to identify the subtitle track.
++     * A string used by `expo-video` to identify the subtitle track. The in-memory external
++     * WebVTT track attached with `setExternalSubtitle` has id `boop-external-subtitle`.
+      *
+      * @platform android
+      */
 diff --git a/build/VideoPlayerEvents.types.d.ts b/build/VideoPlayerEvents.types.d.ts
 index 9c7eaea..5a0a70c 100644
 --- a/build/VideoPlayerEvents.types.d.ts
@@ -703,10 +867,10 @@ index 3c2fde4..4c60612 100644
      let alreadyReleased = didRelease.withLock { didRelease in
        defer {
 diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
-index 07a2cdf..37f317d 100644
+index 8eae68f..7eea46f 100644
 --- a/src/VideoPlayer.types.ts
 +++ b/src/VideoPlayer.types.ts
-@@ -293,6 +293,9 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+@@ -293,6 +293,9 @@
     */
    pause(): void;
  
@@ -716,7 +880,22 @@ index 07a2cdf..37f317d 100644
    /**
     * Replaces the current source with a new one.
     *
-@@ -332,6 +335,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
+@@ -309,6 +312,14 @@
+    * > On Android and Web, this method is equivalent to `replace`.
+    */
+   replaceAsync(source: VideoSource): Promise<void>;
++
++  /**
++   * Attaches a normalized WebVTT subtitle track supplied in memory, or clears the external track.
++   * Resolves after Android has loaded and selected the external track. Rebuilding the media item
++   * may briefly rebuffer playback. The external track uses `EXTERNAL_SUBTITLE_TRACK_ID`.
++   * @platform android
++   */
++  setExternalSubtitle?(vtt: string | null): Promise<void>;
+ 
+   /**
+    * Seeks the playback by the given number of seconds. The time to which the player seeks may differ from the specified requested time for efficiency,
+@@ -332,6 +343,11 @@
      times: number | number[],
      options?: VideoThumbnailOptions
    ): Promise<VideoThumbnail[]>;
@@ -728,6 +907,16 @@ index 07a2cdf..37f317d 100644
  }
  
  /**
+@@ -589,7 +605,8 @@
+ 
+ export type SubtitleTrack = {
+   /**
+-   * A string used by `expo-video` to identify the subtitle track.
++   * A string used by `expo-video` to identify the subtitle track. The in-memory external
++   * WebVTT track attached with `setExternalSubtitle` has id `boop-external-subtitle`.
+    *
+    * @platform android
+    */
 diff --git a/src/VideoPlayer.web.tsx b/src/VideoPlayer.web.tsx
 index 6b5083e..4e49390 100644
 --- a/src/VideoPlayer.web.tsx
@@ -799,3 +988,381 @@ index c53b082..a64bbdf 100644
    /**
     * Handler for an event emitted in a given interval specified by the `timeUpdateEventInterval`.
     */
+diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayerAudioTracks.kt b/android/src/main/java/expo/modules/video/player/VideoPlayerAudioTracks.kt
+index 9363850..d4159a0 100644
+--- a/android/src/main/java/expo/modules/video/player/VideoPlayerAudioTracks.kt
++++ b/android/src/main/java/expo/modules/video/player/VideoPlayerAudioTracks.kt
+@@ -11,6 +11,7 @@
+ import androidx.media3.common.util.UnstableApi
+ import expo.modules.video.listeners.VideoPlayerListener
+ import expo.modules.video.records.AudioTrack
++import expo.modules.video.records.normalizeMergedTrackId
+ import java.lang.ref.WeakReference
+ 
+ @OptIn(UnstableApi::class)
+@@ -84,7 +85,7 @@
+       return
+     }
+     val format = formatsToGroups.keys.firstOrNull {
+-      it.id == audioTrack.id
++      it.id?.let(::normalizeMergedTrackId) == audioTrack.id
+     }
+     format?.let {
+       formatsToGroups[it]?.let { subtitlePair ->
+diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayerSubtitles.kt b/android/src/main/java/expo/modules/video/player/VideoPlayerSubtitles.kt
+index cea4668..b7fd49d 100644
+--- a/android/src/main/java/expo/modules/video/player/VideoPlayerSubtitles.kt
++++ b/android/src/main/java/expo/modules/video/player/VideoPlayerSubtitles.kt
+@@ -11,10 +11,15 @@
+ import androidx.media3.common.util.UnstableApi
+ import expo.modules.video.listeners.VideoPlayerListener
+ import expo.modules.video.records.SubtitleTrack
++import expo.modules.video.records.normalizeMergedTrackId
+ import java.lang.ref.WeakReference
+ 
+ @OptIn(UnstableApi::class)
+ class VideoPlayerSubtitles(owner: VideoPlayer) : VideoPlayerListener {
++  companion object {
++    const val EXTERNAL_SUBTITLE_ID = "boop-external-subtitle"
++  }
++
+   private val owner = WeakReference(owner)
+   private val videoPlayer: VideoPlayer?
+     get() {
+@@ -23,10 +28,25 @@
+   private val formatsToGroups = mutableMapOf<Format, Pair<TrackGroup, Int>>()
+   private var currentSubtitleFormat: Format? = null
+   private var currentOverride: TrackSelectionOverride? = null
++  var externalSubtitleRequested = false
++
++  private fun normalizeSubtitleTrack(format: Format?): SubtitleTrack? {
++    val track = SubtitleTrack.fromFormat(format) ?: return null
++    val normalizedId = format?.id?.let(::normalizeMergedTrackId) ?: return track
++    if (normalizedId == track.id) return track
++    return SubtitleTrack(
++      id = normalizedId,
++      language = track.language,
++      label = track.label,
++      name = track.name,
++      isDefault = track.isDefault,
++      autoSelect = track.autoSelect
++    )
++  }
+ 
+   var currentSubtitleTrack: SubtitleTrack?
+     get() {
+-      return SubtitleTrack.fromFormat(currentSubtitleFormat)
++      return normalizeSubtitleTrack(currentSubtitleFormat)
+     }
+     set(value) {
+       applySubtitleTrack(value)
+@@ -61,12 +81,17 @@
+ 
+         if (MimeTypes.isText(format.sampleMimeType)) {
+           formatsToGroups[format] = Pair(group.mediaTrackGroup, i)
+-          val track = SubtitleTrack.fromFormat(format) ?: continue
++          val track = normalizeSubtitleTrack(format) ?: continue
+           availableSubtitleTracks.add(track)
+         }
+       }
+     }
+     currentSubtitleFormat = findSelectedSubtitleFormat()
++    if (externalSubtitleRequested) {
++      availableSubtitleTracks.firstOrNull { it.id == EXTERNAL_SUBTITLE_ID }?.let {
++        applySubtitleTrack(it)
++      }
++    }
+     super.onTracksChanged(player, tracks)
+   }
+ 
+@@ -83,8 +108,10 @@
+       currentOverride = null
+       return
+     }
+-    val format = formatsToGroups.keys.firstOrNull {
+-      it.id == subtitleTrack.id
++    val format = if (subtitleTrack.id == EXTERNAL_SUBTITLE_ID) {
++      formatsToGroups.keys.firstOrNull { it.id?.let(::normalizeMergedTrackId) == EXTERNAL_SUBTITLE_ID }
++    } else {
++      formatsToGroups.keys.firstOrNull { it.id?.let(::normalizeMergedTrackId) == subtitleTrack.id }
+     }
+     format?.let {
+       formatsToGroups[it]?.let { subtitlePair ->
+diff --git a/android/src/main/java/expo/modules/video/records/Tracks.kt b/android/src/main/java/expo/modules/video/records/Tracks.kt
+index 6179e09..28b1ad1 100644
+--- a/android/src/main/java/expo/modules/video/records/Tracks.kt
++++ b/android/src/main/java/expo/modules/video/records/Tracks.kt
+@@ -9,6 +9,12 @@
+ import java.io.Serializable
+ import java.util.Locale
+ import expo.modules.kotlin.types.OptimizedRecord
++
++internal fun normalizeMergedTrackId(id: String): String {
++  val separator = id.indexOf(':')
++  if (separator <= 0 || id.substring(0, separator).any { !it.isDigit() }) return id
++  return id.substring(separator + 1)
++}
+ 
+ @OptimizedRecord
+ class SubtitleTrack(
+@@ -22,7 +28,7 @@
+   companion object {
+     fun fromFormat(format: Format?): SubtitleTrack? {
+       format ?: return null
+-      val id = format.id ?: return null
++      val id = format.id?.let(::normalizeMergedTrackId) ?: return null
+       val language = format.language ?: return null
+       val label = Locale(language).displayLanguage
+       val name = format.label
+@@ -53,7 +59,7 @@
+   companion object {
+     fun fromFormat(format: Format?): AudioTrack? {
+       format ?: return null
+-      val id = format.id ?: return null
++      val id = format.id?.let(::normalizeMergedTrackId) ?: return null
+       val language = format.language
+       val label = language?.let { Locale(it).displayLanguage } ?: "Unknown"
+       val name = format.label
+@@ -89,7 +95,7 @@
+ ) : Record, Serializable {
+   companion object {
+     fun fromFormat(format: Format?, isSupported: Boolean, variantUrl: Uri?): VideoTrack? {
+-      val id = format?.id ?: return null
++      val id = format?.id?.let(::normalizeMergedTrackId) ?: return null
+       val size = VideoSize(format)
+       val mimeType = format.sampleMimeType
+       val averageBitrate = format.averageBitrate.takeIf { it != Format.NO_VALUE }
+diff --git a/android/src/main/java/expo/modules/video/records/VideoSource.kt b/android/src/main/java/expo/modules/video/records/VideoSource.kt
+index 1adec5f..7e5cbee 100644
+--- a/android/src/main/java/expo/modules/video/records/VideoSource.kt
++++ b/android/src/main/java/expo/modules/video/records/VideoSource.kt
+@@ -44,12 +44,12 @@
+       "ContentType:${this.contentType.value}"
+   }
+ 
+-  fun toMediaSource(context: Context): MediaSource? {
++  fun toMediaSource(context: Context, externalSubtitleVtt: String? = null): MediaSource? {
+     this.uri ?: return null
+-    return buildExpoVideoMediaSource(context, this)
++    return buildExpoVideoMediaSource(context, this, externalSubtitleVtt)
+   }
+ 
+-  fun toMediaItem(context: Context) = MediaItem
++  fun toMediaItem(context: Context, externalSubtitleUri: Uri? = null) = MediaItem
+     .Builder()
+     .apply {
+       setUri(parseLocalAssetId(uri, context))
+@@ -74,6 +74,17 @@
+           }
+         }.build()
+       )
++      externalSubtitleUri?.let { subtitleUri ->
++        setSubtitleConfigurations(
++          listOf(
++            MediaItem.SubtitleConfiguration.Builder(subtitleUri)
++              .setId("boop-external-subtitle")
++              .setMimeType("text/vtt")
++              .setLanguage("und")
++              .build()
++          )
++        )
++      }
+     }
+     .build()
+ 
+diff --git a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
+index 4d09809..d136845 100644
+--- a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
++++ b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
+@@ -2,11 +2,16 @@
+ 
+ import android.content.Context
+ import android.content.pm.ApplicationInfo
++import android.net.Uri
+ import androidx.annotation.OptIn
++import androidx.media3.common.C
+ import androidx.media3.common.util.UnstableApi
+ import androidx.media3.common.util.Util
++import androidx.media3.datasource.ByteArrayDataSource
+ import androidx.media3.datasource.DataSource
++import androidx.media3.datasource.DataSpec
+ import androidx.media3.datasource.DefaultDataSource
++import androidx.media3.datasource.TransferListener
+ import androidx.media3.datasource.cache.CacheDataSource
+ import androidx.media3.datasource.okhttp.OkHttpDataSource
+ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+@@ -23,6 +28,7 @@
+ import okio.ForwardingSource
+ import okio.buffer
+ import java.util.concurrent.ConcurrentHashMap
++import java.util.UUID
+ 
+ @OptIn(UnstableApi::class)
+ fun buildBaseDataSourceFactory(
+@@ -189,12 +195,21 @@
+ @OptIn(UnstableApi::class)
+ fun buildExpoVideoMediaSource(
+   context: Context,
+-  videoSource: VideoSource
++  videoSource: VideoSource,
++  externalSubtitleVtt: String? = null
+ ): MediaSource {
+-  val dataSourceFactory = if (videoSource.useCaching) {
++  val baseDataSourceFactory = if (videoSource.useCaching) {
+     buildCacheDataSourceFactory(context, videoSource)
+   } else {
+     buildBaseDataSourceFactory(context, videoSource)
++  }
++  val externalSubtitleUri = externalSubtitleVtt?.let {
++    Uri.Builder().scheme("boop-in-memory-subtitle").authority(UUID.randomUUID().toString()).build()
++  }
++  val dataSourceFactory = if (externalSubtitleUri != null && externalSubtitleVtt != null) {
++    InMemorySubtitleDataSourceFactory(baseDataSourceFactory, externalSubtitleUri, externalSubtitleVtt.toByteArray(Charsets.UTF_8))
++  } else {
++    baseDataSourceFactory
+   }
+   // With caching on, some renditions may be servable from the cache while the network is gone.
+   // Let a rendition that cannot be reached fall back to another one instead of failing playback.
+@@ -203,8 +218,49 @@
+     dataSourceFactory,
+     fallbackOnTransportError = videoSource.useCaching
+   )
+-  val mediaItem = videoSource.toMediaItem(context)
++  val mediaItem = videoSource.toMediaItem(context, externalSubtitleUri)
+   return mediaSourceFactory.createMediaSource(mediaItem)
++}
++
++private class InMemorySubtitleDataSourceFactory(
++  private val upstreamFactory: DataSource.Factory,
++  private val subtitleUri: Uri,
++  private val subtitleBytes: ByteArray
++) : DataSource.Factory {
++  override fun createDataSource(): DataSource = object : DataSource {
++    private val transferListeners = mutableListOf<TransferListener>()
++    private var activeDataSource: DataSource? = null
++
++    override fun addTransferListener(transferListener: TransferListener) {
++      transferListeners.add(transferListener)
++      activeDataSource?.addTransferListener(transferListener)
++    }
++
++    override fun open(dataSpec: DataSpec): Long {
++      val dataSource = if (dataSpec.uri == subtitleUri) {
++        ByteArrayDataSource(subtitleBytes)
++      } else {
++        upstreamFactory.createDataSource()
++      }
++      activeDataSource = dataSource
++      transferListeners.forEach(dataSource::addTransferListener)
++      return dataSource.open(dataSpec)
++    }
++
++    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
++      activeDataSource?.read(buffer, offset, length) ?: C.RESULT_END_OF_INPUT
++
++    override fun getUri(): Uri? = activeDataSource?.uri
++
++    override fun getResponseHeaders(): Map<String, List<String>> =
++      activeDataSource?.responseHeaders ?: emptyMap()
++
++    override fun close() {
++      val dataSource = activeDataSource
++      activeDataSource = null
++      dataSource?.close()
++    }
++  }
+ }
+ 
+ private fun getApplicationName(context: Context): String {
+diff --git a/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt b/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt
+index 8e85633..ae2c07f 100644
+--- a/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt
++++ b/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt
+@@ -2,11 +2,17 @@
+ 
+ import android.content.Context
+ import android.util.TypedValue
++import android.view.View
+ import android.view.accessibility.CaptioningManager
+ import androidx.media3.ui.CaptionStyleCompat
+ import androidx.media3.ui.PlayerView
++import java.lang.ref.WeakReference
++import java.util.WeakHashMap
+ 
+ object SubtitleUtils {
++  private const val DEFAULT_BOTTOM_PADDING_FRACTION = 0.08f
++  private val layoutListeners = WeakHashMap<PlayerView, View.OnLayoutChangeListener>()
++
+   /**
+    * Configures the PlayerView's subtitle view to fix sizing issues with embedded styles.
+    * Disables embedded HLS subtitle styling and applies Android accessibility settings
+@@ -30,6 +36,33 @@
+         setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, baseFontSize * fontScale)
+       }
+     }
++    updateBottomPadding(playerView)
++    synchronized(layoutListeners) {
++      if (layoutListeners.containsKey(playerView)) return@synchronized
++      val viewReference = WeakReference(playerView)
++      val listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
++        viewReference.get()?.let(::updateBottomPadding)
++      }
++      layoutListeners[playerView] = listener
++      playerView.addOnLayoutChangeListener(listener)
++    }
++  }
++
++  private fun updateBottomPadding(playerView: PlayerView) {
++    val subtitleView = playerView.subtitleView ?: return
++    val viewHeight = playerView.height
++    if (viewHeight <= 0) return
++    val surfaceView = playerView.videoSurfaceView
++    val contentBottom = surfaceView?.takeIf { it.isShown }?.let {
++      val playerLocation = IntArray(2)
++      val surfaceLocation = IntArray(2)
++      playerView.getLocationOnScreen(playerLocation)
++      it.getLocationOnScreen(surfaceLocation)
++      surfaceLocation[1] - playerLocation[1] + it.height
++    } ?: viewHeight
++    val letterboxBelowContent = (viewHeight - contentBottom).coerceAtLeast(0)
++    val paddingFraction = DEFAULT_BOTTOM_PADDING_FRACTION + letterboxBelowContent.toFloat() / viewHeight
++    subtitleView.setBottomPaddingFraction(paddingFraction.coerceAtMost(0.8f))
+   }
+ 
+   /**
+diff --git a/build/index.d.ts b/build/index.d.ts
+index ce98327..1e1c98d 100644
+--- a/build/index.d.ts
++++ b/build/index.d.ts
+@@ -4,6 +4,7 @@
+ export type { VideoContentFit, VideoViewProps, SurfaceType, ButtonOptions, } from './VideoView.types';
+ export type { VideoThumbnail } from './VideoThumbnail';
+ export { createVideoPlayer } from './VideoPlayer';
++export declare const EXTERNAL_SUBTITLE_TRACK_ID = "boop-external-subtitle";
+ export { default as VideoAirPlayButton } from './VideoAirPlayButton';
+ export type * from './VideoPlayer.types';
+ export type * from './VideoPlayerEvents.types';
+diff --git a/build/index.js b/build/index.js
+index 471db90..c13db3e 100644
+--- a/build/index.js
++++ b/build/index.js
+@@ -2,6 +2,7 @@
+ export { VideoView } from './VideoView';
+ export { useVideoPlayer } from './VideoPlayer';
+ export { createVideoPlayer } from './VideoPlayer';
++export const EXTERNAL_SUBTITLE_TRACK_ID = 'boop-external-subtitle';
+ export { default as VideoAirPlayButton } from './VideoAirPlayButton';
+ 
+ //# sourceMappingURL=index.js.map
+diff --git a/src/index.ts b/src/index.ts
+index 9b807d6..41eee8e 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -16,6 +16,7 @@
+ export type { VideoThumbnail } from './VideoThumbnail';
+ 
+ export { createVideoPlayer } from './VideoPlayer';
++export const EXTERNAL_SUBTITLE_TRACK_ID = 'boop-external-subtitle';
+ export { default as VideoAirPlayButton } from './VideoAirPlayButton';
+ 
+ export type * from './VideoPlayer.types';

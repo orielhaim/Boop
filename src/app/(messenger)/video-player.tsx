@@ -6,14 +6,16 @@ import { useStore } from "zustand";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import { VideoViewer } from "@/components/video/viewer";
-import { CaptionOptions, Captions } from "@/components/video/captions";
+import { Captions } from "@/components/video/captions";
+import { SubtitleOptions } from "@/components/video/subtitle-options";
+import { selectedExternal } from "@/core/video/subtitles/tracks";
 import { useLocal } from "@/services/local-context";
 import { useDialog } from "@/components/ui/dialog";
 
 export default function VideoPlayerRoute() {
   const dialog = useDialog();
   const { video } = useLocal();
-  const { current, preferences } = useStore(video.store);
+  const { current, preferences, captionAppearance } = useStore(video.store);
   const navigation = useNavigation();
   const { t } = useTranslation("video");
   const presentation = current?.presentation;
@@ -62,7 +64,7 @@ export default function VideoPlayerRoute() {
     canExport,
     background,
     neighbors,
-    captions,
+    subtitles,
   } = current;
   const origin =
     source.kind === "attachment" && source.source.kind === "marmot"
@@ -129,35 +131,45 @@ export default function VideoPlayerRoute() {
       }
       advancedGestures={preferences.advancedGestures}
       seekInterval={preferences.seekInterval}
-      subtitleExtra={
-        canExport
-          ? (close) => (
-              <CaptionOptions
-                captions={captions}
-                update={(value) => video.captions(player, value)}
-                close={close}
-                onError={() =>
-                  void dialog.show({
-                    title: t("viewer.subtitleFailed"),
-                    tone: "error",
-                  })
-                }
-              />
-            )
-          : undefined
-      }
-      onSelectEmbeddedSubtitle={() => {
-        if (captions) video.captions(player);
-      }}
+      subtitleOptions={(tracks, close) => (
+        <SubtitleOptions
+          state={subtitles}
+          embedded={tracks}
+          appearance={captionAppearance}
+          canImport={canExport}
+          videoName={source.title ?? ""}
+          importSignal={() => video.subtitleImportSignal(player)}
+          select={(selection) => video.selectSubtitle(player, selection)}
+          add={(inputs) => video.addSubtitles(player, inputs)}
+          remove={(id) => video.removeSubtitle(player, id)}
+          setEncoding={(id, encoding) =>
+            video.subtitleEncoding(player, id, encoding)
+          }
+          setOffset={(offset) => video.subtitleOffset(player, offset)}
+          setAppearance={(appearance) => video.captionAppearance(appearance)}
+          close={close}
+          onError={() =>
+            void dialog.show({
+              title: t("viewer.subtitleFailed"),
+              tone: "error",
+            })
+          }
+        />
+      )}
       subtitleOverlay={
-        captions
-          ? (controlsVisible) => (
-              <Captions
-                player={player}
-                captions={captions}
-                controlsVisible={controlsVisible}
-              />
-            )
+        subtitles
+          ? (controlsVisible) => {
+              const track = selectedExternal(subtitles);
+              return track && subtitles.rendering === "fallback" ? (
+                <Captions
+                  player={player}
+                  track={track}
+                  appearance={captionAppearance}
+                  offset={subtitles.offset}
+                  controlsVisible={controlsVisible}
+                />
+              ) : null;
+            }
           : undefined
       }
     />

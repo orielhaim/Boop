@@ -1,0 +1,27 @@
+WEBVTT
+
+REGION
+id:lower
+width:60%
+viewportanchor:35%,75%
+
+STYLE
+::cue { background: url(https://example.invalid/untrusted); }
+
+dialogue
+00:01.000 --> 00:05.000 region:lower align:start
+<v Narrator><c.yellow.bg_black><b>שלום</b></c></v>
+<i><u>مرحبا</u></i> 1 < 2 &amp; 3 > 2
+<ruby>漢<rt>かん</rt></ruby>
+00:02.000
+
+00:02.000 --> 00:03.000
+A <00:02.200>B
+
+00:06.000 --> 00:09.000
+&lt;i&gt;literal&lt;/i&gt; &amp;lt;
+&#x05E9; &#1513; &amp;#x05E9; &#0;
+<custom>label</custom>
+<cus<i>tom>
+<i
+<img src="https://example.invalid/asset">

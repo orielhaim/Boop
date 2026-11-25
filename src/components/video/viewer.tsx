@@ -57,8 +57,11 @@ import { createScrubPreview } from "./scrub-preview";
 import { scheduleOnRN } from "react-native-worklets";
 import { useTheme } from "@/theme";
 import { updateVideoPlayer } from "@/core/video/player-settings";
+import { androidExternalSubtitleId } from "@/core/video/subtitles/tracks";
+import { notifySubtitleSeek } from "@/core/video/subtitles/sync";
 import { useVideoOrientation } from "./orientation";
 import { useSurfaceGestures } from "./surface-gestures";
+import { MenuRow } from "./menu-row";
 
 type ViewerProps = {
   player: VideoPlayer;
@@ -80,9 +83,8 @@ type ViewerProps = {
   onSave?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
-  subtitleExtra?: ReactNode | ((close: () => void) => ReactNode);
+  subtitleOptions?: (tracks: SubtitleTrack[], close: () => void) => ReactNode;
   subtitleOverlay?: (controlsVisible: boolean) => ReactNode;
-  onSelectEmbeddedSubtitle?: () => void;
   onMemoryWarning?: (listener: () => void) => () => void;
   style?: StyleProp<ViewStyle>;
 };
@@ -98,13 +100,9 @@ type FloatingVideoProps = Pick<
   | "onPictureInPictureChange"
 > & {
   onExpand: () => void;
+  captions?: ReactNode;
   style?: StyleProp<ViewStyle>;
 };
-
-type TrackChoice =
-  | { kind: "audio"; track: AudioTrack }
-  | { kind: "subtitle"; track: SubtitleTrack }
-  | { kind: "subtitle-off" };
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
@@ -164,9 +162,8 @@ export function VideoViewer({
   onSave,
   onPrevious,
   onNext,
-  subtitleExtra,
+  subtitleOptions,
   subtitleOverlay,
-  onSelectEmbeddedSubtitle,
   onMemoryWarning,
   style,
 }: ViewerProps) {
@@ -196,6 +193,7 @@ export function VideoViewer({
   const [loop, setLoop] = useState(player.loop);
   const [remainingTime, setRemainingTime] = useState(false);
   const [firstFrameRendered, setFirstFrameRendered] = useState(false);
+  const [missingVideo, setMissingVideo] = useState(false);
   const scrubPlayback = useRef<{ wasPlaying: boolean } | null>(null);
   const originalBrightness = useRef<{ value: number; system: boolean } | null>(
     null,
@@ -256,21 +254,40 @@ export function VideoViewer({
     duration > 0
       ? Math.max(0, Math.min(1, player.bufferedPosition / duration))
       : 0;
+  // Native readiness and track discovery can arrive in separate events.
   const error =
     status === "error" ||
-    (status === "readyToPlay" && player.availableVideoTracks.length === 0);
+    (missingVideo &&
+      status === "readyToPlay" &&
+      !firstFrameRendered &&
+      !player.availableVideoTracks.length);
+  const opening = !background && !firstFrameRendered && !error;
+  const controlsReady = !opening && !error;
   const keepControls =
-    !isPlaying || error || Boolean(trackMenu) || scrubbing || screenReader;
+    !isPlaying ||
+    opening ||
+    error ||
+    Boolean(trackMenu) ||
+    scrubbing ||
+    screenReader;
   const controlsVisible = showControls || keepControls;
-  const loading =
-    !error &&
-    (status === "loading" ||
-      status === "idle" ||
-      (!firstFrameRendered && currentTime === 0));
+  const buffering = !background && !error && status === "loading";
   const pipSupported = !background && allowPiP && isPictureInPictureSupported();
   const { playbackRate } = useEvent(player, "playbackRateChange", {
     playbackRate: player.playbackRate,
   });
+
+  useEffect(() => {
+    if (background || firstFrameRendered || status !== "readyToPlay") return;
+    const watchdog = setTimeout(() => {
+      if (
+        player.status === "readyToPlay" &&
+        !player.availableVideoTracks.length
+      )
+        setMissingVideo(true);
+    }, 12_000);
+    return () => clearTimeout(watchdog);
+  }, [background, firstFrameRendered, player, status]);
 
   useEffect(() => {
     const subscription = AccessibilityInfo.addEventListener(
@@ -491,6 +508,7 @@ export function VideoViewer({
       setCommittedTime(seconds);
       progressValue.set(seconds / duration);
       updateVideoPlayer(player, { currentTime: seconds });
+      notifySubtitleSeek(player);
       if (resume) player.play();
     },
     [duration, player, progressValue],
@@ -641,43 +659,16 @@ export function VideoViewer({
     }
   }, [onPictureInPictureChange, pipActive, pipSupported]);
 
-  const chooseTrack = useCallback(
-    (choice: TrackChoice) => {
-      if (choice.kind === "audio")
-        updateVideoPlayer(player, { audioTrack: choice.track });
-      else {
-        onSelectEmbeddedSubtitle?.();
-        updateVideoPlayer(player, {
-          subtitleTrack: choice.kind === "subtitle" ? choice.track : null,
-        });
-      }
+  const chooseAudioTrack = useCallback(
+    (track: AudioTrack) => {
+      updateVideoPlayer(player, { audioTrack: track });
       setTrackMenu(null);
     },
-    [onSelectEmbeddedSubtitle, player],
+    [player],
   );
-
-  const trackOptions =
-    trackMenu === "audio"
-      ? availableAudioTracks.map((track, index) => ({
-          key: track.id ?? `${track.language}-${index}`,
-          title: track.label || track.name || track.language,
-          selected: audioTrack === track,
-          choice: { kind: "audio", track } satisfies TrackChoice,
-        }))
-      : [
-          {
-            key: "off",
-            title: t("viewer.subtitlesOff"),
-            selected: subtitleTrack === null,
-            choice: { kind: "subtitle-off" } satisfies TrackChoice,
-          },
-          ...availableSubtitleTracks.map((track, index) => ({
-            key: track.id ?? `${track.language}-${index}`,
-            title: track.label || track.name || track.language,
-            selected: subtitleTrack === track,
-            choice: { kind: "subtitle", track } satisfies TrackChoice,
-          })),
-        ];
+  const embeddedSubtitleTracks = availableSubtitleTracks.filter(
+    (track) => track.id !== androidExternalSubtitleId,
+  );
 
   useEffect(() => {
     if (keepControls || pipActive || !showControls) return;
@@ -725,8 +716,11 @@ export function VideoViewer({
               <Text style={styles.listeningText}>{t("viewer.listening")}</Text>
             </View>
           )}
-          {!background && !pipActive && subtitleOverlay?.(controlsVisible)}
-          {poster && !background && (loading || error) ? (
+          {!background &&
+            !pipActive &&
+            firstFrameRendered &&
+            subtitleOverlay?.(controlsVisible)}
+          {poster && opening ? (
             <Image
               source={poster}
               cachePolicy="none"
@@ -750,12 +744,13 @@ export function VideoViewer({
               ) : null}
             </View>
           ) : null}
-          {loading && !background ? (
-            <ActivityIndicator
-              color="#fff"
-              accessibilityLabel={t("viewer.loading")}
-              style={styles.loader}
-            />
+          {opening || buffering ? (
+            <View pointerEvents="none" style={styles.loader}>
+              <ActivityIndicator
+                color="#fff"
+                accessibilityLabel={t("viewer.loading")}
+              />
+            </View>
           ) : null}
           {screenReader && (
             <Pressable
@@ -803,25 +798,27 @@ export function VideoViewer({
                 ) : (
                   <View style={styles.titleSpacer} />
                 )}
-                {onMinimize ? (
+                {onMinimize && controlsReady ? (
                   <Control label={t("viewer.minimize")} onPress={onMinimize}>
                     <Icon name="expand" color="#fff" size={23} weight="bold" />
                   </Control>
                 ) : null}
-                <Control
-                  label={t("viewer.options")}
-                  onPress={() => setTrackMenu("options")}
-                >
-                  <Icon name="more" size={24} weight="bold" color="#fff" />
-                </Control>
+                {controlsReady && (
+                  <Control
+                    label={t("viewer.options")}
+                    onPress={() => setTrackMenu("options")}
+                  >
+                    <Icon name="more" size={24} weight="bold" color="#fff" />
+                  </Control>
+                )}
               </View>
 
               <View
                 style={styles.centerControls}
                 pointerEvents="box-none"
-                accessibilityElementsHidden={error}
+                accessibilityElementsHidden={!controlsReady || buffering}
               >
-                {!error && (
+                {controlsReady && !buffering && (
                   <>
                     <Control
                       label={t("viewer.seekBack", { seconds: seekInterval })}
@@ -873,162 +870,174 @@ export function VideoViewer({
                 )}
               </View>
 
-              <View style={styles.bottomPanel}>
-                <View style={styles.timelineRow}>
-                  <GestureDetector gesture={scrubGesture}>
-                    <View
-                      onLayout={onRailLayout}
-                      accessibilityRole="adjustable"
-                      accessibilityLabel={t("viewer.timeline")}
-                      accessibilityValue={{ min: 0, max: duration, now: time }}
-                      accessibilityActions={[
-                        {
-                          name: "increment",
-                          label: t("viewer.seekForward", {
-                            seconds: seekInterval,
-                          }),
-                        },
-                        {
-                          name: "decrement",
-                          label: t("viewer.seekBack", {
-                            seconds: seekInterval,
-                          }),
-                        },
-                      ]}
-                      onAccessibilityAction={(event) =>
-                        seekBy(
-                          event.nativeEvent.actionName === "increment"
-                            ? seekInterval
-                            : -seekInterval,
-                        )
-                      }
-                      style={styles.railHit}
-                    >
-                      {scrubbing && previewVisible ? (
-                        <Animated.View
-                          pointerEvents="none"
-                          style={[
-                            styles.previewFrame,
-                            (!previewThumbnail || !previewPainted) &&
-                              styles.previewTimeOnly,
-                            previewPositionStyle,
-                          ]}
-                        >
-                          {previewThumbnail && (
-                            <Image
-                              source={previewThumbnail}
-                              contentFit="cover"
-                              cachePolicy="none"
-                              onDisplay={() => setPreviewPainted(true)}
-                              style={styles.previewImage}
-                            />
-                          )}
-                          <Text style={styles.previewTime}>
-                            {formatTime(time)}
-                          </Text>
-                        </Animated.View>
-                      ) : null}
-                      <View style={styles.rail}>
-                        <View
-                          style={[
-                            styles.buffered,
-                            { width: `${buffered * 100}%` },
-                          ]}
-                        />
-                        <Animated.View
-                          style={[styles.progress, progressStyle]}
-                        />
-                        <Animated.View
-                          style={[styles.thumb, thumbPositionStyle]}
-                        />
+              {controlsReady && (
+                <View style={styles.bottomPanel}>
+                  <View style={styles.timelineRow}>
+                    <GestureDetector gesture={scrubGesture}>
+                      <View
+                        onLayout={onRailLayout}
+                        accessibilityRole="adjustable"
+                        accessibilityLabel={t("viewer.timeline")}
+                        accessibilityValue={{
+                          min: 0,
+                          max: duration,
+                          now: time,
+                        }}
+                        accessibilityActions={[
+                          {
+                            name: "increment",
+                            label: t("viewer.seekForward", {
+                              seconds: seekInterval,
+                            }),
+                          },
+                          {
+                            name: "decrement",
+                            label: t("viewer.seekBack", {
+                              seconds: seekInterval,
+                            }),
+                          },
+                        ]}
+                        onAccessibilityAction={(event) =>
+                          seekBy(
+                            event.nativeEvent.actionName === "increment"
+                              ? seekInterval
+                              : -seekInterval,
+                          )
+                        }
+                        style={styles.railHit}
+                      >
+                        {scrubbing && previewVisible ? (
+                          <Animated.View
+                            pointerEvents="none"
+                            style={[
+                              styles.previewFrame,
+                              (!previewThumbnail || !previewPainted) &&
+                                styles.previewTimeOnly,
+                              previewPositionStyle,
+                            ]}
+                          >
+                            {previewThumbnail && (
+                              <Image
+                                source={previewThumbnail}
+                                contentFit="cover"
+                                cachePolicy="none"
+                                onDisplay={() => setPreviewPainted(true)}
+                                style={styles.previewImage}
+                              />
+                            )}
+                            <Text style={styles.previewTime}>
+                              {formatTime(time)}
+                            </Text>
+                          </Animated.View>
+                        ) : null}
+                        <View style={styles.rail}>
+                          <View
+                            style={[
+                              styles.buffered,
+                              { width: `${buffered * 100}%` },
+                            ]}
+                          />
+                          <Animated.View
+                            style={[styles.progress, progressStyle]}
+                          />
+                          <Animated.View
+                            style={[styles.thumb, thumbPositionStyle]}
+                          />
+                        </View>
                       </View>
-                    </View>
-                  </GestureDetector>
-                  {player.isLive ? (
-                    <Text style={[styles.timeLabel, styles.timeWidth]}>
-                      {timecode}
-                    </Text>
-                  ) : (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={t(
-                        remainingTime
-                          ? "viewer.remainingTime"
-                          : "viewer.duration",
-                      )}
-                      accessibilityValue={{ text: timecode }}
-                      onPress={() => setRemainingTime((value) => !value)}
-                      style={[styles.timeButton, styles.timeWidth]}
-                    >
-                      <Text style={styles.timeLabel}>{timecode}</Text>
-                    </Pressable>
-                  )}
-                </View>
-                <View style={styles.transportRow}>
-                  <Control
-                    label={player.muted ? t("viewer.unmute") : t("viewer.mute")}
-                    onPress={() => {
-                      updateVideoPlayer(player, { muted: !player.muted });
-                    }}
-                    compact
-                  >
-                    {player.muted ? (
-                      <Icon name="speakerOff" size={21} color="#fff" />
+                    </GestureDetector>
+                    {player.isLive ? (
+                      <Text style={[styles.timeLabel, styles.timeWidth]}>
+                        {timecode}
+                      </Text>
                     ) : (
-                      <Icon name="speaker" size={21} color="#fff" />
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t(
+                          remainingTime
+                            ? "viewer.remainingTime"
+                            : "viewer.duration",
+                        )}
+                        accessibilityValue={{ text: timecode }}
+                        onPress={() => setRemainingTime((value) => !value)}
+                        style={[styles.timeButton, styles.timeWidth]}
+                      >
+                        <Text style={styles.timeLabel}>{timecode}</Text>
+                      </Pressable>
                     )}
-                  </Control>
-                  {availableSubtitleTracks.length > 0 || subtitleExtra ? (
+                  </View>
+                  <View style={styles.transportRow}>
                     <Control
-                      label={t("viewer.subtitles")}
-                      onPress={() => setTrackMenu("subtitles")}
-                      compact
-                    >
-                      <Icon name="captions" size={21} color="#fff" />
-                    </Control>
-                  ) : null}
-                  {pipSupported ? (
-                    <Control
-                      label={t("viewer.pictureInPicture")}
-                      onPress={() => void togglePiP()}
-                      compact
-                    >
-                      <Icon name="pictureInPicture" size={20} color="#fff" />
-                    </Control>
-                  ) : null}
-                  {onPrevious ? (
-                    <Control
-                      label={t("viewer.previous")}
-                      onPress={onPrevious}
-                      compact
-                    >
-                      <Text style={styles.saveGlyph}>‹</Text>
-                    </Control>
-                  ) : null}
-                  {onNext ? (
-                    <Control label={t("viewer.next")} onPress={onNext} compact>
-                      <Text style={styles.saveGlyph}>›</Text>
-                    </Control>
-                  ) : null}
-                  {!background && (
-                    <Control
-                      label={t(
-                        orientation.landscape
-                          ? "viewer.resetOrientation"
-                          : "viewer.fullscreen",
-                      )}
-                      onPress={
-                        orientation.landscape
-                          ? orientation.reset
-                          : orientation.enter
+                      label={
+                        player.muted ? t("viewer.unmute") : t("viewer.mute")
                       }
+                      onPress={() => {
+                        updateVideoPlayer(player, { muted: !player.muted });
+                      }}
                       compact
                     >
-                      <Icon name="fullscreen" size={20} color="#fff" />
+                      {player.muted ? (
+                        <Icon name="speakerOff" size={21} color="#fff" />
+                      ) : (
+                        <Icon name="speaker" size={21} color="#fff" />
+                      )}
                     </Control>
-                  )}
+                    {embeddedSubtitleTracks.length > 0 || subtitleOptions ? (
+                      <Control
+                        label={t("viewer.subtitles")}
+                        onPress={() => setTrackMenu("subtitles")}
+                        compact
+                      >
+                        <Icon name="captions" size={21} color="#fff" />
+                      </Control>
+                    ) : null}
+                    {pipSupported ? (
+                      <Control
+                        label={t("viewer.pictureInPicture")}
+                        onPress={() => void togglePiP()}
+                        compact
+                      >
+                        <Icon name="pictureInPicture" size={20} color="#fff" />
+                      </Control>
+                    ) : null}
+                    {onPrevious ? (
+                      <Control
+                        label={t("viewer.previous")}
+                        onPress={onPrevious}
+                        compact
+                      >
+                        <Text style={styles.saveGlyph}>‹</Text>
+                      </Control>
+                    ) : null}
+                    {onNext ? (
+                      <Control
+                        label={t("viewer.next")}
+                        onPress={onNext}
+                        compact
+                      >
+                        <Text style={styles.saveGlyph}>›</Text>
+                      </Control>
+                    ) : null}
+                    {!background && (
+                      <Control
+                        label={t(
+                          orientation.landscape
+                            ? "viewer.resetOrientation"
+                            : "viewer.fullscreen",
+                        )}
+                        onPress={
+                          orientation.landscape
+                            ? orientation.reset
+                            : orientation.enter
+                        }
+                        compact
+                      >
+                        <Icon name="fullscreen" size={20} color="#fff" />
+                      </Control>
+                    )}
+                  </View>
                 </View>
-              </View>
+              )}
             </Animated.View>
           ) : null}
         </Animated.View>
@@ -1066,7 +1075,11 @@ export function VideoViewer({
               )}
             </Text>
             <ScrollView>
-              {trackMenu === "options" ? (
+              {trackMenu === "subtitles" ? (
+                subtitleOptions?.(embeddedSubtitleTracks, () =>
+                  setTrackMenu(null),
+                )
+              ) : trackMenu === "options" ? (
                 <>
                   <MenuRow
                     label={t("viewer.speed")}
@@ -1173,50 +1186,20 @@ export function VideoViewer({
                   />
                 ))
               ) : (
-                trackOptions.map((item) => (
+                availableAudioTracks.map((track, index) => (
                   <MenuRow
-                    key={item.key}
-                    label={item.title}
-                    selected={item.selected}
-                    action={() => chooseTrack(item.choice)}
+                    key={track.id ?? `${track.language}-${index}`}
+                    label={track.label || track.name || track.language}
+                    selected={audioTrack === track}
+                    action={() => chooseAudioTrack(track)}
                   />
                 ))
               )}
             </ScrollView>
-            {trackMenu === "subtitles"
-              ? typeof subtitleExtra === "function"
-                ? subtitleExtra(() => setTrackMenu(null))
-                : subtitleExtra
-              : null}
           </View>
         </Pressable>
       </Modal>
     </View>
-  );
-}
-
-export function MenuRow({
-  label,
-  detail,
-  selected,
-  action,
-}: {
-  label: string;
-  detail?: string;
-  selected?: boolean;
-  action(): void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      onPress={action}
-      style={styles.trackRow}
-    >
-      <Text style={styles.trackLabel}>{label}</Text>
-      {detail && <Text style={styles.timeLabel}>{detail}</Text>}
-      {selected && <View style={styles.selectedDot} />}
-    </Pressable>
   );
 }
 
@@ -1229,6 +1212,7 @@ export function FloatingVideo({
   background,
   allowPiP,
   onPictureInPictureChange,
+  captions,
   style,
 }: FloatingVideoProps) {
   const { t } = useTranslation("video");
@@ -1236,6 +1220,7 @@ export function FloatingVideo({
     isPlaying: player.playing,
   });
   const systemPiP = !background && allowPiP && isPictureInPictureSupported();
+  const [pipActive, setPipActive] = useState(false);
   const { status } = useEvent(player, "statusChange", {
     status: player.status,
     error: undefined,
@@ -1248,10 +1233,7 @@ export function FloatingVideo({
     bufferedPosition: player.bufferedPosition,
   });
   const duration = player.duration;
-  const loading =
-    status === "loading" ||
-    status === "idle" ||
-    (!firstFrameRendered && currentTime === 0);
+  const opening = !background && !firstFrameRendered && status !== "error";
   const fraction = duration > 0 ? Math.min(1, currentTime / duration) : 0;
   const insets = useSafeAreaInsets();
 
@@ -1321,12 +1303,18 @@ export function FloatingVideo({
             surfaceType="textureView"
             allowsPictureInPicture={Boolean(systemPiP)}
             startsPictureInPictureAutomatically={Boolean(systemPiP)}
-            onPictureInPictureStart={() => onPictureInPictureChange?.(true)}
-            onPictureInPictureStop={() => onPictureInPictureChange?.(false)}
+            onPictureInPictureStart={() => {
+              setPipActive(true);
+              onPictureInPictureChange?.(true);
+            }}
+            onPictureInPictureStop={() => {
+              setPipActive(false);
+              onPictureInPictureChange?.(false);
+            }}
             onFirstFrameRender={() => setFirstFrameRendered(true)}
           />
         )}
-        {poster && loading && !background ? (
+        {poster && opening ? (
           <Image
             source={poster}
             contentFit="contain"
@@ -1334,6 +1322,15 @@ export function FloatingVideo({
             style={styles.floatingPoster}
           />
         ) : null}
+        {opening && !pipActive && (
+          <View pointerEvents="none" style={styles.loader}>
+            <ActivityIndicator
+              color="#fff"
+              accessibilityLabel={t("viewer.loading")}
+            />
+          </View>
+        )}
+        {!background && !pipActive && firstFrameRendered && captions}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("viewer.expand")}
@@ -1374,7 +1371,12 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#050505", overflow: "hidden" },
   surface: { flex: 1, backgroundColor: "#050505", overflow: "hidden" },
   poster: { ...StyleSheet.absoluteFill, zIndex: 1 },
-  loader: { position: "absolute", top: "50%", alignSelf: "center", zIndex: 2 },
+  loader: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+  },
   errorNotice: {
     position: "absolute",
     top: "42%",
@@ -1566,22 +1568,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     marginBottom: 12,
-  },
-  trackRow: {
-    minHeight: 52,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.15)",
-  },
-  trackLabel: { color: "#fff", fontSize: 15, flex: 1 },
-  selectedDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: "#fff",
   },
   emptyTracks: { paddingVertical: 20, color: "rgba(255,255,255,0.7)" },
   floating: {

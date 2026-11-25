@@ -7,6 +7,7 @@ import { initializeLocal } from "@/services/local";
 import type { AppLock } from "@/core/security/app-lock";
 import { videoImportDirectory } from "./import-cache";
 import { videoFile } from "./types";
+import type { SubtitleInput } from "./subtitles/tracks";
 
 let importing = false;
 
@@ -87,6 +88,7 @@ export async function openLocalVideo(
   uri: string,
   name?: string,
   mimeType?: string,
+  relatedSubtitles?: (signal: AbortSignal) => Promise<SubtitleInput[]>,
 ) {
   const local = await initializeLocal();
   if (
@@ -152,7 +154,7 @@ export async function openLocalVideo(
         dimensions: info.dimensions,
         duration: info.duration ?? undefined,
       },
-      { dispose },
+      { dispose, relatedSubtitles },
     );
   } finally {
     importing = false;

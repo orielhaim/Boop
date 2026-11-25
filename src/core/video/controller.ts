@@ -4,7 +4,17 @@ import type { AcquireOptions } from "@/core/media/sources";
 import { mediaId, type MediaHandle } from "@/core/media/source";
 import type { createVideoEngine } from "./engine";
 import type { VideoPreferences, VideoSource } from "./types";
-import type { LocalCaptions } from "./subtitles";
+import { bindSubtitles, emptySubtitles } from "./subtitles/session";
+import type { SubtitleEncoding } from "./subtitles/encoding";
+import type {
+  SubtitleInput,
+  SubtitleSelection,
+  SubtitleState,
+} from "./subtitles/tracks";
+import {
+  defaultCaptionAppearance,
+  type CaptionAppearance,
+} from "./subtitles/types";
 
 export type VideoPresentation = "full" | "floating";
 export type VideoNeighbors = { previous?: () => void; next?: () => void };
@@ -19,7 +29,7 @@ type SessionView = {
   allowBackground: boolean;
   canExport: boolean;
   neighbors?: VideoNeighbors;
-  captions?: LocalCaptions;
+  subtitles: SubtitleState;
   suspended?: boolean;
 };
 
@@ -34,6 +44,7 @@ type Playback = {
   abort: AbortController;
   engine?: ReturnType<typeof createVideoEngine>;
   handle?: MediaHandle;
+  subtitles?: ReturnType<typeof bindSubtitles>;
   subscriptions: { remove(): void }[];
   exports: Set<Promise<void>>;
   expiry?: ReturnType<typeof setTimeout>;
@@ -59,13 +70,22 @@ export function createVideoController(deps: {
   savePreferences(value: VideoPreferences): void;
   position(id: string): number;
   checkpoint(id: string, seconds: number): void;
+  captionPreferences?: {
+    appearance: CaptionAppearance;
+    saveAppearance(value: CaptionAppearance): void;
+    offset(id: string): number;
+    saveOffset(id: string, offset: number): void;
+  };
   genericTitle(): string;
 }) {
   const store = createStore<{
     current?: SessionView;
     preferences: VideoPreferences;
+    captionAppearance: CaptionAppearance;
   }>(() => ({
     preferences: deps.preferences,
+    captionAppearance:
+      deps.captionPreferences?.appearance ?? defaultCaptionAppearance,
   }));
   let current: Playback | undefined;
   let suspended: SuspendedVideo | undefined;
@@ -127,6 +147,7 @@ export function createVideoController(deps: {
     }
     current = undefined;
     session.abort.abort();
+    session.subtitles?.close();
     clearTimeout(session.expiry);
     clearTimeout(session.backgroundPause);
     deps.release();
@@ -169,6 +190,7 @@ export function createVideoController(deps: {
       dispose?: () => void;
       neighbors?: VideoNeighbors;
       restore?: SuspendedVideo;
+      relatedSubtitles?: (signal: AbortSignal) => Promise<SubtitleInput[]>;
     } = {},
   ) {
     const { restore } = options;
@@ -206,7 +228,7 @@ export function createVideoController(deps: {
         allowBackground: false,
         canExport: false,
         neighbors: options.neighbors,
-        captions: restore?.view.captions,
+        subtitles: emptySubtitles,
       },
       abort: new AbortController(),
       subscriptions: [],
@@ -250,9 +272,11 @@ export function createVideoController(deps: {
         );
       }
       let initialized = false;
+      let prepared = false;
       const start = () => {
         if (
           initialized ||
+          !prepared ||
           !valid(session) ||
           !foreground ||
           player.status !== "readyToPlay"
@@ -301,8 +325,32 @@ export function createVideoController(deps: {
       );
       await engine.load(handle, deps.genericTitle());
       if (!valid(session)) return false;
+      const id = mediaId(source);
+      session.subtitles = bindSubtitles(player, {
+        active: () => valid(session),
+        allowExternal: canExport,
+        initialOffset: canExport
+          ? (deps.captionPreferences?.offset(id) ?? 0)
+          : 0,
+        saveOffset: (offset) => {
+          if (canExport) deps.captionPreferences?.saveOffset(id, offset);
+        },
+        publish: (subtitles) => publish(session, { subtitles }),
+        appearance: () => store.getState().captionAppearance,
+      });
+      if (canExport && options.relatedSubtitles) {
+        const inputs = await options
+          .relatedSubtitles(session.abort.signal)
+          .catch(() => []);
+        if (!valid(session)) return false;
+        if (foreground && session.subtitles.add(inputs))
+          await session.subtitles.settled();
+        if (!valid(session)) return false;
+      }
+      prepared = true;
       publish(session, {
         player,
+        subtitles: session.subtitles.state,
         canExport,
         allowPiP: canExport && !privateMode,
         allowBackground: canExport && !privateMode,
@@ -392,11 +440,42 @@ export function createVideoController(deps: {
       await Promise.allSettled(opening);
     },
     present,
-    captions(owner: VideoPlayer, captions?: LocalCaptions) {
+    subtitleImportSignal(owner: VideoPlayer) {
       const session = current;
-      if (!session || session.view.player !== owner || !valid(session)) return;
-      if (captions) owner.subtitleTrack = null;
-      publish(session, { captions });
+      if (
+        session?.view.player === owner &&
+        session.view.canExport &&
+        valid(session)
+      )
+        return session.abort.signal;
+    },
+    addSubtitles(owner: VideoPlayer, inputs: SubtitleInput[]) {
+      return foreground && current?.view.player === owner
+        ? (current.subtitles?.add(inputs) ?? 0)
+        : 0;
+    },
+    selectSubtitle(owner: VideoPlayer, selection: SubtitleSelection) {
+      if (current?.view.player === owner) current.subtitles?.select(selection);
+    },
+    removeSubtitle(owner: VideoPlayer, id: number) {
+      if (current?.view.player === owner) current.subtitles?.remove(id);
+    },
+    subtitleEncoding(
+      owner: VideoPlayer,
+      id: number,
+      encoding: SubtitleEncoding,
+    ) {
+      return current?.view.player === owner
+        ? (current.subtitles?.encoding(id, encoding) ?? false)
+        : false;
+    },
+    subtitleOffset(owner: VideoPlayer, offset: number) {
+      if (current?.view.player === owner) current.subtitles?.offset(offset);
+    },
+    captionAppearance(appearance: CaptionAppearance) {
+      store.setState({ captionAppearance: appearance });
+      deps.captionPreferences?.saveAppearance(appearance);
+      current?.subtitles?.appearanceChanged();
     },
     exportFile,
     preferences(patch: Partial<VideoPreferences>) {
@@ -478,6 +557,7 @@ export function createVideoController(deps: {
               allowPiP: false,
               allowBackground: false,
               canExport: false,
+              subtitles: emptySubtitles,
               suspended: true,
             },
             position: view.player.currentTime,

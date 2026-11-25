@@ -1,0 +1,10 @@
+[Script Info]
+ScriptType: v4.00
+
+[V4 Styles]
+Format: Name, PrimaryColour, Bold, Italic, Alignment
+Style: Default,16711680,0,-1,6
+
+[Events]
+Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: Marked=0,0:00:01.00,0:00:05.00,Default,,0,0,0,,старый файл

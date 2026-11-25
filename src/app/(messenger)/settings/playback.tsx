@@ -4,6 +4,7 @@ import { getDocumentAsync } from "expo-document-picker";
 import { useDialog } from "@/components/ui/dialog";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
+import { Platform } from "react-native";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import {
   ListGroup,
@@ -13,8 +14,9 @@ import {
 import { SettingsMenuRow } from "@/components/settings/menu-row";
 import { Screen } from "@/components/ui/kit";
 import { openLocalVideo } from "@/core/video/open";
+import { readSelectedSubtitles } from "@/core/video/subtitle-files";
 import { speeds } from "@/core/audio/types";
-import { pipModes, seekIntervals } from "@/core/video/types";
+import { pipModes, seekIntervals, videoFile } from "@/core/video/types";
 import { useLocal } from "@/services/local-context";
 import { useAudioActions } from "@/components/audio/actions";
 
@@ -28,13 +30,31 @@ export default function PlaybackSettings() {
   const { t: videoT } = useTranslation("video");
   async function pickVideo() {
     try {
+      const scopedSelection = Platform.OS === "android";
       const result = await getDocumentAsync({
-        type: ["video/*"],
-        copyToCacheDirectory: true,
+        type: scopedSelection
+          ? [
+              "video/*",
+              "text/*",
+              "application/x-subrip",
+              "application/x-ass",
+              "application/octet-stream",
+            ]
+          : ["video/*"],
+        multiple: scopedSelection,
+        copyToCacheDirectory: !scopedSelection,
       });
       if (result.canceled) return;
-      const file = result.assets[0];
-      if (!file) return;
+      const file = result.assets.find((asset) =>
+        videoFile(asset.name, asset.mimeType ?? ""),
+      );
+      if (!file) {
+        void dialog.show({
+          title: videoT("settings.openFailed"),
+          tone: "error",
+        });
+        return;
+      }
       const selected = new File(file.uri);
       const cachePrefix = Paths.cache.uri.endsWith("/")
         ? Paths.cache.uri
@@ -45,6 +65,13 @@ export default function PlaybackSettings() {
           file.uri,
           file.name,
           file.mimeType ?? undefined,
+          scopedSelection && result.assets.length > 1
+            ? (signal) =>
+                readSelectedSubtitles(result.assets, {
+                  relatedTo: file.name,
+                  signal,
+                })
+            : undefined,
         );
         if (!opened)
           void dialog.show({
