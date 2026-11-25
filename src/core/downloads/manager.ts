@@ -34,6 +34,7 @@ export function createDownloadManager({
   eligible,
   authorized,
   available = () => true,
+  transferAvailable = () => true,
   completed,
   concurrency = 2,
   now = Date.now,
@@ -43,6 +44,7 @@ export function createDownloadManager({
   transport: DownloadTransport;
   eligible: () => boolean;
   available?: (source: DownloadSource) => boolean;
+  transferAvailable?: (source: DownloadSource) => boolean;
   authorized: (source: DownloadSource) => boolean;
   completed?: (source: DownloadSource) => void;
   concurrency?: number;
@@ -57,6 +59,12 @@ export function createDownloadManager({
         { ...job, speed: 0, verifying: false } satisfies DownloadItem,
       ]),
   );
+  for (const job of jobs.values()) {
+    if (job.kind === "provider" && !transport.available?.(job)) {
+      job.state = "failed";
+      job.issue = "unavailable";
+    }
+  }
   const listeners = new Set<() => void>();
   const playback = new Map<string, Set<() => Promise<void>>>();
   const running = new Map<
@@ -92,7 +100,9 @@ export function createDownloadManager({
     (job.expiresAt === null || job.expiresAt > now()) && authorized(job);
 
   const usable = (job: DownloadSource) =>
-    !(job.kind === "marmot" && marmotClosing) && available(job);
+    !(job.kind === "marmot" && marmotClosing) &&
+    available(job) &&
+    (job.kind !== "provider" || (transport.available?.(job) ?? false));
   const runningSession = () => phase !== "stopped";
 
   async function retirePlayback(id?: string) {
@@ -203,7 +213,9 @@ export function createDownloadManager({
       ? Math.max(0, (metered ? 1 : concurrency) - running.size)
       : 0;
     const { ready, wakeAt } = selectDownloads(
-      read().filter((job) => allowed(job) && usable(job)),
+      read().filter(
+        (job) => allowed(job) && usable(job) && transferAvailable(job),
+      ),
       new Set([...running.keys(), ...commands.keys()]),
       capacity,
       now(),
@@ -371,6 +383,15 @@ export function createDownloadManager({
     if (!runningSession()) return;
     const foreground = eligible();
     if (wasEligible && !foreground) interrupt(running.keys());
+    else if (foreground) {
+      const suspended = [...running]
+        .filter(([id, { abort }]) => {
+          const job = jobs.get(id);
+          return job && !abort.signal.aborted && !transferAvailable(job);
+        })
+        .map(([id]) => id);
+      if (suspended.length) interrupt(suspended);
+    }
     wasEligible = foreground;
     pump();
   }
@@ -408,7 +429,9 @@ export function createDownloadManager({
         state: action === "pause" ? "paused" : "cancelled",
         intent: undefined,
         received:
-          action === "cancel" && current.kind === "http" ? 0 : current.received,
+          action === "cancel" && current.kind !== "marmot"
+            ? 0
+            : current.received,
         speed: 0,
         verifying: false,
       });
@@ -421,7 +444,15 @@ export function createDownloadManager({
     const command = Promise.resolve()
       .then(async () => {
         const job = jobs.get(id);
-        if (!job || phase === "stopped" || !usable(job)) return;
+        if (!job || phase === "stopped") return;
+        if (job.kind === "provider" && !transport.available?.(job)) {
+          if (action === "remove") {
+            await retirePlayback(id);
+            forget(id);
+          }
+          return;
+        }
+        if (!usable(job)) return;
         if (
           action === "pause" &&
           job.kind === "marmot" &&
@@ -687,7 +718,7 @@ export function createDownloadManager({
         !usable(source) ||
         !allowed(source) ||
         job?.intent === "remove" ||
-        (source.kind === "http" && job?.state !== "completed")
+        (source.kind !== "marmot" && job?.state !== "completed")
       )
         return;
       const consumers = playback.get(id) ?? new Set();
@@ -736,6 +767,20 @@ export function createDownloadManager({
         clearing,
       ]);
     },
+    async drain() {
+      if (phase !== "stopped") {
+        interrupt(running.keys());
+        phase = "stopped";
+      }
+      clearTimeout(timer);
+      clearTimeout(progressTimer);
+      await Promise.allSettled([
+        ...[...running.values()].map(({ done }) => done),
+        ...commands.values(),
+        recovery,
+        clearing,
+      ]);
+    },
     clear(clearNative: () => Promise<void>) {
       if (clearing) return clearing;
       clearing = Promise.resolve()
@@ -743,7 +788,7 @@ export function createDownloadManager({
           await retirePlayback();
           await Promise.all(
             read().map((job) =>
-              control(job.id, job.kind === "http" ? "remove" : "cancel"),
+              control(job.id, job.kind === "marmot" ? "cancel" : "remove"),
             ),
           );
           if (phase === "stopped") return;

@@ -1,10 +1,16 @@
-import { canReorder, type DownloadItem } from "./types";
+import { canReorder, torrentsSource, type DownloadItem } from "./types";
 
 function contentKey(job: DownloadItem) {
+  if (job.kind === "provider") {
+    const torrent = torrentsSource.safeParse(job);
+    if (torrent.success) return `torrent:${torrent.data.payload.torrentId}`;
+  }
   if (!job.hash) return undefined;
   return job.kind === "marmot"
     ? `marmot:${job.hash}`
-    : `${job.artifact}:${job.hash}`;
+    : job.kind === "http"
+      ? `${job.artifact}:${job.hash}`
+      : undefined;
 }
 
 export function selectDownloads(

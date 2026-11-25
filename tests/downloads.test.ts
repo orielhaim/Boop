@@ -8,7 +8,10 @@ import {
   sourceId,
   type BlossomDownload,
   type MarmotDownload,
+  type ProviderDownload,
+  type TorrentsDownload,
 } from "../src/core/downloads/types";
+import { downloadTransports } from "../src/core/downloads/transport";
 import { createAttachmentPresentation } from "../src/core/marmot/attachment-presentation";
 import { downloadStore } from "../src/db/downloads";
 import * as schema from "../src/db/schema";
@@ -26,6 +29,181 @@ const source = (id: string, hash?: string): MarmotDownload => ({
 });
 const id = (name: string) => downloadId(source(name).target);
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+test("provider downloads use a stable provider scoped identity", () => {
+  const torrent: TorrentsDownload = {
+    kind: "provider",
+    provider: "torrents",
+    version: 1,
+    payload: { torrentId: "a".repeat(40), fileIndex: 3 },
+    name: "episode.mkv",
+    type: "video/x-matroska",
+    total: null,
+    expiresAt: null,
+  };
+  expect(sourceId(torrent)).toBe(`provider:torrents:1:${"a".repeat(40)}:3`);
+  expect(sourceId(torrent)).toBe(sourceId({ ...torrent, name: "renamed.mkv" }));
+});
+
+test("unknown provider versions remain unavailable and removable", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  const unknown = {
+    kind: "provider" as const,
+    provider: "future-source",
+    version: 8,
+    payload: { opaque: true },
+    name: "future.bin",
+    type: "application/octet-stream",
+    total: null,
+    expiresAt: null,
+  };
+  const jobId = sourceId(unknown);
+  store.save([
+    {
+      ...unknown,
+      id: jobId,
+      state: "queued",
+      received: 0,
+      createdAt: 1,
+      changedAt: 1,
+      order: 1,
+      retries: 0,
+      retryAt: 0,
+    },
+  ]);
+  const restored = store.load();
+  expect(restored).toHaveLength(1);
+  expect(restored[0]).toMatchObject({ provider: "future-source", version: 8 });
+  const manager = createDownloadManager({
+    store,
+    eligible: () => true,
+    authorized: () => true,
+    transport: {
+      transfer: async () => "ready",
+      status: async () => undefined,
+      control: async () => {},
+    },
+  });
+  expect(manager.get(jobId)).toMatchObject({
+    state: "failed",
+    issue: "unavailable",
+  });
+  const stop = manager.start();
+  await manager.remove(jobId);
+  expect(manager.get(jobId)).toBeUndefined();
+  stop();
+});
+
+test("provider transport dispatch is gated by the declared version", async () => {
+  const calls: string[] = [];
+  const torrent: TorrentsDownload = {
+    kind: "provider",
+    provider: "torrents",
+    version: 1,
+    payload: { torrentId: "b".repeat(40), fileIndex: 0 },
+    name: "file",
+    type: "application/octet-stream",
+    total: null,
+    expiresAt: null,
+  };
+  const transports = downloadTransports(
+    {
+      transfer: async () => "ready",
+      status: async () => undefined,
+      control: async () => {},
+    },
+    {
+      transfer: async () => "ready",
+      status: async () => undefined,
+      control: async () => {},
+    },
+    {
+      torrents: {
+        supportedVersions: [1],
+        async transfer() {
+          calls.push("transfer");
+          return "ready";
+        },
+        async status() {
+          return undefined;
+        },
+        async control() {},
+      },
+    },
+  );
+  expect(transports.available?.(torrent)).toBe(true);
+  expect(
+    await transports.transfer(torrent, () => {}, new AbortController().signal),
+  ).toBe("ready");
+  expect(calls).toEqual(["transfer"]);
+  const future: ProviderDownload = { ...torrent, version: 2 };
+  expect(transports.available?.(future)).toBe(false);
+  expect(
+    await transports.transfer(future, () => {}, new AbortController().signal),
+  ).toBe("unavailable");
+});
+
+test("suspends a disabled provider and serializes selected files from one torrent", async () => {
+  using sqlite = new Database(":memory:");
+  const { store } = fixture(sqlite);
+  let enabled = true;
+  const first: TorrentsDownload = {
+    kind: "provider",
+    provider: "torrents",
+    version: 1,
+    payload: { torrentId: "e".repeat(40), fileIndex: 0 },
+    name: "first.mp4",
+    type: "video/mp4",
+    total: 500,
+    expiresAt: null,
+  };
+  const sibling: TorrentsDownload = {
+    ...first,
+    name: "second.mp4",
+    payload: { ...first.payload, fileIndex: 1 },
+  };
+  const admitted: string[] = [];
+  const manager = createDownloadManager({
+    store,
+    eligible: () => true,
+    authorized: () => true,
+    transferAvailable: (source) => source.kind !== "provider" || enabled,
+    transport: {
+      available: () => true,
+      transfer: async (source, _, signal) => {
+        admitted.push(sourceId(source));
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return "interrupted";
+      },
+      status: async () => "unavailable",
+      control: async () => undefined,
+    },
+  });
+  manager.start();
+  try {
+    manager.enqueue(first);
+    manager.enqueue(sibling);
+    await tick();
+    expect(admitted).toEqual([sourceId(first)]);
+    enabled = false;
+    manager.sync();
+    await tick();
+    expect(store.load().map(({ state }) => state)).toEqual([
+      "queued",
+      "queued",
+    ]);
+    expect(admitted).toEqual([sourceId(first)]);
+    enabled = true;
+    manager.sync();
+    await tick();
+    expect(admitted).toEqual([sourceId(first), sourceId(first)]);
+  } finally {
+    await manager.drain();
+  }
+});
 
 test("a retained attachment lease cannot escape when account policy becomes unavailable", async () => {
   using sqlite = new Database(":memory:");
