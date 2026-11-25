@@ -128,7 +128,7 @@ import {
   type PendingVideoFile,
   VideoTimestampBackground,
 } from "./marmot-attachments";
-import { useMarmotError } from "./marmot-group";
+import { useMarmotError } from "./use-marmot-error";
 import { conversationRoute } from "./marmot-inbox";
 import { MarmotLocked } from "./marmot-locked";
 import { useOpenLater } from "./use-open-later";
@@ -317,8 +317,8 @@ function localUpload(uri: string, name: string, type: string): MarmotUpload {
 
 type MarmotConversationScreenProps = {
   id: string;
-  audioMessage?: string;
-  initialPanel?: "search" | "media";
+  messageTarget?: string;
+  initialPanel?: "search";
 };
 
 export function MarmotConversationScreen(props: MarmotConversationScreenProps) {
@@ -332,7 +332,7 @@ export function MarmotConversationScreen(props: MarmotConversationScreenProps) {
 function MarmotConversationContent({
   id,
   initialPanel,
-  audioMessage,
+  messageTarget,
 }: MarmotConversationScreenProps) {
   const blurTarget = useGlassBackdropTarget();
   const { t } = useTranslation(namespaces);
@@ -390,10 +390,7 @@ function MarmotConversationContent({
     marmotSession.subscribe,
     marmotSession.revision,
   );
-  const target =
-    audioMessage && !chatPreferences.hidden(id).includes(audioMessage)
-      ? audioMessage
-      : undefined;
+  const target = messageTarget;
   const { snapshot, window, error, retry } = useConversationWindow(
     id,
     target,
@@ -481,10 +478,10 @@ function MarmotConversationContent({
       ? visibility.ids
       : noVisibleMessages;
   const [panel, setPanel] = useState<
-    "search" | "media" | "edits" | "forward" | "poll" | null
+    "search" | "edits" | "forward" | "poll" | null
   >(initialPanel ?? null);
   const [searchQuery, setSearchQuery] = useState("");
-  const searching = panel === "search" || panel === "media";
+  const searching = panel === "search";
   const closeSearch = useCallback(() => {
     Keyboard.dismiss();
     setPanel(null);
@@ -500,6 +497,7 @@ function MarmotConversationContent({
   const [selected, setSelected] = useState<MarmotMessage>();
   const [jump, setJump] = useState<{ message: string } | { latest: true }>();
   const [highlight, setHighlight] = useState("");
+  const [resolvedTarget, setResolvedTarget] = useState(false);
   const [pinOffset, setPinOffset] = useState(0);
   const chatRef = useRef<ChatHandle | null>(null);
   const lastRead = useRef<string | undefined>(undefined);
@@ -529,6 +527,31 @@ function MarmotConversationContent({
       ? peerName
       : snapshot?.title || t("messages:marmot.group");
   const rows = snapshot?.messages;
+  const targetAvailable = Boolean(
+    target &&
+    !blocked &&
+    !snapshot?.invited &&
+    !chatPreferences.hidden(id).includes(target) &&
+    rows?.some(
+      (row) =>
+        row.id === target &&
+        !row.deleted &&
+        !row.invalidationStatus &&
+        !privacy.isBlocked(row.sender) &&
+        (row.expiresAt == null || row.expiresAt * 1000 > Date.now()),
+    ),
+  );
+  useEffect(() => {
+    if (
+      !target ||
+      !snapshot?.authorityReady ||
+      !targetAvailable ||
+      resolvedTarget
+    )
+      return;
+    setResolvedTarget(true);
+    setJump({ message: target });
+  }, [resolvedTarget, snapshot?.authorityReady, target, targetAvailable]);
   const people = snapshot?.identities;
   const contacts = useContacts();
   const mentionRoster = useMentionMembers(
@@ -1783,6 +1806,19 @@ function MarmotConversationContent({
     });
   }
 
+  if (
+    (error && target) ||
+    (target && snapshot?.authorityReady && !targetAvailable && !resolvedTarget)
+  )
+    return (
+      <Screen navigationHeader={<ScreenHeader title={title} />}>
+        <Empty
+          icon="chat"
+          detail=""
+          title={t("messages:sharedMedia.messageUnavailable")}
+        />
+      </Screen>
+    );
   if (error)
     return (
       <Screen navigationHeader={<ScreenHeader title={title} />}>
@@ -1802,6 +1838,9 @@ function MarmotConversationContent({
 
   const menu = [
     { id: "search", title: t("messages:marmot.searchConversation") },
+    ...(!snapshot.invited && canSend
+      ? [{ id: "shared-media", title: t("messages:sharedMedia.title") }]
+      : []),
     ...(pins.length
       ? [
           {
@@ -1824,6 +1863,12 @@ function MarmotConversationContent({
 
   function selectMenuAction(action: string) {
     switch (action) {
+      case "shared-media":
+        router.push({
+          pathname: "/shared-media",
+          params: { group: id, scope: peer ? "direct" : "group" },
+        });
+        break;
       case "search":
         setSearchQuery("");
         setPanel("search");
@@ -1859,11 +1904,7 @@ function MarmotConversationContent({
       ? candidate
       : undefined;
 
-  const searchLabel = t(
-    panel === "media"
-      ? "messages:marmot.mediaAndFiles"
-      : "messages:marmot.searchConversation",
-  );
+  const searchLabel = t("messages:marmot.searchConversation");
 
   const header = (
     <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
@@ -2124,7 +2165,6 @@ function MarmotConversationContent({
             {searching && (
               <ConversationSearch
                 group={id}
-                media={panel === "media"}
                 query={searchQuery}
                 onSelect={(message, term) => {
                   Keyboard.dismiss();

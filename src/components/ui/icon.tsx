@@ -31,6 +31,10 @@ import { DotsSixVerticalIcon } from "phosphor-react-native/src/icons/DotsSixVert
 import { DownloadSimpleIcon } from "phosphor-react-native/src/icons/DownloadSimple";
 import { EnvelopeIcon } from "phosphor-react-native/src/icons/Envelope";
 import { FileIcon } from "phosphor-react-native/src/icons/File";
+import { FileArchiveIcon } from "phosphor-react-native/src/icons/FileArchive";
+import { FileDocIcon } from "phosphor-react-native/src/icons/FileDoc";
+import { FilePdfIcon } from "phosphor-react-native/src/icons/FilePdf";
+import { FileXlsIcon } from "phosphor-react-native/src/icons/FileXls";
 import { FingerprintIcon } from "phosphor-react-native/src/icons/Fingerprint";
 import { FlagIcon } from "phosphor-react-native/src/icons/Flag";
 import { GearIcon } from "phosphor-react-native/src/icons/Gear";
@@ -63,6 +67,7 @@ import { RepeatIcon } from "phosphor-react-native/src/icons/Repeat";
 import { RepeatOnceIcon } from "phosphor-react-native/src/icons/RepeatOnce";
 import { ShareFatIcon } from "phosphor-react-native/src/icons/ShareFat";
 import { ShieldCheckIcon } from "phosphor-react-native/src/icons/ShieldCheck";
+import { SignOutIcon } from "phosphor-react-native/src/icons/SignOut";
 import { ShuffleIcon } from "phosphor-react-native/src/icons/Shuffle";
 import { SkipBackIcon } from "phosphor-react-native/src/icons/SkipBack";
 import { SkipForwardIcon } from "phosphor-react-native/src/icons/SkipForward";
@@ -97,6 +102,7 @@ import { PizzaIcon } from "phosphor-react-native/src/icons/Pizza";
 import { PushPinSlashIcon } from "phosphor-react-native/src/icons/PushPinSlash";
 import { SealCheckIcon } from "phosphor-react-native/src/icons/SealCheck";
 import { SmileyIcon } from "phosphor-react-native/src/icons/Smiley";
+import { SlidersHorizontalIcon } from "phosphor-react-native/src/icons/SlidersHorizontal";
 import { TrainIcon } from "phosphor-react-native/src/icons/Train";
 import { XIcon } from "phosphor-react-native/src/icons/X";
 import { directionFor, resolveLanguage } from "@/i18n";
@@ -128,6 +134,7 @@ const icons = {
   info: InfoIcon,
   warning: WarningCircleIcon,
   settings: GearIcon,
+  filters: SlidersHorizontalIcon,
   plugins: PuzzlePieceIcon,
   star: StarIcon,
   favorite: StarIcon,
@@ -136,6 +143,10 @@ const icons = {
   missed: PhoneXIcon,
   hangup: PhoneDisconnectIcon,
   file: FileIcon,
+  archiveFile: FileArchiveIcon,
+  documentFile: FileDocIcon,
+  pdfFile: FilePdfIcon,
+  sheetFile: FileXlsIcon,
   skipPrevious: SkipBackIcon,
   skipNext: SkipForwardIcon,
   shuffle: ShuffleIcon,
@@ -160,6 +171,7 @@ const icons = {
   reply: ArrowBendUpLeftIcon,
   forward: ArrowBendUpRightIcon,
   edit: PencilSimpleIcon,
+  leave: SignOutIcon,
   erase: BackspaceIcon,
   trash: TrashIcon,
   mic: MicrophoneSlashIcon,

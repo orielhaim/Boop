@@ -13,6 +13,23 @@ const clip = (id: string): VideoSource => ({
   file: { name: id + ".mp4", path: "/" + id, type: "video/mp4" },
 });
 
+test("an explicit Boop player request opens the internal decoder with an external default", async () => {
+  const { video, actions } = fixture(async () => ({
+    kind: "local",
+    file: { name: "shared.mp4", path: "/shared", type: "video/mp4" },
+    uri: "file:///shared",
+    expiresAt: null,
+    async release() {},
+  }));
+  video.preferences({ external: true });
+
+  expect(await video.open(clip("shared"), { openInBoop: true })).toBe(true);
+  expect(video.store.getState().current?.player).toBeDefined();
+  expect(video.store.getState().preferences.external).toBe(true);
+  expect(actions).toEqual(["load", "play"]);
+  await video.close();
+});
+
 test("progressive playback revokes blocking reads before releasing the decoder and keeps exports closed", async () => {
   const events: string[] = [];
   const { video, actions } = fixture(

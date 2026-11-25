@@ -99,6 +99,10 @@ export default function MessengerLayout() {
               }}
             />
             <BlankStack.Screen name="requests" />
+            <BlankStack.Screen
+              name="shared-media"
+              options={{ ...push, inactiveBehavior: "keep" }}
+            />
           </BlankStack.Protected>
         </BlankStack>
       </VideoFrame>

@@ -41,7 +41,11 @@ import {
   type ViewProps,
 } from "react-native";
 import { useTranslation } from "react-i18next";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import {
+  Gesture,
+  GestureDetector,
+  GestureHandlerRootView,
+} from "react-native-gesture-handler";
 import Animated, {
   LinearTransition,
   cancelAnimation,
@@ -58,7 +62,7 @@ import { directionFor, resolveLanguage } from "@/i18n";
 import { motion } from "@/theme/tokens";
 import { useGlassTheme } from "./glass-provider";
 import { GlassSurface } from "./glass-surface";
-import { useLayerPresence } from "./lib/modal-layer";
+import { ModalLayerHost, useLayerPresence } from "./lib/modal-layer";
 
 type TrayNavigation = {
   push: (screen: string) => void;
@@ -88,6 +92,7 @@ function isScreen(child: ReactNode): child is ReactElement<Screen> {
 type GlassTrayProps = ViewProps & {
   children: ReactNode;
   open: boolean;
+  presentation?: "inline" | "sheet";
   onOpenChange: (open: boolean) => void;
   initialScreen: string;
   showHeader?: boolean;
@@ -116,6 +121,7 @@ export function GlassTray({
   showHeader = true,
   onOpenChange,
   open,
+  presentation = "inline",
   backLabel,
   closeLabel,
   onCoverageChange,
@@ -150,6 +156,7 @@ export function GlassTray({
   const active = screens.find((page) => page.props.name === screen);
   const previous = screens.find((page) => page.props.name === history.previous);
   const reduce = preferences.reduceMotion;
+  const sheet = presentation === "sheet";
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const push = useCallback((name: string) => {
     setHistory((current) => {
@@ -180,13 +187,13 @@ export function GlassTray({
   }, [close, history.stack.length, pop]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || sheet) return;
     const listener = BackHandler.addEventListener("hardwareBackPress", () => {
       back();
       return true;
     });
     return () => listener.remove();
-  }, [back, open]);
+  }, [back, open, sheet]);
 
   useEffect(() => {
     if (!present) return;
@@ -287,7 +294,7 @@ export function GlassTray({
   );
 
   if (!present || !active) return null;
-  return (
+  const content = (
     <TrayNavigationContext.Provider value={navigation}>
       <View
         pointerEvents={open ? "box-none" : "none"}
@@ -314,9 +321,9 @@ export function GlassTray({
           style={[
             styles.frame,
             {
-              paddingLeft: insets.left + 8,
-              paddingRight: insets.right + 8,
-              paddingBottom: Math.max(insets.bottom, 8),
+              paddingLeft: sheet && !landscape ? 0 : insets.left + 8,
+              paddingRight: sheet && !landscape ? 0 : insets.right + 8,
+              paddingBottom: sheet ? 0 : Math.max(insets.bottom, 8),
             },
             landscape && styles.sideFrame,
             { direction: rtl ? "rtl" : "ltr" },
@@ -342,7 +349,12 @@ export function GlassTray({
                 );
             }}
             layout={reduce ? undefined : resize}
-            style={[styles.panel, panel, landscape && styles.sidePanel]}
+            style={[
+              styles.panel,
+              panel,
+              sheet && styles.dockedPanel,
+              landscape && styles.sidePanel,
+            ]}
           >
             <GlassSurface
               {...rest}
@@ -352,10 +364,12 @@ export function GlassTray({
               preset="overlay"
               style={[
                 styles.surface,
+                sheet && styles.dockedSurface,
+                sheet && { paddingBottom: insets.bottom + 8 },
                 {
                   maxHeight: Math.max(
                     180,
-                    height - insets.top - insets.bottom - 20,
+                    height - insets.top - (sheet ? 12 : insets.bottom + 20),
                   ),
                 },
                 style,
@@ -397,7 +411,15 @@ export function GlassTray({
                   </Pressable>
                 </View>
               )}
-              <View style={styles.body}>
+              <View
+                style={[
+                  styles.body,
+                  sheet && {
+                    paddingLeft: landscape ? 0 : insets.left,
+                    paddingRight: landscape ? 0 : insets.right,
+                  },
+                ]}
+              >
                 {previous && !reduce && (
                   <Animated.View
                     key={previous.props.name}
@@ -422,10 +444,20 @@ export function GlassTray({
       </View>
     </TrayNavigationContext.Provider>
   );
+  return sheet ? (
+    <ModalLayerHost onRequestClose={back} present={present}>
+      <GestureHandlerRootView style={styles.modalRoot}>
+        {content}
+      </GestureHandlerRootView>
+    </ModalLayerHost>
+  ) : (
+    content
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({
   host: { ...StyleSheet.absoluteFillObject, zIndex: 30 },
+  modalRoot: { flex: 1 },
   frame: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-end",
@@ -433,12 +465,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   sideFrame: { alignItems: "flex-end" },
   panel: { width: "100%", maxWidth: 500 },
+  dockedPanel: { maxWidth: 660 },
   sidePanel: { maxWidth: 400 },
   surface: {
     borderRadius: theme.radius.card + 4,
     overflow: "hidden",
     paddingBottom: theme.space.sm,
   },
+  dockedSurface: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
   handleTouch: { alignItems: "center", justifyContent: "center", height: 26 },
   handle: {
     width: 32,

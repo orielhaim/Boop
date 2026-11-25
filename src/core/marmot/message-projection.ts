@@ -37,30 +37,26 @@ const rejected = z.object({
   detail: z.string().nullish(),
 });
 
-export const attachments = z
-  .array(z.discriminatedUnion("outcome", [accepted, rejected]))
-  .transform((items) =>
-    items.map((item) => {
-      if (item.outcome === "rejected") return item;
-      const { metadata, ...reference } = item;
-      const [sizeText, durationText, levels, kind] = metadata ?? [];
-      const size = sizeText && /^\d+$/.test(sizeText) ? Number(sizeText) : 0;
-      const duration = durationText ? Number(durationText) : 0;
-      return {
-        ...reference,
-        size: Number.isSafeInteger(size) && size > 0 ? size : undefined,
-        duration: duration > 0 && duration <= 604800 ? duration : undefined,
-        waveform: levels
-          ?.split(",")
-          .filter((level) => /^\d{1,2}$/.test(level))
-          .map(Number)
-          .filter((level) => level <= 31)
-          .slice(0, 64),
-        round: kind === "round" && item.type.startsWith("video/"),
-        voice: kind === "voice" && item.type.startsWith("audio/"),
-      };
-    }),
-  );
+export const acceptedAttachment = accepted.transform((item) => {
+  const { metadata, ...reference } = item;
+  const [sizeText, durationText, levels, kind] = metadata ?? [];
+  const size = sizeText && /^\d+$/.test(sizeText) ? Number(sizeText) : 0;
+  const duration = durationText ? Number(durationText) : 0;
+  return {
+    ...reference,
+    size: Number.isSafeInteger(size) && size > 0 ? size : undefined,
+    duration: duration > 0 && duration <= 604800 ? duration : undefined,
+    waveform: levels
+      ?.split(",")
+      .filter((level) => /^\d{1,2}$/.test(level))
+      .map(Number)
+      .filter((level) => level <= 31)
+      .slice(0, 64),
+    round: kind === "round" && item.type.startsWith("video/"),
+    voice: kind === "voice" && item.type.startsWith("audio/"),
+  };
+});
+export const attachments = z.array(z.union([acceptedAttachment, rejected]));
 
 const thread = z.object({ root: z.string(), parent: z.string() });
 const availability = {

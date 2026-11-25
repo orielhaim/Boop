@@ -234,7 +234,7 @@ function MiniPlayer({
         pathname: "/chat/[key]",
         params: {
           key: `marmot-${origin[0]}`,
-          audioMessage: origin[1],
+          messageTarget: origin[1],
         },
       });
     } else open();

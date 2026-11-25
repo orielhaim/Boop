@@ -166,7 +166,10 @@ export default function VideoPlayerRoute() {
               router.back();
               router.navigate({
                 pathname: "/chat/[key]",
-                params: { key: `marmot-${origin[0]}`, audioMessage: origin[1] },
+                params: {
+                  key: `marmot-${origin[0]}`,
+                  messageTarget: origin[1],
+                },
               });
             }
           : undefined

@@ -51,6 +51,7 @@ export function createAttachmentPresentation(
   >,
   sourceFor: (target: AttachmentTarget) => MarmotDownload | undefined,
   interactive: () => boolean,
+  retainedAtDiscovery?: (target: AttachmentTarget) => boolean | undefined,
 ) {
   const entries = new Map<string, Entry>();
   const availabilityListeners = new Set<() => void>();
@@ -102,6 +103,12 @@ export function createAttachmentPresentation(
     );
   }
 
+  function confirmLocal(entry: Entry) {
+    set(entry, { kind: "cached" });
+    if (entry.openAfterDownload) prepare(entry);
+    entry.openAfterDownload = false;
+  }
+
   function checkLocal(entry: Entry) {
     if (!allowed(entry)) return;
     const pending: State = { kind: "checking" };
@@ -110,11 +117,13 @@ export function createAttachmentPresentation(
     void native.retainedAttachmentBytes(...entry.target).then(
       (bytes) => {
         if (!current()) return;
-        set(entry, { kind: bytes === null ? "remote" : "cached" });
-        if (bytes !== null && entry.openAfterDownload) prepare(entry);
-        entry.openAfterDownload = false;
-        if (bytes === null && entry.job?.state === "completed")
-          void downloads.reconcile();
+        if (bytes !== null) {
+          confirmLocal(entry);
+        } else {
+          entry.openAfterDownload = false;
+          set(entry, { kind: "remote" });
+          if (entry.job?.state === "completed") void downloads.reconcile();
+        }
       },
       () => {
         if (current()) set(entry, { kind: "failed" });
@@ -135,7 +144,8 @@ export function createAttachmentPresentation(
     }
     if (job.state === "completed") {
       if (before?.state === "completed" || entry.state.kind === "local") return;
-      checkLocal(entry);
+      if (before) confirmLocal(entry);
+      else checkLocal(entry);
     } else if (
       job.state === "failed" ||
       job.state === "cancelled" ||
@@ -176,7 +186,11 @@ export function createAttachmentPresentation(
         entry = created;
         created.unsubscribe = downloads.subscribe(() => update(created, key));
         update(created, key);
-        if (created.state === checking) checkLocal(created);
+        if (created.state === checking) {
+          const retained = retainedAtDiscovery?.(target);
+          if (retained === undefined) checkLocal(created);
+          else set(created, { kind: retained ? "cached" : "remote" });
+        }
       }
       entry.listeners.add(notify);
       return () => {
@@ -240,6 +254,13 @@ export function createAttachmentPresentation(
           if (entry.state === checking) checkLocal(entry);
         }
       }
+    },
+    invalidateLocal(target: AttachmentTarget) {
+      const entry = entries.get(attachmentKey(target));
+      if (!entry) return;
+      if (entry.state.kind === "local") release(entry.state.lease);
+      entry.openAfterDownload = false;
+      set(entry, { kind: "remote" });
     },
     stop() {
       for (const entry of entries.values()) dispose(entry);

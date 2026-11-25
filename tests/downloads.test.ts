@@ -847,6 +847,41 @@ test("chat mounting requests no bytes, leaving chat keeps the transfer, and reop
   stop();
 });
 
+test("an observed download completion is immediately available while retained checks are pending", async () => {
+  using sqlite = new Database(":memory:");
+  const f = fixture(sqlite);
+  const manager = f.create();
+  const stop = manager.start();
+  const { target } = source("one");
+  const lookup = Promise.withResolvers<number | null>();
+  const presentation = createAttachmentPresentation(
+    {
+      retainedAttachmentBytes: () => lookup.promise,
+      openAttachment: async () => null,
+      releaseAttachment: async () => {},
+    },
+    manager,
+    () => source("one"),
+    () => true,
+  );
+  const unsubscribe = presentation.subscribe(target, () => {});
+  try {
+    presentation.download(id("one"), false);
+    await tick();
+    expect(presentation.state(id("one"))).toMatchObject({
+      kind: "downloading",
+    });
+    f.finish("one");
+    await tick();
+    expect(manager.get(id("one"))?.state).toBe("completed");
+    expect(presentation.state(id("one"))).toEqual({ kind: "cached" });
+  } finally {
+    unsubscribe();
+    lookup.resolve(null);
+    stop();
+  }
+});
+
 test("a previously downloaded attachment needs Download again if no local bytes remain", async () => {
   using sqlite = new Database(":memory:");
   const f = fixture(sqlite);

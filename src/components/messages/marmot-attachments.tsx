@@ -46,7 +46,11 @@ import {
   type AttachmentPresentation,
   type AttachmentTarget,
 } from "@/core/marmot/attachment-presentation";
-import type { MarmotMessage, MarmotUpload } from "@/core/marmot/native";
+import type {
+  MarmotMessage,
+  MarmotUpload,
+  SharedMediaRow,
+} from "@/core/marmot/native";
 import { speechSource } from "@/core/speech/service";
 import type { SpeechSource } from "@/core/speech/types";
 import { formatDuration } from "@/i18n/format";
@@ -487,7 +491,7 @@ function GalleryPage({
   dialog: ReturnType<typeof useDialog>;
   presentation: AttachmentPresentation;
   foreground: boolean;
-  onPlay(): void;
+  onPlay?(): void;
   neighbors?: VideoNeighbors;
 }) {
   const isVideo = videoFile(asset.item.name, asset.item.type);
@@ -523,6 +527,40 @@ function GalleryPage({
       <Poster item={asset.item} />
       <VideoTransferOverlay message={shown} />
     </View>
+  );
+}
+
+export function SharedMediaPhotoPage({
+  row,
+  senderName,
+  presentation,
+  ...page
+}: ComponentProps<typeof MediaViewerPage> & {
+  row: SharedMediaRow;
+  senderName: string;
+  presentation: AttachmentPresentation;
+}) {
+  const dialog = useDialog();
+  const message: IMessage = {
+    _id: JSON.stringify([row.group, row.message, row.source, row.item.index]),
+    text: row.caption,
+    createdAt: row.at * 1000,
+    user: { _id: row.sender, name: senderName },
+  };
+  const asset: Asset = {
+    target: [row.group, row.message, row.source, row.item.index],
+    item: row.item,
+  };
+
+  return (
+    <GalleryPage
+      {...page}
+      message={message}
+      asset={asset}
+      dialog={dialog}
+      presentation={presentation}
+      foreground
+    />
   );
 }
 

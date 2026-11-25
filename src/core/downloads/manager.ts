@@ -11,6 +11,7 @@ import {
   type DownloadItem,
   type DownloadJob,
   type DownloadSource,
+  type MarmotDownload,
 } from "./types";
 
 type Store = {
@@ -879,6 +880,7 @@ export function createDownloadManager({
         clearing ||
         !usable(source) ||
         !allowed(source) ||
+        (!job && commands.has(id)) ||
         job?.intent === "remove" ||
         (source.kind !== "marmot" &&
           job?.state !== "completed" &&
@@ -897,6 +899,22 @@ export function createDownloadManager({
     pause: (id: string) => control(id, "pause"),
     cancel: (id: string) => control(id, "cancel"),
     remove: (id: string) => control(id, "remove"),
+    async removeRetainedMarmot(source: MarmotDownload) {
+      const id = sourceId(source);
+      if (jobs.has(id)) return control(id, "remove");
+      const pending = commands.get(id);
+      if (pending) return pending;
+      if (!eligible() || !usable(source) || !allowed(source)) return;
+      const command = Promise.resolve()
+        .then(async () => {
+          await retirePlayback(id);
+          if (eligible() && usable(source) && allowed(source))
+            await transport.control(source, "remove");
+        })
+        .finally(() => commands.delete(id));
+      commands.set(id, command);
+      await command;
+    },
     reorder(id: string, before: string | undefined) {
       const pending = read().filter(canReorder);
       const from = pending.findIndex((item) => item.id === id);

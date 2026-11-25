@@ -23,6 +23,38 @@ import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
+  @Test fun sharedMediaUsesIndependentNativeHistoryCollections() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val arguments = InstrumentationRegistry.getArguments()
+    val relay = checkNotNull(arguments.getString("relay"))
+    val blossom = checkNotNull(arguments.getString("blossom"))
+    val context = instrumentation.targetContext
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "fixture-${UUID.randomUUID()}")
+    val alice = Client(File(root, "alice"), relay, blossom)
+    val bob = Client(File(root, "bob"), relay, blossom)
+    try {
+      alice.start()
+      bob.start()
+      for (client in listOf(alice, bob)) {
+        await("${client.directory.name} ready for messaging") {
+          client.kit.accountSetupReadiness(client.key) == AccountSetupReadinessFfi.NETWORK_READY
+        }
+      }
+      assertNull(alice.kit.existingDirectConversation(alice.key, bob.key))
+      assertTrue(alice.kit.chatList(alice.key, true).isEmpty())
+      val direct = alice.kit.startDirectConversation(alice.key, bob.key)
+      assertEquals(direct, alice.kit.existingDirectConversation(alice.key, bob.key)?.groupIdHex)
+      bob.accept(direct)
+      val reply = alice.kit.sendTextWithClientToken(alice.key, direct, "Shared media reply fixture", "shared-media-reply")
+      bob.receives(direct, alice.key, "Shared media reply fixture")
+      mediaRoundTrip(alice, bob, direct, blossom, reply.messageIdHex)
+    } finally {
+      alice.close()
+      bob.close()
+      root.deleteRecursively()
+    }
+  }
 
   @Test fun generatedIdentityKeepsItsProfileAndNativeSignerAcrossRestart() = runBlocking {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -1017,6 +1049,43 @@ class MarmotRelayTest {
         assertEquals(listOf(0u, 1u), entries.map { (it.attachment as MediaAttachmentOutcomeFfi.Accepted).attachmentIndex })
         assertTrue(entries.all { it.messageIdHex == persisted.messageIdHex && it.sourceMessageIdHex == persisted.sourceMessageIdHex })
       }
+    }
+    val history = SharedMediaHistory()
+    val conversation = SharedMediaHistory.Query(group, null, null, null, null)
+    val account = SharedMediaHistory.Query(group, sender.key, persisted.timelineAt, persisted.timelineAt, null)
+    suspend fun read(query: SharedMediaHistory.Query, cursor: String? = null, baseline: String? = null) =
+      history.page(recipient.kit, recipient.key, query, cursor, baseline, 1u)
+    try {
+      val groupHead = read(conversation)
+      val secondGroupHead = read(conversation)
+      val groupBase = checkNotNull(groupHead["baseline"] as? String)
+      val secondGroupBase = checkNotNull(secondGroupHead["baseline"] as? String)
+      val groupNext = checkNotNull(groupHead["next"] as? String)
+      assertNotEquals(groupBase, secondGroupBase)
+      assertEquals("unchanged", history.changes(recipient.kit, recipient.key, groupBase))
+      assertEquals(true, read(conversation, groupNext, secondGroupBase)["restart"])
+      val groupTail = read(conversation, groupNext, groupBase)
+      assertEquals(groupBase, groupTail["baseline"])
+      val groupItems = (listOf(groupHead, groupTail).flatMap { it["rows"] as List<*> }).filterIsInstance<Map<*, *>>()
+      assertEquals(listOf(0.0, 1.0), groupItems.map { (it["item"] as Map<*, *>)["index"] })
+      assertTrue(groupItems.all { it["group"] == group && it["source"] == persisted.sourceMessageIdHex && it["sender"] == sender.key })
+
+      val accountItems = mutableListOf<Map<*, *>>()
+      var page = read(account)
+      val accountBase = checkNotNull(page["baseline"] as? String)
+      for (step in 0 until 32) {
+        accountItems += (page["rows"] as List<*>).filterIsInstance<Map<*, *>>()
+        val next = page["next"] as? String ?: break
+        page = read(account, next, accountBase)
+      }
+      assertEquals(listOf(0.0, 1.0), accountItems.map { (it["item"] as Map<*, *>)["index"] })
+      assertTrue(accountItems.all { it["group"] == group && it["sender"] == sender.key })
+      assertEquals("unchanged", history.changes(recipient.kit, recipient.key, accountBase))
+      history.release(groupBase)
+      assertEquals("restart", history.changes(recipient.kit, recipient.key, groupBase))
+      assertEquals("unchanged", history.changes(recipient.kit, recipient.key, secondGroupBase))
+    } finally {
+      history.close()
     }
     if (fixture) assertEquals(historyGets, fixtureCall("stats"))
     val anchored = ConversationWindow(recipient.kit.openConversationWindow(

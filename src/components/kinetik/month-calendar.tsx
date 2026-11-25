@@ -14,8 +14,7 @@ import { useTranslation } from "react-i18next";
 import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { motion, radius, useTheme } from "@/theme";
-
-export type DateRange = { start: Date | null; end: Date | null };
+import { dayKey, selectCalendarDay, type DateRange } from "./calendar-range";
 
 type Common = {
   /** The month shown first. Defaults to the selected date's month, or today's. */
@@ -59,8 +58,6 @@ const DISC = 38;
 
 export const startOfMonth = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth(), 1);
-const dayKey = (d: Date) =>
-  d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate();
 const sameDay = (a: Date | null | undefined, b: Date | null | undefined) =>
   Boolean(a && b && dayKey(a) === dayKey(b));
 const addMonths = (d: Date, n: number) =>
@@ -159,10 +156,7 @@ export function MonthCalendar(props: MonthCalendarProps) {
       props.onChange(d);
       return;
     }
-    const { start, end } = props.range;
-    if (!start || end || dayKey(d) < dayKey(start))
-      props.onRangeChange({ start: d, end: null });
-    else props.onRangeChange({ start, end: d });
+    props.onRangeChange(selectCalendarDay(props.range, d));
   };
 
   // The disc for a single date glides within a month and jumps across months.

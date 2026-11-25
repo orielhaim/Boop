@@ -8,7 +8,7 @@ import { Action, Ink, Screen } from "@/components/ui/kit";
 import { marmot, type MarmotMessage } from "@/core/marmot/native";
 import { namespaces } from "@/i18n";
 import { space } from "@/theme";
-import { useMarmotError } from "./marmot-group";
+import { useMarmotError } from "./use-marmot-error";
 
 export function MarmotPollComposer({
   group,

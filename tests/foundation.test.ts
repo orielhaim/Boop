@@ -117,6 +117,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "profile-photo/[key]",
     "requests",
     "settings",
+    "shared-media",
     "video-player",
   ]);
   expect(

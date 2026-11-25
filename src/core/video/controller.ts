@@ -198,6 +198,7 @@ export function createVideoController(deps: {
     source: VideoSource,
     options: {
       download?: boolean;
+      openInBoop?: true;
       progressive?: boolean;
       replace?: boolean;
       dispose?: () => void;
@@ -213,7 +214,8 @@ export function createVideoController(deps: {
       options.dispose?.();
       return false;
     }
-    const external = !restore && store.getState().preferences.external;
+    const external =
+      !restore && !options.openInBoop && store.getState().preferences.external;
     if (
       current &&
       !options.replace &&

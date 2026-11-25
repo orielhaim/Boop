@@ -20,7 +20,16 @@ import {
 
 export function speechSource(
   group: string,
-  row: MarmotMessage,
+  row: Pick<
+    MarmotMessage,
+    | "id"
+    | "sourceId"
+    | "sender"
+    | "sentAt"
+    | "expiresAt"
+    | "deleted"
+    | "invalidationStatus"
+  >,
   item: ReturnType<typeof acceptedAttachments>[number],
   account: string,
 ): SpeechSource | undefined {

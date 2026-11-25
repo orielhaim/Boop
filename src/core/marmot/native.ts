@@ -8,13 +8,43 @@ import {
   windowRevision,
 } from "./window-projection";
 import { messageContent } from "./message-content";
-import { message } from "./message-projection";
+import { acceptedAttachment, message } from "./message-projection";
 import { mediaUploadArguments } from "./media-send";
 
 export type MarmotRelays = {
   general: readonly string[];
   inbox: readonly string[];
   discovery: readonly string[];
+};
+
+const sharedMediaRow = z.object({
+  group: z.string(),
+  groupLabel: z.string().nullish(),
+  peer: z.string().nullish(),
+  message: z.string(),
+  source: z.string(),
+  sender: z.string(),
+  at: z.number().nonnegative(),
+  expiresAt: z.number().nullish(),
+  caption: z.string(),
+  category: z.enum(["image", "video", "audio", "file"]),
+  local: z.boolean(),
+  item: acceptedAttachment,
+});
+const sharedMediaPage = z.object({
+  rows: z.array(sharedMediaRow),
+  next: z.string().nullable(),
+  baseline: z.string().nullable(),
+  restart: z.boolean(),
+});
+export type SharedMediaRow = z.infer<typeof sharedMediaRow>;
+export type SharedMediaPage = z.infer<typeof sharedMediaPage>;
+export type SharedMediaQuery = {
+  group?: string;
+  sender?: string;
+  after?: number;
+  before?: number;
+  caption?: string;
 };
 
 const accountRelayLists = z.object({
@@ -656,12 +686,19 @@ type Bridge = {
   viewGroupImage(group: string, hash: string): Promise<string>;
   updateGroupImage(group: string, path: string | null): Promise<unknown>;
   updateGroupMedia(group: string, origins: string[]): Promise<unknown>;
-  searchConversation(
-    group: string,
-    text: string | null,
-    media: boolean,
+  existingDirectConversation(peer: string): Promise<string | null>;
+  sharedMediaPage(
+    group: string | null,
+    sender: string | null,
+    after: number | null,
+    before: number | null,
+    caption: string | null,
     cursor: string | null,
+    baseline: string | null,
   ): Promise<unknown>;
+  sharedMediaChanges(baseline: string): Promise<unknown>;
+  sharedMediaRelease(handle: string): Promise<void>;
+  searchConversation(group: string, text: string): Promise<unknown>;
   releaseAttachmentHistoryCursor(token: string): Promise<void>;
   editHistory(
     group: string,
@@ -1232,6 +1269,36 @@ const avatarRead = z.object({
   uri: z.string().startsWith("data:image/").nullish(),
 });
 export const marmot = {
+  existingDirectConversation: (peer: string) =>
+    native().existingDirectConversation(peer),
+  async sharedMediaPage(
+    query: SharedMediaQuery,
+    cursor?: string,
+    baseline?: string,
+  ) {
+    return sharedMediaPage.parse(
+      await native().sharedMediaPage(
+        query.group ?? null,
+        query.sender ?? null,
+        query.after ?? null,
+        query.before ?? null,
+        query.caption ?? null,
+        cursor ?? null,
+        baseline ?? null,
+      ),
+    );
+  },
+  async sharedMediaChanges(baseline: string) {
+    return z
+      .enum(["unchanged", "additions", "restart"])
+      .parse(await native().sharedMediaChanges(baseline));
+  },
+  releaseSharedMediaHandle: (handle: string) =>
+    native().sharedMediaRelease(handle),
+  subscribeSharedMediaWakeup: (receive: () => void) => {
+    const listener = native().addListener("windowChanged", receive);
+    return () => listener.remove();
+  },
   observeMemoryPressure: (receive: () => void) =>
     native().addListener("memoryPressure", receive),
   async requestAvatarAssets(targets: string[]) {
@@ -1380,15 +1447,8 @@ export const marmot = {
   },
   viewGroupImage: (group: string, hash: string) =>
     native().viewGroupImage(group, hash),
-  async searchConversation(
-    group: string,
-    text: string | null,
-    media: boolean,
-    cursor: string | null = null,
-  ) {
-    return searchPage.parse(
-      await native().searchConversation(group, text, media, cursor),
-    );
+  async searchConversation(group: string, text: string) {
+    return searchPage.parse(await native().searchConversation(group, text));
   },
   releaseAttachmentHistoryCursor: (token: string) =>
     native().releaseAttachmentHistoryCursor(token),

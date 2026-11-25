@@ -21,7 +21,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
+import { Action, Icon, IconButton, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
@@ -50,7 +50,7 @@ import { useMentionMembers } from "./use-mention-members";
 
 export function conversationRoute(
   group: string,
-  view?: "details" | "edit" | "call" | "search" | "media",
+  view?: "details" | "edit" | "call" | "search",
 ) {
   return {
     pathname: "/chat/[key]" as const,
@@ -357,7 +357,25 @@ export function MarmotInbox({
         isSortEnabled={false}
         isSearchEnabled={!invitations}
         renderHeaderRight={
-          invitations || archived ? undefined : renderDownloadsIndicator
+          invitations || archived
+            ? undefined
+            : () => (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: space.xs,
+                  }}
+                >
+                  <IconButton
+                    tone="plain"
+                    icon="media"
+                    label={t("messages:sharedMedia.title")}
+                    onPress={() => router.push("/shared-media")}
+                  />
+                  <DownloadsIndicator />
+                </View>
+              )
         }
         filterChat={() => true}
         onSearchChange={setSearch}
@@ -612,7 +630,3 @@ const styles = StyleSheet.create({
   },
   invitationTitle: { flex: 1, fontSize: 16, fontWeight: "500" },
 });
-
-function renderDownloadsIndicator() {
-  return <DownloadsIndicator />;
-}

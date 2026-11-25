@@ -16,7 +16,7 @@ import {
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space } from "@/theme";
-import { useMarmotError } from "./marmot-group";
+import { useMarmotError } from "./use-marmot-error";
 import { useMarmotWindow } from "./marmot-window";
 import type { useMentionMembers } from "./use-mention-members";
 
@@ -78,12 +78,10 @@ const styles = StyleSheet.create({
 
 export function ConversationSearch({
   group,
-  media,
   query,
   onSelect,
 }: {
   group: string;
-  media: boolean;
   query: string;
   onSelect(id: string, query: string): void;
 }) {
@@ -91,116 +89,39 @@ export function ConversationSearch({
   const { privacy, chatPreferences } = useLocal();
   const [result, setResult] = useState<{
     group: string;
-    media: boolean;
     term: string;
     rows?: MarmotSearchResult[];
-    next?: string | null;
     failed?: boolean;
   }>();
-  const [loadingMore, setLoadingMore] = useState(false);
-  const loadingMoreRef = useRef(false);
-  const requestGeneration = useRef(0);
   const term = query.trim();
   useEffect(() => {
-    const generation = ++requestGeneration.current;
-    loadingMoreRef.current = false;
-    if (!term && !media) return;
+    if (!term) return;
     let active = true;
     const job = setTimeout(() => {
       void marmot
-        .searchConversation(group, term || null, media)
+        .searchConversation(group, term)
         .then((page) => {
-          if (active && requestGeneration.current === generation) {
-            setResult({ group, media, term, rows: page.rows, next: page.next });
-            setLoadingMore(false);
-          } else if (page.next) {
-            void marmot.releaseAttachmentHistoryCursor(page.next);
-          }
+          if (active) setResult({ group, term, rows: page.rows });
         })
         .catch(() => {
-          if (active && requestGeneration.current === generation)
-            setResult({ group, media, term, failed: true });
-          if (active && requestGeneration.current === generation)
-            setLoadingMore(false);
+          if (active) setResult({ group, term, failed: true });
         });
     }, 220);
     return () => {
       active = false;
-      if (requestGeneration.current === generation)
-        requestGeneration.current += 1;
       clearTimeout(job);
     };
-  }, [group, media, term]);
+  }, [group, term]);
   const hidden = new Set(chatPreferences.hidden(group));
   const latest =
-    result?.group === group && result.media === media && result.term === term
-      ? result
-      : undefined;
-  useEffect(() => {
-    const cursor = latest?.next;
-    return () => {
-      if (cursor) void marmot.releaseAttachmentHistoryCursor(cursor);
-    };
-  }, [latest?.next]);
+    result?.group === group && result.term === term ? result : undefined;
   const visible = latest?.rows?.filter(
     (row) => !hidden.has(row.id) && !privacy.isBlocked(row.sender),
   );
-  const loadMore = () => {
-    if (!latest?.next || loadingMoreRef.current) return;
-    const generation = requestGeneration.current;
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
-    void marmot
-      .searchConversation(group, term || null, media, latest.next)
-      .then((page) => {
-        if (
-          requestGeneration.current !== generation ||
-          result?.group !== group ||
-          result.media !== media ||
-          result.term !== term
-        ) {
-          if (page.next) void marmot.releaseAttachmentHistoryCursor(page.next);
-          return;
-        }
-        setResult((current) =>
-          current?.group === group &&
-          current.media === media &&
-          current.term === term
-            ? {
-                ...current,
-                rows: page.restart
-                  ? page.rows
-                  : [
-                      ...new Map(
-                        [...(current.rows ?? []), ...page.rows].map((row) => [
-                          row.id,
-                          row,
-                        ]),
-                      ).values(),
-                    ],
-                next: page.next,
-                failed: false,
-              }
-            : current,
-        );
-      })
-      .catch(() => {
-        if (requestGeneration.current === generation)
-          setResult((current) =>
-            current ? { ...current, failed: true, next: null } : current,
-          );
-      })
-      .finally(() => {
-        if (requestGeneration.current === generation) {
-          loadingMoreRef.current = false;
-          setLoadingMore(false);
-        }
-      });
-  };
   return (
     <View>
       {latest?.failed && <Ink>{t("messages:marmot.operationError")}</Ink>}
-      {visible?.length === 0 && !latest?.next && !latest?.failed && (
+      {visible?.length === 0 && !latest?.failed && (
         <Ink>{t("messages:marmot.noResults")}</Ink>
       )}
       <ScrollView
@@ -217,11 +138,6 @@ export function ConversationSearch({
               t("messages:marmot.mediaAndFiles")}
           </Action>
         ))}
-        {latest?.next && (
-          <Action size="sm" onPress={loadMore}>
-            {loadingMore ? t("common:checking") : t("messages:marmot.loadMore")}
-          </Action>
-        )}
       </ScrollView>
     </View>
   );
@@ -308,11 +224,13 @@ export function MessageEditHistory({
 export function ForwardMessage({
   group,
   row,
+  onlyAttachment,
   canDispatch,
   onClose,
 }: {
   group: string;
   row: MarmotMessage;
+  onlyAttachment?: number;
   canDispatch(): boolean;
   onClose(): void;
 }) {
@@ -352,7 +270,11 @@ export function ForwardMessage({
       tokens.current.set(destination, token);
       if (row.attachments.length && row.sourceId) {
         const files = [];
-        for (const item of acceptedAttachments(row)) {
+        const attachments = acceptedAttachments(row).filter(
+          (item) => onlyAttachment == null || item.index === onlyAttachment,
+        );
+        if (!attachments.length) throw new Error("MediaUnavailable");
+        for (const item of attachments) {
           if (!canDispatch() || privacy.isBlocked(row.sender)) return;
           const file = await marmot.openAttachment(
             group,
@@ -389,7 +311,7 @@ export function ForwardMessage({
             sdk: mediaSdk,
             group: destination,
             source: { kind: "files", files, saveDraft: false },
-            caption: row.text || null,
+            caption: onlyAttachment == null ? row.text || null : null,
             token,
             reply: null,
             allowed: () =>
@@ -405,6 +327,8 @@ export function ForwardMessage({
                 tone: "error",
               }),
           });
+      } else if (onlyAttachment != null) {
+        throw new Error("MediaUnavailable");
       } else if (row.eventKind === 24883) {
         await marmot.sendSpecial(
           destination,

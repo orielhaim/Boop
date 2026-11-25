@@ -17,6 +17,7 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.modules.ModuleDefinitionBuilder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,36 +40,10 @@ class BoopMarmotModule : Module() {
   private val observations = ConcurrentHashMap<String, Observation>()
   private val directoryWork = ConcurrentHashMap<Job, Boolean>()
   private data class HistoryCursor<T>(val scope: String, val cursor: T)
-  private val attachmentHistoryCursors = ConcurrentHashMap<String, HistoryCursor<AttachmentHistoryCursor>>()
   private val accountAttachmentHistoryCursors = ConcurrentHashMap<String, HistoryCursor<AccountAttachmentCursor>>()
+  private data class MediaVersion(val scope: String, val account: AccountAttachmentVersion? = null, val group: AttachmentHistoryVersion? = null)
 
-  private suspend fun timelineRowsAt(
-    active: Session,
-    group: String,
-    at: ULong,
-    targetIds: Set<String>,
-    attachmentType: UInt,
-    search: String? = null,
-  ): Map<String, TimelineMessageRecordFfi> {
-    val found = mutableMapOf<String, TimelineMessageRecordFfi>()
-    var before: ULong? = null
-    var beforeId: String? = null
-    var pages = 0
-    while (found.size < targetIds.size && pages < 4) {
-      currentCoroutineContext().ensureActive()
-      val query = TimelineMessageQueryFfi(group, search, null, at, at, attachmentType = attachmentType,
-        cursorGroupId = group.takeIf { before != null }, before = before, beforeMessageId = beforeId,
-        after = null, afterMessageId = null, limit = 200u)
-      val page = active.kit.timelineMessages(active.account, query)
-      page.messages.filter { it.messageIdHex in targetIds }.forEach { found[it.messageIdHex] = it }
-      pages++
-      if (!page.hasMoreBefore || page.messages.isEmpty()) break
-      val oldest = page.messages.first()
-      before = oldest.timelineAt
-      beforeId = oldest.messageIdHex
-    }
-    return found
-  }
+  private val sharedMedia = SharedMediaHistory()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
   private var session: Session? = null
@@ -95,6 +70,27 @@ class BoopMarmotModule : Module() {
   private fun stopMemoryPressure() {
     pressureContext?.unregisterComponentCallbacks(memoryPressure)
     pressureContext = null
+  }
+
+  private fun ModuleDefinitionBuilder.defineSharedMedia() {
+    AsyncFunction("existingDirectConversation") Coroutine { peer: String ->
+      withSession { active ->
+        active.kit.existingDirectConversation(active.account, peer)?.takeIf { it.reusable }?.groupIdHex
+      }
+    }
+    AsyncFunction("sharedMediaPage") Coroutine { group: String?, sender: String?, after: Double?, before: Double?, caption: String?, token: String?, baseline: String? ->
+      withSession { active ->
+        val query = SharedMediaHistory.Query(group, sender, after?.toULong(), before?.toULong(), caption)
+        sharedMedia.page(active.kit, active.account, query, token, baseline)
+      }
+    }
+    AsyncFunction("sharedMediaChanges") Coroutine { baseline: String ->
+      withSession { active -> sharedMedia.changes(active.kit, active.account, baseline) }
+    }
+    AsyncFunction("sharedMediaRelease") Coroutine { handle: String ->
+      sharedMedia.release(handle)
+      Unit
+    }
   }
 
   override fun definition() = ModuleDefinition {
@@ -1108,7 +1104,7 @@ class BoopMarmotModule : Module() {
           for ((key, entries) in page.entries.filter { it.entry.category == AttachmentCategoryFfi.AUDIO }
             .groupBy { it.groupIdHex to it.entry.timelineAt }) {
             val (group, at) = key
-            val metadata = timelineRowsAt(active, group, at, entries.map { it.entry.messageIdHex }.toSet(), 3u)
+            val metadata = active.kit.timelineRowsAt(active.account, group, at, entries.map { it.entry.messageIdHex }.toSet(), 3u)
             for ((id, row) in metadata) metadataById[group to id] = row
           }
           for (item in page.entries) {
@@ -1145,55 +1141,9 @@ class BoopMarmotModule : Module() {
     AsyncFunction("editLocalMessageWithClientToken") Coroutine { group: String, originalToken: String, content: String, editToken: String ->
       withSession { it.kit.editLocalMessageWithClientToken(it.account, group, originalToken, content, editToken).messageIdHex }
     }
-    AsyncFunction("searchConversation") Coroutine { group: String, text: String?, media: Boolean, token: String? ->
+    defineSharedMedia()
+    AsyncFunction("searchConversation") Coroutine { group: String, text: String? ->
       withSession {
-        if (media) {
-          val scope = "media:$group:${text.orEmpty()}"
-          val cursor = token?.let {
-            val saved = attachmentHistoryCursors.remove(it) ?: throw problem("AttachmentHistoryCursorMismatch")
-            if (saved.scope != scope) {
-              saved.cursor.destroy()
-              throw problem("AttachmentHistoryCursorMismatch")
-            }
-            saved.cursor
-          }
-          if (token != null && cursor == null) throw problem("AttachmentHistoryCursorMismatch")
-          if (token == null) attachmentHistoryCursors.entries.filter { it.value.scope.startsWith("media:$group:") }.forEach {
-            if (attachmentHistoryCursors.remove(it.key, it.value)) it.value.cursor.destroy()
-          }
-          val rows = linkedMapOf<String, Map<String, Any?>>()
-          val read = cursor.use { continuation ->
-            it.kit.attachmentHistoryPage(it.account, group, 40u, continuation)
-          }
-          val restarted = read == AttachmentPageReadFfi.RestartRequired
-          val result = if (restarted) it.kit.attachmentHistoryPage(it.account, group, 40u, null) else read
-          val page = (result as? AttachmentPageReadFfi.Page)?.page
-            ?: throw problem("AttachmentHistoryUnavailable")
-          return@withSession page.use { history ->
-            val candidates = history.entries.filter {
-              it.role == AttachmentRoleFfi.SHARED && it.category != AttachmentCategoryFfi.REJECTED
-            }
-            val metadataById = mutableMapOf<String, TimelineMessageRecordFfi>()
-            for ((at, entries) in candidates.groupBy { it.timelineAt }) {
-              metadataById += timelineRowsAt(it, group, at, entries.map { it.messageIdHex }.toSet(), 5u, text)
-            }
-            for (entry in candidates) {
-              if (rows.containsKey(entry.messageIdHex)) continue
-              val row = metadataById[entry.messageIdHex]?.takeIf {
-                !it.deleted && it.invalidationStatus == null && it.sourceMessageIdHex == entry.sourceMessageIdHex
-              } ?: continue
-              rows[row.messageIdHex] = mapOf("id" to row.messageIdHex, "sender" to row.sender,
-                "text" to row.plaintext, "sentAt" to row.timelineAt.toDouble())
-            }
-            val next = history.nextCursor?.let { continuation ->
-              UUID.randomUUID().toString().also { id ->
-                attachmentHistoryCursors[id] = HistoryCursor(scope, continuation)
-                history.nextCursor = null
-              }
-            }
-            mapOf("rows" to rows.values.toList(), "next" to next, "restart" to restarted)
-          }
-        }
         val query = TimelineMessageQueryFfi(group, text, null, null, null,
           attachmentType = 0u, cursorGroupId = null, before = null,
           beforeMessageId = null, after = null, afterMessageId = null, limit = 40u)
@@ -1203,7 +1153,6 @@ class BoopMarmotModule : Module() {
       }
     }
     AsyncFunction("releaseAttachmentHistoryCursor") Coroutine { token: String ->
-      attachmentHistoryCursors.remove(token)?.cursor?.destroy()
       accountAttachmentHistoryCursors.remove(token)?.cursor?.destroy()
       Unit
     }
@@ -1390,10 +1339,9 @@ class BoopMarmotModule : Module() {
         work.joinAll()
         drain(pauseMessaging, closeRuntime)
       } finally {
-        attachmentHistoryCursors.values.forEach { it.cursor.destroy() }
-        attachmentHistoryCursors.clear()
         accountAttachmentHistoryCursors.values.forEach { it.cursor.destroy() }
         accountAttachmentHistoryCursors.clear()
+        sharedMedia.close()
         lifecycle.withLock { closingAccount = false }
       }
     }

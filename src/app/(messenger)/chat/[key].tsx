@@ -15,10 +15,10 @@ import { namespaces } from "@/i18n";
 
 export default function ChatRoute() {
   const { t } = useTranslation(namespaces);
-  const { key, view, audioMessage, profileMorph } = useLocalSearchParams<{
+  const { key, view, messageTarget, profileMorph } = useLocalSearchParams<{
     key?: string;
     view?: string;
-    audioMessage?: string;
+    messageTarget?: string;
     profileMorph?: string;
   }>();
   if (key === "new-group") return <NewMarmotGroup />;
@@ -38,12 +38,10 @@ export default function ChatRoute() {
         />
       ) : (
         <MarmotConversationScreen
-          key={group}
+          key={messageTarget ? `${group}:${messageTarget}` : group}
           id={group}
-          audioMessage={audioMessage}
-          initialPanel={
-            view === "search" || view === "media" ? view : undefined
-          }
+          messageTarget={messageTarget}
+          initialPanel={view === "search" ? view : undefined}
         />
       );
     const peer = parsePublicKey(key);

@@ -32,6 +32,7 @@ import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 type GroupCallStart = { disabled: boolean; onPress: () => void };
+type ProfileCallPresentation = { shortcut: ReactNode; status?: ReactNode };
 const GroupCallStartContext = createContext<GroupCallStart | null>(null);
 
 export function GroupCallHeaderButton({
@@ -73,13 +74,13 @@ export function MarmotActiveCall({
   group,
   members,
   canStart,
-  profileActions,
+  profile,
   header,
 }: {
   group: string;
   members?: readonly { id: string; name?: string | null; label?: string }[];
   canStart: boolean;
-  profileActions?: ReactNode;
+  profile?: (call: ProfileCallPresentation) => ReactNode;
   header?: ReactNode;
 }) {
   const { t } = useTranslation(namespaces);
@@ -202,17 +203,9 @@ export function MarmotActiveCall({
     state.fullGroupCall.at >= active.updatedAt;
   const isJoining = state.joining?.groupId === group;
   if (!current && !lobby && !active && !isJoining) {
-    if (!canStart)
-      return (
-        <>
-          <GroupCallStartContext.Provider value={null}>
-            {header}
-          </GroupCallStartContext.Provider>
-          {profileActions && <GroupShortcuts>{profileActions}</GroupShortcuts>}
-        </>
-      );
     const start: GroupCallStart = {
       disabled:
+        !canStart ||
         !announcements ||
         Boolean(
           state.groupLobby ||
@@ -221,26 +214,24 @@ export function MarmotActiveCall({
         ),
       onPress: startGroupCall,
     };
-    if (header)
-      return (
-        <>
-          <GroupCallStartContext.Provider value={start}>
-            {header}
-          </GroupCallStartContext.Provider>
-        </>
-      );
-    if (profileActions)
-      return (
-        <GroupShortcuts>
+    if (profile)
+      return profile({
+        shortcut: (
           <GroupShortcut
             icon="phone"
             label={t("messages:marmot.shortcutCall")}
             description={t("calls:startCall")}
             {...start}
           />
-          {profileActions}
-        </GroupShortcuts>
+        ),
+      });
+    if (header)
+      return (
+        <GroupCallStartContext.Provider value={canStart ? start : null}>
+          {header}
+        </GroupCallStartContext.Provider>
       );
+    if (!canStart) return null;
     return (
       <View style={styles.row}>
         <Action size="sm" {...start}>
@@ -258,66 +249,82 @@ export function MarmotActiveCall({
   )
     .map((key) => roster.get(key))
     .filter(Boolean);
+  const actionLabel = current
+    ? t("messages:marmot.returnToCall")
+    : lobby
+      ? t("calls:end")
+      : full
+        ? t("messages:marmot.groupCallFull")
+        : isJoining
+          ? t("messages:marmot.joiningGroupCall")
+          : t("messages:marmot.joinGroupCall");
+  const action = {
+    disabled:
+      !current &&
+      (isJoining ||
+        !!full ||
+        Boolean(state.groupLobby && !lobby) ||
+        Boolean(state.call && state.call.phase !== "ended")),
+    onPress: () => {
+      if (current) {
+        router.push({
+          pathname: "/call/[key]",
+          params: { key: current.peerKey, callId: current.id },
+        });
+      } else if (lobby) {
+        calling.end();
+      } else if (
+        active &&
+        active.expiresAt > Date.now() &&
+        !lock.getState().locked
+      ) {
+        pending.current = active.call;
+        void calling.join(group, active.call, active.routes);
+      }
+    },
+  };
+  const status = (
+    <View
+      style={[
+        styles.row,
+        profile && styles.profileRow,
+        { backgroundColor: colors.selected },
+      ]}
+    >
+      <Icon name="audio" color={colors.accent} />
+      <View style={styles.label}>
+        <Ink>{t("messages:marmot.activeGroupCall")}</Ink>
+        {names.length > 0 && (
+          <Ink kind="caption" numberOfLines={1}>
+            {names.join(", ")}
+          </Ink>
+        )}
+      </View>
+      {!profile && (
+        <Action size="sm" {...action}>
+          {actionLabel}
+        </Action>
+      )}
+    </View>
+  );
+  if (profile)
+    return profile({
+      shortcut: (
+        <GroupShortcut
+          icon={lobby ? "hangup" : "phone"}
+          label={actionLabel}
+          description={actionLabel}
+          {...action}
+        />
+      ),
+      status,
+    });
   return (
     <>
       <GroupCallStartContext.Provider value={null}>
         {header}
       </GroupCallStartContext.Provider>
-      {profileActions && <GroupShortcuts>{profileActions}</GroupShortcuts>}
-      <View
-        style={[
-          styles.row,
-          Boolean(profileActions) && styles.profileRow,
-          { backgroundColor: colors.selected },
-        ]}
-      >
-        <Icon name="audio" color={colors.accent} />
-        <View style={styles.label}>
-          <Ink>{t("messages:marmot.activeGroupCall")}</Ink>
-          {names.length > 0 && (
-            <Ink kind="caption" numberOfLines={1}>
-              {names.join(", ")}
-            </Ink>
-          )}
-        </View>
-        <Action
-          size="sm"
-          disabled={
-            !current &&
-            (isJoining ||
-              !!full ||
-              Boolean(state.groupLobby && !lobby) ||
-              Boolean(state.call && state.call.phase !== "ended"))
-          }
-          onPress={() => {
-            if (current) {
-              router.push({
-                pathname: "/call/[key]",
-                params: { key: current.peerKey, callId: current.id },
-              });
-            } else if (lobby) {
-              calling.end();
-            } else if (
-              active &&
-              active.expiresAt > Date.now() &&
-              !lock.getState().locked
-            ) {
-              pending.current = active.call;
-              void calling.join(group, active.call, active.routes);
-            }
-          }}
-        >
-          {current
-            ? t("messages:marmot.returnToCall")
-            : lobby
-              ? t("calls:end")
-              : full
-                ? t("messages:marmot.groupCallFull")
-                : isJoining
-                  ? t("messages:marmot.joiningGroupCall")
-                  : t("messages:marmot.joinGroupCall")}
-        </Action>
-      </View>
+      {status}
     </>
   );
 }

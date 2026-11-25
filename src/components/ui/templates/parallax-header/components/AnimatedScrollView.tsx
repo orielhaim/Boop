@@ -15,6 +15,7 @@ export function ParallaxScrollView({
   bodyStyle,
   header,
   headerControls,
+  stickyTabs,
   headerMaxHeight,
   headerOverlap,
   backgroundColor,
@@ -24,6 +25,7 @@ export function ParallaxScrollView({
   bodyStyle: StyleProp<ViewStyle>;
   header: ReactNode;
   headerControls: ReactNode;
+  stickyTabs?: ReactNode;
   headerMaxHeight: number;
   headerOverlap: number;
   backgroundColor: string;
@@ -43,6 +45,7 @@ export function ParallaxScrollView({
       keyboardDismissMode="on-drag"
       onScroll={scrollHandler}
       scrollEventThrottle={16}
+      stickyHeaderIndices={stickyTabs ? [1] : undefined}
     >
       <View
         pointerEvents="box-none"
@@ -56,6 +59,7 @@ export function ParallaxScrollView({
         </Animated.View>
         {headerControls}
       </View>
+      {stickyTabs}
       <Animated.View style={[bodyStyle, motion.body]}>
         <View
           pointerEvents="none"

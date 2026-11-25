@@ -1,5 +1,10 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { ProfileElement } from "@/components/navigation/profile-elements";
+import { SharedMediaLibrary } from "@/components/shared-media/library";
+import {
+  ProfileTabs,
+  type ProfileTab,
+} from "@/components/shared-media/profile-tabs";
 import { router, useIsFocused, usePreventRemove } from "expo-router";
 import type { File } from "expo-file-system";
 import { asc } from "drizzle-orm";
@@ -62,7 +67,7 @@ import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
 import { useChatClock, useMuteDuration } from "./chat-mute";
-import { marmotErrorCode } from "@/core/marmot/errors";
+import { useMarmotError } from "./use-marmot-error";
 import { useMarmotWindow } from "./marmot-window";
 import {
   GroupShortcut,
@@ -70,37 +75,6 @@ import {
   MarmotActiveCall,
 } from "./marmot-active-call";
 import { usePreparedGroupAvatar } from "./use-prepared-group-avatar";
-
-export function useMarmotError() {
-  const { t } = useTranslation(namespaces);
-  return (error: unknown) => {
-    const code = marmotErrorCode(error);
-    if (code === "GroupCommitPending")
-      return t("messages:marmot.pendingCommit");
-    if (code === "NoUsableRelay" || code === "Publish")
-      return t("messages:marmot.relayError");
-    if (code === "IdentityMismatch" || code === "SecretNotFound")
-      return t("messages:marmot.identityMismatch");
-    if (code === "GroupRemoved" || code === "AccountSignedOut")
-      return t("messages:marmot.noLongerMember");
-    if (code === "GroupInviteNotPending")
-      return t("messages:marmot.inviteGone");
-    if (code === "MissingMemberInboxRoute")
-      return t("messages:marmot.missingInboxRoute");
-    if (code === "DirectoryLookupIncomplete")
-      return t("messages:marmot.temporarilyUnavailable");
-    if (code === "MediaNotConfigured")
-      return t("messages:marmot.mediaUnavailableForChat");
-    if (
-      code === "MediaAttachmentRejected" ||
-      code === "MediaUnfetchable" ||
-      code === "MediaUnavailable"
-    )
-      return t("messages:marmot.mediaReferenceUnavailable");
-    if (code.includes("KeyPackage")) return t("messages:marmot.missingPackage");
-    return t("messages:marmot.operationError");
-  };
-}
 
 function resolveAddresses(addresses: string, own: string) {
   const items = addresses
@@ -622,6 +596,10 @@ export function MarmotGroupDetailsScreen({
   const [showRelays, setShowRelays] = useState(false);
   const [showMediaServers, setShowMediaServers] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [profileTab, setProfileTab] = useState<"info" | "members" | "media">(
+    "info",
+  );
+  const sharedMediaScrollPosition = useRef(0);
   const [showInvite, setShowInvite] = useState(false);
   const [profileDraft, setProfileDraft] = useState<{
     name?: string;
@@ -825,60 +803,65 @@ export function MarmotGroupDetailsScreen({
     />
   );
   const canLoadImage = Boolean(photo && !imageUri);
-  const profileHeader = !editing && !details?.pendingInvitation && (
-    <GroupProfileHeader
-      morph={morph}
-      name={details || morph ? groupName : undefined}
-      count={isGroup ? details?.members.length : undefined}
-      description={details?.description}
-      back={back}
-      edit={
-        canEdit ? () => router.push(conversationRoute(id, "edit")) : undefined
-      }
-      editTitle={editTitle}
-      avatar={
-        peer ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("contacts:openProfile", { name: groupName })}
-            onPress={() =>
-              router.push({
-                pathname: "/person/[key]",
-                params: { key: peer.id },
-              })
-            }
-          >
-            <Avatar publicKey={peer.id} name={groupName} size="xl" />
-          </Pressable>
-        ) : details || morph ? (
-          <Pressable
-            accessible={canLoadImage}
-            accessibilityRole={canLoadImage ? "button" : undefined}
-            accessibilityLabel={
-              canLoadImage ? t("messages:marmot.viewGroupPhoto") : undefined
-            }
-            disabled={canLoadImage && busy}
-            onPress={canLoadImage ? () => void loadImage() : undefined}
-          >
-            {avatar}
-            {canLoadImage && (
-              <View
-                style={[
-                  styles.photoBadge,
-                  {
-                    backgroundColor: colors.selected,
-                    borderColor: colors.background,
-                  },
-                ]}
-              >
-                <Icon name="download" size={14} />
-              </View>
-            )}
-          </Pressable>
-        ) : undefined
-      }
-    />
-  );
+  const editProfile = canEdit
+    ? () => router.push(conversationRoute(id, "edit"))
+    : undefined;
+  const profileHeader = (active: boolean, showActions = true) =>
+    !editing &&
+    !details?.pendingInvitation && (
+      <GroupProfileHeader
+        morph={active ? morph : undefined}
+        name={details || morph ? groupName : undefined}
+        count={isGroup ? details?.members.length : undefined}
+        description={details?.description}
+        back={showActions && !morph ? back : undefined}
+        edit={showActions && !isGroup ? editProfile : undefined}
+        editTitle={editTitle}
+        avatar={
+          peer ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("contacts:openProfile", {
+                name: groupName,
+              })}
+              onPress={() =>
+                router.push({
+                  pathname: "/person/[key]",
+                  params: { key: peer.id },
+                })
+              }
+            >
+              <Avatar publicKey={peer.id} name={groupName} size="xl" />
+            </Pressable>
+          ) : details || morph ? (
+            <Pressable
+              accessible={canLoadImage}
+              accessibilityRole={canLoadImage ? "button" : undefined}
+              accessibilityLabel={
+                canLoadImage ? t("messages:marmot.viewGroupPhoto") : undefined
+              }
+              disabled={canLoadImage && busy}
+              onPress={canLoadImage ? () => void loadImage() : undefined}
+            >
+              {avatar}
+              {canLoadImage && (
+                <View
+                  style={[
+                    styles.photoBadge,
+                    {
+                      backgroundColor: colors.selected,
+                      borderColor: colors.background,
+                    },
+                  ]}
+                >
+                  <Icon name="download" size={14} />
+                </View>
+              )}
+            </Pressable>
+          ) : undefined
+        }
+      />
+    );
 
   if (
     state.error ||
@@ -897,7 +880,7 @@ export function MarmotGroupDetailsScreen({
           ) : undefined
         }
       >
-        {profileHeader}
+        {profileHeader(true)}
         {state.error ? (
           <Empty
             detail=""
@@ -1226,34 +1209,35 @@ export function MarmotGroupDetailsScreen({
       )}
     </Card>
   );
-  const shortcuts = (
-    <>
-      <GroupShortcut
-        icon="media"
-        label={t("messages:marmot.shortcutMedia")}
-        description={t("messages:marmot.mediaAndFiles")}
-        onPress={() => router.push(conversationRoute(id, "media"))}
-      />
-      <GroupShortcut
-        icon={muted ? "bellOff" : "bell"}
-        label={t(muted ? "calls:unmute" : "calls:mute")}
-        description={t(
-          muted
-            ? "messages:marmot.unmuteConversation"
-            : "messages:marmot.muteConversation",
-        )}
-        disabled={busy}
-        onPress={() => {
-          if (muted) void update(() => marmot.clearChatMuted(id), false, true);
-          else chooseMuteDuration([id], state.retry);
-        }}
-      />
-    </>
+  const muteShortcut = (
+    <GroupShortcut
+      icon={muted ? "bellOff" : "bell"}
+      label={t(muted ? "calls:unmute" : "calls:mute")}
+      description={t(
+        muted
+          ? "messages:marmot.unmuteConversation"
+          : "messages:marmot.muteConversation",
+      )}
+      disabled={busy}
+      onPress={() => {
+        if (muted) void update(() => marmot.clearChatMuted(id), false, true);
+        else chooseMuteDuration([id], state.retry);
+      }}
+    />
   );
   const showMembershipActions = !isGroup || details.members.length > 1;
+  const canLeave = details.canLeave && showMembershipActions;
+  const canLeaveFromInfo = canLeave && (!isGroup || !member || canEdit);
+  const leaveGroup = () =>
+    confirm(
+      t("messages:marmot.leave"),
+      () => marmot.changeMembership(id, "leave"),
+      true,
+    );
   const canDeleteLocal = !member || (isGroup && !details.canDisband);
   const showActions =
-    (showMembershipActions && (member || details.canLeave)) ||
+    (showMembershipActions && member) ||
+    canLeaveFromInfo ||
     details.canCancelLeave ||
     canDeleteLocal;
   const editedName = profileDraft.name ?? details.name;
@@ -1282,9 +1266,207 @@ export function MarmotGroupDetailsScreen({
     return saved;
   }
 
+  const groupTabs: ProfileTab<"info" | "members" | "media">[] = [
+    { key: "info", label: t("messages:sharedMedia.info") },
+    { key: "members", label: t("messages:marmot.members") },
+    { key: "media", label: t("messages:marmot.shortcutMedia") },
+  ];
+  const groupTabBar = (
+    <ProfileTabs value={profileTab} onChange={setProfileTab} tabs={groupTabs} />
+  );
+  const groupInfoContent = (callStatus?: ReactNode) => (
+    <>
+      {callStatus}
+      {member && muteStatus && (
+        <Ink kind="caption" muted style={styles.profileCaption}>
+          {muteStatus}
+        </Ink>
+      )}
+      {notice}
+      <ListGroup title={t("messages:marmot.groupInformation")}>
+        {details.createdAt ? (
+          <ListRow
+            title={t("messages:marmot.createdAt", {
+              date: new Date(details.createdAt * 1_000).toLocaleDateString(),
+            })}
+          />
+        ) : null}
+        {connections}
+      </ListGroup>
+      {showActions && (
+        <ListGroup title={t("messages:marmot.conversationActions")}>
+          {member && showMembershipActions && (
+            <ListRow
+              title={t(
+                details.archived
+                  ? "messages:marmot.unarchiveConversation"
+                  : "messages:marmot.archiveConversation",
+              )}
+              disabled={busy}
+              onPress={() =>
+                void update(
+                  () => marmot.setArchived(id, !details.archived),
+                  false,
+                  true,
+                )
+              }
+            />
+          )}
+          {details.canCancelLeave && (
+            <ListRow
+              title={t("messages:marmot.cancelLeave")}
+              disabled={busy}
+              onPress={() =>
+                void update(() => marmot.changeMembership(id, "cancelLeave"))
+              }
+            />
+          )}
+          {canLeaveFromInfo && (
+            <ListRow
+              title={t("messages:marmot.leave")}
+              disabled={busy}
+              onPress={leaveGroup}
+            />
+          )}
+          {canDeleteLocal && (
+            <ListRow
+              title={t("messages:marmot.forgetGroup")}
+              disabled={busy || details.disbanding}
+              onPress={() =>
+                confirm(
+                  t("messages:marmot.forgetGroup"),
+                  async () => {
+                    await state.window?.close();
+                    try {
+                      await marmot.changeMembership(id, "deleteLocal");
+                    } catch (error) {
+                      state.retry();
+                      throw error;
+                    }
+                    if (isCurrent()) {
+                      chatPreferences.clearGroupCreation(id);
+                      if (!lock.getState().locked) router.dismissTo("/");
+                    }
+                  },
+                  false,
+                  t("messages:marmot.deleteLocalGroupConfirmation"),
+                )
+              }
+            />
+          )}
+        </ListGroup>
+      )}
+    </>
+  );
+
+  function renderGroupProfile(shortcut?: ReactNode, status?: ReactNode) {
+    const actions = member && (
+      <GroupShortcuts>
+        {shortcut}
+        {muteShortcut}
+        {editProfile ? (
+          <GroupShortcut
+            icon="edit"
+            label={t("messages:marmot.shortcutEdit")}
+            description={editTitle}
+            disabled={busy}
+            onPress={editProfile}
+          />
+        ) : (
+          <GroupShortcut
+            icon="leave"
+            label={t("messages:marmot.shortcutLeave")}
+            description={t("messages:marmot.leave")}
+            disabled={busy || !canLeave}
+            onPress={leaveGroup}
+          />
+        )}
+      </GroupShortcuts>
+    );
+    function overview(tab: typeof profileTab) {
+      return (
+        <View style={styles.groupOverview}>
+          {profileHeader(profileTab === tab, false)}
+          {actions}
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.groupStack}>
+        <View
+          pointerEvents={profileTab === "info" ? "auto" : "none"}
+          accessibilityElementsHidden={profileTab !== "info"}
+          importantForAccessibility={
+            profileTab === "info" ? "auto" : "no-hide-descendants"
+          }
+          style={[
+            styles.groupPage,
+            profileTab !== "info" && styles.groupPageHidden,
+          ]}
+        >
+          <ScrollView
+            style={styles.groupProfileScroll}
+            contentContainerStyle={styles.groupProfileBody}
+            stickyHeaderIndices={[1]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {overview("info")}
+            {groupTabBar}
+            {groupInfoContent(status)}
+          </ScrollView>
+        </View>
+        <View
+          pointerEvents={profileTab === "members" ? "auto" : "none"}
+          accessibilityElementsHidden={profileTab !== "members"}
+          importantForAccessibility={
+            profileTab === "members" ? "auto" : "no-hide-descendants"
+          }
+          style={[
+            styles.groupPage,
+            profileTab !== "members" && styles.groupPageHidden,
+          ]}
+        >
+          <ScrollView
+            style={styles.groupProfileScroll}
+            contentContainerStyle={styles.groupProfileBody}
+            stickyHeaderIndices={[1]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {overview("members")}
+            {groupTabBar}
+            {roster}
+          </ScrollView>
+        </View>
+        <View
+          pointerEvents={profileTab === "media" ? "auto" : "none"}
+          accessibilityElementsHidden={profileTab !== "media"}
+          importantForAccessibility={
+            profileTab === "media" ? "auto" : "no-hide-descendants"
+          }
+          style={[
+            styles.groupPage,
+            profileTab !== "media" && styles.groupPageHidden,
+          ]}
+        >
+          <SharedMediaLibrary
+            scope={{ kind: "group", group: id }}
+            header={
+              <View style={styles.groupMediaHeader}>{overview("media")}</View>
+            }
+            tabs={groupTabBar}
+            scrollPositionRef={sharedMediaScrollPosition}
+            active={profileTab === "media"}
+          />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <Screen
       topInset
+      scroll={editing || !isGroup}
       navigationHeader={
         editing ? (
           <ScreenHeader
@@ -1301,12 +1483,20 @@ export function MarmotGroupDetailsScreen({
               ) : undefined
             }
           />
+        ) : isGroup ? (
+          <View style={styles.groupNavigation}>
+            <GlassBackButton
+              onPress={back}
+              style={styles.profileBack}
+              elevation={morph ? "none" : undefined}
+              dimOnPress={!morph}
+            />
+          </View>
         ) : morph ? (
           <ChatProfileBackButton onPress={back} />
         ) : undefined
       }
     >
-      {profileHeader}
       {editing ? (
         <>
           {isGroup && (
@@ -1425,23 +1615,42 @@ export function MarmotGroupDetailsScreen({
             </Action>
           )}
         </>
+      ) : isGroup ? (
+        member ? (
+          <MarmotActiveCall
+            group={id}
+            members={details.members}
+            canStart={
+              details.lifecycle === "stable" &&
+              !details.pendingLeave &&
+              !details.disbanding
+            }
+            profile={({ shortcut, status }) =>
+              renderGroupProfile(shortcut, status)
+            }
+          />
+        ) : (
+          renderGroupProfile()
+        )
       ) : (
         <>
-          {member &&
-            (isGroup ? (
-              <MarmotActiveCall
-                group={id}
-                canStart={
-                  details.lifecycle === "stable" &&
-                  !details.pendingLeave &&
-                  !details.disbanding
+          {profileHeader(true)}
+          {member && (
+            <GroupShortcuts>
+              <GroupShortcut
+                icon="media"
+                label={t("messages:marmot.shortcutMedia")}
+                description={t("messages:marmot.mediaAndFiles")}
+                onPress={() =>
+                  router.push({
+                    pathname: "/shared-media",
+                    params: { group: id, scope: "direct" },
+                  })
                 }
-                members={details.members}
-                profileActions={shortcuts}
               />
-            ) : (
-              <GroupShortcuts>{shortcuts}</GroupShortcuts>
-            ))}
+              {muteShortcut}
+            </GroupShortcuts>
+          )}
           {member && muteStatus && (
             <Ink kind="caption" muted style={styles.profileCaption}>
               {muteStatus}
@@ -1493,17 +1702,11 @@ export function MarmotGroupDetailsScreen({
                   }
                 />
               )}
-              {details.canLeave && showMembershipActions && (
+              {canLeave && (
                 <ListRow
                   title={t("messages:marmot.leave")}
                   disabled={busy}
-                  onPress={() =>
-                    confirm(
-                      t("messages:marmot.leave"),
-                      () => marmot.changeMembership(id, "leave"),
-                      true,
-                    )
-                  }
+                  onPress={leaveGroup}
                 />
               )}
               {canDeleteLocal && (
@@ -1581,35 +1784,19 @@ function GroupProfileHeader({
   avatar?: ReactNode;
   count?: number;
   description?: string;
-  back: () => void;
+  back?: () => void;
   edit?: () => void;
   editTitle?: string;
 }) {
   const { t } = useTranslation(namespaces);
-  const { colors } = useTheme();
-  const surface = { backgroundColor: colors.selected };
   return (
     <View style={styles.profileHeader}>
       <View style={styles.profileAvatar}>
-        {!morph && (
-          <GlassBackButton onPress={back} style={styles.profileBack} />
-        )}
+        {back && <GlassBackButton onPress={back} style={styles.profileBack} />}
         <ProfileElement profile={morph} part="avatar">
           {avatar}
         </ProfileElement>
-        {edit && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={editTitle}
-            onPress={() => {
-              tapFeedback();
-              edit();
-            }}
-            style={[styles.iconTarget, styles.profileEdit, surface]}
-          >
-            <Icon name="edit" size={20} />
-          </Pressable>
-        )}
+        {edit && <GroupProfileEditButton onPress={edit} label={editTitle} />}
       </View>
       {name && (
         <ProfileElement
@@ -1638,6 +1825,33 @@ function GroupProfileHeader({
         </Ink>
       ) : null}
     </View>
+  );
+}
+
+function GroupProfileEditButton({
+  onPress,
+  label,
+}: {
+  onPress: () => void;
+  label?: string;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={() => {
+        tapFeedback();
+        onPress();
+      }}
+      style={[
+        styles.iconTarget,
+        styles.profileEdit,
+        { backgroundColor: colors.selected },
+      ]}
+    >
+      <Icon name="edit" size={20} />
+    </Pressable>
   );
 }
 
@@ -1748,7 +1962,29 @@ function InviteMemberField({
 }
 
 const styles = StyleSheet.create({
+  groupStack: { flex: 1 },
   grow: { flex: 1, minWidth: 0, gap: 3 },
+  groupPage: {
+    position: "absolute",
+    top: 0,
+    start: 0,
+    end: 0,
+    bottom: 0,
+    zIndex: 1,
+  },
+  groupPageHidden: { opacity: 0, zIndex: 0 },
+  groupNavigation: {
+    marginHorizontal: space.lg,
+    height: 44,
+  },
+  groupMediaHeader: { paddingHorizontal: space.lg, paddingBottom: space.lg },
+  groupOverview: { gap: space.lg },
+  groupProfileScroll: { flex: 1 },
+  groupProfileBody: {
+    gap: space.lg,
+    paddingHorizontal: space.lg,
+    paddingBottom: space.xxl,
+  },
   profileHeader: { alignItems: "center", gap: space.xs },
   profileAvatar: {
     alignSelf: "stretch",

@@ -45,6 +45,18 @@ cargo test --locked --manifest-path extensions/torrents/rust/Cargo.toml --lib --
 
 The native suite covers cancellable verified reads, Media3 seeking, and Android transfer jobs. Use legal fixture media and a controlled seeder. Codec support depends on the device.
 
+### Shared media
+
+Profiles, the chat shortcut, and Chats → Shared media use the same library. Person profiles use MDK's read-only direct conversation lookup. The Media tab appears for an eligible direct conversation even when its attachment history is empty.
+
+The library combines categories and search in the source-owned Reacticx Gooey Search Tabs component, using Boop's installed Skia, theme, icons, and motion preferences.
+
+Ordinary conversation browsing uses `attachmentHistoryPage`. Account browsing and sender/date queries use `accountAttachmentHistoryPage`. Each library owns an in-memory baseline and one continuation per active query. Additions refresh the loaded prefix in bounded batches. Destructive changes retire the old rows and handles before the next page appears. A filtered page can be empty while its continuation is valid.
+
+Filename and caption search inspects bounded history pages and reports when older history remains. Discovery uses authenticated metadata and batched local availability checks. Only an explicit action can enqueue a transfer. Open, playback, export, and forwarding use the original group/message/source/attachment tuple and the existing authorization and retained-file lease paths. Retained videos open directly in Boop's video player. Round notes play through their original message. The grid uses authenticated video posters and verified local photos.
+
+Run `MarmotRelayTest#sharedMediaUsesIndependentNativeHistoryCollections` with the relay and Blossom fixture arguments. It exercises a real encrypted album, original slot indices, independent collections, and the fixture request count during browsing.
+
 ## Build a local Android release
 
 1. Advance `expo.android.versionCode` in `app.json` past the highest code used in Play Console. Build all configured ABIs.

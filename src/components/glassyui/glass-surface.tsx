@@ -72,10 +72,11 @@ export const GlassSurface = forwardRef<
       Boolean(blurTarget),
       translucentFallback || cinematic,
     );
-    const borderRadius =
-      StyleSheet.flatten(style)?.borderRadius ?? radius.control;
+    const shape = StyleSheet.flatten(style);
     const corners = {
-      borderRadius,
+      borderRadius: shape?.borderRadius ?? radius.control,
+      borderBottomLeftRadius: shape?.borderBottomLeftRadius,
+      borderBottomRightRadius: shape?.borderBottomRightRadius,
       borderCurve: "continuous",
     } as const;
     const lens = translucentFallback ? colors.lens : undefined;

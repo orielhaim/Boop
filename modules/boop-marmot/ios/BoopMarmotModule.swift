@@ -13,8 +13,21 @@ public final class BoopMarmotModule: Module {
   private let attachmentLock = NSLock()
   private let directoryLock = NSLock()
   private let historyLock = NSLock()
-  private var attachmentHistoryCursors: [String: (scope: String, cursor: AttachmentHistoryCursor)] = [:]
   private var accountAttachmentHistoryCursors: [String: (scope: String, cursor: AccountAttachmentCursor)] = [:]
+  private enum SharedMediaCursor {
+    case group(AttachmentHistoryCursor)
+    case account(AccountAttachmentCursor)
+  }
+  private enum SharedMediaRead {
+    case group(AttachmentPageReadFfi)
+    case account(AccountAttachmentPageReadFfi)
+  }
+  private enum SharedMediaVersion {
+    case group(String, AttachmentHistoryVersion)
+    case account(AccountAttachmentVersion)
+  }
+  private var sharedMediaCursors: [String: (scope: String, cursor: SharedMediaCursor)] = [:]
+  private var sharedMediaVersions: [String: (scope: String, version: SharedMediaVersion)] = [:]
   private struct Observation {
     let accountScoped: Bool
     var task: Task<Void, Error>?
@@ -37,9 +50,10 @@ public final class BoopMarmotModule: Module {
     var before: UInt64?
     var beforeId: String?
     var pages = 0
+    let exclusiveEnd = at < UInt64(Int64.max) ? at + 1 : nil
     while found.count < targetIds.count && pages < 4 {
       let query = TimelineMessageQueryFfi(groupIdHex: group, search: search, sender: nil,
-        since: at, until: at, attachmentType: attachmentType, searchWallClock: false,
+        since: at, until: exclusiveEnd, attachmentType: attachmentType, searchWallClock: false,
         cursorGroupId: before == nil ? nil : group, before: before, beforeMessageId: beforeId,
         after: nil, afterMessageId: nil, limit: 200)
       let page = try kit.timelineMessages(accountRef: account, query: query)
@@ -51,6 +65,14 @@ public final class BoopMarmotModule: Module {
     }
     return found
   }
+
+  private func historyTimestamp(_ value: Double?) throws -> UInt64? {
+    guard let value else { return nil }
+    guard value.isFinite, value >= 0, value.rounded(.towardZero) == value,
+      let timestamp = UInt64(exactly: value) else { throw problem("InvalidHistoryRange") }
+    return timestamp
+  }
+
   private var uploads: [String: MediaFileTransferControlFfi] = [:]
 
   public func definition() -> ModuleDefinition {
@@ -439,59 +461,9 @@ public final class BoopMarmotModule: Module {
         return "data:\(mime);base64,\(bytes.base64EncodedString())"
       }
     }
-    AsyncFunction("searchConversation") { (group: String, text: String?, media: Bool, token: String?) async throws -> Document in
+    AsyncFunction("searchConversation") { (group: String, text: String?) async throws -> Document in
       try await self.withAccount { kit, account in
-        if media {
-          let scope = "media:\(group):\(text ?? "")"
-          let cursor: AttachmentHistoryCursor? = try self.historyLock.withLock {
-            guard let token else { return nil }
-            guard let saved = self.attachmentHistoryCursors.removeValue(forKey: token), saved.scope == scope else {
-              throw problem("AttachmentHistoryCursorMismatch")
-            }
-            return saved.cursor
-          }
-          if token == nil {
-            self.historyLock.withLock {
-              self.attachmentHistoryCursors = self.attachmentHistoryCursors.filter { !$0.value.scope.hasPrefix("media:\(group):") }
-            }
-          }
-          var read = try await kit.attachmentHistoryPage(accountRef: account, groupIdHex: group, limit: 40, cursor: cursor)
-          var restarted = false
-          if case .restartRequired = read {
-            restarted = true
-            read = try await kit.attachmentHistoryPage(accountRef: account, groupIdHex: group, limit: 40, cursor: nil)
-          }
-          var page: AttachmentPageFfi
-          switch read {
-          case .page(let value): page = value
-          default: throw problem("AttachmentHistoryUnavailable")
-          }
-          let candidates = page.entries.filter { $0.role == .shared && $0.category != .rejected }
-          var metadataByGroup: [String: [String: TimelineMessageRecordFfi]] = [:]
-          for (_, entries) in Dictionary(grouping: candidates, by: \.timelineAt) {
-            guard let first = entries.first else { continue }
-            let metadata = try self.timelineRowsAt(kit: kit, account: account, group: group,
-              at: first.timelineAt, targetIds: Set(entries.map(\.messageIdHex)), attachmentType: 5, search: text)
-            metadataByGroup[group, default: [:]].merge(metadata) { current, _ in current }
-          }
-          var rows: [Document] = []
-          var seen = Set<String>()
-          for entry in candidates where seen.insert(entry.messageIdHex).inserted {
-            guard let row = metadataByGroup[group]?[entry.messageIdHex], !row.deleted,
-              row.invalidationStatus == nil, row.sourceMessageIdHex == entry.sourceMessageIdHex else { continue }
-            rows.append(["id": row.messageIdHex, "sender": row.sender,
-              "text": row.plaintext, "sentAt": Double(row.timelineAt)])
-          }
-          let continuation = page.nextCursor
-          page.nextCursor = nil
-          let next = continuation.map { value -> String in
-            let id = UUID().uuidString
-            self.historyLock.withLock { self.attachmentHistoryCursors[id] = (scope, value) }
-            return id
-          }
-          return ["rows": rows, "next": bridgeValue(next), "restart": restarted]
-        }
-        let query = TimelineMessageQueryFfi(groupIdHex: group, search: text, sender: nil, since: nil, until: nil, attachmentType: media ? 5 : 0, cursorGroupId: nil, before: nil, beforeMessageId: nil, after: nil, afterMessageId: nil, limit: 40)
+        let query = TimelineMessageQueryFfi(groupIdHex: group, search: text, sender: nil, since: nil, until: nil, attachmentType: 0, cursorGroupId: nil, before: nil, beforeMessageId: nil, after: nil, afterMessageId: nil, limit: 40)
         let rows: [Document] = try kit.timelineMessages(accountRef: account, query: query).messages.filter { !$0.deleted }.map {
           ["id": $0.messageIdHex, "sender": $0.sender, "text": $0.plaintext, "sentAt": Double($0.timelineAt)]
         }
@@ -500,7 +472,6 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("releaseAttachmentHistoryCursor") { (token: String) in
       self.historyLock.withLock {
-        _ = self.attachmentHistoryCursors.removeValue(forKey: token)
         _ = self.accountAttachmentHistoryCursors.removeValue(forKey: token)
       }
     }
@@ -977,6 +948,185 @@ public final class BoopMarmotModule: Module {
           originalClientToken: originalToken, content: content, editClientToken: editToken).messageIdHex
       }
     }
+    AsyncFunction("existingDirectConversation") { (peer: String) async throws -> String? in
+      try await self.withAccount { kit, account in
+        try await kit.existingDirectConversation(accountRef: account, peerAccountId: peer).flatMap { $0.reusable ? $0.groupIdHex : nil }
+      }
+    }
+    AsyncFunction("sharedMediaPage") { (group: String?, sender: String?, after: Double?, before: Double?, caption: String?, token: String?, baseline: String?) async throws -> Document in
+      try await self.withAccount { kit, account in
+        let groupOnly = group != nil && sender == nil && after == nil && before == nil
+        let versionScope = groupOnly ? "group:\(group ?? "")" : "account"
+        let queryScope = "\(versionScope):\(group ?? ""):\(sender ?? ""):\(String(describing: after)):\(String(describing: before)):\(caption ?? "")"
+        let cursorScope = queryScope + ":" + (baseline ?? "initial")
+        let restart: Document = ["rows": [], "next": NSNull(), "baseline": NSNull(), "restart": true]
+        if let baseline {
+          guard self.historyLock.withLock({ self.sharedMediaVersions[baseline]?.scope }) == queryScope else { return restart }
+        } else if token != nil {
+          return restart
+        }
+        let savedCursor: SharedMediaCursor? = self.historyLock.withLock {
+          guard let token else { return nil }
+          guard self.sharedMediaCursors[token]?.scope == cursorScope else { return nil }
+          return self.sharedMediaCursors.removeValue(forKey: token)?.cursor
+        }
+        if token != nil && savedCursor == nil { return restart }
+        let groupCursor: AttachmentHistoryCursor?
+        let accountCursor: AccountAttachmentCursor?
+        switch savedCursor {
+        case .group(let value): groupCursor = value; accountCursor = nil
+        case .account(let value): accountCursor = value; groupCursor = nil
+        case nil: groupCursor = nil; accountCursor = nil
+        }
+        let read: SharedMediaRead
+        if groupOnly, let group {
+          read = .group(try await kit.attachmentHistoryPage(accountRef: account, groupIdHex: group, limit: 40, cursor: groupCursor))
+        } else {
+          let minimum = try self.historyTimestamp(after)
+          let maximum = try self.historyTimestamp(before)
+          if let minimum, let maximum, minimum > maximum { throw problem("InvalidHistoryRange") }
+          let query = AccountAttachmentQueryFfi(groups: group.map { [$0] } ?? [], senders: sender.map { [$0] } ?? [],
+            minTimelineAt: minimum, maxTimelineAt: maximum)
+          read = .account(try await kit.accountAttachmentHistoryPage(accountRef: account, query: query, limit: 40, cursor: accountCursor))
+        }
+        var groupPage: AttachmentPageFfi?
+        var accountPage: AccountAttachmentPageFfi?
+        switch read {
+        case .group(.restartRequired), .account(.restartRequired):
+          if let baseline {
+            self.historyLock.withLock {
+              self.sharedMediaVersions.removeValue(forKey: baseline)
+              self.sharedMediaCursors = self.sharedMediaCursors.filter { !$0.value.scope.hasSuffix(":" + baseline) }
+            }
+          }
+          return restart
+        case .group(.page(let page)):
+          groupPage = page
+          accountPage = nil
+        case .account(.page(let page)):
+          groupPage = nil
+          accountPage = page
+        }
+        let baselineId: String
+        var pendingVersion: SharedMediaVersion?
+        if let baseline { baselineId = baseline }
+        else {
+          baselineId = UUID().uuidString
+          if let page = groupPage, let group { pendingVersion = .group(group, page.version) }
+          else if let page = accountPage { pendingVersion = .account(page.version) }
+          else { throw problem("AttachmentHistoryVersionUnavailable") }
+        }
+        let entries: [(String, AttachmentEntryFfi)]
+        if let page = groupPage, let group { entries = page.entries.map { (group, $0) } }
+        else if let page = accountPage { entries = page.entries.map { ($0.groupIdHex, $0.entry) } }
+        else { throw problem("AttachmentHistoryUnavailable") }
+        let shared = entries.filter { item in
+          if case .accepted(_, let reference) = item.1.attachment {
+            return item.1.role == .shared && item.1.category != .rejected && reference.version == .v2
+          }
+          return false
+        }
+        var eligibleGroups: [String: ChatListRowFfi] = [:]
+        for conversation in Set(shared.map { $0.0 }) {
+          if let row = try kit.chatListRow(accountRef: account, groupIdHex: conversation),
+            row.selfMembership == .member, !row.pendingConfirmation, !row.leaveRequestPending, !row.disbanding,
+            row.lifecycleState != .unrecoverable {
+            eligibleGroups[conversation] = row
+          }
+        }
+        let directGroups = eligibleGroups.keys.filter { eligibleGroups[$0]?.conversationKind == .direct }
+        let peers = try await kit.groupMemberIdsPage(accountRef: account, groupIdsHex: Array(directGroups)).reduce(into: [String: String]()) { result, row in
+          let others = row.memberIdsHex.filter { $0 != account }
+          if others.count == 1 { result[row.groupIdHex] = others[0] }
+        }
+        let candidates = shared.filter { eligibleGroups[$0.0] != nil && (!directGroups.contains($0.0) || peers[$0.0] != nil) }
+        var metadata: [String: [String: TimelineMessageRecordFfi]] = [:]
+        for (_, entries) in Dictionary(grouping: candidates, by: { "\($0.0):\($0.1.timelineAt)" }) {
+          guard let first = entries.first else { continue }
+          let found = try self.timelineRowsAt(kit: kit, account: account, group: first.0,
+            at: first.1.timelineAt, targetIds: Set(entries.map { $0.1.messageIdHex }), attachmentType: 5, search: caption)
+          metadata[first.0, default: [:]].merge(found) { current, _ in current }
+        }
+        var localAssets: [String: Bool] = [:]
+        for (conversation, items) in Dictionary(grouping: candidates, by: { $0.0 }) {
+          let targets = items.compactMap { item -> (String, AttachmentLocalTargetFfi)? in
+            guard case .accepted(let index, _) = item.1.attachment else { return nil }
+            let key = "\(item.1.messageIdHex):\(item.1.sourceMessageIdHex):\(index)"
+            return (key, AttachmentLocalTargetFfi(messageIdHex: item.1.messageIdHex,
+              sourceMessageIdHex: item.1.sourceMessageIdHex, attachmentIndex: index))
+          }
+          let assets = try await kit.attachmentLocalAssets(accountRef: account, groupIdHex: conversation, targets: targets.map { $0.1 })
+          for (target, asset) in zip(targets, assets) { localAssets["\(conversation):\(target.0)"] = asset.reference != nil }
+        }
+        var rows: [Document] = []
+        for (conversation, entry) in candidates {
+          guard let row = metadata[conversation]?[entry.messageIdHex], !row.deleted,
+            row.invalidationStatus == nil, row.sourceMessageIdHex == entry.sourceMessageIdHex, row.sender == entry.sender,
+            case .accepted(let index, let reference) = entry.attachment, reference.version == .v2 else { continue }
+          let tag = row.tags.singleOrNil { $0.values.count == 6 && $0.values[0] == "boop-media" && $0.values[1] == String(index) }?.values
+          let metadataValues = tag.map { Array($0.dropFirst(2)) }.flatMap { values in
+            values.allSatisfy { $0.count <= 192 } ? values : nil
+          }
+          let asset: Document = ["outcome": "accepted", "index": Double(index), "name": reference.fileName,
+            "type": reference.mediaType, "thumbhash": bridgeValue(reference.thumbhash), "dimensions": bridgeValue(reference.dim),
+            "plaintextHash": reference.plaintextSha256, "metadata": bridgeValue(metadataValues)]
+          rows.append(["group": conversation, "groupLabel": bridgeValue(eligibleGroups[conversation]?.title),
+            "peer": bridgeValue(peers[conversation]),
+            "message": entry.messageIdHex, "source": entry.sourceMessageIdHex, "sender": row.sender,
+            "at": Double(row.timelineAt), "expiresAt": bridgeValue(row.retentionExpiresAt.map(Double.init)),
+            "caption": row.plaintext, "item": asset, "category": wireName(entry.category),
+            "local": localAssets["\(conversation):\(entry.messageIdHex):\(entry.sourceMessageIdHex):\(index)"] == true])
+        }
+        let cursorScope = queryScope + ":" + baselineId
+        if let pendingVersion {
+          self.historyLock.withLock { self.sharedMediaVersions[baselineId] = (queryScope, pendingVersion) }
+        }
+        let continuation: SharedMediaCursor? = groupPage?.nextCursor.map(SharedMediaCursor.group) ??
+          accountPage?.nextCursor.map(SharedMediaCursor.account)
+        let next = continuation.map { value -> String in
+          let id = UUID().uuidString
+          self.historyLock.withLock { self.sharedMediaCursors[id] = (cursorScope, value) }
+          return id
+        }
+        groupPage?.nextCursor = nil
+        accountPage?.nextCursor = nil
+        return ["rows": rows, "next": bridgeValue(next), "baseline": baselineId, "restart": false]
+      }
+    }
+    AsyncFunction("sharedMediaChanges") { (baseline: String) async throws -> String in
+      try await self.withAccount { kit, account in
+        guard let saved = self.historyLock.withLock({ self.sharedMediaVersions[baseline]?.version }) else {
+          return "restart"
+        }
+        let change: AttachmentHistoryChangeFfi
+        switch saved {
+        case .account(let version):
+          let current = try await kit.accountAttachmentHistoryVersion(accountRef: account)
+          change = current.changeSince(previous: version)
+        case .group(let group, let version):
+          let current = try await kit.attachmentHistoryVersion(accountRef: account, groupIdHex: group)
+          change = current.changeSince(previous: version)
+        }
+        switch change {
+        case .unchanged: return "unchanged"
+        case .additions: return "additions"
+        case .restartRequired:
+          self.historyLock.withLock {
+            self.sharedMediaVersions.removeValue(forKey: baseline)
+            self.sharedMediaCursors = self.sharedMediaCursors.filter { !$0.value.scope.hasSuffix(":" + baseline) }
+          }
+          return "restart"
+        }
+      }
+    }
+    AsyncFunction("sharedMediaRelease") { (handle: String) in
+      self.historyLock.withLock {
+        _ = self.sharedMediaCursors.removeValue(forKey: handle)
+        if self.sharedMediaVersions.removeValue(forKey: handle) != nil {
+          self.sharedMediaCursors = self.sharedMediaCursors.filter { !$0.value.scope.hasSuffix(":" + handle) }
+        }
+      }
+    }
     AsyncFunction("recentVoiceNotes") { (sender: String, since: UInt64, onlyOutgoing: Bool, token: String?) async throws -> Document in
       try await self.withAccount { kit, account in
         let scope = "voice:\(sender):\(since):\(onlyOutgoing)"
@@ -1157,7 +1307,8 @@ public final class BoopMarmotModule: Module {
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
     defer {
       historyLock.withLock {
-        attachmentHistoryCursors.removeAll()
+        sharedMediaCursors.removeAll()
+        sharedMediaVersions.removeAll()
         accountAttachmentHistoryCursors.removeAll()
       }
     }

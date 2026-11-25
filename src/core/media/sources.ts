@@ -1,12 +1,14 @@
 import { Directory, File, Paths } from "expo-file-system";
-import { acceptedAttachments } from "@/core/marmot/message-projection";
 import { marmot } from "@/core/marmot/native";
 import type { DownloadManager } from "@/core/downloads/manager";
 import type { DownloadFile } from "@/core/downloads/transport";
 import { sourceId } from "@/core/downloads/types";
 import type { LocalMediaHandle, MediaHandle, MediaSource } from "./source";
 import { waitForDownload } from "./download";
-import { waitForMediaAuthority } from "./authorization";
+import {
+  authorizedMarmotAttachment,
+  waitForMediaAuthority,
+} from "./authorization";
 import { localMediaUri } from "./open-local-attachment";
 
 export type AcquireOptions = {
@@ -100,7 +102,7 @@ export function createMediaSources<T extends MediaSource>({
         };
         let stopWatchingWindow: (() => void) | undefined;
         if (source.kind === "marmot") {
-          const [group, message, event, index] = source.target;
+          const [group, message] = source.target;
           if (!ready()) throw new Error("MediaUnavailable");
           check();
           const window = await marmot.openConversation(group, {
@@ -111,35 +113,15 @@ export function createMediaSources<T extends MediaSource>({
             await window.close();
           };
           const authorized = () => {
-            const state = window.getState();
-            if (state.status !== "ready" || !ready() || !allowed(track))
-              return false;
-            const { snapshot } = state;
-            return (
-              snapshot.authorityReady &&
-              !snapshot.invited &&
-              snapshot.canSend &&
-              !(snapshot.peer && blocked(snapshot.peer)) &&
-              snapshot.messages.some((row) => {
-                const valid =
-                  row.id === message &&
-                  row.sourceId === event &&
-                  row.sender === source.sender &&
-                  !row.deleted &&
-                  !row.invalidationStatus &&
-                  (row.expiresAt == null ||
-                    row.expiresAt * 1000 > Date.now()) &&
-                  acceptedAttachments(row).some(
-                    (attachment) => attachment.index === index,
-                  );
-                if (valid && row.expiresAt != null)
-                  expiresAt = Math.min(
-                    expiresAt ?? Infinity,
-                    row.expiresAt * 1000,
-                  );
-                return valid;
-              })
+            if (!ready() || !allowed(track)) return false;
+            const row = authorizedMarmotAttachment(
+              window.getState(),
+              source,
+              blocked,
             );
+            if (row?.expiresAt != null)
+              expiresAt = Math.min(expiresAt ?? Infinity, row.expiresAt * 1000);
+            return Boolean(row);
           };
           await waitForMediaAuthority(window, options.signal);
           check();

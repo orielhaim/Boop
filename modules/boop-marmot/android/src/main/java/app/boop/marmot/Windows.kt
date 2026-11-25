@@ -6,6 +6,28 @@ import kotlinx.coroutines.cancelAndJoin
 
 internal typealias Document = Map<String, Any?>
 
+internal fun attachmentDocument(row: TimelineMessageRecordFfi, media: MediaAttachmentOutcomeFfi): Document =
+  when (media) {
+    is MediaAttachmentOutcomeFfi.Rejected -> mapOf(
+      "outcome" to "rejected", "index" to media.attachmentIndex.toDouble(),
+      "reason" to media.rejection.kind.name.lowercase(), "detail" to media.rejection.detail,
+    )
+    is MediaAttachmentOutcomeFfi.Accepted -> {
+      val reference = media.reference
+      val metadata = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
+        tag.values[1] == media.attachmentIndex.toString() }?.values?.drop(2)
+      if (reference.version != EncryptedMediaVersionFfi.V2) mapOf(
+        "outcome" to "rejected", "index" to media.attachmentIndex.toDouble(), "reason" to "unsupported_format",
+      ) else mapOf(
+        "outcome" to "accepted", "index" to media.attachmentIndex.toDouble(),
+        "name" to reference.fileName, "type" to reference.mediaType,
+        "thumbhash" to reference.thumbhash, "dimensions" to reference.dim,
+        "plaintextHash" to reference.plaintextSha256,
+        "metadata" to metadata?.takeIf { it.all { value -> value.length <= 192 } },
+      )
+    }
+  }
+
 internal fun mediaPresentation(kind: String?, mime: String) = when {
   kind == "round" && mime.startsWith("video/", ignoreCase = true) -> "round"
   kind == "voice" && mime.startsWith("audio/", ignoreCase = true) -> "voice"
@@ -338,28 +360,7 @@ private fun project(snapshot: ConversationWindowSnapshotFfi): Document = mapOf(
       "reactions" to message.references.reactions.items.map {
         mapOf("emoji" to it.emoji, "count" to it.count.toDouble(), "users" to it.reactors, "own" to it.viewerReacted)
       },
-      "attachments" to row.media.map { media ->
-        when (media) {
-          is MediaAttachmentOutcomeFfi.Rejected -> mapOf(
-            "outcome" to "rejected", "index" to media.attachmentIndex.toDouble(),
-            "reason" to media.rejection.kind.name.lowercase(), "detail" to media.rejection.detail,
-          )
-          is MediaAttachmentOutcomeFfi.Accepted -> {
-            val reference = media.reference
-            val metadata = row.tags.singleOrNull { tag -> tag.values.size == 6 && tag.values[0] == "boop-media" &&
-              tag.values[1] == media.attachmentIndex.toString() }?.values?.drop(2)
-            if (reference.version != EncryptedMediaVersionFfi.V2) mapOf(
-              "outcome" to "rejected", "index" to media.attachmentIndex.toDouble(), "reason" to "unsupported_format",
-            ) else mapOf(
-              "outcome" to "accepted", "index" to media.attachmentIndex.toDouble(),
-              "name" to reference.fileName, "type" to reference.mediaType,
-              "thumbhash" to reference.thumbhash, "dimensions" to reference.dim,
-              "plaintextHash" to reference.plaintextSha256,
-              "metadata" to metadata?.takeIf { it.all { value -> value.length <= 192 } },
-            )
-          }
-        }
-      },
+      "attachments" to row.media.map { attachmentDocument(row, it) },
       "sourceId" to row.sourceMessageIdHex,
       "poll" to row.poll?.let { poll ->
         mapOf("question" to poll.question, "multiple" to (poll.pollType == PollTypeFfi.MULTIPLE_CHOICE), "open" to poll.open,

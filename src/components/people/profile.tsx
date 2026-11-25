@@ -4,7 +4,13 @@ import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Keyboard, Linking, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -16,6 +22,11 @@ import {
 } from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { ProfileElement } from "@/components/navigation/profile-elements";
+import { SharedMediaLibrary } from "@/components/shared-media/library";
+import {
+  ProfileTabs,
+  type ProfileTab,
+} from "@/components/shared-media/profile-tabs";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { useDialog } from "@/components/ui/dialog";
 import {
@@ -30,6 +41,7 @@ import { AuraLift } from "@/components/ui/organisms/aura-lift";
 import { ParallaxScrollView } from "@/components/ui/templates/parallax-header/components/AnimatedScrollView";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { parsePublicIdentity, toNpub } from "@/core/identity/keys";
+import { marmot } from "@/core/marmot/native";
 import {
   contactByKey,
   removeContact,
@@ -98,6 +110,7 @@ function ProfileContent({
     identity,
     initialProfile,
     lock,
+    marmotSession,
     privacy,
     profileEditor,
     profiles,
@@ -145,6 +158,14 @@ function ProfileContent({
     publicKey,
   );
   const chatsEnabled = useChatsEnabled();
+  const sessionStatus = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.status,
+  );
+  const sessionRevision = useSyncExternalStore(
+    marmotSession.subscribe,
+    marmotSession.revision,
+  );
   const address = toNpub(publicKey);
   const showIdentitySheet = useIdentitySheet();
   const [qr, setQr] = useState(false);
@@ -159,6 +180,97 @@ function ProfileContent({
   const [imageConsent, setImageConsent] = useState<number>();
   const allowImages = imageConsent === privacyRevision;
   const [notice, setNotice] = useState("");
+  const [conversationRecord, setConversationRecord] = useState<{
+    peer: string;
+    revision: number;
+    privacyRevision: number;
+    id: string | null;
+  }>();
+  const [selectedTab, setSelectedTab] = useState<"profile" | "media">(
+    "profile",
+  );
+  const mediaScrollPosition = useRef(0);
+  const mediaConversation =
+    conversationRecord?.peer === publicKey &&
+    conversationRecord.revision === sessionRevision &&
+    conversationRecord.privacyRevision === privacyRevision &&
+    !own &&
+    !restricted
+      ? conversationRecord.id
+      : undefined;
+  const mediaAvailable =
+    typeof mediaConversation === "string" &&
+    chatsEnabled &&
+    lockState.active &&
+    !lockState.locked &&
+    sessionStatus === "ready";
+  const showingMedia = mediaAvailable && selectedTab === "media";
+
+  useEffect(() => {
+    let current = true;
+    if (own || restricted) return;
+    if (
+      !chatsEnabled ||
+      !focused ||
+      !lockState.active ||
+      lockState.locked ||
+      sessionStatus !== "ready"
+    )
+      return () => {
+        current = false;
+      };
+    void marmot
+      .existingDirectConversation(publicKey)
+      .then((conversation) => {
+        if (!current) return;
+        const state = lock.getState();
+        if (
+          !state.active ||
+          state.locked ||
+          privacy.isBlocked(publicKey) ||
+          !chatsEnabled ||
+          marmotSession.status() !== "ready" ||
+          marmotSession.revision() !== sessionRevision
+        ) {
+          return;
+        }
+        setConversationRecord({
+          peer: publicKey,
+          revision: sessionRevision,
+          privacyRevision,
+          id: conversation,
+        });
+      })
+      .catch(() => {
+        if (current)
+          setConversationRecord({
+            peer: publicKey,
+            revision: sessionRevision,
+            privacyRevision,
+            id: null,
+          });
+      });
+    return () => {
+      current = false;
+    };
+  }, [
+    chatsEnabled,
+    focused,
+    lock,
+    lockState.active,
+    lockState.locked,
+    own,
+    privacy,
+    privacyRevision,
+    publicKey,
+    restricted,
+    sessionRevision,
+    sessionStatus,
+    marmotSession,
+  ]);
+
+  if (mediaConversation === null && selectedTab === "media")
+    setSelectedTab("profile");
 
   useEffect(() => {
     if (
@@ -270,418 +382,527 @@ function ProfileContent({
     if (router.canGoBack()) router.back();
     else router.replace("/people");
   };
+  const showQr = () => {
+    if (own) {
+      showIdentitySheet("qr");
+      return;
+    }
+    setQr(true);
+    setAddressOpen(true);
+  };
+  const tabs: ProfileTab<"profile" | "media">[] = mediaAvailable
+    ? [
+        { key: "profile", label: t("messages:sharedMedia.info") },
+        { key: "media", label: t("messages:marmot.shortcutMedia") },
+      ]
+    : [];
+  const profileTabs = mediaAvailable ? (
+    <ProfileTabs tabs={tabs} value={selectedTab} onChange={setSelectedTab} />
+  ) : undefined;
+  const personHero = (active: boolean) => (
+    <View style={styles.hero}>
+      <View style={styles.identityLine}>
+        <Transition.Boundary
+          id={active ? `avatar:${publicKey}` : `avatar:${publicKey}:profile`}
+          accessibilityRole={canViewPhoto ? "button" : undefined}
+          accessibilityLabel={
+            canViewPhoto ? t("messenger:viewProfilePhoto") : undefined
+          }
+          {...(canViewPhoto
+            ? {
+                onPress: () =>
+                  router.push({
+                    pathname: "/profile-photo/[key]",
+                    params: {
+                      key: publicKey,
+                      origin: `avatar:${publicKey}`,
+                    },
+                  }),
+              }
+            : {})}
+          style={[styles.avatar, { backgroundColor: colors.background }]}
+        >
+          <ProfileElement profile={active ? morph : undefined} part="avatar">
+            <PersonAvatar
+              publicKey={publicKey}
+              name={displayName}
+              photo={photo}
+              animateArrival={!morph || !active}
+              hasName={Boolean(localName || contact?.name || profile?.name)}
+              size="xxl"
+            />
+          </ProfileElement>
+        </Transition.Boundary>
+        <View style={styles.identity}>
+          <ProfileElement profile={active ? morph : undefined} part="name">
+            <Ink
+              kind="profileName"
+              accessibilityRole="header"
+              numberOfLines={2}
+              style={[
+                styles.name,
+                !localName &&
+                  !contact?.name &&
+                  !profile?.name &&
+                  styles.fallbackName,
+              ]}
+            >
+              {displayName}
+            </Ink>
+          </ProfileElement>
+          {profile?.name && profile.name !== name && (
+            <Ink muted kind="caption">
+              {profile.name}
+            </Ink>
+          )}
+          {details.handle && details.handle !== profile?.name && (
+            <Ink muted kind="caption">
+              @{details.handle}
+            </Ink>
+          )}
+          {details.nip05 && (
+            <View
+              style={styles.badge}
+              accessible
+              accessibilityLabel={`${t(verified ? "messenger:verified" : "messenger:unverified")}: ${details.nip05}`}
+            >
+              {verified && <Icon name="check" size={14} />}
+              <Ink muted={!verified} kind="caption">
+                {details.nip05}
+              </Ink>
+            </View>
+          )}
+        </View>
+      </View>
+      {details.bot && (
+        <Ink kind="caption" muted>
+          {t("messenger:bot")}
+        </Ink>
+      )}
+    </View>
+  );
+  const profileActions = own ? (
+    <View style={styles.actions}>
+      <CompactAction
+        icon="edit"
+        label={t("settings:editProfile")}
+        onPress={editProfile}
+      />
+      {tab && (
+        <CompactAction
+          icon="settings"
+          label={t("navigation:settings")}
+          onPress={() => router.push("/settings")}
+        />
+      )}
+    </View>
+  ) : (
+    <View style={styles.actions}>
+      {chatsEnabled && (
+        <CompactAction
+          prominent
+          style={styles.primary}
+          icon="chat"
+          label={t("contacts:message")}
+          disabled={restricted}
+          onPress={() =>
+            router.push({
+              pathname: "/chat/[key]",
+              params: { key: publicKey },
+            })
+          }
+        />
+      )}
+      <CompactAction
+        iconOnly
+        icon="phone"
+        label={t("messenger:voice")}
+        disabled={restricted}
+        onPress={() =>
+          router.push({
+            pathname: "/call/[key]",
+            params: { key: publicKey },
+          })
+        }
+      />
+    </View>
+  );
+  const mediaHeader = (
+    <View style={styles.mediaHeader}>
+      <View style={[styles.mediaBanner, { backgroundColor: colors.selected }]}>
+        {!reduceTransparency && (
+          <LinearGradient
+            colors={[colors.heroStart, colors.selected, colors.heroEnd]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+        )}
+        {banner ? (
+          <Image
+            source={banner}
+            contentFit="cover"
+            style={StyleSheet.absoluteFill}
+          />
+        ) : (
+          <View
+            pointerEvents="none"
+            style={[styles.orbit, { borderColor: colors.line }]}
+          />
+        )}
+        <CompactAction
+          icon="qr"
+          iconOnly
+          style={styles.bannerQr}
+          label={t("security:showIdentityQr")}
+          onPress={showQr}
+        />
+      </View>
+      {personHero(showingMedia)}
+      {profileActions}
+    </View>
+  );
   return (
     <Screen scroll={false} tab={tab} topInset>
-      {morph && <ChatProfileBackButton onPress={back} />}
-      <ParallaxScrollView
-        headerMaxHeight={148}
-        headerOverlap={54}
-        backgroundColor={colors.background}
-        bodyStyle={styles.body}
-        onScroll={tab ? onScroll : undefined}
-        header={
-          <View
-            style={[
-              StyleSheet.absoluteFill,
-              { backgroundColor: colors.selected },
-            ]}
-          >
-            {!reduceTransparency && (
-              <LinearGradient
-                colors={[colors.heroStart, colors.selected, colors.heroEnd]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-            {banner && (
-              <Image
-                source={banner}
-                contentFit="cover"
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-            {!banner && (
-              <View
-                pointerEvents="none"
-                style={[styles.orbit, { borderColor: colors.line }]}
-              />
-            )}
-          </View>
+      <View
+        pointerEvents={showingMedia ? "none" : "auto"}
+        accessibilityElementsHidden={showingMedia}
+        importantForAccessibility={
+          showingMedia ? "no-hide-descendants" : "auto"
         }
-        headerControls={
-          <>
-            {!tab && !morph && (
-              <GlassBackButton style={styles.bannerBack} onPress={back} />
-            )}
-            <CompactAction
-              icon="qr"
-              iconOnly
-              style={styles.bannerQr}
-              label={t("security:showIdentityQr")}
-              onPress={() => {
-                if (own) {
-                  showIdentitySheet("qr");
-                  return;
-                }
-                setQr(true);
-                setAddressOpen(true);
-              }}
-            />
-          </>
-        }
+        style={[
+          StyleSheet.absoluteFill,
+          styles.profileLayer,
+          showingMedia && styles.hiddenLayer,
+        ]}
       >
-        <View style={styles.hero}>
-          <View style={styles.identityLine}>
-            <Transition.Boundary
-              id={`avatar:${publicKey}`}
-              accessibilityRole={canViewPhoto ? "button" : undefined}
-              accessibilityLabel={
-                canViewPhoto ? t("messenger:viewProfilePhoto") : undefined
-              }
-              {...(canViewPhoto
-                ? {
-                    onPress: () =>
-                      router.push({
-                        pathname: "/profile-photo/[key]",
-                        params: {
-                          key: publicKey,
-                          origin: `avatar:${publicKey}`,
-                        },
-                      }),
-                  }
-                : {})}
-              style={[styles.avatar, { backgroundColor: colors.background }]}
+        <ParallaxScrollView
+          headerMaxHeight={148}
+          headerOverlap={54}
+          backgroundColor={colors.background}
+          bodyStyle={styles.body}
+          onScroll={tab ? onScroll : undefined}
+          stickyTabs={profileTabs}
+          header={
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                { backgroundColor: colors.selected },
+              ]}
             >
-              <ProfileElement profile={morph} part="avatar">
-                <PersonAvatar
-                  publicKey={publicKey}
-                  name={displayName}
-                  photo={photo}
-                  animateArrival={!morph}
-                  hasName={Boolean(localName || contact?.name || profile?.name)}
-                  size="xxl"
+              {!reduceTransparency && (
+                <LinearGradient
+                  colors={[colors.heroStart, colors.selected, colors.heroEnd]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFill}
                 />
-              </ProfileElement>
-            </Transition.Boundary>
-            <View style={styles.identity}>
-              <ProfileElement profile={morph} part="name">
-                <Ink
-                  kind="profileName"
-                  accessibilityRole="header"
-                  numberOfLines={2}
-                  style={[
-                    styles.name,
-                    !localName &&
-                      !contact?.name &&
-                      !profile?.name &&
-                      styles.fallbackName,
-                  ]}
-                >
-                  {displayName}
-                </Ink>
-              </ProfileElement>
-              {profile?.name && profile.name !== name && (
-                <Ink muted kind="caption">
-                  {profile.name}
-                </Ink>
               )}
-              {details.handle && details.handle !== profile?.name && (
-                <Ink muted kind="caption">
-                  @{details.handle}
-                </Ink>
+              {banner && (
+                <Image
+                  source={banner}
+                  contentFit="cover"
+                  style={StyleSheet.absoluteFill}
+                />
               )}
-              {details.nip05 && (
+              {!banner && (
                 <View
-                  style={styles.badge}
-                  accessible
-                  accessibilityLabel={`${t(verified ? "messenger:verified" : "messenger:unverified")}: ${details.nip05}`}
-                >
-                  {verified && <Icon name="check" size={14} />}
-                  <Ink muted={!verified} kind="caption">
-                    {details.nip05}
+                  pointerEvents="none"
+                  style={[styles.orbit, { borderColor: colors.line }]}
+                />
+              )}
+            </View>
+          }
+          headerControls={
+            <>
+              {!tab && !morph && (
+                <GlassBackButton style={styles.bannerBack} onPress={back} />
+              )}
+              <CompactAction
+                icon="qr"
+                iconOnly
+                style={styles.bannerQr}
+                label={t("security:showIdentityQr")}
+                onPress={() => {
+                  if (own) {
+                    showIdentitySheet("qr");
+                    return;
+                  }
+                  setQr(true);
+                  setAddressOpen(true);
+                }}
+              />
+            </>
+          }
+        >
+          {personHero(!showingMedia)}
+          {profileActions}
+          {(about || details.website || !own) && (
+            <View style={[styles.details, { borderColor: colors.line }]}>
+              {about && <Ink selectable>{about}</Ink>}
+              {details.website && (
+                <View style={styles.link}>
+                  <Icon name="language" size={16} />
+                  <Ink
+                    kind="label"
+                    numberOfLines={1}
+                    style={[styles.primary, { color: colors.accent }]}
+                    accessibilityRole="link"
+                    onPress={() => {
+                      if (details.website)
+                        void Linking.openURL(details.website).catch(() =>
+                          setNotice(t("contacts:unavailable")),
+                        );
+                    }}
+                  >
+                    {new URL(details.website).hostname}
                   </Ink>
                 </View>
               )}
-            </View>
-          </View>
-          {details.bot && (
-            <Ink kind="caption" muted>
-              {t("messenger:bot")}
-            </Ink>
-          )}
-        </View>
-        {own ? (
-          <View style={styles.actions}>
-            <CompactAction
-              icon="edit"
-              label={t("settings:editProfile")}
-              onPress={editProfile}
-            />
-            {tab && (
-              <CompactAction
-                icon="settings"
-                label={t("navigation:settings")}
-                onPress={() => router.push("/settings")}
-              />
-            )}
-          </View>
-        ) : (
-          <View style={styles.actions}>
-            {chatsEnabled && (
-              <CompactAction
-                prominent
-                style={styles.primary}
-                icon="chat"
-                label={t("contacts:message")}
-                disabled={restricted}
-                onPress={() =>
-                  router.push({
-                    pathname: "/chat/[key]",
-                    params: { key: publicKey },
-                  })
-                }
-              />
-            )}
-            <CompactAction
-              iconOnly
-              icon="phone"
-              label={t("messenger:voice")}
-              disabled={restricted}
-              onPress={() =>
-                router.push({
-                  pathname: "/call/[key]",
-                  params: { key: publicKey },
-                })
-              }
-            />
-          </View>
-        )}
-        {(about || details.website || !own) && (
-          <View style={[styles.details, { borderColor: colors.line }]}>
-            {about && <Ink selectable>{about}</Ink>}
-            {details.website && (
-              <View style={styles.link}>
-                <Icon name="language" size={16} />
+              {!own && (
                 <Ink
-                  kind="label"
-                  numberOfLines={1}
-                  style={[styles.primary, { color: colors.accent }]}
-                  accessibilityRole="link"
+                  kind="caption"
+                  accessibilityRole="button"
+                  accessibilityLabel={t("settings:publicAddress")}
+                  style={[styles.addressTrigger, { color: colors.accent }]}
                   onPress={() => {
-                    if (details.website)
-                      void Linking.openURL(details.website).catch(() =>
-                        setNotice(t("contacts:unavailable")),
-                      );
+                    setQr(false);
+                    setAddressOpen(true);
                   }}
                 >
-                  {new URL(details.website).hostname}
+                  {shortAddress}
                 </Ink>
-              </View>
-            )}
-            {!own && (
-              <Ink
-                kind="caption"
-                accessibilityRole="button"
-                accessibilityLabel={t("settings:publicAddress")}
-                style={[styles.addressTrigger, { color: colors.accent }]}
-                onPress={() => {
-                  setQr(false);
-                  setAddressOpen(true);
-                }}
-              >
-                {shortAddress}
-              </Ink>
-            )}
-          </View>
-        )}
-        {!restricted &&
-          !avatars.autoLoads(publicKey) &&
-          !allowImages &&
-          Boolean(profile?.picture || details.banner) && (
-            <CompactAction
-              icon="download"
-              label={t("messenger:loadImages")}
-              onPress={() => setImageConsent(privacyRevision)}
-            />
+              )}
+            </View>
           )}
-        {!own && (
-          <GlassSheet open={addressOpen} onOpenChange={setAddressOpen}>
-            <GlassSheetContent>
-              <AddressSheetContent
-                address={address}
-                showQr={qr}
-                onShowQr={() => setQr(true)}
+          {!restricted &&
+            !avatars.autoLoads(publicKey) &&
+            !allowImages &&
+            Boolean(profile?.picture || details.banner) && (
+              <CompactAction
+                icon="download"
+                label={t("messenger:loadImages")}
+                onPress={() => setImageConsent(privacyRevision)}
               />
-            </GlassSheetContent>
-          </GlassSheet>
-        )}
-        {!own && (
-          <GlassSheet
-            open={
-              focused &&
-              lockState.active &&
-              !restricted &&
-              !lockState.locked &&
-              !!contactEditor
-            }
-            onOpenChange={(open) => {
-              if (!open) setContactEditor(undefined);
-            }}
-          >
-            <GlassSheetContent>
-              {contactEditor && (
-                <>
-                  <GlassSheetTitle>
-                    {t(
-                      contactEditor.kind === "add"
-                        ? "contacts:saveAs"
-                        : "messenger:nickname",
+            )}
+          {!own && (
+            <GlassSheet
+              open={!showingMedia && addressOpen}
+              onOpenChange={setAddressOpen}
+            >
+              <GlassSheetContent>
+                <AddressSheetContent
+                  address={address}
+                  showQr={qr}
+                  onShowQr={() => setQr(true)}
+                />
+              </GlassSheetContent>
+            </GlassSheet>
+          )}
+          {!own && (
+            <GlassSheet
+              open={
+                focused &&
+                lockState.active &&
+                !restricted &&
+                !lockState.locked &&
+                !!contactEditor
+              }
+              onOpenChange={(open) => {
+                if (!open) setContactEditor(undefined);
+              }}
+            >
+              <GlassSheetContent>
+                {contactEditor && (
+                  <>
+                    <GlassSheetTitle>
+                      {t(
+                        contactEditor.kind === "add"
+                          ? "contacts:saveAs"
+                          : "messenger:nickname",
+                      )}
+                    </GlassSheetTitle>
+                    <GlassInput
+                      label={t("contacts:nickname")}
+                      value={contactEditor.name}
+                      onChangeText={(name) => {
+                        setContactEditor({ ...contactEditor, name });
+                        setContactEditorError(false);
+                      }}
+                      maxLength={128}
+                    />
+                    {contactEditorError && (
+                      <Ink
+                        accessibilityRole="alert"
+                        accessibilityLiveRegion="polite"
+                      >
+                        {t("contacts:saveError")}
+                      </Ink>
                     )}
-                  </GlassSheetTitle>
-                  <GlassInput
-                    label={t("contacts:nickname")}
-                    value={contactEditor.name}
-                    onChangeText={(name) => {
-                      setContactEditor({ ...contactEditor, name });
-                      setContactEditorError(false);
-                    }}
-                    maxLength={128}
-                  />
-                  {contactEditorError && (
-                    <Ink
-                      accessibilityRole="alert"
-                      accessibilityLiveRegion="polite"
-                    >
-                      {t("contacts:saveError")}
-                    </Ink>
-                  )}
-                  <SaveButton
-                    label={t("contacts:save")}
-                    savedDecoration={contactAdded ? <AuraLift /> : undefined}
-                    onSave={() => {
-                      try {
-                        const state = lock.getState();
-                        if (
-                          !state.active ||
-                          state.locked ||
-                          privacy.isBlocked(publicKey)
-                        ) {
+                    <SaveButton
+                      label={t("contacts:save")}
+                      savedDecoration={contactAdded ? <AuraLift /> : undefined}
+                      onSave={() => {
+                        try {
+                          const state = lock.getState();
+                          if (
+                            !state.active ||
+                            state.locked ||
+                            privacy.isBlocked(publicKey)
+                          ) {
+                            setContactEditorError(true);
+                            return false;
+                          }
+                          const name = contactEditor.name.trim();
+                          const added = db.transaction((tx) => {
+                            if (contactByKey(tx, publicKey).get()) {
+                              updateContactPreferences(tx, publicKey, { name });
+                              return false;
+                            }
+                            saveContact(tx, publicKey, name);
+                            return true;
+                          });
+                          setContactAdded(added);
+                          Keyboard.dismiss();
+                          return true;
+                        } catch {
                           setContactEditorError(true);
                           return false;
                         }
-                        const name = contactEditor.name.trim();
-                        const added = db.transaction((tx) => {
-                          if (contactByKey(tx, publicKey).get()) {
-                            updateContactPreferences(tx, publicKey, { name });
-                            return false;
-                          }
-                          saveContact(tx, publicKey, name);
-                          return true;
-                        });
-                        setContactAdded(added);
-                        Keyboard.dismiss();
-                        return true;
-                      } catch {
-                        setContactEditorError(true);
-                        return false;
-                      }
-                    }}
-                    onSaved={() => setContactEditor(undefined)}
-                  />
-                </>
-              )}
-            </GlassSheetContent>
-          </GlassSheet>
-        )}
-        {!own && (
-          <ListGroup>
-            {!restricted && (
-              <ListRow
-                title={t(contact ? "messenger:nickname" : "contacts:saveAs")}
-                detail={contact?.name || undefined}
-                onPress={() => {
-                  setContactEditorError(false);
-                  setContactEditor({
-                    kind: contact ? "rename" : "add",
-                    name: contact ? contact.name : (profile?.name ?? ""),
-                  });
-                }}
-              />
-            )}
-            {contact && (
-              <>
-                <ListRow
-                  title={t(
-                    contact.favorite
-                      ? "contacts:removeFavorite"
-                      : "contacts:addFavorite",
-                  )}
-                  onPress={() =>
-                    write(() =>
-                      updateContactPreferences(db, publicKey, {
-                        favorite: !contact.favorite,
-                      }),
-                    )
-                  }
-                />
-                {!restricted && (
-                  <>
-                    <ListRow
-                      title={t("settings:photoChange")}
-                      detail={t("settings:photoLocalHelp")}
-                      onPress={() => setPicking(true)}
-                    />
-                    {avatars.hasOverride(publicKey) && (
-                      <ListRow
-                        title={t("settings:photoRemove")}
-                        onPress={() =>
-                          write(() => avatars.saveOverride(publicKey, null))
-                        }
-                      />
-                    )}
-                    <ListRow
-                      title={t("video:automatic")}
-                      detail={contact.allowIncomingVideo ? "✓" : undefined}
-                      onPress={() =>
-                        write(() =>
-                          updateContactPreferences(db, publicKey, {
-                            allowIncomingVideo: !contact.allowIncomingVideo,
-                          }),
-                        )
-                      }
+                      }}
+                      onSaved={() => setContactEditor(undefined)}
                     />
                   </>
                 )}
+              </GlassSheetContent>
+            </GlassSheet>
+          )}
+          {!own && (
+            <ListGroup>
+              {!restricted && (
                 <ListRow
-                  title={t("messenger:removePerson")}
-                  onPress={() =>
-                    void dialog.show({
-                      title: t("messenger:removePerson"),
-                      dismissible: false,
-                      actions: [
-                        { label: t("common:cancel"), tone: "cancel" },
-                        {
-                          label: t("messenger:removePerson"),
-                          tone: "danger",
-                          onSelect: () =>
-                            write(() => removeContact(db, publicKey)),
-                        },
-                      ],
-                    })
-                  }
+                  title={t(contact ? "messenger:nickname" : "contacts:saveAs")}
+                  detail={contact?.name || undefined}
+                  onPress={() => {
+                    setContactEditorError(false);
+                    setContactEditor({
+                      kind: contact ? "rename" : "add",
+                      name: contact ? contact.name : (profile?.name ?? ""),
+                    });
+                  }}
                 />
-              </>
-            )}
-            <ListRow
-              title={block.label}
-              onPress={block.disabled ? undefined : block.onPress}
+              )}
+              {contact && (
+                <>
+                  <ListRow
+                    title={t(
+                      contact.favorite
+                        ? "contacts:removeFavorite"
+                        : "contacts:addFavorite",
+                    )}
+                    onPress={() =>
+                      write(() =>
+                        updateContactPreferences(db, publicKey, {
+                          favorite: !contact.favorite,
+                        }),
+                      )
+                    }
+                  />
+                  {!restricted && (
+                    <>
+                      <ListRow
+                        title={t("settings:photoChange")}
+                        detail={t("settings:photoLocalHelp")}
+                        onPress={() => setPicking(true)}
+                      />
+                      {avatars.hasOverride(publicKey) && (
+                        <ListRow
+                          title={t("settings:photoRemove")}
+                          onPress={() =>
+                            write(() => avatars.saveOverride(publicKey, null))
+                          }
+                        />
+                      )}
+                      <ListRow
+                        title={t("video:automatic")}
+                        detail={contact.allowIncomingVideo ? "✓" : undefined}
+                        onPress={() =>
+                          write(() =>
+                            updateContactPreferences(db, publicKey, {
+                              allowIncomingVideo: !contact.allowIncomingVideo,
+                            }),
+                          )
+                        }
+                      />
+                    </>
+                  )}
+                  <ListRow
+                    title={t("messenger:removePerson")}
+                    onPress={() =>
+                      void dialog.show({
+                        title: t("messenger:removePerson"),
+                        dismissible: false,
+                        actions: [
+                          { label: t("common:cancel"), tone: "cancel" },
+                          {
+                            label: t("messenger:removePerson"),
+                            tone: "danger",
+                            onSelect: () =>
+                              write(() => removeContact(db, publicKey)),
+                          },
+                        ],
+                      })
+                    }
+                  />
+                </>
+              )}
+              <ListRow
+                title={block.label}
+                onPress={block.disabled ? undefined : block.onPress}
+              />
+            </ListGroup>
+          )}
+          {!own && !restricted && <PersonContext publicKey={publicKey} />}
+          {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
+        </ParallaxScrollView>
+      </View>
+      {mediaConversation && (
+        <View
+          pointerEvents={showingMedia ? "auto" : "none"}
+          accessibilityElementsHidden={!showingMedia}
+          importantForAccessibility={
+            showingMedia ? "auto" : "no-hide-descendants"
+          }
+          style={[
+            StyleSheet.absoluteFill,
+            styles.profileLayer,
+            !showingMedia && styles.hiddenLayer,
+          ]}
+        >
+          <SharedMediaLibrary
+            scope={{ kind: "direct", group: mediaConversation }}
+            header={mediaHeader}
+            tabs={profileTabs}
+            scrollPositionRef={mediaScrollPosition}
+            active={showingMedia}
+          />
+        </View>
+      )}
+      {!own && mediaConversation && (
+        <GlassSheet
+          open={showingMedia && addressOpen}
+          onOpenChange={setAddressOpen}
+        >
+          <GlassSheetContent>
+            <AddressSheetContent
+              address={address}
+              showQr={qr}
+              onShowQr={() => setQr(true)}
             />
-          </ListGroup>
-        )}
-        {!own && !restricted && <PersonContext publicKey={publicKey} />}
-        {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
-      </ParallaxScrollView>
+          </GlassSheetContent>
+        </GlassSheet>
+      )}
+      {morph && <ChatProfileBackButton onPress={back} />}
     </Screen>
   );
 }
@@ -692,6 +913,18 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.space.lg,
     paddingHorizontal: theme.space.lg,
     paddingBottom: theme.space.xxl,
+  },
+  profileLayer: { flex: 1, zIndex: 1 },
+  hiddenLayer: { opacity: 0, zIndex: 0 },
+  mediaHeader: {
+    gap: theme.space.md,
+    paddingHorizontal: theme.space.lg,
+    paddingBottom: theme.space.lg,
+  },
+  mediaBanner: {
+    height: 148,
+    marginHorizontal: -theme.space.lg,
+    overflow: "hidden",
   },
   bannerBack: {
     position: "absolute",
