@@ -1,7 +1,11 @@
 import { createStore } from "zustand/vanilla";
 import type { VideoPlayer } from "expo-video";
 import type { AcquireOptions } from "@/core/media/sources";
-import { mediaId, type MediaHandle } from "@/core/media/source";
+import {
+  mediaId,
+  type LocalMediaHandle,
+  type MediaHandle,
+} from "@/core/media/source";
 import type { createVideoEngine } from "./engine";
 import type { VideoPreferences, VideoSource } from "./types";
 import { bindSubtitles, emptySubtitles } from "./subtitles/session";
@@ -28,6 +32,7 @@ type SessionView = {
   allowPiP: boolean;
   allowBackground: boolean;
   canExport: boolean;
+  progressive: boolean;
   neighbors?: VideoNeighbors;
   subtitles: SubtitleState;
   suspended?: boolean;
@@ -62,9 +67,13 @@ export function createVideoController(deps: {
   claim(): boolean;
   release(): void;
   handoff(
-    handle: MediaHandle,
+    handle: LocalMediaHandle,
     action: "external" | "share" | "save",
     signal: AbortSignal,
+  ): Promise<void>;
+  openCompleted?(
+    id: string,
+    consume: (handle: LocalMediaHandle) => Promise<void>,
   ): Promise<void>;
   preferences: VideoPreferences;
   savePreferences(value: VideoPreferences): void;
@@ -159,6 +168,8 @@ export function createVideoController(deps: {
     store.setState({ current: retain?.view });
     const cleanup = async () => {
       try {
+        if (session.handle?.kind === "progressive")
+          await session.handle.cancelReads().catch(() => undefined);
         await session.engine?.close();
       } finally {
         await Promise.allSettled(session.exports);
@@ -179,7 +190,7 @@ export function createVideoController(deps: {
     player.staysActiveInBackground = background;
     player.showNowPlayingNotification =
       !privateMode &&
-      session.view.canExport &&
+      session.handle?.expiresAt === null &&
       (foreground || session.pip || background);
   }
 
@@ -187,6 +198,8 @@ export function createVideoController(deps: {
     source: VideoSource,
     options: {
       download?: boolean;
+      progressive?: boolean;
+      replace?: boolean;
       dispose?: () => void;
       neighbors?: VideoNeighbors;
       restore?: SuspendedVideo;
@@ -203,8 +216,9 @@ export function createVideoController(deps: {
     const external = !restore && store.getState().preferences.external;
     if (
       current &&
+      !options.replace &&
       mediaId(current.view.source) === mediaId(source) &&
-      current.view.player &&
+      (current.view.player || current.view.progressive) &&
       !(external && current.view.canExport)
     ) {
       options.dispose?.();
@@ -227,6 +241,7 @@ export function createVideoController(deps: {
         allowPiP: false,
         allowBackground: false,
         canExport: false,
+        progressive: options.progressive === true,
         neighbors: options.neighbors,
         subtitles: emptySubtitles,
       },
@@ -239,13 +254,15 @@ export function createVideoController(deps: {
       dispose: options.dispose,
     };
     current = session;
-    if (!external && !options.download) publish(session, {});
+    if ((!external && !options.download) || options.progressive)
+      publish(session, {});
     try {
       await retired;
       if (!valid(session) || !foreground) return false;
       const handle = await deps.acquire(source, {
         signal: session.abort.signal,
         download: options.download === true,
+        progressive: options.progressive === true,
         invalidate: () => (current === session ? close() : pending),
       });
       if (!valid(session)) {
@@ -254,8 +271,9 @@ export function createVideoController(deps: {
       }
       session.handle = handle;
       if (!valid(session) || !foreground) return false;
-      const canExport = handle.expiresAt === null;
-      if (external && canExport) {
+      const canExport = handle.kind === "local" && handle.expiresAt === null;
+      const unrestricted = handle.expiresAt === null;
+      if (external && canExport && !options.progressive) {
         await exportFile("external");
         return true;
       }
@@ -328,17 +346,17 @@ export function createVideoController(deps: {
       const id = mediaId(source);
       session.subtitles = bindSubtitles(player, {
         active: () => valid(session),
-        allowExternal: canExport,
-        initialOffset: canExport
+        allowExternal: unrestricted,
+        initialOffset: unrestricted
           ? (deps.captionPreferences?.offset(id) ?? 0)
           : 0,
         saveOffset: (offset) => {
-          if (canExport) deps.captionPreferences?.saveOffset(id, offset);
+          if (unrestricted) deps.captionPreferences?.saveOffset(id, offset);
         },
         publish: (subtitles) => publish(session, { subtitles }),
         appearance: () => store.getState().captionAppearance,
       });
-      if (canExport && options.relatedSubtitles) {
+      if (unrestricted && options.relatedSubtitles) {
         const inputs = await options
           .relatedSubtitles(session.abort.signal)
           .catch(() => []);
@@ -352,8 +370,9 @@ export function createVideoController(deps: {
         player,
         subtitles: session.subtitles.state,
         canExport,
-        allowPiP: canExport && !privateMode,
-        allowBackground: canExport && !privateMode,
+        progressive: handle.kind === "progressive",
+        allowPiP: unrestricted && !privateMode,
+        allowBackground: unrestricted && !privateMode,
       });
       refreshPolicy(session);
       start();
@@ -387,8 +406,17 @@ export function createVideoController(deps: {
       session.handle?.expiresAt !== null
     )
       return;
-    session.engine?.player.pause();
-    const task = deps.handoff(session.handle, action, session.abort.signal);
+    const handoff = async (handle: LocalMediaHandle) => {
+      if (valid(session) && foreground) {
+        session.engine?.player.pause();
+        await deps.handoff(handle, action, session.abort.signal);
+      }
+    };
+    const task =
+      session.handle.kind === "local"
+        ? handoff(session.handle)
+        : (deps.openCompleted?.(session.handle.sourceId, handoff) ??
+          Promise.resolve());
     session.exports.add(task);
     try {
       await task;
@@ -444,7 +472,7 @@ export function createVideoController(deps: {
       const session = current;
       if (
         session?.view.player === owner &&
-        session.view.canExport &&
+        session.handle?.expiresAt === null &&
         valid(session)
       )
         return session.abort.signal;
@@ -498,7 +526,7 @@ export function createVideoController(deps: {
       const session = current;
       if (
         !session ||
-        !session.view.canExport ||
+        !session.view.allowBackground ||
         privateMode ||
         (active && !store.getState().preferences.allowBackground)
       )
@@ -535,6 +563,7 @@ export function createVideoController(deps: {
           suspended = undefined;
           return open(restore.view.source, {
             restore,
+            progressive: restore.view.progressive,
             neighbors: restore.view.neighbors,
             dispose: restore.dispose,
           });
@@ -572,7 +601,11 @@ export function createVideoController(deps: {
           allowBackground: false,
           background: false,
         });
-      if (!privateMode && session.view.canExport && !session.view.allowPiP)
+      if (
+        !privateMode &&
+        session.handle?.expiresAt === null &&
+        !session.view.allowPiP
+      )
         publish(session, { allowPiP: true, allowBackground: true });
       if (!foreground) {
         checkpoint(session);
@@ -589,6 +622,9 @@ export function createVideoController(deps: {
     },
     revalidate() {
       if (current && !valid(current)) void close();
+    },
+    retireProgressive() {
+      if (current?.view.progressive) return close();
     },
   };
 }

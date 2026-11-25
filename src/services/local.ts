@@ -35,6 +35,13 @@ import { createDownloadManager } from "@/core/downloads/manager";
 import { createBlossomDownloads } from "@/core/downloads/blossom-transfer";
 import { marmotDownloads } from "@/core/downloads/marmot";
 import { downloadTransports } from "@/core/downloads/transport";
+import { torrentsSource } from "@/core/downloads/types";
+import { createTorrents } from "@/plugins/torrents/service";
+import { torrentDelivery } from "@/core/plugins/delivery";
+import { createTorrentDownloads } from "@/plugins/torrents/downloads";
+import { torrentMetadataCache } from "@/db/torrents";
+import { pluginMessageText } from "@/core/plugins/message-content";
+import { waitForMediaAuthority } from "@/core/media/authorization";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { downloadStore } from "@/db/downloads";
@@ -42,7 +49,7 @@ import { priority as speechPriority } from "@/core/speech/scheduler";
 import { createMediaSdk } from "@/core/media";
 import { createNativeLinkPreviews } from "@/core/messaging/native-link-previews";
 import { File } from "expo-file-system";
-import { getRandomValues } from "expo-crypto";
+import { getRandomValues, randomUUID } from "expo-crypto";
 import { uploadAvatar } from "@/core/avatars/blossom";
 import { createProfileEditor } from "@/core/avatars/editor";
 import { createAvatars } from "@/core/avatars/service";
@@ -475,10 +482,59 @@ async function start() {
       }
     }
     const downloadScope = bytesToHex(sha256(downloadKey));
+    const read = (key: string) => preference(db, key);
+    const write = (key: string, value: string) => setPreference(db, key, value);
+    const random = (size: number) => getRandomValues(new Uint8Array(size));
+    function retainedTorrentJobs() {
+      return downloads.snapshot().flatMap((source) => {
+        const result = torrentsSource.safeParse(source);
+        return result.success ? [{ ...result.data, id: source.id }] : [];
+      });
+    }
+    let pluginSessionLive = false;
+    const torrents: ReturnType<typeof createTorrents> = createTorrents({
+      delivery: torrentDelivery,
+      newId: randomUUID,
+      scope: downloadScope,
+      cache: torrentMetadataCache(db, downloadKey, random),
+      canAccess: () => pluginSessionLive && active(),
+      canRunInBackground: () =>
+        pluginSessionLive &&
+        isCurrent() &&
+        !lock.getState().enabled &&
+        !lock.getState().locked,
+      readPreference: read,
+      writePreference: write,
+      pinned: () => retainedTorrentJobs().map((job) => job.payload.torrentId),
+      async pauseDownloads() {
+        await Promise.allSettled(
+          downloads
+            .snapshot()
+            .flatMap((job) =>
+              job.kind === "provider" &&
+              job.provider === "torrents" &&
+              (job.state === "active" ||
+                job.state === "queued" ||
+                job.state === "waiting")
+                ? [downloads.pause(job.id)]
+                : [],
+            ),
+        );
+      },
+      onEligibilityChange: () => downloads.sync(),
+    });
+    const torrentDownloads = createTorrentDownloads(
+      downloadScope,
+      torrents,
+      (source) =>
+        retainedTorrentJobs().some(
+          (job) =>
+            job.payload.torrentId === source.payload.torrentId &&
+            job.payload.fileIndex !== source.payload.fileIndex,
+        ),
+    );
     const downloads = createDownloadManager({
-      store: downloadStore(db, identity.publicKey, downloadKey, (size) =>
-        getRandomValues(new Uint8Array(size)),
-      ),
+      store: downloadStore(db, identity.publicKey, downloadKey, random),
       transport: downloadTransports(
         marmotDownloads,
         createBlossomDownloads(
@@ -486,11 +542,16 @@ async function start() {
           () => mediaSdk.configured("attachment").map(({ origin }) => origin),
           blossomLists.discoverBlossomServers,
         ),
+        { [torrents.descriptor.downloadProvider.id]: torrentDownloads },
       ),
       eligible: active,
-      available: (source) => source.kind === "http" || messagingAvailable(),
+      available: (source) => source.kind !== "marmot" || messagingAvailable(),
+      transferAvailable: (source) =>
+        source.kind !== "provider" || torrents.canTransfer(),
+      continueInBackground: (source) =>
+        torrentsSource.safeParse(source).success && torrents.canContinue(),
       authorized: (source) =>
-        source.kind === "http" ||
+        source.kind !== "marmot" ||
         (!blocks.has(source.sender) &&
           !chatPreferences.hidden(source.target[0]).includes(source.target[1])),
       completed: (source) => {
@@ -500,13 +561,119 @@ async function start() {
         admitDownloadedVoice();
       },
     });
-    const read = (key: string) => preference(db, key);
-    const write = (key: string, value: string) => setPreference(db, key, value);
+    let torrentAuthorityWindows = 0;
+    async function authorizeTorrent<T>(
+      target: {
+        group: string;
+        message: string;
+        sourceId: string;
+        hash: string;
+      },
+      signal: AbortSignal,
+      perform: (
+        magnet: import("@/plugins/torrents/magnets").Magnet,
+        signal: AbortSignal,
+      ) => Promise<T>,
+    ) {
+      const { group, message, sourceId, hash } = target;
+      signal.throwIfAborted();
+      if (
+        torrentAuthorityWindows >= 4 ||
+        !canReadConversations() ||
+        !active() ||
+        !torrents.canTransfer()
+      )
+        throw new Error("TorrentUnavailable");
+      torrentAuthorityWindows++;
+      const window = await marmot
+        .openConversation(group, { target: message })
+        .catch((error: unknown) => {
+          torrentAuthorityWindows--;
+          throw error;
+        });
+      const authority = new AbortController();
+      const abort = () => authority.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      function current() {
+        const state = window.getState();
+        if (
+          authority.signal.aborted ||
+          !active() ||
+          !canReadConversations() ||
+          state.status !== "ready" ||
+          !state.snapshot.authorityReady ||
+          state.snapshot.invited ||
+          !state.snapshot.canSend ||
+          (state.snapshot.peer && blocks.has(state.snapshot.peer))
+        )
+          return;
+        const row = state.snapshot.messages.find((item) => item.id === message);
+        if (
+          !row ||
+          row.sourceId !== sourceId ||
+          row.deleted ||
+          row.invalidationStatus ||
+          (row.eventKind !== 9 && row.eventKind !== 1111) ||
+          blocks.has(row.sender) ||
+          chatPreferences.hidden(group).includes(message) ||
+          (row.expiresAt != null && row.expiresAt * 1000 <= Date.now())
+        )
+          return;
+        const text = pluginMessageText(row.text, row.content);
+        const embed = torrents
+          .match({ text, eligible: true })
+          .find(({ payload }) => payload.infoHash === hash);
+        if (!embed) return;
+        return { magnet: embed.payload, expiresAt: row.expiresAt };
+      }
+      let unwatch: (() => void) | undefined;
+      let unblock: (() => void) | undefined;
+      let unhide: (() => void) | undefined;
+      try {
+        await waitForMediaAuthority(window, authority.signal);
+        const accepted = current();
+        if (!accepted) throw new Error("TorrentUnavailable");
+        const verify = () => {
+          clearTimeout(deadline);
+          const live = current();
+          if (!live || live.magnet.uri !== accepted.magnet.uri) abort();
+          if (live?.expiresAt != null)
+            deadline = setTimeout(
+              verify,
+              Math.max(
+                1,
+                Math.min(2_147_483_647, live.expiresAt * 1000 - Date.now()),
+              ),
+            );
+        };
+        unwatch = window.subscribe(verify);
+        unblock = blocks.subscribe(verify);
+        unhide = chatPreferences.subscribe(verify);
+        verify();
+        authority.signal.throwIfAborted();
+        const result = await perform(accepted.magnet, authority.signal);
+        authority.signal.throwIfAborted();
+        return result;
+      } finally {
+        clearTimeout(deadline);
+        signal.removeEventListener("abort", abort);
+        unwatch?.();
+        unblock?.();
+        unhide?.();
+        try {
+          await window.close();
+        } finally {
+          torrentAuthorityWindows--;
+        }
+      }
+    }
     const allowed = (track: MediaSource) =>
       track.kind !== "attachment" ||
       ((track.source.expiresAt === null ||
         track.source.expiresAt > Date.now()) &&
-        (track.source.kind === "http" ||
+        (track.source.kind !== "marmot" ||
           (chatPreferences.enabled() &&
             !blocks.has(track.source.sender) &&
             !chatPreferences
@@ -637,6 +804,17 @@ async function start() {
       },
       claim: () => ownership.claim("video"),
       release: () => ownership.release("video"),
+      async openCompleted(id, consume) {
+        await downloads.open(id, (file) =>
+          consume({
+            kind: "local",
+            file,
+            uri: localMediaUri(file.path),
+            expiresAt: null,
+            release: () => Promise.resolve(),
+          }),
+        );
+      },
       async handoff({ file, uri }, action, signal) {
         signal.throwIfAborted();
         if (action === "external")
@@ -678,6 +856,10 @@ async function start() {
     });
     ownership.register("audio", audio.suspendPlayback);
     ownership.register("video", () => void video.close());
+    torrents.state.subscribe(({ enabled, delivery, loadFailed }) => {
+      if (!enabled || delivery?.kind !== "installed" || loadFailed)
+        void video.retireProgressive();
+    });
     audio.store.subscribe((next, previous) => {
       if (next.blocked === previous.blocked) return;
       if (next.blocked) ownership.release("audio");
@@ -840,6 +1022,7 @@ async function start() {
         catchUpMessaging();
       }
       function syncPrivacyAndRouting() {
+        torrents.sync();
         downloads.sync();
         speech.sync();
         admitDownloadedVoice();
@@ -913,6 +1096,8 @@ async function start() {
       const stop = () => {
         if (!mounted) return;
         mounted = false;
+        pluginSessionLive = false;
+        torrents.sync();
         conversations.setAvailable(false);
         conversations.setForeground(false);
         stopObserving = undefined;
@@ -929,6 +1114,7 @@ async function start() {
         relays.stop();
       };
       stopObserving = stop;
+      pluginSessionLive = true;
       try {
         own(
           attachSystemPresentation(calling, nativeOpen, {
@@ -1120,6 +1306,7 @@ async function start() {
           retirement.abort();
           calling.end();
           stopObserving?.();
+          await Promise.all([downloads.drain(), torrents.dispose()]);
           await Promise.all([audio.close(), video.drain(), retireRoundNotes()]);
           await marmotSession.stop();
           await marmotAccounts.signOut(account.key);
@@ -1137,6 +1324,8 @@ async function start() {
       identity,
       speech,
       downloads,
+      torrents,
+      authorizeTorrent,
       audio,
       audioSources,
       video,

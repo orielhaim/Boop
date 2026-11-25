@@ -1,5 +1,4 @@
 import { CircularList } from "@/components/ui/molecules/circular-list";
-import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import Transition from "react-native-screen-transitions";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
@@ -27,7 +26,6 @@ import {
   GlassSegmentedControl,
   GlassSegmentedControlItem,
 } from "@/components/glassyui/glass-segmented-control";
-import { useMarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import {
   Action,
   Icon,
@@ -42,7 +40,6 @@ import {
 } from "@/components/ui/molecules/Shimmer/Shimmer";
 import { useAvatar, useAvatarVisibility } from "@/core/avatars/use-avatar";
 import { CompactHeader, QuietState } from "@/components/ui/messenger-ui";
-import { useDirectorySearch } from "@/core/profiles/use-directory-search";
 import { toNpub } from "@/core/identity/keys";
 import {
   contactByKey,
@@ -55,17 +52,14 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
 import { PersonAvatar } from "./person-avatar";
-import { usePublicProfile, useVerifiedIdentifier } from "./use-person";
+import { usePublicProfile } from "./use-person";
 
 type PersonItem = {
-  publicKey: string;
-  reference?: string;
-  showVerification?: boolean;
+  contact: SavedContact;
   separated?: boolean;
 };
 type SavedContact = ReturnType<typeof useContacts>[number];
-type DirectoryItem =
-  { title: string; separated?: boolean } | PersonItem | { carousel: true };
+type DirectoryItem = PersonItem | { carousel: true };
 
 export function PeopleDirectory() {
   const onScroll = useMinimizeOnScroll();
@@ -79,15 +73,12 @@ export function PeopleDirectory() {
   useLayoutEffect(() => {
     setPeopleFabVisible?.(!showCalls);
   }, [setPeopleFabVisible, showCalls]);
-  const { db, identity, lock, privacy, profiles } = useLocal();
+  const { db, lock, privacy, profiles } = useLocal();
   const contacts = useContacts();
   const enabled = useChatsEnabled();
   const focused = useIsFocused() && !showCalls;
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
   useSyncExternalStore(privacy.subscribe, privacy.revision);
-  const {
-    inbox: { snapshot },
-  } = useMarmotChatLists();
   const [query, setQuery] = useState("");
   const [carouselVisible, setCarouselVisible] = useState(false);
   const [contactMenu, setContactMenu] = useState<{
@@ -104,16 +95,8 @@ export function PeopleDirectory() {
       }),
     [lock],
   );
-  const term = query.trim();
-  const { exactKey, current } = useDirectorySearch(
-    term,
-    focused && lockState.active && !lockState.locked,
-  );
-  const exactReference = exactKey ? term : undefined;
+  const term = query.trim().toLowerCase();
   const local = contacts.filter((row) => !privacy.isBlocked(row.publicKey));
-  const contactsByKey = new Map(
-    local.map((contact) => [contact.publicKey, contact]),
-  );
   const filtered = term
     ? local.filter((row) => {
         const profile = profiles.profile(row.publicKey);
@@ -121,77 +104,34 @@ export function PeopleDirectory() {
           row.name,
           profile?.name,
           profile?.nip05,
+          row.publicKey,
           toNpub(row.publicKey),
-        ].some((value) => value?.toLowerCase().includes(term.toLowerCase()));
+        ].some((value) => value?.toLowerCase().includes(term));
       })
     : local;
   filtered.sort(
     (a, b) =>
       Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name),
   );
-  const recent = [
-    ...new Set(
-      snapshot?.rows.flatMap((row) =>
-        row.peer && row.membership === "member" && !row.invited
-          ? [row.peer]
-          : [],
-      ),
-    ),
-  ]
-    .filter(
-      (key) =>
-        key !== identity.publicKey &&
-        !local.some((row) => row.publicKey === key) &&
-        !privacy.isBlocked(key),
-    )
-    .slice(0, 8);
-
-  const remote = exactKey
-    ? [exactKey]
-    : (current?.keys ?? []).filter(
-        (key) =>
-          !filtered.some((row) => row.publicKey === key) &&
-          !privacy.isBlocked(key),
-      );
-
   const favorites = term ? [] : filtered.filter(({ favorite }) => favorite);
-  const savedPeople = filtered.filter(
-    (row) => row.publicKey !== exactKey && (term || !row.favorite),
-  );
+  const savedPeople = term
+    ? filtered
+    : filtered.filter(({ favorite }) => !favorite);
   const boringFavorites = favorites.length > 0 && favoritesDisplay === "boring";
   const items: DirectoryItem[] = [
-    ...(term && remote.length
-      ? [
-          ...(!exactKey ? [{ title: t("messenger:results") }] : []),
-          ...remote.map((publicKey) => ({
-            publicKey,
-            reference: exactReference,
-            showVerification: true,
-          })),
-        ]
-      : []),
     ...(favorites.length
       ? favoritesDisplay === "cool"
         ? [{ carousel: true } as const]
-        : favorites
+        : favorites.map((contact) => ({ contact }))
       : []),
-    ...savedPeople.map(({ publicKey }, index) => ({
-      publicKey,
+    ...savedPeople.map((contact, index) => ({
+      contact,
       separated: boringFavorites && index === 0,
     })),
-    ...(!term && recent.length
-      ? [
-          {
-            title: t("messenger:recent"),
-            separated: boringFavorites && !savedPeople.length,
-          },
-          ...recent.map((publicKey) => ({ publicKey })),
-        ]
-      : []),
   ];
   const { onViewableItemsChanged: onDirectoryViewable, viewabilityConfig } =
     useAvatarVisibility<DirectoryItem>((item) =>
-      "publicKey" in item ? item.publicKey : "",
+      "contact" in item ? item.contact.publicKey : "",
     );
   const toggleDirectoryVisibility = useCallback(
     (event: Parameters<typeof onDirectoryViewable>[0]) => {
@@ -205,13 +145,6 @@ export function PeopleDirectory() {
     [onDirectoryViewable, setCarouselVisible],
   );
   const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
-  const noMatches =
-    term &&
-    !remote.length &&
-    !filtered.length &&
-    (current?.state === "complete" ||
-      term.length > 80 ||
-      /^(?:nostr:|nsec1|ncryptsec1|npub1|nprofile1)/i.test(term));
   const menuContact = local.find((row) => row.publicKey === contactMenu?.key);
   const menuName =
     menuContact &&
@@ -282,9 +215,9 @@ export function PeopleDirectory() {
         )}
         {!showCalls && (
           <GlassInput
-            accessibilityLabel={t("messenger:find")}
+            accessibilityLabel={t("contacts:search")}
             compact
-            placeholder={t("messenger:searchHint")}
+            placeholder={t("contacts:search")}
             value={query}
             onChangeText={setQuery}
             autoCapitalize="none"
@@ -302,38 +235,18 @@ export function PeopleDirectory() {
             viewabilityConfig={viewabilityConfig}
             onViewableItemsChanged={toggleDirectoryVisibility}
             keyExtractor={(item) =>
-              "publicKey" in item
-                ? item.publicKey
-                : "carousel" in item
-                  ? "favorites-carousel"
-                  : item.title
+              "contact" in item ? item.contact.publicKey : "favorites-carousel"
             }
             renderItem={({ item }) =>
-              "publicKey" in item ? (
-                <PersonRow
-                  {...item}
-                  contact={contactsByKey.get(item.publicKey)}
-                  onContactActions={openContactMenu}
-                />
-              ) : "carousel" in item ? (
+              "contact" in item ? (
+                <PersonRow {...item} onContactActions={openContactMenu} />
+              ) : (
                 <FavoriteCarousel
                   favorites={favorites}
                   visible={carouselVisible}
                   rtl={rtl}
                   onContactActions={openContactMenu}
                 />
-              ) : (
-                <Ink
-                  kind="caption"
-                  muted
-                  accessibilityRole="header"
-                  style={[
-                    styles.section,
-                    item.separated && styles.sectionSeparated,
-                  ]}
-                >
-                  {item.title}
-                </Ink>
               )
             }
             keyboardShouldPersistTaps="handled"
@@ -341,20 +254,16 @@ export function PeopleDirectory() {
             onScroll={onScroll}
             scrollEventThrottle={16}
             contentContainerStyle={styles.list}
-            ListFooterComponent={
-              term && current?.state === "loading" ? (
-                <LoadingSkeleton layout="person" label={t("common:opening")} />
-              ) : term && current?.state === "unavailable" ? (
-                <Ink muted>{t("messenger:searchUnavailable")}</Ink>
-              ) : noMatches ? (
-                <Ink muted>{t("messenger:noResults")}</Ink>
-              ) : !term && !local.length && !recent.length ? (
+            ListEmptyComponent={
+              term ? (
+                <Ink muted>{t("contacts:noResults")}</Ink>
+              ) : (
                 <QuietState
                   icon="person"
-                  title={t("messenger:find")}
-                  detail={t("messenger:noPeople")}
+                  title={t("contacts:empty")}
+                  detail={t("contacts:emptyHint")}
                 />
-              ) : undefined
+              )
             }
           />
         )}
@@ -457,7 +366,6 @@ function FavoriteCarousel({
       {...visibility}
       renderItem={(person) => (
         <PersonRow
-          publicKey={person.publicKey}
           contact={person}
           tile
           lookUpName={visible}
@@ -469,32 +377,25 @@ function FavoriteCarousel({
 }
 
 function PersonRow({
-  publicKey,
-  reference,
-  showVerification,
   separated,
   contact,
   lookUpName = false,
   onContactActions,
   tile = false,
 }: PersonItem & {
-  contact?: SavedContact;
   lookUpName?: boolean;
   onContactActions: (key: string) => void;
   tile?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
+  const { publicKey } = contact;
   const profile = usePublicProfile(publicKey);
   const photo = useAvatar(publicKey, false);
-  const knownName = contact?.name.trim() || profile?.name;
+  const knownName = contact.name.trim() || profile?.name;
   const name =
     knownName ||
     (tile ? t("contacts:unnamed") : nameOrAddress(undefined, publicKey));
-  const { about, nip05 } = profile ?? {};
-  const verified = useVerifiedIdentifier(
-    showVerification ? nip05 : undefined,
-    publicKey,
-  );
+  const about = profile?.about;
   const address = toNpub(publicKey);
   return (
     <Transition.Boundary
@@ -505,20 +406,14 @@ function PersonRow({
       ]}
       accessibilityRole="button"
       accessibilityLabel={t("contacts:openProfile", { name })}
-      onLongPress={contact ? () => onContactActions(publicKey) : undefined}
-      accessibilityActions={
-        contact
-          ? [{ name: "longpress", label: t("contacts:contactActions") }]
-          : undefined
-      }
-      onAccessibilityAction={
-        contact
-          ? (event) => {
-              if (event.nativeEvent.actionName === "longpress")
-                onContactActions(publicKey);
-            }
-          : undefined
-      }
+      onLongPress={() => onContactActions(publicKey)}
+      accessibilityActions={[
+        { name: "longpress", label: t("contacts:contactActions") },
+      ]}
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === "longpress")
+          onContactActions(publicKey);
+      }}
       onPress={() => {
         tapFeedback();
         router.push({
@@ -526,7 +421,6 @@ function PersonRow({
           params: {
             key: publicKey,
             origin: `person:${publicKey}`,
-            ...(reference ? { reference } : {}),
           },
         });
       }}
@@ -555,18 +449,10 @@ function PersonRow({
               {name}
             </Ink>
             <Ink kind="caption" muted numberOfLines={1}>
-              {verified
-                ? nip05
-                : about || `${address.slice(0, 15)}…${address.slice(-5)}`}
+              {about || `${address.slice(0, 15)}…${address.slice(-5)}`}
             </Ink>
           </View>
-          {contact?.favorite ? (
-            <Icon name="favorite" size={18} />
-          ) : contact ? (
-            <Icon name="check" size={18} />
-          ) : (
-            <Icon name="next" size={18} />
-          )}
+          <Icon name={contact.favorite ? "favorite" : "check"} size={18} />
         </>
       )}
     </Transition.Boundary>
@@ -626,5 +512,4 @@ const styles = StyleSheet.create({
   pendingLabel: { minHeight: 18, justifyContent: "center" },
   pendingLine: { width: 56, height: 10, borderRadius: 8 },
   sectionSeparated: { marginTop: space.sm },
-  section: { paddingTop: space.md, paddingBottom: space.xs, fontWeight: "600" },
 });

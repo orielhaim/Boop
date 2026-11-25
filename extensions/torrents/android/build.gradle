@@ -1,0 +1,48 @@
+apply plugin: 'com.android.dynamic-feature'
+
+android {
+  namespace 'app.boop.feature.torrents'
+  compileSdk rootProject.ext.compileSdkVersion
+  ndkVersion rootProject.ext.ndkVersion
+  defaultConfig {
+    minSdk rootProject.ext.minSdkVersion
+  }
+}
+
+dependencies {
+  implementation project(':app')
+}
+
+def rustDir = file('../rust')
+def abis = (findProperty('reactNativeArchitectures') ?: 'armeabi-v7a,arm64-v8a,x86,x86_64')
+  .split(',').collect { it.trim() }.findAll { it }
+def cargoJniLibs = layout.buildDirectory.dir('generated/torrentJniLibs')
+
+abstract class CompileTorrent extends Exec {
+  @OutputDirectory
+  abstract DirectoryProperty getJniLibs()
+}
+
+def compileTorrent = tasks.register('compileTorrent', CompileTorrent) {
+  workingDir rustDir
+  inputs.files(fileTree(rustDir) { include 'Cargo.toml', 'Cargo.lock', 'src/**' })
+  inputs.property('abis', abis.join(','))
+  inputs.property('ndkVersion', android.ndkVersion)
+  inputs.property('api', rootProject.ext.minSdkVersion)
+  jniLibs.set(cargoJniLibs)
+  def ndk = new File(android.sdkDirectory, "ndk/${android.ndkVersion}")
+  environment 'ANDROID_NDK_HOME', ndk.absolutePath
+  environment 'CARGO_TARGET_DIR', layout.buildDirectory.dir('cargo').get().asFile.absolutePath
+  doFirst {
+    delete cargoJniLibs
+  }
+  commandLine(['cargo', 'ndk', '--platform', rootProject.ext.minSdkVersion.toString()] +
+    abis.collectMany { ['-t', it] } +
+    ['-o', cargoJniLibs.get().asFile.absolutePath, 'build', '--locked', '--release'])
+}
+
+androidComponents {
+  onVariants(selector().all()) { variant ->
+    variant.sources.jniLibs.addGeneratedSourceDirectory(compileTorrent) { it.jniLibs }
+  }
+}

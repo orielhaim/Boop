@@ -1,0 +1,27 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'app.boop'
+version = '1.0.0'
+
+android {
+  namespace 'app.boop.plugins'
+  defaultConfig {
+    consumerProguardFiles 'plugins.pro'
+    testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+  }
+}
+
+dependencies {
+  implementation 'com.facebook.react:react-android'
+  implementation project(':expo-video')
+  implementation 'androidx.media3:media3-datasource:1.9.1'
+  api 'com.google.android.play:feature-delivery:2.1.0'
+  implementation 'com.getkeepsafe.relinker:relinker:1.4.5'
+  androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+  androidTestImplementation 'androidx.test:runner:1.7.0'
+  androidTestImplementation 'androidx.test:core:1.6.1'
+  androidTestImplementation 'androidx.media3:media3-exoplayer:1.9.1'
+}

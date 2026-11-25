@@ -3,11 +3,15 @@ import { File, Paths } from "expo-file-system";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { marmot } from "@/core/marmot/native";
+import { torrentsSource } from "@/core/downloads/types";
+import { localMediaUri } from "@/core/media/open-local-attachment";
 import { initializeLocal } from "@/services/local";
 import type { AppLock } from "@/core/security/app-lock";
 import { videoImportDirectory } from "./import-cache";
 import { videoFile } from "./types";
 import type { SubtitleInput } from "./subtitles/tracks";
+import { relatedSubtitle } from "./subtitles/tracks";
+import { readSelectedSubtitles } from "./subtitle-files";
 
 let importing = false;
 
@@ -71,17 +75,93 @@ async function localVideoId(file: File, size: number) {
   }
 }
 
-export async function openDownloadedVideo(id: string) {
+export async function openDownloadedVideo(
+  id: string,
+  { allowProgressive = false, replace = false } = {},
+) {
   const local = await initializeLocal();
   if (local.status !== "ready" || !local.isCurrent()) return false;
   const source = local.downloads.get(id);
   if (
-    source?.state !== "completed" ||
+    !source ||
+    (source.state !== "completed" &&
+      !(allowProgressive && local.downloads.canStream(source))) ||
     source.intent ||
     !videoFile(source.name, source.type)
   )
     return false;
-  return local.video.open({ kind: "attachment", source, title: source.name });
+  const torrent = torrentsSource.safeParse(source);
+  const progressive = source.state !== "completed";
+  return local.video.open(
+    { kind: "attachment", source, title: source.name },
+    torrent.success
+      ? {
+          progressive,
+          replace,
+          download: progressive,
+          relatedSubtitles: async (signal) => {
+            const { torrentId, fileIndex } = torrent.data.payload;
+            const files = local.torrents.cached(torrentId)?.files;
+            const directory = files
+              ?.find((file) => file.index === fileIndex)
+              ?.path.slice(0, -1)
+              .join("/");
+            if (directory === undefined) return [];
+            const session = new AbortController();
+            const abort = () => session.abort();
+            if (signal.aborted) abort();
+            signal.addEventListener("abort", abort, { once: true });
+            const readersDone = Promise.withResolvers<void>();
+            const releases: (() => void)[] = [];
+            const selected: { name: string; uri: string; size?: number }[] = [];
+            try {
+              for (const sibling of local.downloads.snapshot()) {
+                if (selected.length >= 12 || session.signal.aborted) break;
+                if (
+                  sibling.state !== "completed" ||
+                  sibling.id === id ||
+                  !relatedSubtitle(source.name, sibling.name)
+                )
+                  continue;
+                const match = torrentsSource.safeParse(sibling);
+                if (
+                  !match.success ||
+                  match.data.payload.torrentId !== torrentId ||
+                  files
+                    ?.find(
+                      (file) => file.index === match.data.payload.fileIndex,
+                    )
+                    ?.path.slice(0, -1)
+                    .join("/") !== directory
+                )
+                  continue;
+                const release = local.downloads.holdForPlayback(sibling, () => {
+                  abort();
+                  return readersDone.promise;
+                });
+                if (!release) continue;
+                releases.push(release);
+                await local.downloads.open(sibling.id, async (file) => {
+                  selected.push({
+                    name: file.name,
+                    uri: localMediaUri(file.path),
+                    size: sibling.total ?? undefined,
+                  });
+                });
+              }
+              return await readSelectedSubtitles(selected, {
+                relatedTo: source.name,
+                signal: session.signal,
+              });
+            } finally {
+              signal.removeEventListener("abort", abort);
+              for (const release of releases) release();
+              readersDone.resolve();
+            }
+          },
+        }
+      : undefined,
+  );
 }
 
 export async function openLocalVideo(

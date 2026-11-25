@@ -1,5 +1,5 @@
 import { type DownloadSource, sourceId } from "@/core/downloads/types";
-import type { DownloadFile } from "@/core/downloads/transport";
+import type { DownloadFile, ProgressiveRead } from "@/core/downloads/transport";
 
 export type MediaSource =
   | { kind: "attachment"; source: DownloadSource }
@@ -13,9 +13,20 @@ export const mediaId = (source: MediaSource) =>
       ? source.id
       : source.file;
 
-export type MediaHandle = {
+export type LocalMediaHandle = {
+  kind: "local";
   file: DownloadFile;
   uri: string;
   expiresAt: number | null;
   release(): Promise<void>;
 };
+
+export type ProgressiveMediaHandle = ProgressiveRead & {
+  kind: "progressive";
+  sourceId: string;
+  mimeType: string;
+  expiresAt: number | null;
+  cancelReads(): Promise<void>;
+};
+
+export type MediaHandle = LocalMediaHandle | ProgressiveMediaHandle;

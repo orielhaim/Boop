@@ -66,6 +66,12 @@ const categoryRows = [
     route: "/settings/connections",
   },
   {
+    category: "plugins",
+    titleKey: "settings:plugins",
+    detailKey: "settings:torrentsDescription",
+    route: "/settings/plugins",
+  },
+  {
     category: "about",
     titleKey: "settings:about",
     detailKey: "settings:categoryAboutHelp",

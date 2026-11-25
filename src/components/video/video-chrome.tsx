@@ -1,4 +1,5 @@
 import { Text, useWindowDimensions, View } from "react-native";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import Animated, {
   useAnimatedStyle,
@@ -30,6 +31,7 @@ type ChromeProps = {
   onHeaderHeight: (height: number) => void;
   onDockHeight: (height: number) => void;
   title?: string;
+  transfer?: ReactNode;
   state: "error" | "loading" | "playing" | "paused" | "ended";
   showDock: boolean;
   timeline: ReturnType<typeof useVideoTimeline>;
@@ -37,6 +39,7 @@ type ChromeProps = {
   live: boolean;
   onClose: () => void;
   onExternal?: () => void;
+  onRetry?: () => void;
   onMinimize?: () => void;
   onPictureInPicture?: () => void;
   onPlay: () => void;
@@ -60,6 +63,7 @@ export function VideoChrome({
   onHeaderHeight,
   onDockHeight,
   title,
+  transfer,
   state,
   showDock,
   timeline,
@@ -67,6 +71,7 @@ export function VideoChrome({
   live,
   onClose,
   onExternal,
+  onRetry,
   onMinimize,
   onPictureInPicture,
   onPlay,
@@ -139,6 +144,9 @@ export function VideoChrome({
           </ControlGroup>
         )}
       </View>
+      {transfer && !showDock && (
+        <View style={[styles.dock, { left, right, bottom }]}>{transfer}</View>
+      )}
       {state === "error" ? (
         <View style={styles.middle} pointerEvents="box-none">
           <GlassSurface
@@ -148,6 +156,14 @@ export function VideoChrome({
           >
             <Icon name="warning" size={24} color={mediaMaterial.secondary} />
             <Text style={styles.errorText}>{t("viewer.loadFailed")}</Text>
+            {onRetry && (
+              <MediaControl
+                glass
+                label={t("retry", { ns: "downloads" })}
+                icon="refresh"
+                onPress={onRetry}
+              />
+            )}
             {onExternal && (
               <MediaControl
                 glass
@@ -175,6 +191,7 @@ export function VideoChrome({
           onLayout={(event) => onDockHeight(event.nativeEvent.layout.height)}
         >
           <VideoTimeline timeline={timeline} seekInterval={seekInterval} />
+          {transfer}
           <View style={[styles.dockActions, { direction }]}>
             <VideoTimecode
               timeline={timeline}

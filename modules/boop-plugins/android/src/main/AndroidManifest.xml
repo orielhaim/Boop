@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+  <application>
+    <service
+      android:name="app.boop.plugins.TorrentTransferJobService"
+      android:exported="false"
+      android:permission="android.permission.BIND_JOB_SERVICE" />
+    <receiver
+      android:name="app.boop.plugins.TorrentTransferActionReceiver"
+      android:exported="false" />
+  </application>
+</manifest>

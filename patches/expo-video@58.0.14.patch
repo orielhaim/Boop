@@ -617,10 +617,10 @@ index e32598a..862ccda 100644
  
    private fun applyPitchCorrection(playbackParameters: PlaybackParameters): PlaybackParameters {
 diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
-index 88fb930..f49bd4d 100644
+index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..729a7b0d9a3f8f7986a7e31f74074b6afcd7f694 100644
 --- a/build/VideoPlayer.types.d.ts
 +++ b/build/VideoPlayer.types.d.ts
-@@ -253,6 +253,8 @@
+@@ -253,6 +253,8 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
       * Pauses the player.
       */
      pause(): void;
@@ -629,7 +629,7 @@ index 88fb930..f49bd4d 100644
      /**
       * Replaces the current source with a new one.
       *
-@@ -268,6 +270,13 @@
+@@ -268,6 +270,13 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
       * > On Android and Web, this method is equivalent to `replace`.
       */
      replaceAsync(source: VideoSource): Promise<void>;
@@ -643,7 +643,7 @@ index 88fb930..f49bd4d 100644
      /**
       * Seeks the playback by the given number of seconds. The time to which the player seeks may differ from the specified requested time for efficiency,
       * depending on the encoding and what is currently buffered by the player. Use this function to implement playback controls that seek by specific amount of time,
-@@ -285,6 +294,11 @@
+@@ -285,6 +294,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
       * @platform ios
       */
      generateThumbnailsAsync(times: number | number[], options?: VideoThumbnailOptions): Promise<VideoThumbnail[]>;
@@ -655,7 +655,19 @@ index 88fb930..f49bd4d 100644
  }
  /**
   * Additional options for video thumbnails generation.
-@@ -513,7 +527,8 @@
+@@ -361,6 +375,11 @@ export type VideoSourceObject = {
+      * @platform ios
+      */
+     contentType?: ContentType;
++    /**
++     * MIME type used when a media URI has no recognizable filename extension.
++     * @platform android
++     */
++    mimeType?: string;
+ };
+ /**
+  * Contains information about any errors that the player encountered during the playback
+@@ -513,7 +532,8 @@ export type ContentType = 'auto' | 'progressive' | 'hls' | 'dash' | 'smoothStrea
  export type AudioMixingMode = 'mixWithOthers' | 'duckOthers' | 'auto' | 'doNotMix';
  export type SubtitleTrack = {
      /**
@@ -867,10 +879,10 @@ index 3c2fde4..4c60612 100644
      let alreadyReleased = didRelease.withLock { didRelease in
        defer {
 diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
-index 8eae68f..7eea46f 100644
+index 07a2cdf7ca129d069102d05071713d5aa4db5004..82db62654ff6873bee6d2dd73266a2cc667ae495 100644
 --- a/src/VideoPlayer.types.ts
 +++ b/src/VideoPlayer.types.ts
-@@ -293,6 +293,9 @@
+@@ -293,6 +293,9 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
     */
    pause(): void;
  
@@ -880,11 +892,7 @@ index 8eae68f..7eea46f 100644
    /**
     * Replaces the current source with a new one.
     *
-@@ -309,6 +312,14 @@
-    * > On Android and Web, this method is equivalent to `replace`.
-    */
-   replaceAsync(source: VideoSource): Promise<void>;
-+
+@@ -313,3 +316,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
 +  /**
 +   * Attaches a normalized WebVTT subtitle track supplied in memory, or clears the external track.
 +   * Resolves after Android has loaded and selected the external track. Rebuilding the media item
@@ -892,10 +900,11 @@ index 8eae68f..7eea46f 100644
 +   * @platform android
 +   */
 +  setExternalSubtitle?(vtt: string | null): Promise<void>;
- 
++
    /**
     * Seeks the playback by the given number of seconds. The time to which the player seeks may differ from the specified requested time for efficiency,
-@@ -332,6 +343,11 @@
+    * depending on the encoding and what is currently buffered by the player. Use this function to implement playback controls that seek by specific amount of time,
+@@ -332,6 +343,11 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
      times: number | number[],
      options?: VideoThumbnailOptions
    ): Promise<VideoThumbnail[]>;
@@ -907,7 +916,18 @@ index 8eae68f..7eea46f 100644
  }
  
  /**
-@@ -589,7 +605,8 @@
+@@ -419,4 +435,10 @@ export type VideoSourceObject = {
+    * @platform ios
+    */
+   contentType?: ContentType;
++
++  /**
++   * MIME type used when a media URI has no recognizable filename extension.
++   * @platform android
++   */
++  mimeType?: string;
+ };
+@@ -589,7 +611,8 @@ export type AudioMixingMode = 'mixWithOthers' | 'duckOthers' | 'auto' | 'doNotMi
  
  export type SubtitleTrack = {
    /**
@@ -1133,10 +1153,20 @@ index 6179e09..28b1ad1 100644
        val mimeType = format.sampleMimeType
        val averageBitrate = format.averageBitrate.takeIf { it != Format.NO_VALUE }
 diff --git a/android/src/main/java/expo/modules/video/records/VideoSource.kt b/android/src/main/java/expo/modules/video/records/VideoSource.kt
-index 1adec5f..7e5cbee 100644
+index b0bfb494a008e02396e01ddb7f4857f0f3f70d7d..214efdc4e421faec37221612d274369790d5c754 100644
 --- a/android/src/main/java/expo/modules/video/records/VideoSource.kt
 +++ b/android/src/main/java/expo/modules/video/records/VideoSource.kt
-@@ -44,12 +44,12 @@
+@@ -28,7 +28,8 @@ class VideoSource(
+   @Field var metadata: VideoMetadata? = null,
+   @Field var headers: Map<String, String>? = null,
+   @Field var useCaching: Boolean = false,
+-  @Field val contentType: ContentType = ContentType.AUTO
++  @Field val contentType: ContentType = ContentType.AUTO,
++  @Field var mimeType: String? = null
+ ) : Record, Serializable {
+   private fun toMediaId(): String {
+     return "uri:${this.uri}" +
+@@ -44,16 +45,20 @@ class VideoSource(
        "ContentType:${this.contentType.value}"
    }
  
@@ -1152,7 +1182,16 @@ index 1adec5f..7e5cbee 100644
      .Builder()
      .apply {
        setUri(parseLocalAssetId(uri, context))
-@@ -74,6 +74,17 @@
+-      contentType.toMimeTypeString()?.let {
++      mimeType?.trim()?.takeIf {
++        it.isNotEmpty() && it != "video/*" && it != "application/octet-stream" && !it.endsWith("/*")
++      }?.let {
++        setMimeType(it)
++      } ?: contentType.toMimeTypeString()?.let {
+         setMimeType(it)
+       }
+       drm?.let {
+@@ -74,6 +79,17 @@ class VideoSource(
            }
          }.build()
        )
@@ -1171,10 +1210,10 @@ index 1adec5f..7e5cbee 100644
      .build()
  
 diff --git a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
-index 4d09809..d136845 100644
+index 0f1207c76c98b17ad835843f9ae5d15951206a81..feaa06ec10b70da36afe50be50499f60672f0854 100644
 --- a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
 +++ b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
-@@ -2,11 +2,16 @@
+@@ -2,11 +2,16 @@ package expo.modules.video
  
  import android.content.Context
  import android.content.pm.ApplicationInfo
@@ -1191,7 +1230,7 @@ index 4d09809..d136845 100644
  import androidx.media3.datasource.cache.CacheDataSource
  import androidx.media3.datasource.okhttp.OkHttpDataSource
  import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-@@ -23,6 +28,7 @@
+@@ -23,6 +28,7 @@ import okhttp3.ResponseBody.Companion.asResponseBody
  import okio.ForwardingSource
  import okio.buffer
  import java.util.concurrent.ConcurrentHashMap
@@ -1199,7 +1238,7 @@ index 4d09809..d136845 100644
  
  @OptIn(UnstableApi::class)
  fun buildBaseDataSourceFactory(
-@@ -189,12 +195,21 @@
+@@ -189,13 +195,23 @@ fun buildMediaSourceFactory(
  @OptIn(UnstableApi::class)
  fun buildExpoVideoMediaSource(
    context: Context,
@@ -1208,11 +1247,12 @@ index 4d09809..d136845 100644
 +  externalSubtitleVtt: String? = null
  ): MediaSource {
 -  val dataSourceFactory = if (videoSource.useCaching) {
-+  val baseDataSourceFactory = if (videoSource.useCaching) {
++  val ordinaryDataSourceFactory = if (videoSource.useCaching) {
      buildCacheDataSourceFactory(context, videoSource)
    } else {
      buildBaseDataSourceFactory(context, videoSource)
-+  }
+   }
++  val baseDataSourceFactory = ManagedDataSourceRoutingFactory(ordinaryDataSourceFactory)
 +  val externalSubtitleUri = externalSubtitleVtt?.let {
 +    Uri.Builder().scheme("boop-in-memory-subtitle").authority(UUID.randomUUID().toString()).build()
 +  }
@@ -1220,16 +1260,69 @@ index 4d09809..d136845 100644
 +    InMemorySubtitleDataSourceFactory(baseDataSourceFactory, externalSubtitleUri, externalSubtitleVtt.toByteArray(Charsets.UTF_8))
 +  } else {
 +    baseDataSourceFactory
-   }
++  }
    // With caching on, some renditions may be servable from the cache while the network is gone.
    // Let a rendition that cannot be reached fall back to another one instead of failing playback.
-@@ -203,8 +218,49 @@
+   val mediaSourceFactory = buildMediaSourceFactory(
+@@ -203,6 +219,6 @@ fun buildExpoVideoMediaSource(
      dataSourceFactory,
      fallbackOnTransportError = videoSource.useCaching
    )
 -  val mediaItem = videoSource.toMediaItem(context)
 +  val mediaItem = videoSource.toMediaItem(context, externalSubtitleUri)
    return mediaSourceFactory.createMediaSource(mediaItem)
+ }
+@@ -210,3 +226,96 @@ fun buildExpoVideoMediaSource(
++/**
++ * Host-owned registration point for optional modules that provide seekable managed media.
++ * Expo Video only knows this generic factory contract and never depends on a provider.
++ */
++object ManagedDataSourceRegistry {
++  private val factories = ConcurrentHashMap<String, DataSource.Factory>()
++
++  fun register(scheme: String, factory: DataSource.Factory): AutoCloseable {
++    require(scheme.matches(Regex("[a-z][a-z0-9+.-]*")))
++    factories[scheme] = factory
++    return AutoCloseable { factories.remove(scheme, factory) }
++  }
++
++  internal fun factory(uri: Uri): DataSource.Factory? = factories[uri.scheme]
++}
++
++private class ManagedDataSourceRoutingFactory(
++  private val ordinaryFactory: DataSource.Factory
++) : DataSource.Factory {
++  override fun createDataSource(): DataSource = object : DataSource {
++    private val listeners = mutableListOf<TransferListener>()
++    private var active: DataSource? = null
++
++    override fun addTransferListener(transferListener: TransferListener) {
++      listeners.add(transferListener)
++      active?.addTransferListener(transferListener)
++    }
++
++    override fun open(dataSpec: DataSpec): Long {
++      val source = ManagedDataSourceRegistry.factory(dataSpec.uri)?.createDataSource()
++        ?: ordinaryFactory.createDataSource()
++      active = source
++      listeners.forEach(source::addTransferListener)
++      return source.open(dataSpec)
++    }
++
++    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
++      active?.read(buffer, offset, length) ?: C.RESULT_END_OF_INPUT
++
++    override fun getUri(): Uri? = active?.uri
++
++    override fun getResponseHeaders(): Map<String, List<String>> =
++      active?.responseHeaders ?: emptyMap()
++
++    override fun close() {
++      val source = active
++      active = null
++      source?.close()
++    }
++  }
 +}
 +
 +private class InMemorySubtitleDataSourceFactory(
@@ -1271,9 +1364,11 @@ index 4d09809..d136845 100644
 +      dataSource?.close()
 +    }
 +  }
- }
- 
++}
++
  private fun getApplicationName(context: Context): String {
+   val applicationInfo: ApplicationInfo = context.applicationInfo
+   val stringId = applicationInfo.labelRes
 diff --git a/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt b/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt
 index 8e85633..ae2c07f 100644
 --- a/android/src/main/java/expo/modules/video/utils/SubtitleUtils.kt

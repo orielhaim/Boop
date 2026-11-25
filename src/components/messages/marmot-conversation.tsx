@@ -127,6 +127,7 @@ import { conversationRoute } from "./marmot-inbox";
 import { MarmotLocked } from "./marmot-locked";
 import { useOpenLater } from "./use-open-later";
 import { MarmotLink } from "./marmot-link";
+import { PluginEmbeds } from "@/components/plugins/embeds";
 import {
   ConversationSearch,
   ForwardMessage,
@@ -1831,32 +1832,18 @@ function MarmotConversationContent({
               style={[styles.headerCapsule, styles.headerActions]}
             >
               {peer && !blocked && (
-                <>
-                  <IconButton
-                    icon="phone"
-                    label={t("messages:call")}
-                    tone="plain"
-                    onPress={() => {
-                      if (!privacy.isBlocked(peer))
-                        router.push({
-                          pathname: "/call/[key]",
-                          params: { key: peer },
-                        });
-                    }}
-                  />
-                  <IconButton
-                    icon="camera"
-                    label={t("messenger:video")}
-                    tone="plain"
-                    onPress={() => {
-                      if (!privacy.isBlocked(peer))
-                        router.push({
-                          pathname: "/call/[key]",
-                          params: { key: peer, video: "1" },
-                        });
-                    }}
-                  />
-                </>
+                <IconButton
+                  icon="phone"
+                  label={t("messages:call")}
+                  tone="plain"
+                  onPress={() => {
+                    if (!privacy.isBlocked(peer))
+                      router.push({
+                        pathname: "/call/[key]",
+                        params: { key: peer },
+                      });
+                  }}
+                />
               )}
               {!peer && canSend && (
                 <GroupCallHeaderButton
@@ -2180,17 +2167,49 @@ function MarmotConversationContent({
                   bubble
                 );
               }}
-              renderMessageText={(props) => (
-                <PreparedMessageText
-                  {...props}
-                  names={mentionNames}
-                  content={
-                    props.currentMessage.row?.text === props.currentMessage.text
-                      ? props.currentMessage.row?.content
-                      : undefined
-                  }
-                />
-              )}
+              renderMessageText={(props) => {
+                const { currentMessage } = props;
+                const row = currentMessage.row;
+                const pluginEmbeds =
+                  row?.sourceId &&
+                  !currentMessage.isViewOnce &&
+                  !row.deleted &&
+                  !row.invalidationStatus &&
+                  (row.eventKind === 9 || row.eventKind === 1111) &&
+                  keepChatWindow &&
+                  !locked &&
+                  !blocked &&
+                  !snapshot?.invited &&
+                  !privacy.isBlocked(row.sender) &&
+                  (row.expiresAt == null ||
+                    row.expiresAt * 1000 > Date.now()) &&
+                  row.text.length <= 16_384 &&
+                  row.text.toLowerCase().includes("magnet:?") ? (
+                    <PluginEmbeds
+                      key={`${row.id}:${row.sourceId}`}
+                      group={id}
+                      message={row.id}
+                      event={row.sourceId}
+                      text={row.text}
+                      content={row.content}
+                      eligible={focused && foreground && visible.has(row.id)}
+                    />
+                  ) : null;
+                return (
+                  <>
+                    <PreparedMessageText
+                      {...props}
+                      names={mentionNames}
+                      content={
+                        row?.text === currentMessage.text
+                          ? row?.content
+                          : undefined
+                      }
+                    />
+                    {pluginEmbeds}
+                  </>
+                );
+              }}
               renderInputToolbar={(props) =>
                 canSend ? (
                   <>

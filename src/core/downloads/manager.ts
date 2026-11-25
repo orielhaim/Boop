@@ -1,4 +1,4 @@
-import { selectDownloads } from "./scheduler";
+import { contentKey, selectDownloads } from "./scheduler";
 import type {
   DownloadControl,
   DownloadFile,
@@ -34,6 +34,8 @@ export function createDownloadManager({
   eligible,
   authorized,
   available = () => true,
+  transferAvailable = () => true,
+  continueInBackground = () => false,
   completed,
   concurrency = 2,
   now = Date.now,
@@ -43,6 +45,8 @@ export function createDownloadManager({
   transport: DownloadTransport;
   eligible: () => boolean;
   available?: (source: DownloadSource) => boolean;
+  transferAvailable?: (source: DownloadSource) => boolean;
+  continueInBackground?: (source: DownloadSource) => boolean;
   authorized: (source: DownloadSource) => boolean;
   completed?: (source: DownloadSource) => void;
   concurrency?: number;
@@ -57,11 +61,23 @@ export function createDownloadManager({
         { ...job, speed: 0, verifying: false } satisfies DownloadItem,
       ]),
   );
+  const recovered = new Set(
+    [...jobs.values()]
+      .filter((job) => job.kind === "provider" && job.state === "active")
+      .map((job) => job.id),
+  );
+  for (const job of jobs.values()) {
+    if (job.kind === "provider" && !transport.available?.(job)) {
+      job.state = "failed";
+      job.issue = "unavailable";
+    }
+  }
   const listeners = new Set<() => void>();
   const playback = new Map<string, Set<() => Promise<void>>>();
+  const playbackPriority = new Set<string>();
   const running = new Map<
     string,
-    { abort: AbortController; done: Promise<void> }
+    { abort: AbortController; started: Promise<void>; done: Promise<void> }
   >();
   const commands = new Map<string, Promise<void>>();
   const read = () =>
@@ -92,7 +108,9 @@ export function createDownloadManager({
     (job.expiresAt === null || job.expiresAt > now()) && authorized(job);
 
   const usable = (job: DownloadSource) =>
-    !(job.kind === "marmot" && marmotClosing) && available(job);
+    !(job.kind === "marmot" && marmotClosing) &&
+    available(job) &&
+    (job.kind !== "provider" || (transport.available?.(job) ?? false));
   const runningSession = () => phase !== "stopped";
 
   async function retirePlayback(id?: string) {
@@ -203,10 +221,13 @@ export function createDownloadManager({
       ? Math.max(0, (metered ? 1 : concurrency) - running.size)
       : 0;
     const { ready, wakeAt } = selectDownloads(
-      read().filter((job) => allowed(job) && usable(job)),
+      read().filter(
+        (job) => allowed(job) && usable(job) && transferAvailable(job),
+      ),
       new Set([...running.keys(), ...commands.keys()]),
       capacity,
       now(),
+      playbackPriority,
     );
     for (const job of ready) {
       try {
@@ -232,15 +253,17 @@ export function createDownloadManager({
 
   function run(job: DownloadItem) {
     const abort = new AbortController();
+    const started = Promise.withResolvers<void>();
     if (job.state !== "active")
       patch(job, { state: "active", issue: undefined, nativeState: "queued" });
     let sample = { time: now(), bytes: job.received };
+    let checkpointAt = sample.time;
     const done = Promise.resolve()
       .then(async () => {
         if (abort.signal.aborted || !eligible()) return;
         let result: string;
         try {
-          result = await transport.transfer(
+          const transfer = transport.transfer(
             job,
             ({ state, received, total }) => {
               const current = jobs.get(job.id);
@@ -256,7 +279,7 @@ export function createDownloadManager({
                 speed = speed ? speed * 0.65 + rate * 0.35 : rate;
                 sample = { time, bytes: received };
               }
-              jobs.set(job.id, {
+              const next = {
                 ...current,
                 received,
                 total: total ?? current.total,
@@ -264,11 +287,22 @@ export function createDownloadManager({
                 nativeState: state,
                 verifying:
                   state.startsWith("verifying") || state === "decrypting",
-              });
+              };
+              jobs.set(job.id, next);
+              if (next.kind === "provider" && time - checkpointAt >= 5_000) {
+                checkpointAt = time;
+                try {
+                  save(next);
+                } catch {
+                  // The previously saved active row can still revalidate native data.
+                }
+              }
               progressTimer ??= setTimeout(publish, 200);
             },
             abort.signal,
           );
+          started.resolve();
+          result = await transfer;
         } catch {
           result = "interrupted";
         }
@@ -283,8 +317,16 @@ export function createDownloadManager({
         if (!allowed(current)) {
           patch(current, { intent: "remove" });
           await applyControl(job.id, "remove");
-        } else if (result === "ready") finish(current);
-        else {
+        } else if (result === "ready") {
+          if (current.state !== "completed") finish(current);
+        } else if (result === "system_stopped") {
+          patch(current, {
+            state: "paused",
+            speed: 0,
+            verifying: false,
+            nativeState: undefined,
+          });
+        } else {
           if (result === "storage_blocked")
             await transport.control(current, "cancel").catch(() => undefined);
           if (jobs.get(job.id) !== current || abort.signal.aborted) return;
@@ -335,10 +377,11 @@ export function createDownloadManager({
         }
       })
       .finally(() => {
+        started.resolve();
         running.delete(job.id);
         pump();
       });
-    running.set(job.id, { abort, done });
+    running.set(job.id, { abort, started: started.promise, done });
   }
 
   function interrupt(ids: Iterable<string>) {
@@ -370,7 +413,23 @@ export function createDownloadManager({
   function sync() {
     if (!runningSession()) return;
     const foreground = eligible();
-    if (wasEligible && !foreground) interrupt(running.keys());
+    if (!foreground) {
+      const suspended = [...running].flatMap(([id, { abort }]) => {
+        const job = jobs.get(id);
+        return job && !abort.signal.aborted && !continueInBackground(job)
+          ? [id]
+          : [];
+      });
+      if (wasEligible || suspended.length) interrupt(suspended);
+    } else if (foreground) {
+      const suspended = [...running]
+        .filter(([id, { abort }]) => {
+          const job = jobs.get(id);
+          return job && !abort.signal.aborted && !transferAvailable(job);
+        })
+        .map(([id]) => id);
+      if (suspended.length) interrupt(suspended);
+    }
     wasEligible = foreground;
     pump();
   }
@@ -382,7 +441,8 @@ export function createDownloadManager({
   ) {
     const job = jobs.get(id);
     if (!job) return;
-    if (action === "remove") await retirePlayback(id);
+    if (action === "remove" || (action === "cancel" && canStream(job)))
+      await retirePlayback(id);
     const run = running.get(id);
     if (job.kind === "marmot" && run && wait) {
       run.abort.abort();
@@ -408,7 +468,9 @@ export function createDownloadManager({
         state: action === "pause" ? "paused" : "cancelled",
         intent: undefined,
         received:
-          action === "cancel" && current.kind === "http" ? 0 : current.received,
+          action === "cancel" && current.kind !== "marmot"
+            ? 0
+            : current.received,
         speed: 0,
         verifying: false,
       });
@@ -421,7 +483,15 @@ export function createDownloadManager({
     const command = Promise.resolve()
       .then(async () => {
         const job = jobs.get(id);
-        if (!job || phase === "stopped" || !usable(job)) return;
+        if (!job || phase === "stopped") return;
+        if (job.kind === "provider" && !transport.available?.(job)) {
+          if (action === "remove") {
+            await retirePlayback(id);
+            forget(id);
+          }
+          return;
+        }
+        if (!usable(job)) return;
         if (
           action === "pause" &&
           job.kind === "marmot" &&
@@ -524,12 +594,13 @@ export function createDownloadManager({
             }
             if (job.state === "active")
               patch(job, {
-                state: "queued",
+                state: recovered.has(job.id) ? "paused" : "queued",
                 speed: 0,
                 verifying: false,
                 nativeState: undefined,
               });
           }
+          recovered.delete(job.id);
         }
       }
       if (currentSession() && phase === "recovering") phase = "ready";
@@ -562,6 +633,122 @@ export function createDownloadManager({
       return;
     patch(job, { state: "queued", issue: undefined, retries: 0, retryAt: 0 });
     pump();
+  }
+
+  function canStream(source: DownloadSource) {
+    return !!transport.openProgressive && !!transport.canStream?.(source);
+  }
+
+  async function openProgressive(source: DownloadSource, signal: AbortSignal) {
+    const id = sourceId(source);
+    const result = Promise.withResolvers<
+      "active" | "completed" | "unavailable"
+    >();
+    const abort = () => result.resolve("unavailable");
+    const check = () => {
+      const job = jobs.get(id);
+      if (
+        signal.aborted ||
+        !job ||
+        job.intent ||
+        !eligible() ||
+        clearing ||
+        !usable(job) ||
+        !allowed(job) ||
+        !canStream(job)
+      )
+        return abort();
+      if (job.state === "completed") return result.resolve("completed");
+      if (!transferAvailable(job) || !isPending(job) || job.state === "paused")
+        return abort();
+      if (job.state === "active")
+        queueMicrotask(() => {
+          if (running.has(id)) result.resolve("active");
+        });
+    };
+    listeners.add(check);
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      const job = jobs.get(id);
+      if (
+        job &&
+        canStream(job) &&
+        canReorder(job) &&
+        eligible() &&
+        allowed(job)
+      ) {
+        playbackPriority.add(id);
+        if (job.retryAt > now()) patch(job, { retryAt: 0 });
+        const key = contentKey(job);
+        for (const [otherId, run] of running) {
+          const other = jobs.get(otherId);
+          if (
+            other &&
+            otherId !== id &&
+            key &&
+            contentKey(other) === key &&
+            !other.intent &&
+            !other.verifying &&
+            !playback.has(otherId)
+          ) {
+            run.abort.abort();
+            patch(other, { state: "queued", speed: 0, nativeState: undefined });
+          }
+        }
+        pump();
+      }
+      check();
+      const state = await result.promise;
+      if (state !== "active") return { kind: state } as const;
+      const run = running.get(id);
+      await run?.started;
+      const admitted = jobs.get(id);
+      if (admitted?.state === "completed")
+        return { kind: "completed" } as const;
+      if (
+        !run ||
+        !admitted ||
+        run.abort.signal.aborted ||
+        signal.aborted ||
+        admitted.intent ||
+        !eligible() ||
+        !allowed(admitted) ||
+        !transferAvailable(admitted)
+      )
+        return { kind: "unavailable" } as const;
+      const read = await transport.openProgressive?.(admitted, signal);
+      if (read) {
+        if (
+          !signal.aborted &&
+          !run.abort.signal.aborted &&
+          eligible() &&
+          allowed(admitted) &&
+          transferAvailable(admitted)
+        )
+          return { kind: "progressive", read } as const;
+        await read.release();
+      }
+      if (jobs.get(id)?.state === "completed")
+        return { kind: "completed" } as const;
+      if ((await transport.status(admitted)) === "ready") {
+        const job = jobs.get(id);
+        if (
+          job &&
+          !job.intent &&
+          !signal.aborted &&
+          eligible() &&
+          allowed(job)
+        ) {
+          if (job.state !== "completed") finish(job);
+          return { kind: "completed" } as const;
+        }
+      }
+      return { kind: "unavailable" } as const;
+    } finally {
+      listeners.delete(check);
+      signal.removeEventListener("abort", abort);
+      playbackPriority.delete(id);
+    }
   }
 
   return {
@@ -678,7 +865,13 @@ export function createDownloadManager({
           await consume(file);
       });
     },
-    holdForPlayback(source: DownloadSource, retire: () => Promise<void>) {
+    canStream,
+    openProgressive,
+    holdForPlayback(
+      source: DownloadSource,
+      retire: () => Promise<void>,
+      progressive = false,
+    ) {
       const id = sourceId(source);
       const job = jobs.get(id);
       if (
@@ -687,7 +880,9 @@ export function createDownloadManager({
         !usable(source) ||
         !allowed(source) ||
         job?.intent === "remove" ||
-        (source.kind === "http" && job?.state !== "completed")
+        (source.kind !== "marmot" &&
+          job?.state !== "completed" &&
+          !(progressive && job && !job.intent && canStream(job)))
       )
         return;
       const consumers = playback.get(id) ?? new Set();
@@ -736,6 +931,21 @@ export function createDownloadManager({
         clearing,
       ]);
     },
+    async drain() {
+      if (phase !== "stopped") {
+        interrupt(running.keys());
+        phase = "stopped";
+      }
+      clearTimeout(timer);
+      clearTimeout(progressTimer);
+      await Promise.allSettled([
+        retirePlayback(),
+        ...[...running.values()].map(({ done }) => done),
+        ...commands.values(),
+        recovery,
+        clearing,
+      ]);
+    },
     clear(clearNative: () => Promise<void>) {
       if (clearing) return clearing;
       clearing = Promise.resolve()
@@ -743,7 +953,7 @@ export function createDownloadManager({
           await retirePlayback();
           await Promise.all(
             read().map((job) =>
-              control(job.id, job.kind === "http" ? "remove" : "cancel"),
+              control(job.id, job.kind === "marmot" ? "cancel" : "remove"),
             ),
           );
           if (phase === "stopped") return;

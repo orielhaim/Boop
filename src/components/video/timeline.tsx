@@ -47,6 +47,7 @@ export function useVideoTimeline({
   onMemoryWarning,
   scrubbing,
   setScrubbing,
+  allowThumbnails = true,
 }: {
   player: VideoPlayer;
   reduceMotion: boolean;
@@ -55,6 +56,7 @@ export function useVideoTimeline({
   scrubbing: boolean;
   setScrubbing: (active: boolean) => void;
   onMemoryWarning?: (listener: () => void) => () => void;
+  allowThumbnails?: boolean;
 }) {
   const duration = player.duration;
   const [previewThumbnail, setPreviewThumbnail] = useState<VideoThumbnail>();
@@ -81,7 +83,7 @@ export function useVideoTimeline({
     () =>
       createScrubPreview(
         async (time) => {
-          if (Platform.OS === "web") return;
+          if (!allowThumbnails || Platform.OS === "web") return;
           if (player.generateScrubThumbnailAsync)
             return player.generateScrubThumbnailAsync(time);
           const [frame] = await player.generateThumbnailsAsync(time, {
@@ -99,7 +101,7 @@ export function useVideoTimeline({
           }
         },
       ),
-    [player],
+    [allowThumbnails, player],
   );
   useEffect(
     () =>

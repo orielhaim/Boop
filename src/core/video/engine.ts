@@ -21,8 +21,20 @@ export function createVideoEngine() {
         }
         player.setPlaybackDeadline(handle.expiresAt);
       }
+      const candidateMimeType =
+        handle.kind === "progressive" ? handle.mimeType.trim() : "";
+      const normalizedMimeType = candidateMimeType.toLowerCase();
+      const mimeType =
+        normalizedMimeType &&
+        normalizedMimeType !== "application/octet-stream" &&
+        !normalizedMimeType.endsWith("/*")
+          ? candidateMimeType
+          : undefined;
       loading = player.replaceAsync({
         uri: handle.uri,
+        ...(handle.kind === "progressive"
+          ? { contentType: "progressive", mimeType }
+          : {}),
         useCaching: false,
         metadata: { title },
       });

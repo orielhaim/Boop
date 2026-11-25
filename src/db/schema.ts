@@ -94,3 +94,10 @@ export const downloads = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.account, table.id] })],
 );
+
+export const torrentCache = sqliteTable("torrent_cache", {
+  id: text().primaryKey().notNull(),
+  sealed: text().notNull(),
+  bytes: integer().notNull(),
+  touched: integer().notNull(),
+});

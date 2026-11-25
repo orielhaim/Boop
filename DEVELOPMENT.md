@@ -69,9 +69,77 @@ Pause, Cancel and Remove use persisted user intents until native acknowledgment.
 
 Downloads history is reachable from Settings → Storage. With the Marmot test fixture, confirm zero binary requests before Download and verify resumed ciphertext and retained plaintext after retry. Sortables owns drag and edge scrolling for pending rows. Run `bun test tests/downloads.test.ts tests/blossom-downloads.test.ts` for queue, persistence, protocol validation and fallback regressions.
 
+### Android plugin delivery
+
+Boop requires Android 14 (API 34) and targets API 36. `app.json` configures Expo prebuild. The generated app, native modules, Torrents split, and `cargo ndk --platform` use that minimum. Leave the call and media playback foreground services registered.
+
+The Expo config plugin registers the `torrents` on-demand feature and installs SplitCompat in the generated application and activity. The base application owns the Play installation bridge and JNI declarations. The feature owns the Rust library. Install `cargo-ndk` 4.1.2 and the Rust targets for the selected Android ABIs. Gradle uses the configured NDK and builds the feature with `Cargo.lock`.
+
+Build from the project root and use bundletool to test the install flow locally. Substitute the bundletool JAR path and the connected emulator ID.
+
+```sh
+bunx expo prebuild --clean --platform android --no-install
+cd android
+./gradlew :app:bundleDebug -PreactNativeArchitectures=x86_64
+java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/debug/app-debug.aab --output=boop-local.apks --local-testing --connected-device --ks=app/debug.keystore --ks-key-alias=androiddebugkey --ks-pass=pass:android --key-pass=pass:android
+java -jar bundletool.jar install-apks --apks=boop-local.apks
+```
+
+Inspect the AAB and APK set before installing. Only the torrents ABI split should contain `libboop_torrent.so`. Connect the development client to Metro and tap **Install** next to Torrents in **Settings → Plugins**. After delivery, open the Torrents row. The enable switch becomes available once Boop verifies the JNI ABI. Compare the application process ID before and after installation to check that delivery needed no restart. A debug APK sideload without the APK set has no local delivery source. A local APK set exercises SplitCompat and the install flow without testing production Play eligibility or deferred uninstall.
+
+### Torrents
+
+The Plugin Host registers first-party code shipped with Boop. Its scoped contracts limit what a provider receives. They do not isolate this code at the operating-system level. The host matches bounded, authenticated conversation content before it dispatches to a registered provider. Chat Kit composes the resulting cards with the normal attachment and preview views. The Android Markdown projection keeps magnet destinations out of ordinary link handling.
+
+Google Play installs the feature for the device. Boop stores activation and magnet resolution preferences per identity. On tap is the default. Automatic resolution applies to eligible visible messages in a focused, foreground, unlocked conversation. Metadata resolution never admits a file transfer. Resolutions share a request by v1 infohash. Boop seals validated metadata in account SQLite and keeps up to 64 entries and 8 MiB of sealed data, including metadata pinned by retained download records.
+
+The shared DownloadManager persists an explicit download or Play & download action before admitting native work. The provider keys one job per account, infohash, and file index. It admits one file per torrent at a time. Play on a queued file promotes it while it waits and can suspend an unplayed sibling transfer to free that torrent's slot. The sibling keeps its checkpoint and original queue order.
+
+A provider can offer `openProgressive` for an already admitted job. Media sources expose a progressive handle with a byte size, MIME type, and revocable URI. Android URLs contain only an opaque native token. Expo Video routes the `boop-media` scheme through a Media3 `DataSource` registry. Media3 byte ranges open cancellable librqbit file readers on the transfer's existing managed torrent. Reads wait for verified pieces, including an extractor seek to a trailing index. The player uses Media3's buffered playback time for the timeline and separately displays verified download bytes. Scrubbing incomplete media skips thumbnail extraction. Closing the player releases its reader lease while the DownloadManager job continues.
+
+Android schedules authorized transfers as `JobScheduler` user-initiated data transfer jobs. The job service observes native execution and maintains a generic progress notification without starting another torrent or needing a JavaScript poll. Only explicitly admitted transfers can run in the background, and App Lock must be off. Metadata resolution remains foreground-only. Lock, identity replacement, and plugin revocation retire affected readers and native work. An Android user stop leaves the job paused. On an unclean process exit the manager reconciles any completed file first, then requires Resume for previously active incomplete torrent jobs. A stopped Android process does not restore its native jobs independently. Marmot and Blossom keep their existing foreground admission policy.
+
+The torrent engine's verified piece tracker controls reads. Resume hashes staged disk data again before serving it. This scan costs time on large files but avoids trusting a piece map written before the corresponding data reached durable storage. The `.engine` workspace shares staged pieces between requests for the same torrent. Cancel clears that workspace when no sibling job needs it. Publication uses a hard link and atomic rename in the account's retained directory. If the filesystem denies hard links, the verified file moves into place with an atomic same-volume rename. Both paths preserve the inode and avoid a payload copy. Existing readers switch to the retained file at their current offsets, then the engine releases its handle. New playback sessions use the retained file directly. Expo Video handles MP4, Matroska, WebM, and other formats supported by the installed Media3 extractors and device decoders. Individual codec support depends on the device.
+
+Blossom's whole-file hash verifies only after the whole blob is available. A streaming Blossom provider would need authenticated range hashes or an equivalent trusted proof for each exposed range. A Marmot implementation would need MDK to expose seekable, authenticated plaintext ranges and enforce the original message authority and lease revocation on every reader.
+
+The feature uses librqbit 9.1.0 with Rust TLS and upload disabled at compile time and runtime. It supports v1 magnets and the v1 part of hybrid torrents. It uses public DHT, trackers and TCP peer connections. LAN discovery and peer listeners are disabled. Cargo pins the [Boop rqbit integration branch](https://github.com/orielhaim/rqbit/tree/boop/9.1.0) to an immutable revision based on [the published 9.1.0 source](https://github.com/ikatson/rqbit/commit/4309d38769ef93f6ee4f01a1ab147009a197fa8f). The fork enforces the address policy at the actual connection boundary and keeps the metadata caps, the debug-only loopback fixture feature and the public FileStream export. Boop builds with default features disabled, so optional rqbit tooling stays out of the Android split. Tracker redirects and DNS lookups use the same policy. The engine validates metadata and filesystem paths before opening its private staging area. It publishes verified files atomically without copying the payload, and Boop can open completed files after the plugin is disabled.
+
+From the repository root, run the native checks and the relevant JavaScript tests:
+
+```sh
+cargo fmt --manifest-path extensions/torrents/rust/Cargo.toml --check
+cargo clippy --locked --manifest-path extensions/torrents/rust/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path extensions/torrents/rust/Cargo.toml
+cargo test --locked --manifest-path extensions/torrents/rust/Cargo.toml --lib --features torrent-test-fixture
+bun test tests/plugins.test.ts tests/downloads.test.ts tests/blossom-downloads.test.ts
+```
+
+Run `./gradlew :boop-plugins:connectedDebugAndroidTest -PreactNativeArchitectures=x86_64` from `android` with the intended Android 14, 15, or 16 test device selected. The Rust loopback fixture checks a blocked read, cancels the reader while keeping the transfer, and reads at a byte offset through the same lease before and after publication. All 11 instrumentation tests passed on each of the three x86_64 emulators. They cover 64-bit offsets, range and EOF semantics, interrupted loaders, and Media3 decoding and seeking through the managed data source with a trailing-index MP4, Matroska, and WebM. The decoder tests use generated fixture bytes. The UIDT test uses Android's real JobScheduler and notification action with an instrumented transfer. It verifies that observation continues after the activity backgrounds and the notification's Pause action stops the registered transfer.
+
+On the Windows host, the PR #9 loopback test took 2.50 seconds. The progressive fixture deliberately paused and resumed the seeder. On Windows, one run observed 0.205 ms for blocked-read cancellation, 14.785 seconds for the first 8 KiB offset read, 0.311 ms for a 4 KiB read after publication, and 14.992 seconds to finish the transfer. On the three Android emulators, the same Rust fixture passed all four tests on each device. Blocked-read cancellation took 0.296 to 0.412 ms, the first offset read took 13.56 to 18.22 seconds, and the read after publication took 0.089 to 0.146 ms. The seeder pause changes the workload relative to the baseline. The Android shell fixture also verified atomic publication on a filesystem that denies hard links.
+
+The emulator timings below each record one run. The first measurement starts at Media3 preparation. The second includes the seek to 80 seconds and at least 100 ms of resumed playback. These tests ran with all three emulators active and used local fixture bytes, so the timings exclude torrent acquisition.
+
+| Emulator   | MP4 first frame / seek + playback | Matroska first frame / seek + playback | WebM first frame / seek + playback |
+| ---------- | --------------------------------: | -------------------------------------: | ---------------------------------: |
+| Android 14 |                    829 / 1,497 ms |                         1,447 / 962 ms |                       676 / 457 ms |
+| Android 15 |                  1,007 / 1,557 ms |                       2,797 / 1,168 ms |                       640 / 354 ms |
+| Android 16 |                    966 / 1,783 ms |                       2,546 / 2,636 ms |                       454 / 301 ms |
+
+Use `:app:bundleRelease` to check the minified release AAB. Check the R8 seeds for the `TorrentNative` JNI methods and run the NDK's `llvm-readelf -lW` on the feature library for each 64-bit ABI. Verify that its load segments have 16 KiB alignment. Use `zipalign -c -P 16 -v 4` on the generated feature APK. Production install, confirmation and physical removal require a Play-installed build. Local delivery does not exercise those Play Store decisions.
+
+The x86_64 debug and minified release bundles built successfully. The local R8 build used a 6 GiB Gradle heap override. Bundletool confirmed on-demand delivery and found the torrent library only in the feature module. The x86_64 torrent ELF and feature APK passed 16 KiB alignment checks. Against the PR #9 x86_64 release APK set, the base master was 38.43 MB versus 38.45 MB, the base native split was 195.70 MB in both sets, and the torrent ABI split was 13.30 MB versus 13.05 MB. An offline Android 15 emulator installed that split through Plugins and completed the JNI handshake in the same app process.
+
+On `Boop_Task16_Fresh` (Android 17, API 37), the debug app received a Marmot message from a separate fixture identity containing a [WebTorrent Sintel magnet](https://webtorrent.io/free-torrents). Resolve loaded all 11 file entries from the public swarm. The card was verified below the received text. Play & download rendered the MP4 while the same transfer displayed 129.1 MB of 129.2 MB downloaded. The video subsequently completed. An individual subtitle and the nine other files selected as a batch also reached Open file in the same chat. A second video download exercised the icon and live percentage ring.
+
+On that emulator, the four Rust fixture tests, seven Media3 data-source tests, and UIDT test passed. The three synthetic decoder tests failed at first-frame rendering. Logcat reported Codec2 buffer-pool failures in the emulator's H.264 and VP9 decoders during that run.
+
+Multi-gigabyte throughput and physical-device memory, battery, and thermal measurements remain unverified.
+
 ### Voice transcription
 
-Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. Android 13 can return estimated word timings. Android 14 and later can use the installed recognizer's language detection and switching. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.
+Rebuild the development client after installing `@hzblj/expo-speech`. The config plugin registers the older iOS speech recognition description and leaves microphone configuration to Boop's recording and calling modules. On Android, the installed recognizer determines whether language detection and switching are available. Before iOS 26, Boop uses SFSpeechRecognizer with speech authorization. iOS 26 and later use SpeechAnalyzer and system-managed language models on supported devices. Verify recognition and model installation on physical iOS hardware.
 
 The protected session owns one transcription worker. It admits verified retained voice notes and leases each file only for local processing. Final text, segments and word timings are sealed with AES-GCM using a device-only SecureStore key for the current identity. Clearing all transcriptions deletes that key. The app omits the native transcript cache key for message audio.
 

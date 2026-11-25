@@ -1,0 +1,35 @@
+[package]
+name = "boop-torrent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+torrent-test-fixture = ["librqbit/test-loopback"]
+
+[dependencies]
+base64 = "=0.22.1"
+getrandom = "=0.3.4"
+jni = "=0.22.4"
+librqbit = { git = "https://github.com/orielhaim/rqbit.git", rev = "eea2d28d1743a1b392c4b0ea3686d4c664d6c1f9", version = "=9.1.0", default-features = false, features = ["disable-upload", "rust-tls"] }
+librqbit-core = { git = "https://github.com/orielhaim/rqbit.git", rev = "eea2d28d1743a1b392c4b0ea3686d4c664d6c1f9", version = "=9.1.0", default-features = false }
+serde_json = "=1.0.149"
+tokio = { version = "=1.49.0", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
+tokio-util = { version = "=0.7.17", features = ["rt"] }
+url = "=2.5.9"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

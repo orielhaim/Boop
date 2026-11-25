@@ -20,7 +20,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   expect(db.query("PRAGMA user_version").values()).toEqual([[4]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
-  ).toEqual([[3]]);
+  ).toEqual([[4]]);
   expect(
     db
       .query(
@@ -36,6 +36,7 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
     "peer_permissions",
     "settings",
     "speech_jobs",
+    "torrent_cache",
   ]);
   db.run("INSERT INTO contacts (public_key, name) VALUES (?, 'Alice')", [
     peerKey,
@@ -142,6 +143,8 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "language/voice-transcription/index",
     "language/voice-transcription/models",
     "playback",
+    "plugins",
+    "plugins/torrents",
     "privacy",
     "privacy/app-lock",
     "privacy/blocked",
