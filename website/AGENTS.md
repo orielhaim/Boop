@@ -1,10 +1,5 @@
-# Fumadocs
+# Boop website
 
-This site is built with [Fumadocs](https://fumadocs.dev) on Astro. The APIs and conventions of Fumadocs may differ from your training data, so check its docs for the task at hand:
+Keep Astro and Fumadocs. `content/docs/privacy.mdx` supplies the public `/privacy` page. Check app data flows before editing the policy.
 
-- Writing pages: https://fumadocs.dev/docs/astro/markdown.md
-- Organizing pages and folders: https://fumadocs.dev/docs/astro/page-conventions.md
-- Customizing the UI: https://fumadocs.dev/docs/astro/guides/customize-ui.md
-- Changing the theme and colors: https://fumadocs.dev/docs/ui/theme.md
-- Upgrading Fumadocs: https://fumadocs.dev/docs/astro/upgrade.md
-- Other tasks: https://fumadocs.dev/llms.txt lists every docs page.
+From `website`, run `bun install --frozen-lockfile`, `bun run types:check`, and `bun run build`. See the [Fumadocs Astro reference](https://fumadocs.dev/docs/astro/markdown.md) for content changes. Deploy with `bun run deploy` when authorized.

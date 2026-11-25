@@ -1,9 +1,10 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { router, useIsFocused } from "expo-router";
+import { router, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Linking, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useCallAddress } from "@/components/calls/use-call-address";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { Action, Empty, Ink, Screen } from "@/components/ui/kit";
 import { parsePublicIdentity } from "@/core/identity/keys";
@@ -13,11 +14,16 @@ import { radius, space, useTheme } from "@/theme";
 export default function ScanAddress() {
   const { t } = useTranslation(namespaces);
   const focused = useIsFocused();
+  const { action } = useLocalSearchParams<{ action?: string }>();
+  const callAddress = useCallAddress();
+  const forCall = action === "call";
   const [permission, requestPermission] = useCameraPermissions();
   const [error, setError] = useState("");
   const locked = useRef(false);
   const { colors } = useTheme();
-  const header = <ScreenHeader title={t("navigation:scan")} />;
+  const header = (
+    <ScreenHeader title={t(forCall ? "calls:scanToCall" : "navigation:scan")} />
+  );
 
   if (!permission?.granted)
     return (
@@ -55,7 +61,22 @@ export default function ScanAddress() {
             barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
             onMountError={() => setError(t("contacts:cameraUnavailable"))}
             onBarcodeScanned={({ data }) => {
-              if (locked.current) return;
+              if (!focused || locked.current) return;
+              if (forCall) {
+                const failure = callAddress(data);
+                if (failure) {
+                  setError(
+                    t(
+                      failure === "contacts:invalidAddress"
+                        ? "contacts:invalidQr"
+                        : failure,
+                    ),
+                  );
+                } else {
+                  locked.current = true;
+                }
+                return;
+              }
               const result = parsePublicIdentity(data);
               const key = result?.key;
               if (!key) {

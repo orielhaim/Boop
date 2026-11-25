@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 const version = "0.19.0";
@@ -41,11 +41,22 @@ const stamp = join(dest, "source.txt");
 const abiStamp = (abi: string) => join(dest, `source-${abi}.txt`);
 const abiLibrary = (abi: string) =>
   join(dest, "jniLibs", abi, "libmarmot_uniffi.so");
+const kotlinBinding = join(
+  dest,
+  "kotlin",
+  "dev",
+  "ipf",
+  "marmotkit",
+  "marmot_uniffi.kt",
+);
 async function exists(path: string) {
   return Bun.file(path).exists();
 }
 async function matches(path: string) {
   return (await exists(path)) && (await readFile(path, "utf8")) === provenance;
+}
+async function androidAbiReady(abi: string) {
+  return (await exists(abiLibrary(abi))) && (await matches(abiStamp(abi)));
 }
 async function built() {
   if (!(await matches(stamp))) return false;
@@ -57,21 +68,10 @@ async function built() {
         exists(join(dest, "PrivacyInfo.xcprivacy")),
       ])
     ).every(Boolean);
-  if (
-    !(await exists(
-      join(dest, "kotlin", "dev", "ipf", "marmotkit", "marmot_uniffi.kt"),
-    ))
-  )
-    return false;
   return (
-    await Promise.all(
-      abis.map((abi) =>
-        Promise.all([exists(abiLibrary(abi)), matches(abiStamp(abi))]).then(
-          (result) => result.every(Boolean),
-        ),
-      ),
-    )
-  ).every(Boolean);
+    (await exists(kotlinBinding)) &&
+    (await Promise.all(abis.map(androidAbiReady))).every(Boolean)
+  );
 }
 if (await built()) {
   console.info(dest);
@@ -210,39 +210,44 @@ if (platform === "ios") {
     process.env.OPENSSL_SRC_PERL ??
     ((await exists(msysPerl)) ? msysPerl : perl);
   const kotlin = join(dest, "kotlin");
-  run(
-    [
-      "cargo",
-      "build",
-      "--locked",
-      "--release",
-      "-p",
-      "marmot-uniffi",
-      "--features",
-      "cli",
-    ],
-    tree,
-    env,
-  );
-  run(
-    [
-      join(targetDir, "release", "uniffi-bindgen.exe"),
-      "generate",
-      "--library",
-      join(targetDir, "release", "marmot_uniffi.dll"),
-      "--language",
-      "kotlin",
-      "--config",
-      join(crate, "uniffi.toml"),
-      "--no-format",
-      "--out-dir",
-      kotlin,
-    ],
-    tree,
-    env,
-  );
-  await cp(join(crate, "kotlin-support"), kotlin, { recursive: true });
+  if (!(await matches(stamp)) || !(await exists(kotlinBinding))) {
+    await rm(stamp, { force: true });
+    run(
+      [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "marmot-uniffi",
+        "--features",
+        "cli",
+      ],
+      tree,
+      env,
+    );
+    run(
+      [
+        join(targetDir, "release", "uniffi-bindgen.exe"),
+        "generate",
+        "--library",
+        join(targetDir, "release", "marmot_uniffi.dll"),
+        "--language",
+        "kotlin",
+        "--config",
+        join(crate, "uniffi.toml"),
+        "--no-format",
+        "--out-dir",
+        kotlin,
+      ],
+      tree,
+      env,
+    );
+    await cp(join(crate, "kotlin-support"), kotlin, { recursive: true });
+    await writeFile(stamp, provenance);
+  }
   for (const abi of abis) {
+    if (await androidAbiReady(abi)) continue;
     const target = androidTargets.get(abi) ?? abi;
     const targetKey = target.replaceAll("-", "_");
     const cargoKey = targetKey.toUpperCase();
@@ -290,10 +295,12 @@ if (platform === "ios") {
     );
     const jni = join(dest, "jniLibs", abi);
     await mkdir(jni, { recursive: true });
+    await rm(abiStamp(abi), { force: true });
     await cp(
       join(targetDir, target, "release", "libmarmot_uniffi.so"),
       join(jni, "libmarmot_uniffi.so"),
     );
+    await writeFile(abiStamp(abi), provenance);
   }
 }
 for (const abi of abis) {

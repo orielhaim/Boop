@@ -60,7 +60,9 @@ function DockNavigator() {
   const chatsEnabled = useChatsEnabled();
   const showIdentitySheet = useIdentitySheet();
   const [chatsVisible, setChatsVisible] = useState(true);
-  const [peopleVisible, setPeopleVisible] = useState(true);
+  const [peopleSection, setPeopleSection] = useState<"contacts" | "calls">(
+    "contacts",
+  );
   const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
   const defaultScreen = useAppPreferences((state) => state.defaultScreen);
   const pathname = usePathname();
@@ -211,17 +213,62 @@ function DockNavigator() {
   );
   const { state, NavigationContent } = useTabsWithChildren({ children: dock });
   const active = state.routes[state.index]?.name;
+  const callsActive =
+    (active === "calls" && separateCallsTab) ||
+    (active === "people" && !separateCallsTab && peopleSection === "calls");
   const showFab =
     !keyboardVisible &&
     ((active === "index" && chatsEnabled && chatsVisible) ||
-      (active === "people" && peopleVisible));
+      active === "people" ||
+      callsActive);
+  const actionColor = colors.outgoingInk;
+  const scanAction = {
+    label: t("contacts:scanQr"),
+    icon: <Icon name="qr" color={actionColor} />,
+    onSelect: () =>
+      router.push(
+        callsActive
+          ? { pathname: "/scan", params: { action: "call" } }
+          : "/scan",
+      ),
+  };
+  const fabProps =
+    active === "people" || callsActive
+      ? {
+          mode: "menu" as const,
+          label: callsActive
+            ? t("calls:newCall")
+            : t("contacts:contactActions"),
+          actions: callsActive
+            ? [
+                scanAction,
+                {
+                  label: t("calls:enterId"),
+                  icon: <Icon name="keyboard" color={actionColor} />,
+                  onSelect: () => router.push("/dial-address"),
+                },
+              ]
+            : [
+                {
+                  label: t("navigation:addContact"),
+                  icon: <Icon name="addPerson" color={actionColor} />,
+                  onSelect: () => router.push("/add-contact"),
+                },
+                scanAction,
+              ],
+        }
+      : {
+          mode: "action" as const,
+          label: t("chatKit:labels.chatListNewChat"),
+          onPress: () => showIdentitySheet("newConversation"),
+        };
 
   return (
     <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
       <View style={styles.navigator}>
         <NavigationContent>
           <TabFabVisibility.Provider
-            value={{ setChatsVisible, setPeopleVisible }}
+            value={{ setChatsVisible, peopleSection, setPeopleSection }}
           >
             <GlassBackdropTarget>
               <DirectionalTabs
@@ -240,33 +287,7 @@ function DockNavigator() {
             >
               <View pointerEvents="box-none" style={styles.fabContent}>
                 <MorphFab
-                  {...(active === "people"
-                    ? {
-                        mode: "menu",
-                        label: t("contacts:contactActions"),
-                        actions: [
-                          {
-                            label: t("navigation:addContact"),
-                            icon: (
-                              <Icon
-                                name="addPerson"
-                                color={colors.outgoingInk}
-                              />
-                            ),
-                            onSelect: () => router.push("/add-contact"),
-                          },
-                          {
-                            label: t("contacts:scanQr"),
-                            icon: <Icon name="qr" color={colors.outgoingInk} />,
-                            onSelect: () => router.push("/scan"),
-                          },
-                        ],
-                      }
-                    : {
-                        mode: "action",
-                        label: t("chatKit:labels.chatListNewChat"),
-                        onPress: () => showIdentitySheet("newConversation"),
-                      })}
+                  {...fabProps}
                   closeLabel={t("common:close")}
                   rtl={direction === "rtl"}
                   trigger={

@@ -17,10 +17,10 @@ test("fresh baseline keeps application state and enforces contact uniqueness", (
   using db = new Database(":memory:");
   initializeTestDatabase(db);
   initializeTestDatabase(db);
-  expect(db.query("PRAGMA user_version").values()).toEqual([[4]]);
+  expect(db.query("PRAGMA user_version").values()).toEqual([[5]]);
   expect(
     db.query("SELECT count(*) FROM __drizzle_migrations").values(),
-  ).toEqual([[4]]);
+  ).toEqual([[1]]);
   expect(
     db
       .query(
@@ -99,6 +99,7 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
   expect(root?.children.map((route) => route.route).sort()).toEqual([
     "(messenger)",
     "call/[key]",
+    "dial-address",
     "scan",
   ]);
   const messenger = root?.children.find(

@@ -45,9 +45,9 @@ export function MorphFab(
   const { label, closeLabel, trigger, rtl, mode } = props;
   const actions = props.mode === "menu" ? props.actions : noActions;
   const { colors, reduceMotion } = useTheme();
-  const [menuOpen, setOpen] = useState(false);
-  const open = mode === "menu" && menuOpen;
-  if (mode === "action" && menuOpen) setOpen(false);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const open = mode === "menu" && openMenu === label;
+  if (openMenu !== null && !open) setOpenMenu(null);
   const progress = useSharedValue(0);
   const geo = buildGeo({
     triggerSize: { w: triggerSize, h: triggerSize },
@@ -74,7 +74,7 @@ export function MorphFab(
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
-        setOpen(false);
+        setOpenMenu(null);
         return true;
       },
     );
@@ -91,7 +91,7 @@ export function MorphFab(
         <Pressable
           accessible={false}
           importantForAccessibility="no"
-          onPress={() => setOpen(false)}
+          onPress={() => setOpenMenu(null)}
           style={StyleSheet.absoluteFill}
         />
       )}
@@ -111,7 +111,7 @@ export function MorphFab(
               geo={geo}
               progress={progress}
               open={open}
-              onClose={() => setOpen(false)}
+              onClose={() => setOpenMenu(null)}
             />
           ))}
           <Pressable
@@ -123,7 +123,7 @@ export function MorphFab(
             onPress={() => {
               tapFeedback();
               if (props.mode === "action") props.onPress();
-              else setOpen(!open);
+              else setOpenMenu(open ? null : label);
             }}
             style={[
               styles.trigger,

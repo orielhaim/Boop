@@ -2,13 +2,7 @@ import { CircularList } from "@/components/ui/molecules/circular-list";
 import Transition from "react-native-screen-transitions";
 import { useMinimizeOnScroll } from "expo-glass-tabs";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Keyboard, View, useWindowDimensions } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -65,14 +59,11 @@ export function PeopleDirectory() {
   const onScroll = useMinimizeOnScroll();
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
-  const setPeopleFabVisible = useTabFabVisibility()?.setPeopleVisible;
+  const tabs = useTabFabVisibility();
   const favoritesDisplay = useAppPreferences((state) => state.favoritesDisplay);
   const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
-  const [section, setSection] = useState<"contacts" | "calls">("contacts");
+  const section = tabs?.peopleSection ?? "contacts";
   const showCalls = !separateCallsTab && section === "calls";
-  useLayoutEffect(() => {
-    setPeopleFabVisible?.(!showCalls);
-  }, [setPeopleFabVisible, showCalls]);
   const { db, lock, privacy, profiles } = useLocal();
   const contacts = useContacts();
   const enabled = useChatsEnabled();
@@ -202,7 +193,7 @@ export function PeopleDirectory() {
               if (next !== "contacts" && next !== "calls") return;
               if (next === "calls") Keyboard.dismiss();
               tapFeedback();
-              setSection(next);
+              tabs?.setPeopleSection(next);
             }}
           >
             <GlassSegmentedControlItem value="contacts">

@@ -20,7 +20,7 @@
     },
     "android": {
       "allowBackup": false,
-      "versionCode": 5,
+      "versionCode": 6,
       "adaptiveIcon": {
         "backgroundColor": "#414DC3",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -130,6 +130,7 @@
       "expo-font",
       "react-native-quick-crypto",
       "./plugins/with-call-tones.js",
+      "./plugins/with-android-release.js",
       "./plugins/with-system-calling.js",
       "./plugins/with-plugin-delivery.js",
       "./plugins/with-android-back-navigation.js",

@@ -395,6 +395,10 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
                     presentation: "modal",
                   }}
                 />
+                <Stack.Screen
+                  name="dial-address"
+                  options={{ headerShown: false, presentation: "modal" }}
+                />
               </Stack>
               {!obscured && <CallIndicator />}
             </View>

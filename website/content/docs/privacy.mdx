@@ -1,76 +1,39 @@
 ---
 title: Privacy Policy
-description: How Boop handles your identity, messages, calls, and device data.
+description: How Boop handles identities, messages, calls, and device data.
 ---
 
-This policy explains how Boop, the Android and iOS messaging and calling app developed by Oriel Haim, handles information. Boop uses Nostr for identity, message delivery, and call setup, and WebRTC for direct calls.
+Boop is an Android and iOS messenger developed by Oriel Haim. Your device manages your Nostr identity. Independent relays and other services carry traffic. Boop has no developer-operated account, messaging, or calling backend and includes no developer-operated analytics, advertising, or crash reporting.
 
-## Information Boop handles
+## Identity and local data
 
-- **On your device.** Boop stores your identity, saved Boop contacts, conversation history, drafts, pending sends and requests, reactions, call history, and settings.
-- **With other users.** The people you contact receive your public address and the messages you send them. Authenticated call participants receive the audio and any video you share with them.
-- **Through outside services.** Nostr relays deliver messages and call signaling, STUN services help establish direct calls, drand provides public time-lock signals, and Google ML Kit supports optional on-device translation.
-- **By the developer.** Boop has no developer-operated account, message, or call backend. The app does not send those records to the developer and includes no developer-operated analytics, advertising, or crash-reporting integration. Independent services can still receive data as described below.
+Boop creates or imports your key on the device and keeps it in the operating system's secure key storage. Your public key is your shareable address. Profile fields you publish are public Nostr data. Local contacts, nicknames, history, drafts, call records, preferences, and downloaded files stay in app storage. Call history can include participants, times, duration, and outcome.
 
-## Local storage and cryptographic identity
+Digital SIM exports a passphrase-encrypted copy of your identity key. You choose where to save it. Recovering the key alone restores your address. Conversation recovery depends on Marmot device state and available history. Boop cannot recover a lost key or passphrase.
 
-Boop generates a Nostr key pair on your device unless you import an existing identity. There is no registration with the developer and no email address, phone number, or account password required. Your public key is the address you share by text or QR code. Boop uses your private key to sign events and decrypt messages and holds it in the operating system's secure storage.
+## Messages, media, and calls
 
-Digital SIM lets you export a passphrase-encrypted copy of your private key using NIP-49. Your device creates the backup and you choose where to save or share it. The backup contains the key only. Imported keys are processed on your device. Keep your key and backup passphrase safe. The developer cannot recover them.
+Marmot uses MLS to encrypt chats and groups for members. Nostr relays can store ciphertext and observe connection IPs, timing, event sizes, and routing fields. Relays you authenticate to can learn your public key. Boop uses configured Blossom servers for encrypted attachments and group images. Recipients receive messages and media you send, including location when you choose to share it. Public profile media can also be hosted on Blossom.
 
-Boop uses a local SQLite database for contacts you add by public address, chat and call records, relay settings, language and appearance preferences, and privacy choices such as blocks, approvals, and camera consent. Call history can include participants' public keys, timestamps, duration, and outcome. Boop's address book is separate from your device's system contacts.
+Calls use encrypted Nostr signaling and direct WebRTC media between authenticated participants. Peers may learn your network addresses. STUN services receive IP addresses, ports, and request timing to help establish calls. Boop keeps call records locally and does not record call audio or video.
 
-## Messages and decentralized delivery
+Open Later fetches and verifies public drand beacons. Beacon requests expose connection metadata and the requested round to the service. They contain no message content or identity keys. Loading profile images, link previews, Nostr identifiers, or public files can contact independent websites or media hosts, which can log requests.
 
-Boop sends one-to-one text messages and supported reactions using NIP-17. NIP-44 encrypts the content end to end, and NIP-59 puts it in a gift-wrapped event whose outer signing key is temporary. The recipient decrypts it locally. Boop can also send a separately encrypted copy to your own inbox so your identity can recover retained messages. Your device stores decrypted history in its local database. Recovery depends on what the relays still hold.
+If you enable Torrents, resolving a magnet can disclose your IP address and torrent interest to trackers, DHT nodes, and peers. Boop downloads torrent files only after you request them. Metadata resolution follows your plugin settings.
 
-Independent Nostr relays carry and may store encrypted messages. The default inbox relays are nos.lol and relay.primal.net, and purplepag.es is a default relay-list discovery service. You can change the configured relays. Boop looks up the recipient's published inbox list and may send to relays they selected. Public inbox listings associate Nostr addresses with relay URLs. Inbox operators may also learn your public key when you authenticate. Operators can observe connection IP addresses, traffic timing, event sizes, and outer event fields such as recipient keys and timestamps.
+## Permissions and optional processing
 
-Open Later adds a separate time lock before sending the encrypted message. To open it, Boop requests and verifies a public Quicknet beacon from drand using api.drand.sh, api2.drand.sh, api3.drand.sh, or drand.cloudflare.com. These requests can disclose your IP address, request time, and requested public round. They carry no message text, ciphertext, or identity keys.
+- **Microphone and camera.** Used for calls, recording media you choose to send, and scanning address QR codes. An ongoing call may use its active microphone or camera in the background where the operating system permits it.
+- **Files and location.** Boop opens files you select, saves media you choose to keep, and accesses your current location when you choose to share it.
+- **Bluetooth, notifications, and playback.** Boop uses Bluetooth for audio routing and system controls and notifications for calls, transfers, and playback. Background audio and picture-in-picture let you continue playback outside the app.
+- **App Lock.** Device authentication returns a result to Boop. Biometric templates and device credentials stay with the operating system. App Lock adds interface protection only.
 
-Chats support text and emoji. The app does not transfer file attachments, photos, or voice notes in messages.
-
-## Voice and video calls
-
-Boop sends encrypted invitations and connection setup over Nostr inbox relays. Setup can include network addresses and connection details inside the encrypted signaling. Authenticated participants exchange encrypted audio and optional video directly over WebRTC, including in multiparty calls. Other participants may learn your network addresses. Boop does not record or store call audio or video.
-
-WebRTC uses public STUN servers operated by Google and Cloudflare to discover usable network addresses. These services can see your public IP address, port, and request timing. Boop configures no TURN media relay or centralized conference server. The call may fail when a direct connection is unavailable.
-
-## Device permissions
-
-- **Microphone.** Boop uses it to transmit your voice in calls, including an ongoing call in the background where the operating system permits it.
-- **Camera.** Boop uses it to scan address QR codes and when you enable your camera in a call. Call video is sent to authorized participants after the applicable viewing consent.
-- **Bluetooth and system call controls.** On Android, Boop can use Bluetooth access to route call audio and system call controls and notifications to show and manage an ongoing call.
-- **Device authentication.** Optional App Lock asks the operating system to verify you using biometrics or device credentials where supported. Boop receives the authentication result and does not receive biometric templates or your device credential.
-
-You can manage microphone, camera, and applicable Bluetooth permissions in your device settings. Denying permission disables the related capability.
-
-## Third-party services and sharing
-
-Relay, STUN, and drand operators process the network data described above to deliver messages and signaling, establish connections, or serve public beacons. Those operators control their own logs and retention.
-
-Optional chat translation processes visible incoming text on the device with Google ML Kit. Boop stores the translation locally and does not send message text or translations to Google. The SDK can contact Google for model downloads and updates and may send usage and performance metrics. See the [Google ML Kit terms and privacy information](https://developers.google.com/ml-kit/terms).
-
-If you choose to share an address, copy a message, or save or share an encrypted key backup, the destination you choose may keep its own copy. This website uses no tracking scripts or analytics cookies. The hosting provider may process request information such as IP addresses and requested pages to serve and protect the site.
-
-## Security and encryption
-
-Boop verifies Nostr signatures and authenticates call peers before sending them media. Message encryption protects content in transit and while stored as ciphertext by relays. Communications are readable by their intended recipients, who may keep or share them. A compromised device or private key can expose your data. App Lock limits access through the app interface. It does not encrypt the local chat database.
+Optional chat translation runs on-device with Google ML Kit. The SDK can download models and send usage or performance metrics. [Google ML Kit terms](https://developers.google.com/ml-kit/terms). Optional voice transcription processes verified local voice notes on-device and stores text and timings in encrypted local storage. Recognizers and language models depend on the device.
 
 ## Retention and deletion
 
-Boop keeps local history and settings for use on the device. Deleting a message in Boop removes its local content and retains a minimal deletion record so relay replay does not restore it. You can clear cached translations separately. Importing a different identity through Digital SIM with confirmation resets identity-owned chats, contacts, calls, and privacy data on that device and retires the previous key from the app. On Android, clearing Boop's app storage removes its local app data. Save any key backup you intend to keep before removing the local identity.
+Local history and settings stay on the device until removed. Deleting a message can leave a minimal record to prevent replay. You can clear downloads, previews, and transcripts in **Settings → Storage**. Replacing an identity retires the previous account and its app data on the device once the replacement is ready. On Android, clearing app storage removes local app data. Save any backups you intend to keep first.
 
-These actions affect the device only. Independently stored encrypted relay events, public relay listings, recipients' copies, operating-system backups, and exports may remain. Boop cannot require independent services to remove their copies or guarantee secure erasure of local storage.
+Recipients, independent relays and media hosts, exports, and operating-system backups may retain their own copies. Their operators control their data and logs. Your chosen destination can keep copies of anything you share or export.
 
-## Children's privacy
-
-Boop is a general-purpose communication app. It is not specifically designed for children.
-
-## Changes to this policy
-
-When this policy changes, the updated text and effective date will appear at [boop.orielhaim.com/privacy](/privacy).
-
-## Contact
-
-Boop is developed by Oriel Haim.
+This website uses no tracking scripts or analytics cookies. Its hosting provider may log requests to serve and protect the site. Boop is a general-purpose messenger and is not designed specifically for children.
