@@ -1,4 +1,4 @@
-import { useMinimizeOnScroll } from "expo-glass-tabs";
+import { useMinimizeOnScroll } from "@/components/navigation/dock-motion";
 import { Redirect } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";

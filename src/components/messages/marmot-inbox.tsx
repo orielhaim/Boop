@@ -2,7 +2,7 @@ import { DownloadsIndicator } from "@/components/downloads/indicator";
 import { CountBadge } from "@/components/kinetik/count-badge";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { ScreenHeader } from "@/components/navigation/screen-header";
-import { useMinimizeOnScroll } from "expo-glass-tabs";
+import { useMinimizeOnScroll } from "@/components/navigation/dock-motion";
 import {
   ChatList,
   ChatListCell,

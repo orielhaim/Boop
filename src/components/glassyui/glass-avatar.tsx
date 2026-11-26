@@ -14,7 +14,7 @@ import { avatarGradient, motion, type GlassTone } from "@/theme/tokens";
 import { useGlassTheme } from "./glass-provider";
 import { wrapPlainText } from "./lib/plain-text";
 
-export type GlassAvatarSize = "xs" | "sm" | "md" | "lg" | "xl" | "xxl";
+export type GlassAvatarSize = "xs" | "sm" | "md" | "dock" | "lg" | "xl" | "xxl";
 
 export type GlassAvatarStatus = "online" | "away" | "busy" | "offline";
 type AvatarSource = ComponentProps<typeof Image>["source"];
@@ -41,6 +41,7 @@ const SIZE = {
   xs: { diameter: 24, dot: 7 },
   sm: { diameter: 32, dot: 8 },
   md: { diameter: 40, dot: 10 },
+  dock: { diameter: 46, dot: 11 },
   lg: { diameter: 56, dot: 14 },
   xl: { diameter: 80, dot: 18 },
   xxl: { diameter: 96, dot: 20 },

@@ -196,14 +196,14 @@ function buildTheme(name: ThemeName, colors: typeof lightColors) {
     glass: {
       dock: dark
         ? {
-            tint: "rgba(30, 52, 79, 0.30)",
-            rim: "rgba(180, 205, 240, 0.21)",
-            opaque: "#242F40",
+            tint: "rgba(29, 29, 34, 0.38)",
+            rim: "rgba(255, 255, 255, 0.20)",
+            opaque: "#26262B",
           }
         : {
-            tint: "rgba(212, 226, 247, 0.52)",
-            rim: "rgba(63, 90, 133, 0.23)",
-            opaque: "#E0E8F4",
+            tint: "rgba(255, 255, 255, 0.32)",
+            rim: "rgba(255, 255, 255, 0.72)",
+            opaque: "#F5F5F7",
           },
       lens: dark
         ? {

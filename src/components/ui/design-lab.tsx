@@ -1,14 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
-import { GlassSurface } from "@/components/glassyui/glass-surface";
-import {
-  GlassBackdropProvider,
-  GlassBackdropTarget,
-  useGlassBackdropTarget,
-} from "@/components/glassyui/lib/glass-backdrop";
+import { GlassEngineLab } from "@/components/glassyui/glass-engine-lab";
 import {
   ListGroup,
   ListRow,
@@ -64,6 +59,8 @@ function DesignLab({ close }: { close: () => void }) {
               rtl={rtl}
             />
           </ListGroup>
+          <Section>{t("settings:designLabGlass")}</Section>
+          <GlassEngineLab />
           <InteractionDemo rtl={rtl} />
           <CountBadgeDemo />
           {(["light", "dark"] satisfies ThemeName[]).map((theme) => (
@@ -129,9 +126,6 @@ function DesignLab({ close }: { close: () => void }) {
             title={t("settings:designLab")}
             detail={t("settings:designLabControls")}
           />
-          <GlassBackdropProvider>
-            <MaterialDemo />
-          </GlassBackdropProvider>
           <Action variant="soft" onPress={close}>
             {t("common:close")}
           </Action>
@@ -243,46 +237,6 @@ function CountBadgeDemo() {
   );
 }
 
-function MaterialDemo() {
-  const { t } = useTranslation("settings");
-  const target = useGlassBackdropTarget();
-  const [blur, setBlur] = useState(true);
-  return (
-    <View style={styles.catalog}>
-      <ListGroup dividers="none">
-        <PreferenceToggle
-          title={t("designLabGlass")}
-          value={blur}
-          onChange={setBlur}
-        />
-      </ListGroup>
-      <View style={styles.material}>
-        <GlassBackdropTarget>
-          <ScrollView
-            horizontal
-            contentContainerStyle={styles.materialContents}
-          >
-            {Array.from({ length: 18 }, (_, index) => (
-              <CategoryIcon
-                key={index}
-                category={settingsCategories[index % settingsCategories.length]}
-              />
-            ))}
-          </ScrollView>
-        </GlassBackdropTarget>
-        <View pointerEvents="none" style={styles.glassOverlay}>
-          <GlassSurface
-            blurTarget={blur ? (target ?? undefined) : undefined}
-            style={styles.glassLabel}
-          >
-            <Ink kind="control">{t("designLabGlass")}</Ink>
-          </GlassSurface>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create(({ space, radius }) => ({
   header: {
     flexDirection: "row",
@@ -294,12 +248,4 @@ const styles = StyleSheet.create(({ space, radius }) => ({
   tile: { minWidth: 72, gap: space.xs, alignItems: "center" },
   tiles: { flexDirection: "row", flexWrap: "wrap", gap: space.md },
   swatch: { height: 36, width: 60, borderRadius: radius.small },
-  material: { height: 112 },
-  materialContents: { alignItems: "center", gap: space.sm },
-  glassOverlay: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  glassLabel: { padding: space.lg, borderRadius: radius.round },
 }));

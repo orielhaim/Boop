@@ -1461,3 +1461,18 @@ index 9b807d6..41eee8e 100644
  export { default as VideoAirPlayButton } from './VideoAirPlayButton';
  
  export type * from './VideoPlayer.types';
+diff --git a/android/src/main/java/expo/modules/video/CallPiPActivity.kt b/android/src/main/java/expo/modules/video/CallPiPActivity.kt
+new file mode 100644
+--- /dev/null
++++ b/android/src/main/java/expo/modules/video/CallPiPActivity.kt
+@@ -0,0 +1,10 @@
++package expo.modules.video
++
++interface CallPiPActivity {
++  fun isCallPiPReserved(): Boolean
++  fun isCallPiPOwned(): Boolean
++  fun isVideoPiPOwned(): Boolean
++  fun claimVideoPiP(): Boolean
++  fun releaseVideoPiP()
++  fun onCallPiPReservationChanged()
++}

@@ -6,7 +6,7 @@ Use `Ink` for text, the Phosphor `Icon` registry for actions, `CategoryIcon` for
 
 ## Glass and theme changes
 
-Keep the glass layer outside its blur target. On Android, keep the target behind it in the same window. Use an opaque material when Reduce Transparency is enabled, the route is inactive, or the glass cannot sample its target. The theme switcher captures the outgoing frame before committing the new palette. Preserve capture authorization and release the snapshot after the transition.
+Keep an optical glass layer separate from the GlassyUI backdrop it samples. Place the backdrop behind the renderer in the same window and scope it to the focused route. Use the opaque material when Reduce Transparency is enabled or sampling is unavailable or prohibited. Keep the older blur target for scrim and media layers that intentionally use blur alone. The theme switcher captures the outgoing frame before committing the new palette. Preserve capture authorization and release the snapshot after the transition.
 
 Use verified local avatar bytes or the stable identity gradient. Rendering an avatar does not authorize fetching it.
 

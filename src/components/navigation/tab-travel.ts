@@ -9,6 +9,23 @@ export type TabTravel =
   | { kind: "settle"; frame: TabFrame }
   | { kind: "slide"; frame: TabFrame; start: number };
 
+export function resolveTabPressTarget(
+  state: {
+    index: number;
+    routeNames: readonly string[];
+    routes: readonly { name: string; key: string }[];
+  },
+  name: string,
+  href: string,
+) {
+  // Expo Router creates a registered route's instance on its first visit.
+  if (!state.routeNames.includes(name)) return undefined;
+  return {
+    eventTarget: state.routes.find((route) => route.name === name)?.key ?? href,
+    selected: state.routes[state.index]?.name === name,
+  };
+}
+
 export function nextTabTravel(
   previous: TabFrame,
   progress: number,

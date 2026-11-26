@@ -3,3 +3,6 @@ ignorePatterns = ["src/db/migrations/", "modules/boop-marmot/sdk/"]
 
 [test]
 root = "tests"
+
+[install]
+linker = "hoisted"

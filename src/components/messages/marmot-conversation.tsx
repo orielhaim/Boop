@@ -59,7 +59,6 @@ import { GlassSurface } from "@/components/glassyui/glass-surface";
 import {
   GlassBackdropProvider,
   GlassBackdropTarget,
-  useGlassBackdropTarget,
 } from "@/components/glassyui/lib/glass-backdrop";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { GlassBackButton } from "@/components/ui/back-button";
@@ -322,8 +321,9 @@ type MarmotConversationScreenProps = {
 };
 
 export function MarmotConversationScreen(props: MarmotConversationScreenProps) {
+  const focused = useIsFocused();
   return (
-    <GlassBackdropProvider>
+    <GlassBackdropProvider active={focused}>
       <MarmotConversationContent {...props} />
     </GlassBackdropProvider>
   );
@@ -334,7 +334,6 @@ function MarmotConversationContent({
   initialPanel,
   messageTarget,
 }: MarmotConversationScreenProps) {
-  const blurTarget = useGlassBackdropTarget();
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
   const navigation = useNavigation();
@@ -1910,7 +1909,6 @@ function MarmotConversationContent({
     <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
       <GlassBackButton
         elevation="none"
-        blurTarget={focused ? (blurTarget ?? undefined) : undefined}
         dimOnPress={false}
         style={styles.headerBack}
         onPress={
@@ -1938,7 +1936,6 @@ function MarmotConversationContent({
           <GlassSurface
             preset="control"
             elevation="none"
-            blurTarget={focused ? (blurTarget ?? undefined) : undefined}
             tint={material.panel}
             style={[styles.headerCapsule, styles.headerIdentity]}
           >
@@ -1994,7 +1991,6 @@ function MarmotConversationContent({
             <GlassSurface
               preset="control"
               elevation="none"
-              blurTarget={focused ? (blurTarget ?? undefined) : undefined}
               tint={material.panel}
               style={[styles.headerCapsule, styles.headerActions]}
             >
@@ -2328,7 +2324,9 @@ function MarmotConversationContent({
                   />
                 );
                 return overlayTime ? (
-                  <GlassBackdropProvider>{bubble}</GlassBackdropProvider>
+                  <GlassBackdropProvider active={focused}>
+                    {bubble}
+                  </GlassBackdropProvider>
                 ) : (
                   bubble
                 );

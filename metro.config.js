@@ -19,7 +19,8 @@ const unusedTrees = [
 
 config.resolver.blockList = [
   ...config.resolver.blockList,
-  /(?:^|[\\/])(?:modules|node_modules)[\\/](?:@[^\\/]+[\\/])?[^\\/]+[\\/]android[\\/](?:build|\.cxx|\.gradle)(?:[\\/]|$)/,
+  /(?:^|[\\/])(?:modules|node_modules|packages)[\\/](?:@[^\\/]+[\\/])?[^\\/]+[\\/]android[\\/](?:build|\.cxx|\.gradle|\.kotlin)(?:[\\/]|$)/,
+  /(?:^|[\\/])node_modules[\\/]\.old_modules-[^\\/]+(?:[\\/]|$)/,
   ...unusedTrees.map((directory) => {
     const absolutePath = path
       .resolve(__dirname, directory)

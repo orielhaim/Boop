@@ -1,8 +1,8 @@
 import {
   EXPANDED_HEIGHT,
   MINIMIZED_HEIGHT,
-  useTabBarMinimized,
-} from "expo-glass-tabs";
+} from "@/components/navigation/dock-geometry";
+import { useTabBarMinimized } from "@/components/navigation/dock-motion";
 import { createContext, type ReactNode, useContext } from "react";
 import { Platform } from "react-native";
 import {
@@ -20,7 +20,7 @@ export function useTabBarBottomOffset() {
   const { bottom } = useSafeAreaInsets();
   return Platform.OS === "android"
     ? bottom + DOCK_GAP
-    : Math.max(bottom - 16, DOCK_GAP);
+    : Math.max(bottom - 12, DOCK_GAP);
 }
 
 export function TabBarInsetProvider({

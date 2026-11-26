@@ -1,24 +1,30 @@
 import {
-  GlassTabBar,
-  GlassTabButton,
-  type GlassTabItem,
-  TabBarMinimizeProvider,
-} from "expo-glass-tabs";
-import { Image } from "expo-image";
+  DockTabButton,
+  ExpandableDock,
+  type DockItem,
+} from "@/components/navigation/expandable-dock";
+import {
+  animateDockSelection,
+  DockMinimizeProvider,
+  useDockMotion,
+} from "@/components/navigation/dock-motion";
 import { router, useIsFocused, usePathname } from "expo-router";
 import { TabList, TabTrigger, useTabsWithChildren } from "expo-router/ui";
 import { DirectionalTabs } from "@/components/navigation/directional-tabs";
+import { resolveTabPressTarget } from "@/components/navigation/tab-travel";
 import { TabFabVisibility } from "@/components/navigation/tab-fab-visibility";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, View } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
+import { scheduleOnUI } from "react-native-worklets";
 import { Icon, tapFeedback } from "@/components/ui/kit";
 import { CountBadge } from "@/components/kinetik/count-badge";
 import { MorphFab } from "@/components/ui/molecules/morph-fab";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
-import { useAvatar } from "@/core/avatars/use-avatar";
+import { PersonAvatar } from "@/components/people/person-avatar";
+import { usePerson } from "@/components/people/use-person";
 import {
   TabBarInsetProvider,
   useTabBarBottomOffset,
@@ -33,29 +39,31 @@ import { themes } from "@/theme/tokens";
 import {
   GlassBackdropProvider,
   GlassBackdropTarget,
-  useGlassBackdropTarget,
 } from "@/components/glassyui/lib/glass-backdrop";
 
 export default function TabLayout() {
   return (
-    <TabBarMinimizeProvider>
-      <GlassBackdropProvider>
-        <DockNavigator />
-      </GlassBackdropProvider>
-    </TabBarMinimizeProvider>
+    <DockMinimizeProvider>
+      <DockNavigator />
+    </DockMinimizeProvider>
   );
 }
 
 function DockNavigator() {
-  const blurTarget = useGlassBackdropTarget();
+  const dockMotion = useDockMotion();
+  const { pageIntent } = dockMotion;
   const focused = useIsFocused();
   const bottomOffset = useTabBarBottomOffset();
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const { t, i18n } = useTranslation(namespaces);
   const direction = directionFor(resolveLanguage(i18n.resolvedLanguage));
-  const { colors, reduceMotion, reduceTransparency, theme } = useTheme();
-  const { identity } = useLocal();
-  const photo = useAvatar(identity.publicKey, false);
+  const { colors, reduceMotion, theme } = useTheme();
+  const { identity, initialProfile } = useLocal();
+  const {
+    name: accountName,
+    photo,
+    profile: accountProfile,
+  } = usePerson(identity.publicKey, false);
   const dockMaterial = themes[theme].glass.dock;
   const chatsEnabled = useChatsEnabled();
   const showIdentitySheet = useIdentitySheet();
@@ -79,7 +87,7 @@ function DockNavigator() {
     chatsEnabled,
   );
   const unread = snapshot?.count ?? 0;
-  const messages: GlassTabItem = {
+  const messages: DockItem = {
     name: "index",
     label: t("common:chats"),
     renderIcon: ({ tint, size }) => (
@@ -104,7 +112,7 @@ function DockNavigator() {
       </View>
     ),
   };
-  const people: GlassTabItem = {
+  const people: DockItem = {
     name: "people",
     label: t("messenger:people"),
     renderIcon: ({ tint, size }) => (
@@ -116,7 +124,7 @@ function DockNavigator() {
       />
     ),
   };
-  const calls: GlassTabItem = {
+  const calls: DockItem = {
     name: "calls",
     label: t("navigation:calls"),
     renderIcon: ({ tint, size }) => (
@@ -128,26 +136,17 @@ function DockNavigator() {
       />
     ),
   };
-  const profile: GlassTabItem = {
+  const profile: DockItem = {
     name: "profile",
     label: t("navigation:profile"),
-    renderIcon: ({ tint, size }) =>
-      photo ? (
-        <Image
-          accessible={false}
-          source={{ uri: photo }}
-          contentFit="cover"
-          cachePolicy="memory"
-          style={{ width: size, height: size, borderRadius: size / 2 }}
-        />
-      ) : (
-        <Icon
-          name="person"
-          size={size}
-          color={tint}
-          weight={tint === colors.accent ? "fill" : "regular"}
-        />
-      ),
+    renderIcon: ({ tint, size }) => (
+      <Icon
+        name="person"
+        size={size}
+        color={tint}
+        weight={tint === colors.accent ? "fill" : "regular"}
+      />
+    ),
   };
   const chatsTab = { item: messages, href: "/" } as const;
   const callsTab = { item: calls, href: "/calls" } as const;
@@ -162,56 +161,91 @@ function DockNavigator() {
     { item: profile, href: "/profile" },
   ] as const;
   const ordered = direction === "rtl" ? [...tabs].reverse() : tabs;
+  const visibleTabs = ordered.filter(({ item }) => item.name !== "profile");
 
   const dock = (
     <TabList asChild>
-      <GlassTabBar
-        blurTarget={
-          focused && !reduceTransparency ? (blurTarget ?? undefined) : undefined
-        }
-        blurTint={
-          theme === "dark"
-            ? "systemUltraThinMaterialDark"
-            : "systemUltraThinMaterial"
-        }
+      <ExpandableDock
+        items={visibleTabs.map(({ item }) => item)}
         bottomOffset={bottomOffset}
-        hidden={keyboardVisible}
-        edgeFadeColor={colors.background}
-        onIndexSelected={(index) => {
-          const selected = ordered[index];
-          if (!selected) return;
-          tapFeedback();
-          router.navigate(selected.href);
-        }}
-        haptics={!reduceMotion}
-        theme={{
-          activeTint: colors.accent,
-          inactiveTint: colors.muted,
-          highlight: colors.selected,
-          glassTint: reduceTransparency
-            ? dockMaterial.opaque
-            : dockMaterial.tint,
-          glassRim: dockMaterial.rim,
-          solidFallback: dockMaterial.opaque,
-        }}
+        hidden={keyboardVisible || !focused}
+        closeLabel={t("common:close")}
+        direction={direction}
+        accountName={accountName}
+        accountAvatar={
+          <PersonAvatar
+            publicKey={identity.publicKey}
+            name={accountName}
+            photo={photo}
+            hasName={Boolean(accountProfile?.name || initialProfile.name)}
+            size="dock"
+          />
+        }
+        accountLabel={t("navigation:accountActions")}
+        profileActionLabel={t("navigation:profile")}
+        qrLabel={t("navigation:accountQr")}
+        onAccountPress={() => router.navigate("/profile")}
+        onQrPress={() => showIdentitySheet("qr")}
+        onTabSelect={selectTab}
       >
-        {ordered.map(({ item, href }, index) => (
-          <TabTrigger key={item.name} name={item.name} href={href} asChild>
-            <GlassTabButton
-              item={item}
-              index={index}
-              accessibilityLabel={
-                href === "/" && unread > 0
-                  ? `${item.label}, ${t("messages:attentionCount", { count: unread })}`
-                  : item.label
-              }
-            />
-          </TabTrigger>
-        ))}
-      </GlassTabBar>
+        {ordered.map(({ item, href }) => {
+          const visibleIndex = visibleTabs.findIndex(
+            ({ item: visibleItem }) => visibleItem.name === item.name,
+          );
+          return (
+            <TabTrigger key={item.name} name={item.name} href={href} asChild>
+              <DockTabButton
+                item={item}
+                index={visibleIndex >= 0 ? visibleIndex : 0}
+                visible={visibleIndex >= 0}
+                onTabSelect={selectTab}
+                accessibilityLabel={
+                  href === "/" && unread > 0
+                    ? `${item.label}, ${t("messages:attentionCount", { count: unread })}`
+                    : item.label
+                }
+              />
+            </TabTrigger>
+          );
+        })}
+      </ExpandableDock>
     </TabList>
   );
-  const { state, NavigationContent } = useTabsWithChildren({ children: dock });
+  const { state, navigation, NavigationContent } = useTabsWithChildren({
+    children: dock,
+  });
+  function selectTab(name: string) {
+    const destination = visibleTabs.find(({ item }) => item.name === name);
+    if (!destination) return;
+    const current = navigation.getState();
+    const target = resolveTabPressTarget(current, name, destination.href);
+    if (!target) return;
+    const event = navigation.emit({
+      type: "tabPress",
+      target: target.eventTarget,
+      canPreventDefault: true,
+    });
+    const currentRoute = current.routes[current.index];
+    if (event.defaultPrevented) {
+      pageIntent.set(undefined);
+      const index = visibleTabs.findIndex(
+        ({ item }) => item.name === currentRoute?.name,
+      );
+      if (index >= 0)
+        scheduleOnUI(animateDockSelection, dockMotion, index, reduceMotion);
+      return;
+    }
+    if (target.selected) return;
+    tapFeedback();
+    if (!reduceMotion) pageIntent.set(name);
+    // The route already belongs to this navigator. Dispatch directly so a
+    // local tab switch does not wait for the URL routing queue to drain.
+    navigation.dispatchSync({
+      type: "JUMP_TO",
+      payload: { name },
+      target: current.key,
+    });
+  }
   const active = state.routes[state.index]?.name;
   const callsActive =
     (active === "calls" && separateCallsTab) ||
@@ -264,43 +298,46 @@ function DockNavigator() {
         };
 
   return (
-    <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
-      <View style={styles.navigator}>
-        <NavigationContent>
-          <TabFabVisibility.Provider
-            value={{ setChatsVisible, peopleSection, setPeopleSection }}
-          >
-            <GlassBackdropTarget>
-              <DirectionalTabs
-                active={active}
-                order={ordered.map(({ item }) => item.name)}
-                style={{ direction }}
-                reduceMotion={reduceMotion}
-              />
-            </GlassBackdropTarget>
-          </TabFabVisibility.Provider>
-          {showFab && (
-            <ScreenInsets
-              edges={["left", "right"]}
-              pointerEvents="box-none"
-              style={StyleSheet.absoluteFill}
+    <GlassBackdropProvider active={focused}>
+      <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
+        <View style={styles.navigator}>
+          <NavigationContent>
+            <TabFabVisibility.Provider
+              value={{ setChatsVisible, peopleSection, setPeopleSection }}
             >
-              <View pointerEvents="box-none" style={styles.fabContent}>
-                <MorphFab
-                  {...fabProps}
-                  closeLabel={t("common:close")}
-                  rtl={direction === "rtl"}
-                  trigger={
-                    <Icon name="add" size={29} color={colors.outgoingInk} />
-                  }
+              <GlassBackdropTarget>
+                <DirectionalTabs
+                  active={active}
+                  order={ordered.map(({ item }) => item.name)}
+                  warmRoutes={visibleTabs.map(({ item }) => item.name)}
+                  style={{ direction }}
+                  reduceMotion={reduceMotion}
                 />
-              </View>
-            </ScreenInsets>
-          )}
-          {dock}
-        </NavigationContent>
-      </View>
-    </TabBarInsetProvider>
+              </GlassBackdropTarget>
+            </TabFabVisibility.Provider>
+            {showFab && (
+              <ScreenInsets
+                edges={["left", "right"]}
+                pointerEvents="box-none"
+                style={StyleSheet.absoluteFill}
+              >
+                <View pointerEvents="box-none" style={styles.fabContent}>
+                  <MorphFab
+                    {...fabProps}
+                    closeLabel={t("common:close")}
+                    rtl={direction === "rtl"}
+                    trigger={
+                      <Icon name="add" size={29} color={colors.outgoingInk} />
+                    }
+                  />
+                </View>
+              </ScreenInsets>
+            )}
+            {dock}
+          </NavigationContent>
+        </View>
+      </TabBarInsetProvider>
+    </GlassBackdropProvider>
   );
 }
 

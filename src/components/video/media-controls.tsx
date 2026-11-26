@@ -1,10 +1,4 @@
-import {
-  createContext,
-  useContext,
-  type ComponentRef,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { type ReactNode } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -24,15 +18,8 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { useTheme } from "@/theme";
 import { mediaMaterial } from "@/theme/tokens";
 
-export const VideoBlurTarget = createContext<
-  RefObject<ComponentRef<typeof View> | null> | undefined
->(undefined);
-
-export function VideoGlass(
-  props: Omit<GlassSurfaceProps, "preset" | "blurTarget">,
-) {
-  const blurTarget = useContext(VideoBlurTarget);
-  return <GlassSurface {...props} preset="cinematic" blurTarget={blurTarget} />;
+export function VideoGlass(props: Omit<GlassSurfaceProps, "preset">) {
+  return <GlassSurface {...props} preset="cinematic" />;
 }
 
 function MediaGlyph({

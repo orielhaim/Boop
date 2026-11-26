@@ -1,0 +1,42 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+version = '0.1.0'
+
+android {
+  namespace 'dev.liquidglass.engine'
+  defaultConfig { testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner' }
+}
+
+dependencies {
+  androidTestImplementation 'androidx.test:runner:1.7.0'
+  androidTestImplementation 'junit:junit:4.13.2'
+}
+
+abstract class GenerateGlassShader extends DefaultTask {
+  @InputFile
+  abstract RegularFileProperty getShaderSource()
+
+  @OutputDirectory
+  abstract DirectoryProperty getOutputDirectory()
+
+  @TaskAction
+  void generate() {
+    def source = shaderSource.get().asFile.getText('UTF-8')
+    def shader = outputDirectory.get().file('dev.liquidglass.engine.agsl').asFile
+    shader.parentFile.mkdirs()
+    shader.setText(source.substring(source.indexOf('`') + 1, source.lastIndexOf('`')), 'UTF-8')
+  }
+}
+
+def generateGlassShader = tasks.register('generateGlassShader', GenerateGlassShader) {
+  shaderSource.set(layout.projectDirectory.file('../src/shader.ts'))
+  outputDirectory.set(layout.buildDirectory.dir('generated/glass-assets'))
+}
+androidComponents {
+  onVariants(selector().all()) { variant ->
+    variant.sources.assets.addGeneratedSourceDirectory(generateGlassShader) { it.outputDirectory }
+  }
+}

@@ -1,6 +1,5 @@
 import { useEvent, useEventListener } from "expo";
 import { Image, type ImageSource } from "expo-image";
-import { BlurTargetView } from "expo-blur";
 import {
   isPictureInPictureSupported,
   VideoView,
@@ -13,7 +12,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ComponentRef,
   type ReactNode,
 } from "react";
 import {
@@ -44,7 +42,11 @@ import {
   useVideoControls,
   useVideoGestureFeedback,
 } from "./interaction";
-import { VideoBlurTarget, VideoGestureFeedback } from "./media-controls";
+import { VideoGestureFeedback } from "./media-controls";
+import {
+  GlassBackdropLayer,
+  GlassBackdropProvider,
+} from "@/components/glassyui/lib/glass-backdrop";
 import { useVideoOrientation } from "./orientation";
 import { PlaybackTray, type SubtitleTrayScreen } from "./playback-tray";
 import { useSurfaceGestures } from "./surface-gestures";
@@ -123,9 +125,8 @@ export function VideoViewer({
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const viewRef = useRef<VideoView>(null);
-  const blurRef = useRef<ComponentRef<typeof View>>(null);
   const canSampleVideo = Platform.OS === "android" && advancedGestures;
-  const Backdrop = canSampleVideo ? BlurTargetView : View;
+  const Backdrop = canSampleVideo ? GlassBackdropLayer : View;
   const orientation = useVideoOrientation();
   const foreground = useVideoAppState();
   const [fit, setFit] = useState<VideoContentFit>("contain");
@@ -321,85 +322,84 @@ export function VideoViewer({
   return (
     <View style={[styles.root, style]}>
       <StatusBar hidden />
-      <Animated.View style={[styles.stage, surfaceStyle]}>
-        {!background && (
-          <Animated.View
-            style={[StyleSheet.absoluteFill, videoStyle]}
-            pointerEvents="none"
-          >
-            <Backdrop ref={blurRef} style={StyleSheet.absoluteFill}>
-              {/* Keep the letterboxing color inside the sampled subtree. */}
-              {canSampleVideo && (
-                <View collapsable={false} style={styles.backdrop} />
-              )}
-              <VideoView
-                ref={viewRef}
-                style={StyleSheet.absoluteFill}
-                player={player}
-                nativeControls={false}
-                contentFit={fit}
-                surfaceType={advancedGestures ? "textureView" : "surfaceView"}
-                allowsPictureInPicture={pipSupported}
-                startsPictureInPictureAutomatically={
-                  automaticPiP && pipSupported && isPlaying
-                }
-                onPictureInPictureStart={() => {
-                  setPip(true);
-                  closeMenu();
-                  orientation.reset();
-                  onPictureInPictureChange?.(true);
-                }}
-                onPictureInPictureStop={() => {
-                  setPip(false);
-                  onPictureInPictureChange?.(false);
-                }}
-                onFirstFrameRender={() => setFirstFrameRendered(true)}
-              />
-            </Backdrop>
-          </Animated.View>
-        )}
-        {poster && opening && (
-          <Image
-            source={poster}
-            cachePolicy="none"
-            contentFit={fit}
-            style={StyleSheet.absoluteFill}
-          />
-        )}
-        <GestureDetector gesture={gesture}>
-          <View
-            collapsable={false}
-            accessible={false}
-            importantForAccessibility="no"
-            style={StyleSheet.absoluteFill}
-            pointerEvents={menu || pip ? "none" : "auto"}
-          />
-        </GestureDetector>
-        {!background &&
+      <GlassBackdropProvider
+        active={
+          foreground &&
           !pip &&
+          !background &&
+          !menu &&
+          chromeVisible &&
           firstFrameRendered &&
-          subtitleOverlay?.(chromeVisible, captionBounds)}
-        {background && (
-          <View pointerEvents="none" style={styles.listening}>
-            <GlassSurface preset="cinematic" style={styles.listeningIcon}>
-              <Icon name="audio" size={24} color={mediaMaterial.accent} />
-            </GlassSurface>
-            <Text style={styles.listeningText}>{t("viewer.listening")}</Text>
-          </View>
-        )}
-
-        <VideoBlurTarget.Provider
-          value={
-            canSampleVideo &&
+          !reduceTransparency
+        }
+      >
+        <Animated.View style={[styles.stage, surfaceStyle]}>
+          {!background && (
+            <Animated.View
+              style={[StyleSheet.absoluteFill, videoStyle]}
+              pointerEvents="none"
+            >
+              <Backdrop style={StyleSheet.absoluteFill}>
+                {/* Keep the letterboxing color inside the sampled subtree. */}
+                {canSampleVideo && (
+                  <View collapsable={false} style={styles.backdrop} />
+                )}
+                <VideoView
+                  ref={viewRef}
+                  style={StyleSheet.absoluteFill}
+                  player={player}
+                  nativeControls={false}
+                  contentFit={fit}
+                  surfaceType={advancedGestures ? "textureView" : "surfaceView"}
+                  allowsPictureInPicture={pipSupported}
+                  startsPictureInPictureAutomatically={
+                    automaticPiP && pipSupported && isPlaying
+                  }
+                  onPictureInPictureStart={() => {
+                    setPip(true);
+                    closeMenu();
+                    orientation.reset();
+                    onPictureInPictureChange?.(true);
+                  }}
+                  onPictureInPictureStop={() => {
+                    setPip(false);
+                    onPictureInPictureChange?.(false);
+                  }}
+                  onFirstFrameRender={() => setFirstFrameRendered(true)}
+                />
+              </Backdrop>
+            </Animated.View>
+          )}
+          {poster && opening && (
+            <Image
+              source={poster}
+              cachePolicy="none"
+              contentFit={fit}
+              style={StyleSheet.absoluteFill}
+            />
+          )}
+          <GestureDetector gesture={gesture}>
+            <View
+              collapsable={false}
+              accessible={false}
+              importantForAccessibility="no"
+              style={StyleSheet.absoluteFill}
+              pointerEvents={menu || pip ? "none" : "auto"}
+            />
+          </GestureDetector>
+          {!background &&
+            !pip &&
             firstFrameRendered &&
-            !background &&
-            chromeVisible &&
-            !menu &&
-            !reduceTransparency
-              ? blurRef
-              : undefined
-          }
-        >
+            subtitleOverlay?.(chromeVisible, captionBounds)}
+          {background && (
+            <View pointerEvents="none" style={styles.listening}>
+              <GlassSurface preset="cinematic" style={styles.listeningIcon}>
+                <Icon name="audio" size={24} color={mediaMaterial.accent} />
+              </GlassSurface>
+              <Text style={styles.listeningText}>{t("viewer.listening")}</Text>
+            </View>
+          )}
+
           {!pip && (
             <VideoChrome
               visible={chromeVisible}
@@ -464,8 +464,8 @@ export function VideoViewer({
           {!pip && !menu && interactions.feedback && (
             <VideoGestureFeedback feedback={interactions.feedback} />
           )}
-        </VideoBlurTarget.Provider>
-      </Animated.View>
+        </Animated.View>
+      </GlassBackdropProvider>
       {foreground && !pip && (
         <PlaybackTray
           open={menu !== null}

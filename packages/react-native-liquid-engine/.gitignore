@@ -1,0 +1,7 @@
+/android/.cxx/
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/examples/.expo/
+/node_modules/
+/*.tgz

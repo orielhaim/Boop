@@ -4,7 +4,6 @@ import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   GlassSurface,
-  type GlassSurfaceProps,
   type SurfaceElevation,
 } from "@/components/glassyui/glass-surface";
 import { Icon, tapFeedback } from "@/components/ui/kit";
@@ -16,19 +15,16 @@ export const backButtonSize = 44;
 export function GlassBackIcon({
   color,
   elevation,
-  blurTarget,
 }: {
   color?: string;
   elevation?: SurfaceElevation;
-  blurTarget?: GlassSurfaceProps["blurTarget"];
 }) {
   const { colors } = useTheme();
   return (
     <GlassSurface
       preset="control"
       elevation={elevation}
-      blurTarget={blurTarget}
-      translucentFallback
+      lensTint
       pointerEvents="none"
       style={styles.circle}
     >
@@ -41,13 +37,11 @@ export function GlassBackButton({
   onPress,
   style,
   elevation,
-  blurTarget,
   dimOnPress = true,
 }: {
   onPress: () => void;
   style?: StyleProp<ViewStyle>;
   elevation?: SurfaceElevation;
-  blurTarget?: GlassSurfaceProps["blurTarget"];
   dimOnPress?: boolean;
 }) {
   const { t } = useTranslation("common");
@@ -61,7 +55,7 @@ export function GlassBackButton({
       }}
       style={({ pressed }) => [style, dimOnPress && pressed && styles.pressed]}
     >
-      <GlassBackIcon elevation={elevation} blurTarget={blurTarget} />
+      <GlassBackIcon elevation={elevation} />
     </Pressable>
   );
 }

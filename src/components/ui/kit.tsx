@@ -1,5 +1,4 @@
 import { useAvatar } from "@/core/avatars/use-avatar";
-import * as Haptics from "expo-haptics";
 import type { ReactNode } from "react";
 import {
   Pressable,
@@ -29,12 +28,13 @@ import {
   type GlassInputProps,
 } from "@/components/glassyui/glass-input";
 import { ScreenInsets } from "@/components/ui/screen-insets";
-import { useAppPreferences } from "@/stores/preferences";
 import { space, spring, type, useTheme } from "@/theme";
 import { Icon, type IconName } from "./icon";
+import { tapFeedback } from "./tap-feedback";
 
 export { Icon } from "./icon";
 export type { IconName, IconWeight } from "./icon";
+export { tapFeedback } from "./tap-feedback";
 
 export function Ink({
   kind = "body",
@@ -129,11 +129,6 @@ export function IconButton({
       </Pressable>
     </Animated.View>
   );
-}
-
-export function tapFeedback() {
-  if (useAppPreferences.getState().haptics)
-    void Haptics.selectionAsync().catch(() => {});
 }
 
 export function Action({ onPress, ...props }: GlassButtonProps) {

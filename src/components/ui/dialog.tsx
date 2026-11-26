@@ -326,7 +326,6 @@ function DialogCard({
           <GlassSurface
             preset="overlay"
             elevation="raised"
-            translucentFallback
             style={styles.panel}
           >
             <ScrollView

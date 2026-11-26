@@ -1,6 +1,6 @@
 import { CircularList } from "@/components/ui/molecules/circular-list";
 import Transition from "react-native-screen-transitions";
-import { useMinimizeOnScroll } from "expo-glass-tabs";
+import { useMinimizeOnScroll } from "@/components/navigation/dock-motion";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";

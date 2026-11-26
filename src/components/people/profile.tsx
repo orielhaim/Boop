@@ -1,6 +1,6 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import Transition from "react-native-screen-transitions";
-import { useMinimizeOnScroll } from "expo-glass-tabs";
+import { useMinimizeOnScroll } from "@/components/navigation/dock-motion";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useIsFocused } from "expo-router";

@@ -1,5 +1,31 @@
 import { expect, test } from "bun:test";
-import { nextTabTravel } from "../src/components/navigation/tab-travel";
+import {
+  nextTabTravel,
+  resolveTabPressTarget,
+} from "../src/components/navigation/tab-travel";
+
+test("a newly enabled Calls tab can be pressed before its route is instantiated", () => {
+  const state = {
+    index: 0,
+    routeNames: ["index", "calls", "people", "profile"],
+    routes: [{ name: "index", key: "chats-key" }],
+  };
+  expect(resolveTabPressTarget(state, "calls", "/calls")).toEqual({
+    eventTarget: "/calls",
+    selected: false,
+  });
+  expect(resolveTabPressTarget(state, "index", "/")).toEqual({
+    eventTarget: "chats-key",
+    selected: true,
+  });
+  expect(
+    resolveTabPressTarget(
+      { ...state, routeNames: ["index"] },
+      "calls",
+      "/calls",
+    ),
+  ).toBeUndefined();
+});
 
 test("tab direction follows the physical order, including the optional Calls tab", () => {
   const frame = { to: "index", sign: 1 } as const;

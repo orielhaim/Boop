@@ -1,4 +1,5 @@
 import { BlurTargetView } from "expo-blur";
+import { GlassBackdrop, GlassProvider } from "react-native-liquid-engine";
 import {
   createContext,
   useContext,
@@ -9,17 +10,26 @@ import {
 } from "react";
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
+export { GlassBackdrop as GlassBackdropLayer };
+
 type BlurTargetRef = RefObject<ComponentRef<typeof View> | null>;
 
 const GlassBackdropContext = createContext<BlurTargetRef | null>(null);
 
-export function GlassBackdropProvider({ children }: { children: ReactNode }) {
+export function GlassBackdropProvider({
+  children,
+  active = true,
+}: {
+  children: ReactNode;
+  active?: boolean;
+}) {
   const target = useRef<ComponentRef<typeof View>>(null);
-
   return (
-    <GlassBackdropContext.Provider value={target}>
-      {children}
-    </GlassBackdropContext.Provider>
+    <GlassProvider active={active}>
+      <GlassBackdropContext.Provider value={target}>
+        {children}
+      </GlassBackdropContext.Provider>
+    </GlassProvider>
   );
 }
 
@@ -40,9 +50,11 @@ export function GlassBackdropTarget({
   }
 
   return (
-    <BlurTargetView ref={target} style={[styles.target, style]}>
-      {children}
-    </BlurTargetView>
+    <GlassBackdrop style={[styles.target, style]}>
+      <BlurTargetView ref={target} style={styles.target}>
+        {children}
+      </BlurTargetView>
+    </GlassBackdrop>
   );
 }
 
