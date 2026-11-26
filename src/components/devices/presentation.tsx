@@ -160,6 +160,19 @@ export function DeviceHeading({
   );
 }
 
+export function DeviceNote({ children }: PropsWithChildren) {
+  return (
+    <Ink
+      kind="description"
+      muted
+      accessibilityLiveRegion="polite"
+      style={styles.note}
+    >
+      {children}
+    </Ink>
+  );
+}
+
 export function DeviceChange({ children }: PropsWithChildren) {
   const { reduceMotion } = useTheme();
   return (
@@ -201,4 +214,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   heading: { gap: theme.space.sm },
   centerText: { textAlign: "center" },
+  note: { paddingHorizontal: theme.space.lg, paddingVertical: theme.space.xs },
 }));

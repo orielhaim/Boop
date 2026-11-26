@@ -4,9 +4,7 @@ export const devicesHe: Record<keyof typeof devicesEn, string> = {
   title: "מכשירים",
   category: "מכשירים מקושרים ואבטחת כניסה",
   attentionCount: "פריטי אבטחה לבדיקה: {{count}}",
-  hero: "החשבון שלך בכל המכשירים",
-  heroHelp:
-    "אפשר להשתמש ב‑Boop בהתקנה נוספת. משווים קוד פרטי בשני המסכים כדי לקשר את המכשירים בבטחה.",
+  heroHelp: "כדי לקשר מכשיר נוסף ל‑Boop, משווים קוד פרטי בשני המסכים.",
   link: "קישור מכשיר",
   current: "המכשיר הזה",
   currentLocal: "החשבון מחובר בהתקנה הזאת",
@@ -33,11 +31,11 @@ export const devicesHe: Record<keyof typeof devicesEn, string> = {
   wipeHelp:
     "Boop תתאם יציאה כשיתאפשר, ואז תסיר מכאן את החשבון, השיחות המקומיות והמדיה שנשמרה. התקנות אחרות יוכלו להמשיך להשתמש בחשבון.",
   others: "מכשירים מקושרים נוספים",
-  noOthers: "אין מכשירים מקושרים נוספים.",
   unknownDevice: "מכשיר ללא שם",
   unknownClient: "יישום לא ידוע",
   active: "פעיל",
   inactive: "לא פעיל",
+  locallyInactive: "זוהה כלא פעיל",
   leaving: "בתהליך יציאה",
   moved: "הועבר",
   unknown: "המצב לא זמין",
@@ -53,6 +51,7 @@ export const devicesHe: Record<keyof typeof devicesEn, string> = {
   unavailable: "לא היה אפשר לאמת את ההסרה",
   remove: "הסרת מכשיר",
   removeOthers: "הסרת כל שאר המכשירים",
+  removeOthersCaption: "המכשיר הזה יישאר מקושר.",
   removeHelp:
     "תישלח בקשה להסרה מקבוצת המכשירים המהימנים ומהשיחות. מי שמחזיק עותק של מפתח החשבון עדיין יכול לחתום בשמך. תוכן שכבר נשמר במקום אחר עשוי להישאר שם.",
   deviceSettings: "העדפות מכשיר",

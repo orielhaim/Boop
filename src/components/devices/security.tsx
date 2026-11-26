@@ -4,11 +4,7 @@ import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useDialog } from "@/components/ui/dialog";
 import { Action, Ink } from "@/components/ui/kit";
-import {
-  ListGroup,
-  ListRow,
-  SettingsDescription,
-} from "@/components/ui/list-group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import type {
   CompromiseWarning,
   DeviceSlot,
@@ -19,6 +15,7 @@ import {
   DeviceCard,
   DeviceError,
   DeviceHeading,
+  DeviceNote,
   formatActivity,
   type DeviceController,
 } from "./presentation";
@@ -117,21 +114,6 @@ export function DeviceSecurity({
         </ListGroup>
       )}
       <ListGroup title={t("signIns")}>
-        {!signIns?.length && (
-          <SettingsDescription>
-            {t(
-              paused
-                ? "pausedHelp"
-                : state.failed.includes("signIns")
-                  ? "unreadable"
-                  : state.connection === "reconnecting"
-                    ? "reconnecting"
-                    : signIns
-                      ? "noSignIns"
-                      : "loading",
-            )}
-          </SettingsDescription>
-        )}
         {signIns?.map((record) => (
           <ListRow
             key={record.slotIdHex}
@@ -159,8 +141,23 @@ export function DeviceSecurity({
           }}
         />
       </ListGroup>
+      {!signIns?.length && discovery !== "failed" && (
+        <DeviceNote>
+          {t(
+            paused
+              ? "pausedHelp"
+              : state.failed.includes("signIns")
+                ? "unreadable"
+                : state.connection === "reconnecting"
+                  ? "reconnecting"
+                  : signIns
+                    ? "noSignIns"
+                    : "loading",
+          )}
+        </DeviceNote>
+      )}
       {discovery === "failed" ? (
-        <SettingsDescription>{t("checkFailed")}</SettingsDescription>
+        <DeviceNote>{t("checkFailed")}</DeviceNote>
       ) : (
         <DeviceError error={error} />
       )}

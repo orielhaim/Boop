@@ -79,6 +79,13 @@ export function DeviceRow({
   );
 }
 
+export function isInactiveDevice(device: LinkedDevice) {
+  return (
+    device.status.kind === "inactive" ||
+    (device.status.kind === "active" && device.inactive)
+  );
+}
+
 export function RosterRow({
   device,
   onPress,
@@ -100,9 +107,11 @@ export function RosterRow({
           : device.isThisDevice
             ? t("current")
             : t(
-                device.status.kind === "unsupported"
-                  ? "unknown"
-                  : device.status.kind,
+                device.status.kind === "active" && device.inactive
+                  ? "locallyInactive"
+                  : device.status.kind === "unsupported"
+                    ? "unknown"
+                    : device.status.kind,
               )
       }
       activity={
@@ -325,7 +334,10 @@ export function DeviceDanger({
       ]}
     >
       <Icon name="warning" size={20} color={colors.danger} />
-      <Ink kind="rowTitle" style={{ color: colors.danger }}>
+      <Ink
+        kind="rowTitle"
+        style={[styles.actionText, { color: colors.danger }]}
+      >
         {title}
       </Ink>
     </Pressable>
@@ -358,6 +370,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.grouped,
     borderRadius: theme.radius.group,
   },
+  actionText: { flexShrink: 1 },
   pressed: { backgroundColor: theme.colors.pressed },
   disabled: { opacity: 0.55 },
 }));

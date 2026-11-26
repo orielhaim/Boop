@@ -3,16 +3,13 @@ import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Ink } from "@/components/ui/kit";
-import {
-  ListGroup,
-  ListRow,
-  SettingsDescription,
-} from "@/components/ui/list-group";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { conversationRoute } from "@/components/messages/marmot-inbox";
 import { useChatsEnabled } from "@/services/local-context";
 import { useTheme } from "@/theme";
 import {
   DeviceCard,
+  DeviceNote,
   formatActivity,
   type DeviceController,
 } from "./presentation";
@@ -78,41 +75,40 @@ export function DeviceSynchronization({
           );
         })}
       </DeviceCard>
-      <ListGroup title={t("history")}>
-        {!history?.length && (
-          <SettingsDescription>
-            {t(history ? "noHistory" : "loading")}
-          </SettingsDescription>
-        )}
-        {history?.map((entry) => {
-          const stage = entry.state;
-          const title =
-            stage.kind === "imported"
-              ? t("historyImported", {
-                  date: formatActivity(stage.at, i18n.resolvedLanguage),
-                })
-              : stage.kind === "receiving"
-                ? t(stage.retrying ? "historyRetrying" : "historyReceiving")
-                : t("unknown");
-          const source =
-            stage.kind === "imported" && stage.from.deviceLabel
-              ? t("historyFrom", { name: stage.from.deviceLabel })
-              : undefined;
-          return (
-            <ListRow
-              key={entry.groupIdHex}
-              icon="chat"
-              title={title}
-              detail={source}
-              onPress={
-                chatsEnabled
-                  ? () => router.push(conversationRoute(entry.groupIdHex))
-                  : undefined
-              }
-            />
-          );
-        })}
-      </ListGroup>
+      {history?.length ? (
+        <ListGroup title={t("history")}>
+          {history.map((entry) => {
+            const stage = entry.state;
+            const title =
+              stage.kind === "imported"
+                ? t("historyImported", {
+                    date: formatActivity(stage.at, i18n.resolvedLanguage),
+                  })
+                : stage.kind === "receiving"
+                  ? t(stage.retrying ? "historyRetrying" : "historyReceiving")
+                  : t("unknown");
+            const source =
+              stage.kind === "imported" && stage.from.deviceLabel
+                ? t("historyFrom", { name: stage.from.deviceLabel })
+                : undefined;
+            return (
+              <ListRow
+                key={entry.groupIdHex}
+                icon="chat"
+                title={title}
+                detail={source}
+                onPress={
+                  chatsEnabled
+                    ? () => router.push(conversationRoute(entry.groupIdHex))
+                    : undefined
+                }
+              />
+            );
+          })}
+        </ListGroup>
+      ) : (
+        <DeviceNote>{t(history ? "noHistory" : "loading")}</DeviceNote>
+      )}
       {recovery &&
         (recovery.inboxCatchingUp ||
           recovery.catchingUpGroupIdsHex.length > 0 ||

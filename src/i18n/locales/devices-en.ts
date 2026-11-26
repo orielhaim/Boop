@@ -2,9 +2,8 @@ export const devicesEn = {
   title: "Devices",
   category: "Linked devices and sign-in security",
   attentionCount: "Security items to review: {{count}}",
-  hero: "Your account, across devices",
   heroHelp:
-    "Use Boop on another installation. Compare a private code on both screens to establish trust.",
+    "Link another device to Boop by comparing a private code on both screens.",
   link: "Link a device",
   current: "This device",
   currentLocal: "Signed in on this installation",
@@ -34,11 +33,11 @@ export const devicesEn = {
   wipeHelp:
     "Boop will coordinate departure where possible, then remove the account, local conversations and retained media here. Other installations may continue using the account.",
   others: "Other linked devices",
-  noOthers: "No other devices are linked.",
   unknownDevice: "Unnamed device",
   unknownClient: "Unknown application",
   active: "Active",
   inactive: "Inactive",
+  locallyInactive: "Assessed inactive",
   leaving: "Leaving",
   moved: "Moved",
   unknown: "Status unavailable",
@@ -54,6 +53,7 @@ export const devicesEn = {
   unavailable: "Couldn’t verify removal",
   remove: "Remove device",
   removeOthers: "Remove all other devices",
+  removeOthersCaption: "This device stays linked.",
   removeHelp:
     "This requests removal from your trusted device group and chats. A copied account key can still sign as you, and any plaintext already saved elsewhere can remain there.",
   deviceSettings: "Device preferences",

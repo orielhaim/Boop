@@ -1,7 +1,12 @@
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import {
+  type PropsWithChildren,
+  useCallback,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { Platform, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { DevicePairing } from "@/components/devices/pairing";
@@ -10,6 +15,7 @@ import {
   DeviceError,
   DeviceHeading,
   DeviceHeroImage,
+  DeviceNote,
   countSecurityItems,
 } from "@/components/devices/presentation";
 import {
@@ -17,19 +23,17 @@ import {
   DeviceDetails,
   DeviceRow,
   RosterRow,
+  isInactiveDevice,
   useRemoveDevices,
 } from "@/components/devices/roster";
 import { DeviceSecurity, SignInReview } from "@/components/devices/security";
 import { DeviceSynchronization } from "@/components/devices/synchronization";
 import { CountBadge } from "@/components/kinetik/count-badge";
 import { useDialog } from "@/components/ui/dialog";
-import { Action, Ink, Screen } from "@/components/ui/kit";
-import {
-  ListGroup,
-  ListRow,
-  SettingsDescription,
-} from "@/components/ui/list-group";
+import { Action, Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
+import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
+import { useTheme } from "@/theme";
 
 function open(view: string, target?: string) {
   router.push({
@@ -43,8 +47,27 @@ function back() {
   else router.replace("/settings/devices");
 }
 
+function DeviceSection({
+  title,
+  children,
+}: PropsWithChildren<{ title: string }>) {
+  return (
+    <View style={styles.deviceSection}>
+      <Ink
+        kind="section"
+        accessibilityRole="header"
+        style={styles.sectionTitle}
+      >
+        {title}
+      </Ink>
+      {children}
+    </View>
+  );
+}
+
 export default function Devices() {
   const { t } = useTranslation(["devices", "common"]);
+  const { colors } = useTheme();
   const dialog = useDialog();
   const { view, target } = useLocalSearchParams<{
     view?: string;
@@ -77,6 +100,8 @@ export default function Devices() {
   } = state;
   const current = roster?.find((row) => row.isThisDevice);
   const others = roster?.filter((row) => !row.isThisDevice) ?? [];
+  const inactive = others.filter(isInactiveDevice);
+  const remaining = others.filter((row) => !isInactiveDevice(row));
   const device = roster?.find((row) => row.slotIdHex === target);
   const signIn = state.projections.signIns?.find(
     (row) => row.slotIdHex === target,
@@ -178,9 +203,7 @@ export default function Devices() {
               onDone={back}
             />
           ) : (
-            <DeviceCard>
-              <Ink>{t("pausedHelp")}</Ink>
-            </DeviceCard>
+            <DeviceNote>{t("pausedHelp")}</DeviceNote>
           )}
           {link?.kind === "linked" && (
             <ListGroup>
@@ -217,9 +240,7 @@ export default function Devices() {
           onDone={back}
         />
       ) : (
-        <SettingsDescription>
-          {t(roster ? "unknown" : "loading")}
-        </SettingsDescription>
+        <DeviceNote>{t(roster ? "unknown" : "loading")}</DeviceNote>
       );
       break;
     case "device":
@@ -233,7 +254,7 @@ export default function Devices() {
           localActions={localActions}
         />
       ) : (
-        <SettingsDescription>
+        <DeviceNote>
           {t(
             target &&
               Array.from(removals).some(
@@ -244,7 +265,7 @@ export default function Devices() {
                 ? "unavailable"
                 : "loading",
           )}
-        </SettingsDescription>
+        </DeviceNote>
       );
       break;
     case "local":
@@ -360,28 +381,39 @@ export default function Devices() {
               />
             </ListGroup>
           )}
-          <DeviceCard hero center>
+          <DeviceCard center>
             <DeviceHeroImage />
-            <DeviceHeading title={t("hero")} detail={t("heroHelp")} />
-            <Action
-              variant="prominent"
-              size="lg"
+            <Ink style={styles.heroCopy}>{t("heroHelp")}</Ink>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !chats }}
               disabled={!chats}
-              onPress={() => open("link")}
+              style={({ pressed }) => [
+                styles.linkButton,
+                (pressed || !chats) && styles.linkDimmed,
+              ]}
+              onPress={() => {
+                tapFeedback();
+                open("link");
+              }}
             >
-              {t(linkInProgress ? "resumeLink" : "link")}
-            </Action>
+              <Icon name="devices" size={21} color={colors.onAccent} />
+              <Ink kind="rowTitle" style={styles.linkText}>
+                {t(linkInProgress ? "resumeLink" : "link")}
+              </Ink>
+            </Pressable>
           </DeviceCard>
           {!chats && (
-            <ListGroup>
-              <ListRow
-                icon="connection"
-                title={t("paused")}
-                detail={t("pausedHelp")}
-                detailLines={6}
-                onPress={() => router.push("/settings/privacy")}
-              />
-            </ListGroup>
+            <View style={styles.sectionWithNote}>
+              <ListGroup>
+                <ListRow
+                  icon="connection"
+                  title={t("paused")}
+                  onPress={() => router.push("/settings/privacy")}
+                />
+              </ListGroup>
+              <DeviceNote>{t("pausedHelp")}</DeviceNote>
+            </View>
           )}
           {chats && (connection !== "observing" || failed.length > 0) ? (
             <ListGroup>
@@ -399,77 +431,91 @@ export default function Devices() {
               />
             </ListGroup>
           ) : null}
-          <ListGroup title={t("current")}>
-            {current ? (
-              <RosterRow
-                device={current}
-                onPress={() => open("device", current.slotIdHex)}
-              />
-            ) : roster || !chats || failed.includes("roster") ? (
-              <DeviceRow
-                platform={Platform.OS}
-                title={t("currentLocal")}
-                app={
-                  Platform.OS === "ios"
-                    ? "Boop · iOS"
-                    : Platform.OS === "android"
-                      ? "Boop · Android"
-                      : "Boop"
-                }
-                status={t(
-                  pairing?.deviceGroupStalled
-                    ? "stalled"
-                    : !chats
-                      ? "paused"
-                      : failed.includes("roster") || roster?.length
-                        ? "unreadable"
-                        : "localOnly",
-                )}
-                onPress={() => open("local")}
-              />
-            ) : (
-              <View
-                accessibilityLabel={t("loading")}
-                accessible
-                style={styles.skeleton}
-              >
-                <View style={styles.circledSkeleton} />
-                <View style={styles.skeletonText}>
-                  <View style={styles.skeletonLine} />
-                  <View style={[styles.skeletonLine, styles.short]} />
+          <View style={styles.sectionWithNote}>
+            <DeviceSection title={t("current")}>
+              {current ? (
+                <RosterRow
+                  device={current}
+                  onPress={() => open("device", current.slotIdHex)}
+                />
+              ) : roster || !chats || failed.includes("roster") ? (
+                <DeviceRow
+                  platform={Platform.OS}
+                  title={t("currentLocal")}
+                  app={
+                    Platform.OS === "ios"
+                      ? "Boop · iOS"
+                      : Platform.OS === "android"
+                        ? "Boop · Android"
+                        : "Boop"
+                  }
+                  status={t(
+                    pairing?.deviceGroupStalled
+                      ? "stalled"
+                      : !chats
+                        ? "paused"
+                        : failed.includes("roster") || roster?.length
+                          ? "unreadable"
+                          : "localOnly",
+                  )}
+                  onPress={() => open("local")}
+                />
+              ) : (
+                <View
+                  accessibilityLabel={t("loading")}
+                  accessible
+                  style={styles.skeleton}
+                >
+                  <View style={styles.circledSkeleton} />
+                  <View style={styles.skeletonText}>
+                    <View style={styles.skeletonLine} />
+                    <View style={[styles.skeletonLine, styles.short]} />
+                  </View>
                 </View>
-              </View>
-            )}
-          </ListGroup>
-          <ListGroup title={t("others")}>
-            {roster &&
-              !others.length &&
-              !failed.includes("roster") &&
-              !pairing?.deviceGroupStalled &&
-              connection === "observing" && (
-                <SettingsDescription>{t("noOthers")}</SettingsDescription>
               )}
-            {others.map((row) => (
-              <RosterRow
-                key={row.slotIdHex}
-                device={row}
-                onPress={() => open("device", row.slotIdHex)}
-              />
-            ))}
-          </ListGroup>
-          {!!others.length && (
-            <DeviceDanger
-              title={t("removeOthers")}
-              disabled={busy || others.every((row) => row.removalPending)}
-              onPress={() =>
-                remove(
-                  others
-                    .filter((row) => !row.removalPending)
-                    .map((row) => row.slotIdHex),
-                  "removeOthers",
-                )
-              }
-            />
+              {!!others.length && (
+                <DeviceDanger
+                  title={t("removeOthers")}
+                  disabled={busy || others.every((row) => row.removalPending)}
+                  onPress={() =>
+                    remove(
+                      others
+                        .filter((row) => !row.removalPending)
+                        .map((row) => row.slotIdHex),
+                      "removeOthers",
+                    )
+                  }
+                />
+              )}
+            </DeviceSection>
+            {!!others.length && (
+              <DeviceNote>{t("removeOthersCaption")}</DeviceNote>
+            )}
+          </View>
+          {!!remaining.length && (
+            <DeviceSection title={t("others")}>
+              {remaining.map((row) => (
+                <RosterRow
+                  key={row.slotIdHex}
+                  device={row}
+                  onPress={() => open("device", row.slotIdHex)}
+                />
+              ))}
+            </DeviceSection>
+          )}
+          {!!inactive.length && (
+            <View style={styles.sectionWithNote}>
+              <DeviceSection title={t("inactivity")}>
+                {inactive.map((row) => (
+                  <RosterRow
+                    key={row.slotIdHex}
+                    device={row}
+                    onPress={() => open("device", row.slotIdHex)}
+                  />
+                ))}
+              </DeviceSection>
+              <DeviceNote>{t("inactivityHelp")}</DeviceNote>
+            </View>
           )}
           {!!removals.size && (
             <ListGroup>
@@ -510,12 +556,7 @@ export default function Devices() {
               />
             </ListGroup>
           ) : null}
-          {startedFresh && (
-            <SettingsDescription>{t("startedFresh")}</SettingsDescription>
-          )}
-          <ListGroup title={t("inactivity")}>
-            <SettingsDescription>{t("inactivityHelp")}</SettingsDescription>
-          </ListGroup>
+          {startedFresh && <DeviceNote>{t("startedFresh")}</DeviceNote>}
           <ListGroup>
             <ListRow
               icon={
@@ -555,6 +596,38 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "center",
     gap: theme.space.lg,
   },
+  sectionWithNote: { gap: theme.space.sm },
+  deviceSection: {
+    backgroundColor: theme.colors.grouped,
+    borderRadius: theme.radius.card,
+    overflow: "hidden",
+    paddingVertical: theme.space.xs,
+  },
+  sectionTitle: {
+    color: theme.colors.accent,
+    paddingHorizontal: theme.space.lg,
+    paddingTop: theme.space.md,
+  },
+  heroCopy: { textAlign: "center" },
+  linkButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: theme.space.sm,
+    minHeight: 52,
+    marginTop: theme.space.sm,
+    paddingVertical: theme.space.md,
+    paddingHorizontal: theme.space.lg,
+    backgroundColor: theme.colors.accent,
+    borderRadius: theme.radius.round,
+  },
+  linkText: {
+    color: theme.colors.onAccent,
+    fontWeight: "700",
+    flexShrink: 1,
+    textAlign: "center",
+  },
+  linkDimmed: { opacity: 0.6 },
   skeleton: {
     padding: theme.space.lg,
     minHeight: 76,
