@@ -1,6 +1,10 @@
 import { router } from "expo-router";
 import { useSyncExternalStore } from "react";
-import { Pressable, View } from "react-native";
+import { useWindowDimensions, View } from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
@@ -9,9 +13,15 @@ import {
   type SettingsCategory,
 } from "@/components/ui/category-icon";
 import { PersonAvatar } from "@/components/people/person-avatar";
+import { ProfileBannerArtwork } from "@/components/people/profile-banner-artwork";
 import { usePerson } from "@/components/people/use-person";
-import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
-import { Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
+import { useIdentitySheet } from "@/components/people/identity-sheet";
+import { GlassBackButton } from "@/components/ui/back-button";
+import { Ink } from "@/components/ui/kit";
+import { CompactAction } from "@/components/ui/messenger-ui";
+import { ScreenInsets } from "@/components/ui/screen-insets";
+import { ParallaxScrollView } from "@/components/ui/templates/parallax-header/components/AnimatedScrollView";
+import { useAvatar } from "@/core/avatars/use-avatar";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
@@ -119,7 +129,13 @@ function CategoryRow({
 
 export default function Settings() {
   const { t } = useTranslation(namespaces);
-  const { identity, profileEditor, deviceController } = useLocal();
+  const { colors } = useTheme();
+  const { height } = useWindowDimensions();
+  const { top } = useSafeAreaInsets();
+  const bannerHeight = top + Math.max(132, Math.min(170, height * 0.19));
+  const { identity, initialProfile, profileEditor, deviceController } =
+    useLocal();
+  const showIdentitySheet = useIdentitySheet();
   const attention = countSecurityItems(
     useSyncExternalStore(deviceController.subscribe, deviceController.getState),
   );
@@ -128,7 +144,8 @@ export default function Settings() {
     name,
     profile,
   } = usePerson(identity.publicKey);
-  const { draft, photoPreview } = useSyncExternalStore(
+  const publishedBanner = useAvatar(identity.publicKey, true, true, true);
+  const { draft, photoPreview, bannerPreview } = useSyncExternalStore(
     profileEditor.subscribe,
     profileEditor.getSnapshot,
   );
@@ -137,104 +154,138 @@ export default function Settings() {
     draft?.photo.kind === "remove"
       ? undefined
       : (photoPreview ?? publishedPhoto);
-  const { colors } = useTheme();
-  const edit = () => router.push("/settings/edit-profile");
+  const banner =
+    draft?.banner?.kind === "remove"
+      ? undefined
+      : (bannerPreview ?? publishedBanner);
+  const hasName = Boolean(
+    draft?.name || (profile ? profile.name : initialProfile.name),
+  );
 
   return (
-    <Screen compact topInset>
-      <View style={styles.header}>
-        <GlassBackButton
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/profile");
-          }}
-        />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${t("settings:editProfile")}, ${displayName}`}
-          onPress={() => {
-            tapFeedback();
-            edit();
-          }}
-          style={({ pressed }) => [styles.identity, pressed && styles.pressed]}
-        >
-          <View>
-            <PersonAvatar
-              size="xxl"
-              publicKey={identity.publicKey}
-              name={displayName}
-              photo={photo}
-              hasName={Boolean(profile?.name || draft?.name)}
-            />
-            <View style={styles.editBadge}>
-              <Icon name="edit" size={14} color={colors.outgoingInk} />
-            </View>
+    <ScreenInsets edges={["bottom"]} style={styles.screen}>
+      <ParallaxScrollView
+        bodyStyle={styles.body}
+        headerMaxHeight={bannerHeight}
+        headerOverlap={44}
+        backgroundColor={colors.background}
+        header={
+          <View style={styles.banner}>
+            <ProfileBannerArtwork source={banner} />
           </View>
-          <Ink
-            kind={profile?.name || draft?.name ? "profileName" : "body"}
-            numberOfLines={2}
-            style={styles.name}
+        }
+        headerControls={
+          <SafeAreaView
+            edges={["top", "left", "right"]}
+            pointerEvents="box-none"
+            style={styles.controls}
           >
-            {displayName}
-          </Ink>
-          <Ink kind="description" style={styles.editLabel}>
-            {t("settings:editProfile")}
-          </Ink>
-        </Pressable>
-      </View>
-
-      {[
-        categoryRows.slice(0, 5),
-        categoryRows.slice(5, 9),
-        categoryRows.slice(9),
-      ].map((group) => (
-        <ListGroup key={group[0]?.category} dividers="none">
-          {group.map((row) => (
-            <CategoryRow
-              key={row.category}
-              category={row.category}
-              title={t(row.titleKey)}
-              detail={
-                row.category === "devices" && attention
-                  ? t("devices:attentionCount", { count: attention })
-                  : t(row.detailKey)
-              }
-              count={row.category === "devices" ? attention : undefined}
-              onPress={() => router.push(row.route)}
+            <GlassBackButton
+              onPress={() => {
+                if (router.canGoBack()) router.back();
+                else router.replace("/");
+              }}
             />
+            <View style={styles.bannerActions}>
+              <CompactAction
+                icon="edit"
+                label={t("settings:editProfile")}
+                onPress={() => router.push("/settings/edit-profile")}
+              />
+              <CompactAction
+                icon="qr"
+                iconOnly
+                label={t("security:showIdentityQr")}
+                onPress={() => showIdentitySheet("qr")}
+              />
+            </View>
+          </SafeAreaView>
+        }
+      >
+        <SafeAreaView edges={["left", "right"]} style={styles.content}>
+          <View style={styles.identity}>
+            <View style={styles.avatar}>
+              <PersonAvatar
+                size="xxl"
+                publicKey={identity.publicKey}
+                name={displayName}
+                photo={photo}
+                hasName={hasName}
+              />
+            </View>
+            <Ink
+              accessibilityRole="header"
+              kind={hasName ? "profileName" : "body"}
+              numberOfLines={2}
+              style={styles.name}
+            >
+              {displayName}
+            </Ink>
+          </View>
+          {[
+            categoryRows.slice(0, 5),
+            categoryRows.slice(5, 9),
+            categoryRows.slice(9),
+          ].map((group) => (
+            <ListGroup key={group[0]?.category} dividers="none">
+              {group.map((row) => (
+                <CategoryRow
+                  key={row.category}
+                  category={row.category}
+                  title={t(row.titleKey)}
+                  detail={
+                    row.category === "devices" && attention
+                      ? t("devices:attentionCount", { count: attention })
+                      : t(row.detailKey)
+                  }
+                  count={row.category === "devices" ? attention : undefined}
+                  onPress={() => router.push(row.route)}
+                />
+              ))}
+            </ListGroup>
           ))}
-        </ListGroup>
-      ))}
-    </Screen>
+        </SafeAreaView>
+      </ParallaxScrollView>
+    </ScreenInsets>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  header: {
+  screen: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  banner: {
+    flex: 1,
+    backgroundColor: theme.colors.selected,
+  },
+  controls: {
     flexDirection: "row",
     alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingHorizontal: theme.space.lg,
+    paddingTop: theme.space.sm,
+    gap: theme.space.sm,
+  },
+  bannerActions: {
+    flexDirection: "row",
+    gap: theme.space.sm,
+  },
+  body: { flex: 1 },
+  content: {
+    paddingHorizontal: theme.space.lg,
+    paddingBottom: theme.space.xxl,
+    gap: theme.space.md,
   },
   identity: {
-    flex: 1,
-    marginEnd: backButtonSize,
     alignItems: "center",
-    gap: theme.space.sm,
-    paddingVertical: theme.space.sm,
+    paddingHorizontal: theme.space.lg,
+    paddingBottom: theme.space.sm,
   },
-  pressed: { opacity: 0.75 },
   name: { textAlign: "center", marginTop: theme.space.xs },
-  editLabel: { color: theme.colors.accent },
-  editBadge: {
-    position: "absolute",
-    bottom: 0,
-    end: 0,
-    width: 29,
-    height: 29,
-    alignItems: "center",
-    justifyContent: "center",
+  avatar: {
+    padding: 4,
     borderRadius: theme.radius.round,
-    backgroundColor: theme.colors.outgoing,
-    borderColor: theme.colors.background,
-    borderWidth: 2,
+    backgroundColor: theme.colors.background,
   },
 }));

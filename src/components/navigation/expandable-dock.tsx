@@ -73,10 +73,10 @@ type DockProps = Omit<TabListProps, "asChild" | "children"> & {
   accountLabel: string;
   accountName: string;
   direction: "ltr" | "rtl";
-  profileActionLabel: string;
+  settingsLabel: string;
   qrLabel: string;
   closeLabel: string;
-  onAccountPress: () => void;
+  onSettingsPress: () => void;
   onQrPress: () => void;
   onTabSelect: (name: string) => void;
 };
@@ -92,10 +92,10 @@ export function ExpandableDock({
   accountLabel,
   accountName,
   direction,
-  profileActionLabel,
+  settingsLabel,
   qrLabel,
   closeLabel,
-  onAccountPress,
+  onSettingsPress,
   onQrPress,
   onTabSelect,
   ...props
@@ -551,11 +551,11 @@ export function ExpandableDock({
         >
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={profileActionLabel}
+            accessibilityLabel={settingsLabel}
             accessibilityHint={accountName}
             onPress={() => {
               closeProfile();
-              onAccountPress();
+              onSettingsPress();
             }}
             style={[styles.details, { direction }]}
           >
@@ -577,7 +577,7 @@ export function ExpandableDock({
                   numberOfLines={1}
                   style={[styles.caption, { color: colors.muted }]}
                 >
-                  {profileActionLabel}
+                  {settingsLabel}
                 </Text>
               </View>
             </DockMorph>
@@ -672,7 +672,6 @@ function CollapsedGlyph({
 type DockTabButtonProps = Omit<TabTriggerSlotProps, "ref"> & {
   item: DockItem;
   index: number;
-  visible?: boolean;
   onTabSelect: (name: string) => void;
 };
 
@@ -680,7 +679,7 @@ export const DockTabButton = forwardRef<
   ComponentRef<typeof View>,
   DockTabButtonProps
 >(function DockTabButton(
-  { item, index, isFocused, visible = true, onTabSelect, ...props },
+  { item, index, isFocused, onTabSelect, ...props },
   ref,
 ) {
   const { colors, reduceMotion } = useTheme();
@@ -703,16 +702,15 @@ export const DockTabButton = forwardRef<
     ),
   }));
   useLayoutEffect(() => {
-    if (!isFocused || !visible) return;
+    if (!isFocused) return;
     scheduleOnUI(() => {
       "worklet";
       motion.selectedIndex.set(index);
       if (!motion.dragging.get())
         animateDockSelection(motion, index, reduceMotion);
     });
-  }, [index, isFocused, motion, reduceMotion, visible]);
+  }, [index, isFocused, motion, reduceMotion]);
 
-  if (!visible) return null;
   return (
     <Pressable
       {...props}

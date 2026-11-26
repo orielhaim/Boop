@@ -1,8 +1,5 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import Transition from "react-native-screen-transitions";
-import { useMinimizeOnScroll } from "@/components/navigation/dock-motion";
-import { Image } from "expo-image";
-import { LinearGradient } from "expo-linear-gradient";
 import {
   router,
   useFocusEffect,
@@ -26,7 +23,7 @@ import {
   View,
 } from "react-native";
 import { GestureDetector } from "react-native-gesture-handler";
-import Animated, { useComposedEventHandler } from "react-native-reanimated";
+import Animated from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { AvatarPicker } from "@/components/avatars/picker";
 import {
@@ -63,21 +60,19 @@ import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 import { AddressSheetContent } from "./address-sheet";
-import { useIdentitySheet } from "./identity-sheet";
 import { PersonCallHistory, PersonGroups } from "./person-context";
 import { PersonAvatar } from "./person-avatar";
+import { ProfileBannerArtwork } from "./profile-banner-artwork";
 import { usePersonIdentity, useVerifiedIdentifier } from "./use-person";
 
 export function PersonProfile({
   publicKey,
   hint,
   morph,
-  tab = false,
 }: {
   publicKey: string | null;
   hint?: string;
   morph?: string;
-  tab?: boolean;
 }) {
   const { t } = useTranslation(namespaces);
   return publicKey ? (
@@ -86,7 +81,6 @@ export function PersonProfile({
       publicKey={publicKey}
       hint={hint}
       morph={morph}
-      tab={tab}
     />
   ) : (
     <Screen
@@ -105,35 +99,18 @@ function ProfileContent({
   publicKey,
   hint,
   morph,
-  tab,
 }: {
   publicKey: string;
   hint?: string;
   morph?: string;
-  tab: boolean;
 }) {
-  const onScroll = useMinimizeOnScroll();
   const { height } = useWindowDimensions();
   const bannerHeight = Math.max(1, Math.min(148, height * 0.2));
   const profileMotion = useAnimateScrollView(bannerHeight);
   const mediaMotion = useAnimateScrollView(bannerHeight);
-  const profileScroll = useComposedEventHandler([
-    profileMotion.onScroll,
-    tab ? onScroll : null,
-  ]);
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
-  const {
-    avatars,
-    db,
-    identity,
-    initialProfile,
-    lock,
-    marmotSession,
-    privacy,
-    profileEditor,
-    profiles,
-  } = useLocal();
+  const { avatars, db, lock, marmotSession, privacy, profiles } = useLocal();
   const { colors, reduceMotion, reduceTransparency } = useTheme();
   const focused = useIsFocused();
   const navigation = useNavigation();
@@ -143,42 +120,18 @@ function ProfileContent({
     privacy.subscribe,
     privacy.revision,
   );
-  const { draft, photoPreview, bannerPreview } = useSyncExternalStore(
-    profileEditor.subscribe,
-    profileEditor.getSnapshot,
-  );
   const {
     contact: observedContact,
     profile,
     name: observedName,
   } = usePersonIdentity(publicKey);
-  const publicPhoto = useAvatar(publicKey, true, false, true);
-  const own = identity.publicKey === publicKey;
-  const pendingProfile = own ? draft : undefined;
-  const photo =
-    pendingProfile?.photo.kind === "remove"
-      ? undefined
-      : own
-        ? (photoPreview ?? publicPhoto)
-        : publicPhoto;
+  const photo = useAvatar(publicKey, true, false, true);
   const canViewPhoto = Boolean(photo);
-  const localName = pendingProfile?.name;
-  const publicBanner = useAvatar(publicKey, true, true, true);
-  const banner =
-    pendingProfile?.banner?.kind === "remove"
-      ? undefined
-      : own
-        ? (bannerPreview ?? publicBanner)
-        : publicBanner;
-  const details = {
-    ...profile,
-    website: pendingProfile?.website ?? profile?.website,
-    nip05: pendingProfile?.nip05 ?? profile?.nip05,
-  };
+  const banner = useAvatar(publicKey, true, true, true);
   const block = useBlockAction(publicKey);
   const restricted = privacy.isBlocked(publicKey);
   const verified = useVerifiedIdentifier(
-    focused && !restricted ? details.nip05 : undefined,
+    focused && !restricted ? profile?.nip05 : undefined,
     publicKey,
   );
   const chatsEnabled = useChatsEnabled();
@@ -191,7 +144,6 @@ function ProfileContent({
     marmotSession.revision,
   );
   const address = toNpub(publicKey);
-  const showIdentitySheet = useIdentitySheet();
   const [addressOpen, setAddressOpen] = useState(false);
   const [contactEdit, setContactEdit] = useState<
     | { kind: "rename"; name: string }
@@ -235,15 +187,12 @@ function ProfileContent({
     privacyRevision: number;
     id: string | null;
   }>();
-  const [tabChoice, setSelectedTab] = useState<
-    "profile" | "media" | "groups"
-  >();
+  const [tabChoice, setSelectedTab] = useState<"media" | "groups">("groups");
   const mediaScrollPosition = useRef(0);
   const mediaConversation =
     conversationRecord?.peer === publicKey &&
     conversationRecord.revision === sessionRevision &&
     conversationRecord.privacyRevision === privacyRevision &&
-    !own &&
     !restricted
       ? conversationRecord.id
       : undefined;
@@ -253,21 +202,15 @@ function ProfileContent({
     lockState.active &&
     !lockState.locked &&
     sessionStatus === "ready";
-  const hasMediaTab = chatsEnabled && !own && !restricted;
-  const selectedTab = own
-    ? tabChoice === "groups"
-      ? "groups"
-      : "profile"
-    : hasMediaTab && tabChoice === "media"
-      ? "media"
-      : "groups";
+  const hasMediaTab = chatsEnabled && !restricted;
+  const selectedTab = hasMediaTab ? tabChoice : "groups";
   const showingMedia = selectedTab === "media";
   const showingGroups = selectedTab === "groups";
   const showingLibrary = showingMedia && mediaAvailable;
 
   useEffect(() => {
     let current = true;
-    if (own || restricted) return;
+    if (restricted) return;
     if (
       !chatsEnabled ||
       !focused ||
@@ -318,7 +261,6 @@ function ProfileContent({
     lock,
     lockState.active,
     lockState.locked,
-    own,
     privacy,
     privacyRevision,
     publicKey,
@@ -390,7 +332,7 @@ function ProfileContent({
   }
 
   function saveProfileContact(edit: { kind: "add" | "rename"; name: string }) {
-    if (own || !navigation.isFocused()) return;
+    if (!navigation.isFocused()) return;
     const state = lock.getState();
     if (!state.active || state.locked || privacy.isBlocked(publicKey)) return;
 
@@ -441,30 +383,20 @@ function ProfileContent({
       </Screen>
     );
 
-  const about =
-    pendingProfile?.about ??
-    (profile ? details.about : own ? initialProfile.about : undefined);
-  const displayName = localName || name;
-  const editProfile = () => router.push("/settings/edit-profile");
+  const about = profile?.about;
+  const website = profile?.website;
   const back = () => {
     if (leaving.current || !navigation.isFocused()) return;
     leaving.current = true;
     if (router.canGoBack()) router.back();
     else router.replace("/people");
   };
-  const showQr = () => {
-    if (own) {
-      showIdentitySheet("qr");
-      return;
-    }
-    setAddressOpen(true);
-  };
   const canManageProfile = focused && lockState.active && !lockState.locked;
   const canRequestImages =
     !restricted &&
     !avatars.autoLoads(publicKey) &&
     !imagesRequested &&
-    Boolean(profile?.picture || details.banner);
+    Boolean(profile?.picture || profile?.banner);
 
   function openContactEditor() {
     if (!contact || !navigation.isFocused() || privacy.isBlocked(publicKey))
@@ -475,7 +407,7 @@ function ProfileContent({
 
   function confirmAddContact() {
     void dialog.show({
-      title: t("contacts:confirmAdd", { name: displayName }),
+      title: t("contacts:confirmAdd", { name }),
       actions: [
         { label: t("common:cancel"), tone: "cancel" },
         {
@@ -492,7 +424,7 @@ function ProfileContent({
     id: string;
     run: () => void;
   })[] = [];
-  if (!own && canManageProfile) {
+  if (canManageProfile) {
     if (canRequestImages) {
       menu.push({
         id: "loadImages",
@@ -578,8 +510,7 @@ function ProfileContent({
       });
     }
   }
-  const tabs: ProfileTab<"profile" | "media" | "groups">[] = [];
-  if (own) tabs.push({ key: "profile", label: t("messages:sharedMedia.info") });
+  const tabs: ProfileTab<"media" | "groups">[] = [];
   if (hasMediaTab)
     tabs.push({ key: "media", label: t("messages:marmot.shortcutMedia") });
   tabs.push({ key: "groups", label: t("contacts:groupsTab") });
@@ -610,10 +541,10 @@ function ProfileContent({
           <ProfileElement profile={active ? morph : undefined} part="avatar">
             <PersonAvatar
               publicKey={publicKey}
-              name={displayName}
+              name={name}
               photo={photo}
               animateArrival={!morph}
-              hasName={Boolean(localName || contact?.name || profile?.name)}
+              hasName={Boolean(contact?.name || profile?.name)}
               size="xxl"
             />
           </ProfileElement>
@@ -626,13 +557,10 @@ function ProfileContent({
               numberOfLines={2}
               style={[
                 styles.name,
-                !localName &&
-                  !contact?.name &&
-                  !profile?.name &&
-                  styles.fallbackName,
+                !contact?.name && !profile?.name && styles.fallbackName,
               ]}
             >
-              {displayName}
+              {name}
             </Ink>
           </ProfileElement>
           {profile?.name && profile.name !== name && (
@@ -640,54 +568,39 @@ function ProfileContent({
               {profile.name}
             </Ink>
           )}
-          {details.handle && details.handle !== profile?.name && (
+          {profile?.handle && profile.handle !== profile.name && (
             <Ink muted kind="caption">
-              @{details.handle}
+              @{profile.handle}
             </Ink>
           )}
-          {details.nip05 && (
+          {profile?.nip05 && (
             <View
               style={styles.badge}
               accessible
-              accessibilityLabel={`${t(verified ? "messenger:verified" : "messenger:unverified")}: ${details.nip05}`}
+              accessibilityLabel={`${t(verified ? "messenger:verified" : "messenger:unverified")}: ${profile.nip05}`}
             >
               {verified && <Icon name="check" size={14} />}
               <Ink muted={!verified} kind="caption">
-                {details.nip05}
+                {profile.nip05}
               </Ink>
             </View>
           )}
         </View>
       </View>
-      {details.bot && (
+      {profile?.bot && (
         <Ink kind="caption" muted>
           {t("messenger:bot")}
         </Ink>
       )}
     </View>
   );
-  const profileActions = own ? (
-    <View style={styles.actions}>
-      <CompactAction
-        icon="edit"
-        label={t("settings:editProfile")}
-        onPress={editProfile}
-      />
-      {tab && (
-        <CompactAction
-          icon="settings"
-          label={t("navigation:settings")}
-          onPress={() => router.push("/settings")}
-        />
-      )}
-    </View>
-  ) : (
+  const profileActions = (
     <View style={styles.actions}>
       <CompactAction
         icon="qr"
         iconOnly
         label={t("security:showIdentityQr")}
-        onPress={showQr}
+        onPress={() => setAddressOpen(true)}
       />
       {chatsEnabled && (
         <CompactAction
@@ -737,44 +650,15 @@ function ProfileContent({
             pointerEvents="none"
             style={[styles.bannerArtwork, motion.artwork]}
           >
-            {!reduceTransparency && (
-              <LinearGradient
-                colors={[colors.heroStart, colors.selected, colors.heroEnd]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-            {banner ? (
-              <Image
-                source={banner}
-                contentFit="cover"
-                style={StyleSheet.absoluteFill}
-              />
-            ) : (
-              <View
-                pointerEvents="none"
-                style={[styles.orbit, { borderColor: colors.line }]}
-              />
-            )}
+            <ProfileBannerArtwork source={banner} />
           </Animated.View>
-          {!tab && (
-            <GlassBackButton
-              style={styles.bannerBack}
-              elevation={morph ? "none" : undefined}
-              dimOnPress={!morph}
-              onPress={back}
-            />
-          )}
-          {own ? (
-            <CompactAction
-              icon="qr"
-              iconOnly
-              style={styles.bannerEnd}
-              label={t("security:showIdentityQr")}
-              onPress={showQr}
-            />
-          ) : menu.length > 0 ? (
+          <GlassBackButton
+            style={styles.bannerBack}
+            elevation={morph ? "none" : undefined}
+            dimOnPress={!morph}
+            onPress={back}
+          />
+          {menu.length > 0 && (
             <ActionMenu
               style={styles.bannerEnd}
               label={t("contacts:profileOptions")}
@@ -795,7 +679,7 @@ function ProfileContent({
                 />
               </View>
             </ActionMenu>
-          ) : null}
+          )}
         </View>
         <Animated.View style={[styles.overview, motion.body]}>
           <View
@@ -807,10 +691,10 @@ function ProfileContent({
           />
           {personHero(active)}
           {profileActions}
-          {(about || details.website) && (
+          {(about || website) && (
             <View style={styles.details}>
               {about && <Ink selectable>{about}</Ink>}
-              {details.website && (
+              {website && (
                 <View style={styles.link}>
                   <Icon name="language" size={16} />
                   <Ink
@@ -819,22 +703,19 @@ function ProfileContent({
                     style={[styles.primary, { color: colors.accent }]}
                     accessibilityRole="link"
                     onPress={() => {
-                      if (details.website)
-                        void Linking.openURL(details.website).catch(() =>
-                          setNotice(t("contacts:unavailable")),
-                        );
+                      void Linking.openURL(website).catch(() =>
+                        setNotice(t("contacts:unavailable")),
+                      );
                     }}
                   >
-                    {new URL(details.website).hostname}
+                    {new URL(website).hostname}
                   </Ink>
                 </View>
               )}
             </View>
           )}
-          {active && !own && !restricted && (
-            <PersonCallHistory publicKey={publicKey} />
-          )}
-          {!own && !contact && !restricted && canManageProfile && (
+          {active && !restricted && <PersonCallHistory publicKey={publicKey} />}
+          {!contact && !restricted && canManageProfile && (
             <Action
               onPress={confirmAddContact}
               variant="soft"
@@ -859,7 +740,7 @@ function ProfileContent({
       stickyHeaderIndices={[1]}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
-      onScroll={profileScroll}
+      onScroll={profileMotion.onScroll}
       scrollEventThrottle={16}
       alwaysBounceVertical={false}
       bounces={!profileMotion.reduceMotion}
@@ -887,7 +768,7 @@ function ProfileContent({
   );
 
   return (
-    <Screen scroll={false} tab={tab} topInset>
+    <Screen scroll={false} topInset>
       <View style={styles.pages}>
         <View
           pointerEvents={showingLibrary ? "none" : "auto"}
@@ -925,7 +806,7 @@ function ProfileContent({
           </View>
         )}
       </View>
-      {!own && contactEdit?.kind !== "saved" && (
+      {contactEdit?.kind !== "saved" && (
         <GlassSheet
           open={
             focused &&
@@ -972,13 +853,11 @@ function ProfileContent({
           </GlassSheetContent>
         </GlassSheet>
       )}
-      {!own && (
-        <GlassSheet open={focused && addressOpen} onOpenChange={setAddressOpen}>
-          <GlassSheetContent>
-            <AddressSheetContent address={address} showQr hideAddress />
-          </GlassSheetContent>
-        </GlassSheet>
-      )}
+      <GlassSheet open={focused && addressOpen} onOpenChange={setAddressOpen}>
+        <GlassSheetContent>
+          <AddressSheetContent address={address} showQr hideAddress />
+        </GlassSheetContent>
+      </GlassSheet>
       {focused &&
         !reduceMotion &&
         !reduceTransparency &&
@@ -1032,15 +911,6 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.round,
   },
   addContact: { alignSelf: "center" },
-  orbit: {
-    position: "absolute",
-    width: 280,
-    height: 280,
-    borderRadius: 140,
-    borderWidth: 1,
-    end: -28,
-    top: -160,
-  },
   identityLine: {
     alignItems: "center",
     gap: theme.space.sm,

@@ -136,18 +136,6 @@ function DockNavigator() {
       />
     ),
   };
-  const profile: DockItem = {
-    name: "profile",
-    label: t("navigation:profile"),
-    renderIcon: ({ tint, size }) => (
-      <Icon
-        name="person"
-        size={size}
-        color={tint}
-        weight={tint === colors.accent ? "fill" : "regular"}
-      />
-    ),
-  };
   const chatsTab = { item: messages, href: "/" } as const;
   const callsTab = { item: calls, href: "/calls" } as const;
   const conversationTabs = !separateCallsTab
@@ -158,15 +146,13 @@ function DockNavigator() {
   const tabs = [
     ...conversationTabs,
     { item: people, href: "/people" },
-    { item: profile, href: "/profile" },
   ] as const;
   const ordered = direction === "rtl" ? [...tabs].reverse() : tabs;
-  const visibleTabs = ordered.filter(({ item }) => item.name !== "profile");
 
   const dock = (
     <TabList asChild>
       <ExpandableDock
-        items={visibleTabs.map(({ item }) => item)}
+        items={ordered.map(({ item }) => item)}
         bottomOffset={bottomOffset}
         hidden={keyboardVisible}
         interactive={focused}
@@ -183,32 +169,26 @@ function DockNavigator() {
           />
         }
         accountLabel={t("navigation:accountActions")}
-        profileActionLabel={t("navigation:profile")}
+        settingsLabel={t("navigation:settings")}
         qrLabel={t("navigation:accountQr")}
-        onAccountPress={() => router.navigate("/profile")}
+        onSettingsPress={() => router.push("/settings")}
         onQrPress={() => showIdentitySheet("qr")}
         onTabSelect={selectTab}
       >
-        {ordered.map(({ item, href }) => {
-          const visibleIndex = visibleTabs.findIndex(
-            ({ item: visibleItem }) => visibleItem.name === item.name,
-          );
-          return (
-            <TabTrigger key={item.name} name={item.name} href={href} asChild>
-              <DockTabButton
-                item={item}
-                index={visibleIndex >= 0 ? visibleIndex : 0}
-                visible={visibleIndex >= 0}
-                onTabSelect={selectTab}
-                accessibilityLabel={
-                  href === "/" && unread > 0
-                    ? `${item.label}, ${t("messages:attentionCount", { count: unread })}`
-                    : item.label
-                }
-              />
-            </TabTrigger>
-          );
-        })}
+        {ordered.map(({ item, href }, index) => (
+          <TabTrigger key={item.name} name={item.name} href={href} asChild>
+            <DockTabButton
+              item={item}
+              index={index}
+              onTabSelect={selectTab}
+              accessibilityLabel={
+                href === "/" && unread > 0
+                  ? `${item.label}, ${t("messages:attentionCount", { count: unread })}`
+                  : item.label
+              }
+            />
+          </TabTrigger>
+        ))}
       </ExpandableDock>
     </TabList>
   );
@@ -216,7 +196,7 @@ function DockNavigator() {
     children: dock,
   });
   function selectTab(name: string) {
-    const destination = visibleTabs.find(({ item }) => item.name === name);
+    const destination = ordered.find(({ item }) => item.name === name);
     if (!destination) return;
     const current = navigation.getState();
     const target = resolveTabPressTarget(current, name, destination.href);
@@ -229,7 +209,7 @@ function DockNavigator() {
     const currentRoute = current.routes[current.index];
     if (event.defaultPrevented) {
       pageIntent.set(undefined);
-      const index = visibleTabs.findIndex(
+      const index = ordered.findIndex(
         ({ item }) => item.name === currentRoute?.name,
       );
       if (index >= 0)
@@ -310,7 +290,7 @@ function DockNavigator() {
                 <DirectionalTabs
                   active={active}
                   order={ordered.map(({ item }) => item.name)}
-                  warmRoutes={visibleTabs.map(({ item }) => item.name)}
+                  warmRoutes={ordered.map(({ item }) => item.name)}
                   style={{ direction }}
                   reduceMotion={reduceMotion}
                 />

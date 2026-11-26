@@ -120,6 +120,12 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "shared-media",
     "video-player",
   ]);
+  const tabs = messenger?.children.find((route) => route.route === "(tabs)");
+  expect(tabs?.children.map((route) => route.route).sort()).toEqual([
+    "calls",
+    "index",
+    "people",
+  ]);
   expect(
     messenger?.children
       .find((route) => route.route === "settings")
@@ -155,10 +161,4 @@ test("Expo Router discovers the primary routes including the optional Calls tab"
     "privacy/profile-photos",
     "storage",
   ]);
-  expect(
-    messenger?.children
-      .find((route) => route.route === "(tabs)")
-      ?.children.map((route) => route.route)
-      .sort(),
-  ).toEqual(["calls", "index", "people", "profile"]);
 });

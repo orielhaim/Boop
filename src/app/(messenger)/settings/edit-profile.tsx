@@ -112,7 +112,7 @@ export default function EditProfile() {
           title={t("settings:editProfile")}
           onBack={() => {
             if (router.canGoBack()) router.back();
-            else router.replace("/profile");
+            else router.replace("/settings");
           }}
           action={
             <SaveButton

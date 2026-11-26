@@ -92,7 +92,7 @@ export function FullPlayer() {
                 label={t("minimize")}
                 onPress={() => {
                   if (router.canGoBack()) router.back();
-                  else router.replace("/profile");
+                  else router.replace("/settings");
                 }}
               />
             }

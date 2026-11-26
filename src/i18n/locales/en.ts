@@ -210,7 +210,6 @@ export const en = {
     contacts: "Contacts",
     contact: "Contact",
     settings: "Settings",
-    profile: "Profile",
     accountQr: "Show my QR code",
     accountActions: "Open account actions",
     connect: "Connect",

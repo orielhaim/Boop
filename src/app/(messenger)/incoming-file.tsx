@@ -38,20 +38,20 @@ export default function IncomingFileRoute() {
       }
       if (!videoFile(name ?? "", type)) {
         void dialog.show({ title: t("settings.openFailed"), tone: "error" });
-        router.replace("/profile");
+        router.replace("/settings");
         return;
       }
       pendingVideo.current = { uri, name, type };
-      router.replace("/profile");
+      router.replace("/settings");
     } catch {
       void dialog.show({ title: t("settings.openFailed"), tone: "error" });
-      router.replace("/profile");
+      router.replace("/settings");
     }
   }, [dialog, lockState.active, lockState.locked, t, uri]);
 
   useEffect(() => {
     const pending = pendingVideo.current;
-    if (!pending || pathname !== "/profile") return;
+    if (!pending || pathname !== "/settings") return;
     pendingVideo.current = undefined;
     void openLocalVideo(pending.uri, pending.name, pending.type)
       .then((success) => {

@@ -204,7 +204,6 @@ export const he = {
     contacts: "אנשי קשר",
     contact: "איש קשר",
     settings: "הגדרות",
-    profile: "פרופיל",
     accountQr: "הצגת קוד ה־QR שלי",
     accountActions: "פתיחת פעולות החשבון",
     connect: "יצירת קשר",
