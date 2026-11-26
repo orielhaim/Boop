@@ -562,7 +562,7 @@ describe("protected conversation cache", () => {
     }
   });
 
-  test("keeps a speculative window at the tail and resolves an out-of-window unread target only when opened", async () => {
+  test("warms an out-of-window unread anchor before the chat opens", async () => {
     const jumps: string[] = [];
     const latest = { ...snapshot([message("tail")]), firstUnread: "unread" };
     const fixture = windowFor(latest, (id) => {
@@ -589,13 +589,13 @@ describe("protected conversation cache", () => {
     cache.setBrowsing(true);
     try {
       cache.candidates([candidate("chat", { unread: 64 })], new Set());
-      await until(() => fixture.observed() === 1);
-      expect(jumps).toEqual([]);
-      expect(cache.get("chat")?.snapshot).toBeUndefined();
-      const release = cache.acquire("chat");
       await until(() => Boolean(cache.get("chat")?.snapshot));
+      const warm = cache.get("chat")?.snapshot;
       expect(jumps).toEqual(["unread"]);
-      expect(cache.get("chat")?.snapshot?.messages[0]?.id).toBe("unread");
+      expect(warm?.messages[0]?.id).toBe("unread");
+      const release = cache.acquire("chat");
+      expect(cache.get("chat")?.snapshot).toBe(warm);
+      expect(jumps).toEqual(["unread"]);
       release?.();
     } finally {
       cache.setAvailable(false);

@@ -135,9 +135,12 @@ export function useGlassSceneEnabled(enabled: boolean) {
 export function GlassProvider({
   children,
   active = true,
+  sourceId,
 }: {
   children: ReactNode;
   active?: boolean;
+  /** Lets controls outside the source subtree sample the same window-local backdrop. */
+  sourceId?: string;
 }) {
   const parent = useContext(BackdropContext);
   const id = useId();
@@ -148,22 +151,29 @@ export function GlassProvider({
   );
   return (
     <BackdropContext.Provider
-      value={{ id, active: active && foreground && (parent?.active ?? true) }}
+      value={{
+        id: sourceId ?? id,
+        active: active && foreground && (parent?.active ?? true),
+      }}
     >
       {children}
     </BackdropContext.Provider>
   );
 }
 
-/** Render one source per provider. Use a sibling renderer to sample it. */
-export function GlassBackdrop(props: ViewProps) {
+/** Render one source per scope. A named source can be sampled across React subtrees. */
+export function GlassBackdrop({
+  sourceId,
+  ...props
+}: ViewProps & { sourceId?: string }) {
   const backdrop = useContext(BackdropContext);
   const BackdropView = getAndroidViews()?.BackdropView;
-  if (!BackdropView || !backdrop) return <View {...props} />;
+  const id = sourceId ?? backdrop?.id;
+  if (!BackdropView || !id) return <View {...props} />;
   return (
     <BackdropView
       {...props}
-      sourceId={backdrop.active ? backdrop.id : undefined}
+      sourceId={backdrop?.active === false ? undefined : id}
     />
   );
 }

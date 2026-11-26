@@ -41,7 +41,7 @@ import {
   removeContact,
   updateContactPreferences,
 } from "@/db/queries";
-import { useContacts, nameOrAddress } from "@/db/contacts";
+import { useContacts } from "@/db/contacts";
 import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
@@ -134,8 +134,9 @@ export function PeopleDirectory() {
     })),
   ];
   const { onViewableItemsChanged: onDirectoryViewable, viewabilityConfig } =
-    useAvatarVisibility<DirectoryItem>((item) =>
-      "contact" in item ? item.contact.publicKey : "",
+    useAvatarVisibility<DirectoryItem>(
+      (item) => ("contact" in item ? item.contact.publicKey : ""),
+      focused,
     );
   const toggleDirectoryVisibility = useCallback(
     (event: Parameters<typeof onDirectoryViewable>[0]) => {
@@ -152,10 +153,9 @@ export function PeopleDirectory() {
   const menuContact = local.find((row) => row.publicKey === contactMenu?.key);
   const menuName =
     menuContact &&
-    nameOrAddress(
-      menuContact.name || profiles.profile(menuContact.publicKey)?.name,
-      menuContact.publicKey,
-    );
+    (menuContact.name.trim() ||
+      profiles.profile(menuContact.publicKey)?.name ||
+      t("contacts:unnamed"));
   const menuOpen =
     focused && lockState.active && !lockState.locked && !!menuContact;
 
@@ -217,23 +217,26 @@ export function PeopleDirectory() {
             </GlassSegmentedControlItem>
           </GlassSegmentedControl>
         )}
-        {!showCalls && (
-          <GlassInput
-            accessibilityLabel={t("contacts:search")}
-            compact
-            placeholder={t("contacts:search")}
-            value={query}
-            onChangeText={setQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            maxLength={1024}
-          />
-        )}
       </View>
       <View style={styles.body}>
-        {showCalls ? (
-          <CallHistory onScroll={onScroll} />
-        ) : (
+        <View
+          style={[styles.contacts, showCalls && styles.hidden]}
+          pointerEvents={showCalls ? "none" : "auto"}
+          accessibilityElementsHidden={showCalls}
+          importantForAccessibility={showCalls ? "no-hide-descendants" : "auto"}
+        >
+          <View style={styles.search}>
+            <GlassInput
+              accessibilityLabel={t("contacts:search")}
+              compact
+              placeholder={t("contacts:search")}
+              value={query}
+              onChangeText={setQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={1024}
+            />
+          </View>
           <Animated.FlatList
             data={items}
             viewabilityConfig={viewabilityConfig}
@@ -247,7 +250,7 @@ export function PeopleDirectory() {
               ) : (
                 <FavoriteCarousel
                   favorites={favorites}
-                  visible={carouselVisible}
+                  visible={focused && carouselVisible}
                   rtl={rtl}
                   onContactActions={openContactMenu}
                 />
@@ -273,7 +276,8 @@ export function PeopleDirectory() {
               )
             }
           />
-        )}
+        </View>
+        {showCalls && <CallHistory onScroll={onScroll} />}
       </View>
       <GlassSheet
         open={menuOpen}
@@ -321,7 +325,7 @@ export function PeopleDirectory() {
                 onPress={() => applyContactAction("favorite")}
               />
               <Row
-                leading={<Icon name="erase" color={colors.danger} />}
+                leading={<Icon name="trash" color={colors.danger} />}
                 title={t("messenger:removePerson")}
                 onPress={() => {
                   setContactActionError(false);
@@ -399,11 +403,7 @@ function PersonRow({
   const profile = usePublicProfile(publicKey);
   const photo = useAvatar(publicKey, false);
   const knownName = contact.name.trim() || profile?.name;
-  const name =
-    knownName ||
-    (tile ? t("contacts:unnamed") : nameOrAddress(undefined, publicKey));
-  const about = profile?.about;
-  const address = toNpub(publicKey);
+  const name = knownName || t("contacts:unnamed");
   return (
     <Transition.Boundary
       id={`person:${publicKey}`}
@@ -450,17 +450,9 @@ function PersonRow({
           </Ink>
         )
       ) : (
-        <>
-          <View style={styles.info}>
-            <Ink kind="label" numberOfLines={1}>
-              {name}
-            </Ink>
-            <Ink kind="caption" muted numberOfLines={1}>
-              {about || `${address.slice(0, 15)}…${address.slice(-5)}`}
-            </Ink>
-          </View>
-          <Icon name={contact.favorite ? "favorite" : "check"} size={18} />
-        </>
+        <Ink kind="label" numberOfLines={1} style={styles.info}>
+          {name}
+        </Ink>
       )}
     </Transition.Boundary>
   );
@@ -501,6 +493,9 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   body: { flex: 1 },
+  contacts: { ...StyleSheet.absoluteFill },
+  hidden: { opacity: 0 },
+  search: { paddingHorizontal: space.lg, paddingBottom: space.sm },
   list: {
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
@@ -514,7 +509,7 @@ const styles = StyleSheet.create({
     minHeight: 57,
     paddingVertical: space.sm,
   },
-  info: { gap: 2, flex: 1 },
+  info: { flex: 1 },
   tile: { alignItems: "center", gap: space.xs, paddingHorizontal: space.xs },
   tileLabel: { textAlign: "center" },
   pendingLabel: { minHeight: 18, justifyContent: "center" },

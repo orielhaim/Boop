@@ -19,7 +19,7 @@ export type GlassSurfaceProps = ViewProps & {
   elevation?: SurfaceElevation;
   preset?: SurfacePreset;
   tint?: string;
-  lensTint?: boolean;
+  lensTint?: boolean | string;
 };
 
 const optics = {
@@ -61,6 +61,7 @@ export const GlassSurface = forwardRef<
       numericRadius(shape?.borderBottomRightRadius, base),
       numericRadius(shape?.borderBottomLeftRadius, base),
     ];
+    const lensColor = typeof lensTint === "string" ? lensTint : undefined;
     const fill =
       tint ??
       (cinematic
@@ -68,7 +69,7 @@ export const GlassSurface = forwardRef<
         : preset === "overlay"
           ? colors.overlaySurface
           : lensTint
-            ? colors.lens.frost
+            ? (lensColor ?? colors.lens.frost)
             : preset === "prominent"
               ? colors.glassFill.tinted
               : colors.glassFill.clear);
@@ -101,7 +102,7 @@ export const GlassSurface = forwardRef<
         opaqueColor={opaque}
         colorScheme={cinematic ? "dark" : preferences.theme}
         systemStyle={cinematic || preset === "subtle" ? "clear" : "regular"}
-        systemTint={tint}
+        systemTint={tint ?? lensColor}
       >
         {Children.map(children, (child) =>
           child === null || child instanceof Object ? (

@@ -165,6 +165,7 @@ export type GlassTone =
 type ConversationMaterial = {
   canvas: [string, string, string];
   contours: string;
+  headerTint: string;
   panel: string;
   rim: string;
   incoming: string;
@@ -178,6 +179,7 @@ function buildTheme(name: ThemeName, colors: typeof lightColors) {
       ? [colors.background, "#17202C", "#17282B"]
       : [colors.background, "#E6ECF4", "#E5EFEE"],
     contours: colors.muted,
+    headerTint: dark ? "rgba(17, 30, 50, 0.82)" : "rgba(251, 253, 255, 0.82)",
     panel: colors.raised,
     rim: colors.line,
     incoming: colors.grouped,

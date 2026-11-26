@@ -144,7 +144,7 @@ export default function EditProfile() {
             {draft?.banner?.kind !== "remove" &&
               (profile?.banner || bannerPreview) && (
                 <CompactAction
-                  icon="erase"
+                  icon="trash"
                   iconOnly
                   label={t("settings:photoRemove")}
                   onPress={() => removeImage("banner")}

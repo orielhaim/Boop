@@ -3,6 +3,7 @@ import {
   conversationWindowActive,
   marmotChatScene,
   profileElementId,
+  retainRecentConversation,
 } from "../src/core/marmot/conversation-route";
 
 const chat = {
@@ -21,6 +22,43 @@ const edit = {
   params: { ...details.params, view: "edit" },
 };
 const player = { key: "player", name: "audio-player" };
+const tabs = { key: "tabs", name: "(tabs)" };
+
+test("returning to the inbox keeps exactly the conversation that was just on screen", () => {
+  const older = {
+    ...chat,
+    key: "older",
+    params: { key: "marmot-cd" },
+    isPreloaded: true,
+  };
+  const other = { ...player, isPreloaded: true };
+  const next = retainRecentConversation(
+    { index: 1, routes: [tabs, chat, older, other] },
+    { index: 0, routes: [tabs, older, other] },
+  );
+  expect(next).toEqual({
+    index: 0,
+    routes: [tabs, other, { ...chat, isPreloaded: true }],
+  });
+  expect(conversationWindowActive(next, chat.key, "ab")).toBe(false);
+});
+
+test("returning from a targeted message, group profile, or different parent preserves the existing preload", () => {
+  const target = {
+    ...chat,
+    params: { ...chat.params, messageTarget: "message" },
+  };
+  for (const [parent, screen] of [
+    [tabs, target],
+    [tabs, details],
+    [player, chat],
+  ]) {
+    const next = { index: 0, routes: [parent] };
+    expect(
+      retainRecentConversation({ index: 1, routes: [parent, screen] }, next),
+    ).toBe(next);
+  }
+});
 
 test("profile bounds are independent ungrouped elements", () => {
   expect(profileElementId("group:ab", "avatar")).toBe(

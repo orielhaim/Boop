@@ -108,6 +108,7 @@ import {
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { createConversationCache } from "@/core/marmot/conversations";
+import { createGroupCallWindows } from "@/core/marmot/group-call-windows";
 import {
   callHandoffPreference,
   callInboxDisabledPreference,
@@ -397,6 +398,10 @@ async function start() {
       open: marmot.openConversation,
       canOpen: canReadConversations,
     });
+    const groupCallWindows = createGroupCallWindows(
+      marmot.openGroupCall,
+      marmotSession.revision,
+    );
     conversations.setForeground(AppState.currentState === "active");
     function updateConversations() {
       conversations.setAvailable(canReadConversations());
@@ -1587,6 +1592,7 @@ async function start() {
       chatPreferences,
       marmotSession,
       conversations,
+      groupCallWindows,
       marmotViewport,
       relays,
       accountRelays,

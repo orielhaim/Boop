@@ -30,7 +30,7 @@ const icons = {
   send: (props) => <Icon name="send" {...props} />,
   reply: (props) => <Icon name="reply" {...props} />,
   forward: (props) => <Icon name="forward" {...props} />,
-  backspace: (props) => <Icon name="erase" {...props} />,
+  backspace: (props) => <Icon name="backspace" {...props} />,
   mic: (props) => <Icon name="microphone" {...props} />,
   camera: (props) => <Icon name="camera" {...props} />,
   play: (props) => <Icon name="play" {...props} />,

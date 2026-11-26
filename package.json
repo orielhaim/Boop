@@ -85,7 +85,7 @@
     "expo-video": "~58.0.14",
     "htmlparser2": "^12.0.0",
     "i18next": "^27.2.9",
-    "immer": "^11.2.10",
+    "immer": "^11.2.13",
     "lru-cache": "11.5.3",
     "nostr-tools": "^2.26.1",
     "phosphor-react-native": "3.0.6",
@@ -147,7 +147,8 @@
     "expo-audio@58.0.12": "patches/expo-audio@58.0.12.patch",
     "expo-video@58.0.14": "patches/expo-video@58.0.14.patch",
     "expo-intent-launcher@58.0.3": "patches/expo-intent-launcher@58.0.3.patch",
-    "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch"
+    "@nostr-dev-kit/ndk@3.0.3": "patches/@nostr-dev-kit%2Fndk@3.0.3.patch",
+    "react-native-screen-transitions@4.2.0": "patches/react-native-screen-transitions@4.2.0.patch"
   },
   "workspaces": [
     "packages/*"

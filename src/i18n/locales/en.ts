@@ -376,6 +376,7 @@ export const en = {
       blocked: "This account is blocked.",
       accountError: "Messaging is unavailable on this device.",
       openingChat: "Opening chat…",
+      openingGroupDetails: "Loading group details…",
       operationError: "Could not complete the messaging action.",
       members: "Members",
       admin: "Admin",

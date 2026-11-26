@@ -1,15 +1,9 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, View } from "react-native";
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { Ink, tapFeedback } from "@/components/ui/kit";
 import { directionFor, resolveLanguage } from "@/i18n";
-import { motion, radius, space, useTheme } from "@/theme";
+import { radius, space } from "@/theme";
 
 export type ProfileTab<Key extends string = string> = {
   key: Key;
@@ -25,39 +19,13 @@ export function ProfileTabs<Key extends string>({
   value: Key;
   onChange: (value: Key) => void;
 }) {
-  const { reduceMotion } = useTheme();
   const { i18n } = useTranslation();
   const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
-  const [width, setWidth] = useState(0);
-  const index = Math.max(
-    0,
-    tabs.findIndex((tab) => tab.key === value),
-  );
-  const tabWidth = Math.max(
-    0,
-    (width - 2 * space.lg - (tabs.length - 1) * space.xs) / tabs.length,
-  );
-  const x = useSharedValue(0);
-  useEffect(() => {
-    const target = index * (tabWidth + space.xs) * (rtl ? -1 : 1);
-    x.set(reduceMotion ? target : withSpring(target, motion.travel));
-  }, [index, reduceMotion, rtl, tabWidth, x]);
-  const slide = useAnimatedStyle(() => ({
-    transform: [{ translateX: x.get() }],
-  }));
   return (
     <View
       accessibilityRole="tablist"
-      onLayout={({ nativeEvent }) => setWidth(nativeEvent.layout.width)}
       style={[styles.tabs, { direction: rtl ? "rtl" : "ltr" }]}
     >
-      {tabWidth > 0 && (
-        <Animated.View
-          pointerEvents="none"
-          accessibilityElementsHidden
-          style={[styles.indicator, { width: tabWidth }, slide]}
-        />
-      )}
       {tabs.map((tab) => {
         const selected = tab.key === value;
         return (
@@ -71,7 +39,7 @@ export function ProfileTabs<Key extends string>({
               tapFeedback();
               onChange(tab.key);
             }}
-            style={styles.tab}
+            style={[styles.tab, selected && styles.selected]}
           >
             <Ink kind="label" muted={!selected} numberOfLines={1}>
               {tab.label}
@@ -92,21 +60,14 @@ const styles = StyleSheet.create(({ colors }) => ({
     paddingVertical: space.sm,
     backgroundColor: colors.background,
   },
-  indicator: {
-    position: "absolute",
-    start: space.lg,
-    top: space.sm,
-    bottom: space.sm,
-    backgroundColor: colors.selected,
-    borderRadius: radius.round,
-  },
   tab: {
     flex: 1,
     minWidth: 0,
     minHeight: 42,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 22,
+    borderRadius: radius.round,
     paddingHorizontal: space.md,
   },
+  selected: { backgroundColor: colors.selected },
 }));

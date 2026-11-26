@@ -1,8 +1,8 @@
 import { useIsFocused } from "expo-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { marmotErrorCode } from "@/core/marmot/errors";
 import type { MarmotWindow } from "@/core/marmot/native";
-import { useLocal } from "@/services/local-context";
+import { useChatsEnabled, useLocal } from "@/services/local-context";
 
 const unsubscribe = () => {};
 const subscribeEmpty = () => unsubscribe;
@@ -52,9 +52,28 @@ export function useMarmotWindow<Snapshot, Direction>(
   return useAccountMarmotWindow(open, enabled && focused);
 }
 
+export function useGroupCallWindow(group: string, enabled: boolean) {
+  const { groupCallWindows, lock } = useLocal();
+  const chatsEnabled = useChatsEnabled();
+  const accountActive = useSyncExternalStore(
+    lock.subscribe,
+    () => lock.getState().active,
+  );
+  const open = useCallback(
+    () => groupCallWindows.acquire(group),
+    [group, groupCallWindows],
+  );
+  return useAccountMarmotWindow(
+    open,
+    enabled && chatsEnabled && accountActive,
+    () => groupCallWindows.peek(group),
+  );
+}
+
 export function useAccountMarmotWindow<Snapshot, Direction>(
   open: () => Promise<MarmotWindow<Snapshot, Direction>>,
   enabled: boolean,
+  peek?: () => MarmotWindow<Snapshot, Direction> | undefined,
 ) {
   const { marmotSession, lock } = useLocal();
   const accountRevision = useSyncExternalStore(
@@ -78,7 +97,7 @@ export function useAccountMarmotWindow<Snapshot, Direction>(
     loaded.accountRevision === accountRevision
       ? loaded
       : undefined;
-  const window = current?.window;
+  const window = current?.window ?? (enabled && !locked ? peek?.() : undefined);
   const state = useSyncExternalStore(
     window?.subscribe ?? subscribeEmpty,
     window?.getState ?? empty,

@@ -14,7 +14,10 @@ import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
 import { usePlayerPresentation } from "@/components/audio/presentation";
-import { conversationWindowActive } from "@/core/marmot/conversation-route";
+import {
+  conversationWindowActive,
+  profileMorphParam,
+} from "@/core/marmot/conversation-route";
 import { messagingMetric } from "@/core/messaging/diagnostics";
 import { audioFile, showMiniPlayer } from "@/core/audio/types";
 import { groupActivity } from "@/core/marmot/chat-preview";
@@ -36,6 +39,7 @@ import { File } from "expo-file-system";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useIsFocused, useNavigation, useRoute } from "expo-router";
+import { useBlankStackStore } from "react-native-screen-transitions";
 import {
   type ComponentRef,
   useCallback,
@@ -52,6 +56,8 @@ import {
   BackHandler,
   Image as BackgroundImage,
   Keyboard,
+  type LayoutChangeEvent,
+  type LayoutRectangle,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   Pressable,
@@ -68,7 +74,11 @@ import {
   GlassBackdropTarget,
 } from "@/components/glassyui/lib/glass-backdrop";
 import { ActionMenu } from "@/components/ui/action-menu";
-import { GlassBackButton } from "@/components/ui/back-button";
+import { backButtonSize } from "@/components/ui/back-button";
+import {
+  useChatBackdropActive,
+  useChatNavigation,
+} from "@/components/navigation/profile-reopen";
 import { LoadingStatus } from "@/components/ui/loading-status";
 import {
   Action,
@@ -149,7 +159,7 @@ import {
   MessageEditHistory,
 } from "./marmot-message-tools";
 import { MarmotPoll, MarmotPollComposer } from "./marmot-poll";
-import { useConversationWindow } from "./marmot-window";
+import { useConversationWindow, useGroupCallWindow } from "./marmot-window";
 import { OpenLaterTray } from "./open-later-tray";
 import { SendMenu } from "./send-menu";
 import { useMessageTranslations } from "./use-message-translations";
@@ -330,10 +340,20 @@ type MarmotConversationScreenProps = {
   initialPanel?: "search";
 };
 
+const subscribeNever = () => () => {};
+
 export function MarmotConversationScreen(props: MarmotConversationScreenProps) {
-  const focused = useIsFocused();
+  const route = useRoute();
+  const glassActive = useChatBackdropActive(route.key);
+  const { conversations } = useLocal();
+  const preloaded = "isPreloaded" in route && route.isPreloaded === true;
+  const ready = useSyncExternalStore(
+    preloaded ? conversations.subscribe : subscribeNever,
+    () => !preloaded || Boolean(conversations.get(props.id)?.snapshot),
+  );
+  if (!ready) return null;
   return (
-    <GlassBackdropProvider active={focused}>
+    <GlassBackdropProvider active={glassActive}>
       <MarmotConversationContent {...props} />
     </GlassBackdropProvider>
   );
@@ -376,6 +396,20 @@ function MarmotConversationContent({
   useSyncExternalStore(privacy.subscribe, privacy.revision);
   const focused = useIsFocused();
   const route = useRoute();
+  const dismiss = useBlankStackStore((stack) => stack.requestDismiss);
+  const returnsToTabs = useBlankStackStore((stack) => {
+    const index = stack.routes.findIndex(({ key }) => key === route.key);
+    return stack.routes[index - 1]?.name === "(tabs)";
+  });
+  const goBack = useCallback(() => {
+    if (!navigation.isFocused()) return;
+    if (returnsToTabs && dismiss?.({ route, immediate: true })) return;
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  }, [dismiss, navigation, returnsToTabs, route]);
+  const reopenClosingRoute = useBlankStackStore(
+    (stack) => stack.reopenClosingRoute,
+  );
   const subscribeNavigation = useCallback(
     (notify: () => void) => navigation.addListener("state", notify),
     [navigation],
@@ -385,7 +419,11 @@ function MarmotConversationContent({
     return state ? conversationWindowActive(state, route.key, id) : focused;
   });
   const { miniHeight } = usePlayerPresentation();
-  const { top: safeTop } = useSafeAreaInsets();
+  const {
+    top: safeTop,
+    left: safeLeft,
+    right: safeRight,
+  } = useSafeAreaInsets();
   const playerClearance = miniHeight - safeTop + space.sm;
   const playerVisible = useStore(
     audio.store,
@@ -393,6 +431,9 @@ function MarmotConversationContent({
       !state.blocked && showMiniPlayer(playerPlayback(state)?.track, id),
   );
   const chromeOffset = playerVisible ? playerClearance : 0;
+  const [chromeHeight, setChromeHeight] = useState(
+    backButtonSize + space.xs + space.sm,
+  );
   const foreground = useSyncExternalStore(subscribeForeground, isForeground);
   const locked = useSyncExternalStore(lock.subscribe, lock.getState).locked;
   const accountRevision = useSyncExternalStore(
@@ -412,6 +453,16 @@ function MarmotConversationContent({
   }));
   const presentedGeneration = useRef<string>(undefined);
   const readyGeneration = useRef<string>(undefined);
+  const preloaded = "isPreloaded" in route && route.isPreloaded === true;
+  const wasPreloaded = useRef(preloaded);
+  useLayoutEffect(() => {
+    if (preloaded) wasPreloaded.current = true;
+    if (focused && wasPreloaded.current && readyGeneration.current)
+      messagingMetric("conversation presented", {
+        ms: performance.now() - conversations.navigationStarted(id),
+      });
+    if (focused) wasPreloaded.current = false;
+  }, [conversations, focused, id, preloaded]);
   useLayoutEffect(() => {
     if (!snapshot || presentedGeneration.current === snapshot.generation)
       return;
@@ -968,6 +1019,7 @@ function MarmotConversationContent({
     return () => cancelAnimationFrame(task);
   }, [focused, foreground, jump, lock, locked, messages, navigation]);
   const canSend = Boolean(snapshot?.canSend && !blocked && !snapshot.invited);
+  const groupCalls = useGroupCallWindow(id, keepChatWindow && !peer && canSend);
   const pendingMedia = pendingMediaDraft(snapshot?.draft);
   const canCompose = canSend && !pendingMedia && !textSending;
   const canAttach = canSend && !textSending;
@@ -1330,12 +1382,7 @@ function MarmotConversationContent({
     }: {
       viewableItems: { item: ChatMessage; isViewable: boolean }[];
     }) => {
-      if (
-        !visibleGeneration ||
-        !navigation.isFocused() ||
-        !isForeground() ||
-        lock.getState().locked
-      )
+      if (!visibleGeneration || !isForeground() || lock.getState().locked)
         return;
       const next = new Set(
         viewableItems
@@ -1350,7 +1397,7 @@ function MarmotConversationContent({
           : { generation: visibleGeneration, ids: next },
       );
     },
-    [lock, navigation, visibleGeneration],
+    [lock, visibleGeneration],
   );
   useEffect(() => {
     if (
@@ -1807,25 +1854,85 @@ function MarmotConversationContent({
     setLater(Date.now());
   }
 
-  function openGroupDetails() {
-    if (!snapshot || snapshot.invited || !navigation.isFocused() || locked)
+  function openProfile() {
+    if (!snapshot || snapshot.invited || !isCurrent() || lock.getState().locked)
       return;
-    const route = conversationRoute(id, "details");
+    if (
+      reopenClosingRoute?.(
+        route.key,
+        (candidate) =>
+          candidate.name === (peer ? "person/[key]" : "chat/[key]") &&
+          profileMorphParam(candidate.params) === profileMorph,
+      )
+    ) {
+      tapFeedback();
+      return;
+    }
+    if (!navigation.isFocused()) return;
+    tapFeedback();
+    if (peer) {
+      router.push({
+        pathname: "/person/[key]",
+        params: { key: peer, profileMorph },
+      });
+      return;
+    }
+    const destination = conversationRoute(id, "details");
     router.push({
-      ...route,
+      ...destination,
       params: {
-        ...route.params,
+        ...destination.params,
         profileMorph,
       },
     });
   }
 
-  if (
+  const unavailableTarget =
     (error && target) ||
-    (target && snapshot?.authorityReady && !targetAvailable && !resolvedTarget)
-  )
+    (target && snapshot?.authorityReady && !targetAvailable && !resolvedTarget);
+  const showHeader = Boolean(snapshot && !error && !unavailableTarget);
+  const [profileLayout, setProfileLayout] = useState<LayoutRectangle>();
+  const measureProfile = useCallback(
+    ({ nativeEvent: { layout } }: LayoutChangeEvent) => {
+      setProfileLayout((current) =>
+        current?.x === layout.x &&
+        current.y === layout.y &&
+        current.width === layout.width &&
+        current.height === layout.height
+          ? current
+          : layout,
+      );
+    },
+    [],
+  );
+  useChatNavigation(
+    useMemo(
+      () =>
+        showHeader
+          ? {
+              profile: profileMorph,
+              onBack: searching ? closeSearch : goBack,
+              topOffset: chromeOffset,
+              tint: material.headerTint,
+              profileLayout,
+            }
+          : undefined,
+      [
+        chromeOffset,
+        closeSearch,
+        goBack,
+        material.headerTint,
+        profileLayout,
+        profileMorph,
+        searching,
+        showHeader,
+      ],
+    ),
+  );
+
+  if (unavailableTarget)
     return (
-      <Screen navigationHeader={<ScreenHeader title={title} />}>
+      <Screen navigationHeader={<ScreenHeader title={title} onBack={goBack} />}>
         <Empty
           icon="chat"
           detail=""
@@ -1835,7 +1942,7 @@ function MarmotConversationContent({
     );
   if (error)
     return (
-      <Screen navigationHeader={<ScreenHeader title={title} />}>
+      <Screen navigationHeader={<ScreenHeader title={title} onBack={goBack} />}>
         <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
           <Action onPress={retry}>{t("common:retry")}</Action>
         </Empty>
@@ -1843,7 +1950,10 @@ function MarmotConversationContent({
     );
   if (!snapshot)
     return (
-      <Screen scroll={false} navigationHeader={<ScreenHeader title={title} />}>
+      <Screen
+        scroll={false}
+        navigationHeader={<ScreenHeader title={title} onBack={goBack} />}
+      >
         <View style={styles.syncing}>
           <LoadingStatus label={t("messages:marmot.openingChat")} />
         </View>
@@ -1921,20 +2031,11 @@ function MarmotConversationContent({
   const searchLabel = t("messages:marmot.searchConversation");
 
   const header = (
-    <View style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}>
-      <GlassBackButton
-        elevation="none"
-        dimOnPress={false}
-        style={styles.headerBack}
-        onPress={
-          searching
-            ? closeSearch
-            : () => {
-                if (router.canGoBack()) router.back();
-                else router.replace("/");
-              }
-        }
-      />
+    <View
+      pointerEvents="box-none"
+      style={[styles.header, { direction: kit.rtl ? "rtl" : "ltr" }]}
+    >
+      <View pointerEvents="none" style={styles.headerBackSpace} />
       {searching ? (
         <View style={styles.headerIdentity}>
           <Search
@@ -1951,7 +2052,8 @@ function MarmotConversationContent({
           <GlassSurface
             preset="control"
             elevation="none"
-            tint={material.panel}
+            lensTint={material.headerTint}
+            onLayout={measureProfile}
             style={[styles.headerCapsule, styles.headerIdentity]}
           >
             {snapshot.invited ? (
@@ -1967,16 +2069,7 @@ function MarmotConversationContent({
                 accessibilityRole="button"
                 accessibilityLabel={title}
                 style={styles.profileLink}
-                onPress={() => {
-                  if (!navigation.isFocused() || locked) return;
-                  tapFeedback();
-                  if (peer) {
-                    router.push({
-                      pathname: "/person/[key]",
-                      params: { key: peer, profileMorph },
-                    });
-                  } else openGroupDetails();
-                }}
+                onPress={openProfile}
               >
                 <ProfileElement profile={profileMorph} part="avatar">
                   <GlassAvatar
@@ -2006,7 +2099,7 @@ function MarmotConversationContent({
             <GlassSurface
               preset="control"
               elevation="none"
-              tint={material.panel}
+              lensTint={material.headerTint}
               style={[styles.headerCapsule, styles.headerActions]}
             >
               {peer && !blocked && (
@@ -2046,161 +2139,146 @@ function MarmotConversationContent({
     </View>
   );
 
-  return (
-    <ScreenInsets
-      edges={["top", "left", "right"]}
-      style={[styles.screen, { backgroundColor: kit.colors.background }]}
+  const chrome = (
+    <View
+      pointerEvents="box-none"
+      onLayout={({ nativeEvent }) => setChromeHeight(nativeEvent.layout.height)}
+      style={[
+        styles.chrome,
+        { top: safeTop + chromeOffset, left: safeLeft, right: safeRight },
+      ]}
     >
-      <GlassBackdropTarget style={StyleSheet.absoluteFill}>
-        <LinearGradient
+      {chromeOffset > 0 && (
+        <View
           pointerEvents="none"
-          colors={material.canvas}
-          start={{ x: 0.15, y: 0 }}
-          end={{ x: 0.85, y: 1 }}
-          style={StyleSheet.absoluteFill}
+          style={[
+            StyleSheet.absoluteFill,
+            { top: -chromeOffset, backgroundColor: kit.colors.background },
+          ]}
         />
-        {!kit.reducedTransparency && (
-          <BackgroundImage
-            accessible={false}
-            source={require("../../../assets/images/chat-contours.png")}
-            resizeMode="cover"
-            style={[
-              StyleSheet.absoluteFill,
-              styles.contours,
-              { tintColor: material.contours },
-            ]}
-          />
-        )}
-      </GlassBackdropTarget>
-      <View
-        style={[styles.chrome, { transform: [{ translateY: chromeOffset }] }]}
-      >
-        {chromeOffset > 0 && (
-          <View
-            style={[
-              StyleSheet.absoluteFill,
-              { top: -chromeOffset, backgroundColor: kit.colors.background },
-            ]}
-          />
-        )}
-        {!peer && !searching && canSend ? (
-          <MarmotActiveCall
-            group={id}
-            members={mentionRoster.members}
-            canStart
-            header={header}
-          />
-        ) : (
-          header
-        )}
-        {!snapshot.invited && (
-          <>
-            {activeUpload &&
-              uploadProgress !== undefined &&
-              !sends.has(activeUpload) &&
-              !rows?.some(
-                (row) => row.sender === self && row.token === activeUpload,
-              ) && (
-                <View style={styles.uploadStatus}>
-                  <Ink kind="caption">
-                    {t("messages:mediaUploadProgress", {
-                      percent: Math.floor(uploadProgress * 100),
-                    })}
-                  </Ink>
-                  <Action
-                    size="sm"
-                    onPress={() => {
-                      attachmentQueue.cancel(activeUpload);
-                    }}
-                  >
-                    {t("common:cancel")}
-                  </Action>
-                </View>
-              )}
-            {!activeUpload &&
-              pendingMedia &&
-              !recoveredVoice &&
-              (pendingMedia.kind !== "ready" ||
-                !sends.has(pendingMedia.token)) &&
-              canSend && (
-                <View style={styles.uploadStatus}>
-                  <Ink kind="caption">
-                    {t(
-                      pendingMedia.kind === "ready"
-                        ? "messages:mediaReadyToResume"
-                        : "messages:mediaDraftIncomplete",
-                    )}
-                  </Ink>
-                  {pendingMedia.kind === "ready" && (
-                    <Action
-                      size="sm"
-                      disabled={busy}
-                      onPress={() =>
-                        submitAttachment(
-                          {
-                            caption: snapshot.draft?.text ?? null,
-                            reply: snapshot.draft?.replyTo ?? null,
-                            token: pendingMedia.token,
-                          },
-                          async () => ({
-                            kind: "draft",
-                            sizes: pendingMedia.sizes,
-                          }),
-                        )
-                      }
-                    >
-                      {t("common:retry")}
-                    </Action>
+      )}
+      {!peer && !searching && canSend ? (
+        <MarmotActiveCall
+          group={id}
+          discovery={groupCalls}
+          members={mentionRoster.members}
+          canStart
+          header={header}
+        />
+      ) : (
+        header
+      )}
+      {!snapshot.invited && (
+        <>
+          {activeUpload &&
+            uploadProgress !== undefined &&
+            !sends.has(activeUpload) &&
+            !rows?.some(
+              (row) => row.sender === self && row.token === activeUpload,
+            ) && (
+              <View style={styles.uploadStatus}>
+                <Ink kind="caption">
+                  {t("messages:mediaUploadProgress", {
+                    percent: Math.floor(uploadProgress * 100),
+                  })}
+                </Ink>
+                <Action
+                  size="sm"
+                  onPress={() => {
+                    attachmentQueue.cancel(activeUpload);
+                  }}
+                >
+                  {t("common:cancel")}
+                </Action>
+              </View>
+            )}
+          {!activeUpload &&
+            pendingMedia &&
+            !recoveredVoice &&
+            (pendingMedia.kind !== "ready" || !sends.has(pendingMedia.token)) &&
+            canSend && (
+              <View style={styles.uploadStatus}>
+                <Ink kind="caption">
+                  {t(
+                    pendingMedia.kind === "ready"
+                      ? "messages:mediaReadyToResume"
+                      : "messages:mediaDraftIncomplete",
                   )}
+                </Ink>
+                {pendingMedia.kind === "ready" && (
                   <Action
                     size="sm"
                     disabled={busy}
-                    onPress={() => {
-                      if (!canDispatch()) return;
-                      setBusy(true);
-                      void marmot
-                        .discardMediaDraft(id)
-                        .catch(showError)
-                        .finally(() => setBusy(false));
-                    }}
+                    onPress={() =>
+                      submitAttachment(
+                        {
+                          caption: snapshot.draft?.text ?? null,
+                          reply: snapshot.draft?.replyTo ?? null,
+                          token: pendingMedia.token,
+                        },
+                        async () => ({
+                          kind: "draft",
+                          sizes: pendingMedia.sizes,
+                        }),
+                      )
+                    }
                   >
-                    {t("messages:mediaDiscardDraft")}
+                    {t("common:retry")}
                   </Action>
-                </View>
-              )}
-            {searching && (
-              <ConversationSearch
-                group={id}
-                query={searchQuery}
-                onSelect={(message, term) => {
-                  Keyboard.dismiss();
-                  moveTo(message, term);
-                }}
-              />
+                )}
+                <Action
+                  size="sm"
+                  disabled={busy}
+                  onPress={() => {
+                    if (!canDispatch()) return;
+                    setBusy(true);
+                    void marmot
+                      .discardMediaDraft(id)
+                      .catch(showError)
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  {t("messages:mediaDiscardDraft")}
+                </Action>
+              </View>
             )}
-            {panel === "edits" && selected && (
-              <MessageEditHistory
-                group={id}
-                message={selected.id}
-                onClose={() => setPanel(null)}
-              />
-            )}
-            {panel === "forward" && selected && (
-              <ForwardMessage
-                group={id}
-                row={selected}
-                canDispatch={canDispatch}
-                onClose={() => setPanel(null)}
-              />
-            )}
-            {snapshot.hasMoreAfter && (
-              <Action size="sm" onPress={() => void page("latest")}>
-                {t("messages:latest")}
-              </Action>
-            )}
-          </>
-        )}
-      </View>
+          {searching && (
+            <ConversationSearch
+              group={id}
+              query={searchQuery}
+              onSelect={(message, term) => {
+                Keyboard.dismiss();
+                moveTo(message, term);
+              }}
+            />
+          )}
+          {panel === "edits" && selected && (
+            <MessageEditHistory
+              group={id}
+              message={selected.id}
+              onClose={() => setPanel(null)}
+            />
+          )}
+          {panel === "forward" && selected && (
+            <ForwardMessage
+              group={id}
+              row={selected}
+              canDispatch={canDispatch}
+              onClose={() => setPanel(null)}
+            />
+          )}
+          {snapshot.hasMoreAfter && (
+            <Action size="sm" onPress={() => void page("latest")}>
+              {t("messages:latest")}
+            </Action>
+          )}
+        </>
+      )}
+    </View>
+  );
+
+  const conversation = (
+    <>
       {(!invited || requestVisible) && (
         <>
           <AttachmentTrayBoundary tray={attachmentTray}>
@@ -2215,6 +2293,7 @@ function MarmotConversationContent({
                     }
               }
               messages={displayed}
+              isDayAnimationEnabled={false}
               chatRef={chatRef}
               highlightText={highlight}
               user={{ _id: self }}
@@ -2461,8 +2540,11 @@ function MarmotConversationContent({
                     ms: performance.now() - opening.at,
                   });
                 },
-                // Keep the oldest message reachable under the player chrome.
-                contentContainerStyle: { paddingTop: playerClearance },
+                // Chat Kit lays out the timeline oldest first, so this space
+                // scrolls away at the top without shrinking the viewport.
+                contentContainerStyle: {
+                  paddingTop: chromeHeight + chromeOffset,
+                },
                 ...(initialScrollOffset !== undefined
                   ? {
                       initialScrollAtEnd: false,
@@ -3215,7 +3297,37 @@ function MarmotConversationContent({
           />
         </>
       )}
-    </ScreenInsets>
+    </>
+  );
+
+  return (
+    <View style={[styles.screen, { backgroundColor: kit.colors.background }]}>
+      <GlassBackdropTarget>
+        <LinearGradient
+          pointerEvents="none"
+          colors={material.canvas}
+          start={{ x: 0.15, y: 0 }}
+          end={{ x: 0.85, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        {!kit.reducedTransparency && (
+          <BackgroundImage
+            accessible={false}
+            source={require("../../../assets/images/chat-contours.png")}
+            resizeMode="cover"
+            style={[
+              StyleSheet.absoluteFill,
+              styles.contours,
+              { tintColor: material.contours },
+            ]}
+          />
+        )}
+        <ScreenInsets edges={["top", "left", "right"]} style={styles.screen}>
+          {conversation}
+        </ScreenInsets>
+      </GlassBackdropTarget>
+      {chrome}
+    </View>
   );
 }
 
@@ -3339,7 +3451,7 @@ const styles = StyleSheet.create({
   },
   uploadFailure: { marginHorizontal: space.md, marginBottom: space.xs },
   screen: { flex: 1 },
-  chrome: { zIndex: 1 },
+  chrome: { position: "absolute", zIndex: 1 },
   syncing: { flex: 1, justifyContent: "center" },
   contours: { width: "100%", height: "100%", opacity: 0.25 },
   header: {
@@ -3352,7 +3464,7 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
   },
   headerCapsule: { minHeight: 44, borderRadius: radius.round },
-  headerBack: { alignSelf: "flex-start" },
+  headerBackSpace: { width: backButtonSize, height: backButtonSize },
   headerIdentity: { flex: 1, minWidth: 0, justifyContent: "center" },
   profileLink: {
     flexDirection: "row",

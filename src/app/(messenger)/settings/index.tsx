@@ -1,6 +1,6 @@
-import { router } from "expo-router";
+import { router, useIsFocused } from "expo-router";
 import { useSyncExternalStore } from "react";
-import { useWindowDimensions, View } from "react-native";
+import { Pressable, useWindowDimensions, View } from "react-native";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -16,9 +16,13 @@ import { PersonAvatar } from "@/components/people/person-avatar";
 import { ProfileBannerArtwork } from "@/components/people/profile-banner-artwork";
 import { usePerson } from "@/components/people/use-person";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
-import { GlassBackButton } from "@/components/ui/back-button";
-import { Ink } from "@/components/ui/kit";
-import { CompactAction } from "@/components/ui/messenger-ui";
+import {
+  GlassBackdropLayer,
+  GlassBackdropProvider,
+} from "@/components/glassyui/lib/glass-backdrop";
+import { GlassSurface } from "@/components/glassyui/glass-surface";
+import { backButtonSize, GlassBackButton } from "@/components/ui/back-button";
+import { Icon, Ink, tapFeedback } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { ParallaxScrollView } from "@/components/ui/templates/parallax-header/components/AnimatedScrollView";
 import { useAvatar } from "@/core/avatars/use-avatar";
@@ -127,8 +131,49 @@ function CategoryRow({
   );
 }
 
+function BannerAction({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: "edit" | "qr";
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={() => {
+        tapFeedback();
+        onPress();
+      }}
+      style={({ pressed }) => [
+        icon === "edit" && styles.editAction,
+        pressed && styles.pressed,
+      ]}
+    >
+      <GlassSurface
+        preset="control"
+        elevation="none"
+        lensTint
+        pointerEvents="none"
+        style={[styles.bannerButton, icon === "qr" && styles.iconButton]}
+      >
+        <Icon name={icon} size={20} />
+        {icon === "edit" && (
+          <Ink kind="label" numberOfLines={2} style={styles.editLabel}>
+            {label}
+          </Ink>
+        )}
+      </GlassSurface>
+    </Pressable>
+  );
+}
+
 export default function Settings() {
   const { t } = useTranslation(namespaces);
+  const focused = useIsFocused();
   const { colors } = useTheme();
   const { height } = useWindowDimensions();
   const { top } = useSafeAreaInsets();
@@ -164,88 +209,90 @@ export default function Settings() {
 
   return (
     <ScreenInsets edges={["bottom"]} style={styles.screen}>
-      <ParallaxScrollView
-        bodyStyle={styles.body}
-        headerMaxHeight={bannerHeight}
-        headerOverlap={44}
-        backgroundColor={colors.background}
-        header={
-          <View style={styles.banner}>
-            <ProfileBannerArtwork source={banner} />
-          </View>
-        }
-        headerControls={
-          <SafeAreaView
-            edges={["top", "left", "right"]}
-            pointerEvents="box-none"
-            style={styles.controls}
-          >
-            <GlassBackButton
-              onPress={() => {
-                if (router.canGoBack()) router.back();
-                else router.replace("/");
-              }}
-            />
-            <View style={styles.bannerActions}>
-              <CompactAction
-                icon="edit"
-                label={t("settings:editProfile")}
-                onPress={() => router.push("/settings/edit-profile")}
-              />
-              <CompactAction
-                icon="qr"
-                iconOnly
-                label={t("security:showIdentityQr")}
-                onPress={() => showIdentitySheet("qr")}
-              />
-            </View>
-          </SafeAreaView>
-        }
-      >
-        <SafeAreaView edges={["left", "right"]} style={styles.content}>
-          <View style={styles.identity}>
-            <View style={styles.avatar}>
-              <PersonAvatar
-                size="xxl"
-                publicKey={identity.publicKey}
-                name={displayName}
-                photo={photo}
-                hasName={hasName}
-              />
-            </View>
-            <Ink
-              accessibilityRole="header"
-              kind={hasName ? "profileName" : "body"}
-              numberOfLines={2}
-              style={styles.name}
+      <GlassBackdropProvider active={focused}>
+        <ParallaxScrollView
+          bodyStyle={styles.body}
+          headerMaxHeight={bannerHeight}
+          headerOverlap={44}
+          backgroundColor={colors.background}
+          header={
+            <GlassBackdropLayer collapsable={false} style={styles.banner}>
+              <ProfileBannerArtwork source={banner} />
+            </GlassBackdropLayer>
+          }
+          headerControls={
+            <SafeAreaView
+              edges={["top", "left", "right"]}
+              pointerEvents="box-none"
+              style={styles.controls}
             >
-              {displayName}
-            </Ink>
-          </View>
-          {[
-            categoryRows.slice(0, 5),
-            categoryRows.slice(5, 9),
-            categoryRows.slice(9),
-          ].map((group) => (
-            <ListGroup key={group[0]?.category} dividers="none">
-              {group.map((row) => (
-                <CategoryRow
-                  key={row.category}
-                  category={row.category}
-                  title={t(row.titleKey)}
-                  detail={
-                    row.category === "devices" && attention
-                      ? t("devices:attentionCount", { count: attention })
-                      : t(row.detailKey)
-                  }
-                  count={row.category === "devices" ? attention : undefined}
-                  onPress={() => router.push(row.route)}
+              <GlassBackButton
+                elevation="none"
+                onPress={() => {
+                  if (router.canGoBack()) router.back();
+                  else router.replace("/");
+                }}
+              />
+              <View style={styles.bannerActions}>
+                <BannerAction
+                  icon="edit"
+                  label={t("settings:editProfile")}
+                  onPress={() => router.push("/settings/edit-profile")}
                 />
-              ))}
-            </ListGroup>
-          ))}
-        </SafeAreaView>
-      </ParallaxScrollView>
+                <BannerAction
+                  icon="qr"
+                  label={t("security:showIdentityQr")}
+                  onPress={() => showIdentitySheet("qr")}
+                />
+              </View>
+            </SafeAreaView>
+          }
+        >
+          <SafeAreaView edges={["left", "right"]} style={styles.content}>
+            <View style={styles.identity}>
+              <View style={styles.avatar}>
+                <PersonAvatar
+                  size="xxl"
+                  publicKey={identity.publicKey}
+                  name={displayName}
+                  photo={photo}
+                  hasName={hasName}
+                />
+              </View>
+              <Ink
+                accessibilityRole="header"
+                kind={hasName ? "profileName" : "body"}
+                numberOfLines={2}
+                style={styles.name}
+              >
+                {displayName}
+              </Ink>
+            </View>
+            {[
+              categoryRows.slice(0, 5),
+              categoryRows.slice(5, 9),
+              categoryRows.slice(9),
+            ].map((group) => (
+              <ListGroup key={group[0]?.category} dividers="none">
+                {group.map((row) => (
+                  <CategoryRow
+                    key={row.category}
+                    category={row.category}
+                    title={t(row.titleKey)}
+                    detail={
+                      row.category === "devices" && attention
+                        ? t("devices:attentionCount", { count: attention })
+                        : t(row.detailKey)
+                    }
+                    count={row.category === "devices" ? attention : undefined}
+                    onPress={() => router.push(row.route)}
+                  />
+                ))}
+              </ListGroup>
+            ))}
+          </SafeAreaView>
+        </ParallaxScrollView>
+      </GlassBackdropProvider>
     </ScreenInsets>
   );
 }
@@ -270,7 +317,21 @@ const styles = StyleSheet.create((theme) => ({
   bannerActions: {
     flexDirection: "row",
     gap: theme.space.sm,
+    flexShrink: 1,
   },
+  bannerButton: {
+    minHeight: backButtonSize,
+    borderRadius: backButtonSize / 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.space.md,
+    gap: theme.space.xs,
+  },
+  iconButton: { width: backButtonSize, paddingHorizontal: 0 },
+  editAction: { flexShrink: 1 },
+  editLabel: { flexShrink: 1 },
+  pressed: { opacity: 0.72 },
   body: { flex: 1 },
   content: {
     paddingHorizontal: theme.space.lg,

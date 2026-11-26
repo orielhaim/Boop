@@ -13,10 +13,12 @@ import {
 } from "@/core/marmot/conversation-route";
 import { directionFor, resolveLanguage } from "@/i18n";
 import { motion, radius, useTheme } from "@/theme";
+import { ChatNavigationOverlay } from "./profile-reopen";
 
 const travel = { open: motion.travel, close: motion.travel };
 const fade = { duration: motion.quickFade, easing: Easing.out(Easing.quad) };
 const detailRadius = radius.card;
+const stationaryOverlay = { opacity: 1, transform: [{ translateX: 0 }] };
 
 const dissolve: ScreenStyleInterpolator = ({ current, focused }) => {
   "worklet";
@@ -109,8 +111,24 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
   }
   const detail = reduceMotion ? push : zoom(false);
   const media = reduceMotion ? push : zoom(true);
+  const chat: BlankStackNavigationOptions = {
+    ...push,
+    inactiveBehavior: "keep",
+    overlay: ChatNavigationOverlay,
+    screenStyleInterpolator: (props) => {
+      "worklet";
+      const style = reduceMotion ? dissolve(props) : horizontal(props, sign);
+      return style && { ...style, overlay: style.content };
+    },
+  };
   const profileMorph: BlankStackNavigationOptions = reduceMotion
-    ? push
+    ? {
+        ...push,
+        screenStyleInterpolator: (props) => {
+          "worklet";
+          return { ...dissolve(props), overlay: stationaryOverlay };
+        },
+      }
     : {
         ...push,
         screenStyleInterpolator: (props) => {
@@ -131,6 +149,7 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
             "clamp",
           );
           return {
+            overlay: stationaryOverlay,
             ...(focused ? { content: { opacity: progress } } : {}),
             ...(avatarBounds.link()?.status === "complete"
               ? { [avatar]: avatarBounds.styles({ scaleMode: "uniform" }) }
@@ -154,5 +173,5 @@ function navigationMotion(rtl: boolean, reduceMotion: boolean) {
         gestureDirection: [{ gesture: "vertical", area: "edge" }],
         transitionSpec: travel,
       });
-  return { push, detail, media, modal, profileMorph };
+  return { push, chat, detail, media, modal, profileMorph };
 }

@@ -301,7 +301,7 @@ ${origins.join("\n")}`,
                 />
                 <ListRow
                   title={t("settings:mediaRemove")}
-                  icon="erase"
+                  icon="trash"
                   onPress={() => {
                     const latest = mediaSdk.snapshot();
                     save({

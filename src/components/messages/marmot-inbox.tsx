@@ -9,7 +9,7 @@ import {
   type ChatListCellProps,
   type ChatListItem,
 } from "@kesha-antonov/react-native-chat";
-import { router, useIsFocused } from "expo-router";
+import { router, useIsFocused, useNavigation } from "expo-router";
 import {
   useCallback,
   useDeferredValue,
@@ -19,8 +19,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useBlankStackStore } from "react-native-screen-transitions";
 import { Action, Icon, IconButton, Ink, Screen } from "@/components/ui/kit";
 import { QuietState } from "@/components/ui/messenger-ui";
 import { useTabFabVisibility } from "@/components/navigation/tab-fab-visibility";
@@ -136,6 +137,8 @@ export function MarmotInbox({
   const chooseMuteDuration = useMuteDuration();
   const { identity, privacy, chatPreferences, conversations, db } = useLocal();
   const focused = useIsFocused();
+  const navigation = useNavigation();
+  const messengerKey = useBlankStackStore((stack) => stack.navigatorKey);
   const setChatsFabVisible = useTabFabVisibility()?.setChatsVisible;
   const showIdentitySheet = useIdentitySheet();
   const privacyRevision = useSyncExternalStore(
@@ -328,6 +331,29 @@ export function MarmotInbox({
     [],
   );
   const canPrepare = focused && !invitations;
+  const warmCandidate = useSyncExternalStore(conversations.subscribe, () => {
+    if (Platform.OS === "web" || !canPrepare || term || archived) return;
+    return snapshot?.rows.find(
+      (row) =>
+        visibleRows.has(row.id) &&
+        !row.invited &&
+        row.membership === "member" &&
+        (!row.peer || !privacy.isBlocked(row.peer)) &&
+        conversations.get(row.id)?.snapshot,
+    )?.id;
+  });
+  useEffect(() => {
+    if (!warmCandidate) return;
+    const idle = requestIdleCallback(() => {
+      if (
+        navigation.isFocused() &&
+        conversations.canPrefetch() &&
+        conversations.get(warmCandidate)?.snapshot
+      )
+        router.prefetch(conversationRoute(warmCandidate));
+    });
+    return () => cancelIdleCallback(idle);
+  }, [conversations, navigation, warmCandidate]);
   useEffect(() => {
     if (!canPrepare) return;
     conversations.setBrowsing(true);
@@ -446,7 +472,14 @@ export function MarmotInbox({
         onArchiveOpenChange={setArchived}
         onPressChat={(row) => {
           conversations.noteNavigation(row.id);
-          router.push(conversationRoute(row.id));
+          const href = conversationRoute(row.id);
+          if (Platform.OS === "web") router.push(href);
+          else
+            navigation.dispatchSync({
+              type: "PUSH",
+              target: messengerKey,
+              payload: { name: "chat/[key]", params: href.params },
+            });
         }}
         title={
           invitations ? t("messages:marmot.invitations") : t("common:chats")

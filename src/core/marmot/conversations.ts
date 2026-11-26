@@ -203,7 +203,7 @@ export function createConversationCache({
       rejected.set(entry.group, entry.preview);
   }
 
-  function publish(entry: Entry, window: Window) {
+  function publish(entry: Entry, window: Window, prepareSpeculative = false) {
     if (entry.controller.signal.aborted || !ready()) return;
     clearTimeout(entry.expiry);
     const projection = window.getState();
@@ -253,7 +253,8 @@ export function createConversationCache({
     const snapshot =
       messages === native.messages ? native : { ...native, messages };
     entry.view = { ...entry.view, window, snapshot };
-    if (entry.consumers && !entry.unreadPrepared) prepareUnread(entry);
+    const positioning =
+      entry.consumers || prepareSpeculative ? prepareUnread(entry) : undefined;
     if (Number.isFinite(expiry)) {
       entry.expiry = setTimeout(
         () => publish(entry, window),
@@ -266,6 +267,7 @@ export function createConversationCache({
     if (!entry.consumers) retain(entry);
     if (entry.consumers || expired.size) notify();
     else idleChanges.addItem(null);
+    return positioning;
   }
 
   function unreadOutsideWindow(entry: Entry) {
@@ -285,11 +287,11 @@ export function createConversationCache({
     const window = entry.window;
     if (!foreground || !window || !entry.view.snapshot || entry.unreadPrepared)
       return;
-    entry.unreadPrepared = true;
     const unread = unreadOutsideWindow(entry);
+    entry.unreadPrepared = Boolean(unread || entry.consumers);
     if (!unread) return;
     entry.positioning = true;
-    void window
+    return window
       .jump(unread)
       .catch(() => undefined)
       .finally(() => {
@@ -450,7 +452,9 @@ export function createConversationCache({
       }
       entry.window = window;
       entry.unsubscribe = window.subscribe(() => publish(entry, window));
-      publish(entry, window);
+      // Resolve the unread anchor before handing the speculative permit to the next chat.
+      await publish(entry, window, speculative && canPrefetch());
+      if (signal.aborted || !ready()) return;
       messagingMetric("conversation projection ready", {
         speculative,
         ms: performance.now() - started,
@@ -533,6 +537,7 @@ export function createConversationCache({
         return entry.view;
     },
     ready,
+    canPrefetch,
     revision: () => state.getState().revision,
     noteNavigation(group: string) {
       navigation = { group, at: performance.now() };

@@ -1,5 +1,10 @@
 import { ScreenHeader } from "@/components/navigation/screen-header";
 import { ProfileElement } from "@/components/navigation/profile-elements";
+import {
+  useDismissProfile,
+  useProfilePresented,
+  useSharedProfileBack,
+} from "@/components/navigation/profile-reopen";
 import { SharedMediaLibrary } from "@/components/shared-media/library";
 import {
   ProfileTabs,
@@ -28,6 +33,7 @@ import { AvatarCropScreen, useAvatarPicker } from "@/components/avatars/picker";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { GlassAvatar } from "@/components/glassyui/glass-avatar";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
+import { LoadingStatus } from "@/components/ui/loading-status";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { SaveButton } from "@/components/ui/save-button";
 import {
@@ -69,7 +75,7 @@ import { space, useTheme } from "@/theme";
 import { conversationRoute } from "./marmot-inbox";
 import { useChatClock, useMuteDuration } from "./chat-mute";
 import { useMarmotError } from "./use-marmot-error";
-import { useMarmotWindow } from "./marmot-window";
+import { useAccountMarmotWindow, useGroupCallWindow } from "./marmot-window";
 import {
   GroupShortcut,
   GroupShortcuts,
@@ -601,6 +607,9 @@ export function MarmotGroupDetailsScreen({
   const [profileTab, setProfileTab] = useState<"info" | "members" | "media">(
     "info",
   );
+  const [visitedProfileTabs, setVisitedProfileTabs] = useState(
+    () => new Set<typeof profileTab>(["info"]),
+  );
   const focused = useIsFocused();
   const deviceControllerState = useSyncExternalStore(
     deviceController.subscribe,
@@ -617,7 +626,8 @@ export function MarmotGroupDetailsScreen({
   }>({});
   const picker = useAvatarPicker();
   const watch = useCallback(() => marmot.openGroupState(id), [id]);
-  const state = useMarmotWindow(watch);
+  const presented = useProfilePresented(morph);
+  const state = useAccountMarmotWindow(watch, presented);
   const { details } = state.snapshot ?? {};
   const muteDeadline = details?.mutedUntilMs;
   const deadlines = useMemo(
@@ -672,6 +682,10 @@ export function MarmotGroupDetailsScreen({
   const member = details?.membership === "member" && !details.pendingInvitation;
   const canEdit = Boolean(member && details?.canEdit);
   const isGroup = details?.kind !== "direct";
+  const groupCalls = useGroupCallWindow(
+    id,
+    focused && member && isGroup && !editing && !state.error,
+  );
   const canReadDeviceActivation = Boolean(
     focused &&
     !editing &&
@@ -712,8 +726,13 @@ export function MarmotGroupDetailsScreen({
   const editTitle = t(
     isGroup ? "messages:marmot.editGroup" : "messages:marmot.editConversation",
   );
-  const back = () =>
-    router.canGoBack() ? router.back() : router.replace(conversationRoute(id));
+  const dismissProfile = useDismissProfile(morph);
+  const sharedBack = useSharedProfileBack(morph);
+  const back = () => {
+    if (dismissProfile()) return;
+    if (router.canGoBack()) router.back();
+    else router.replace(conversationRoute(id));
+  };
 
   async function update(
     task: () => Promise<void | MarmotGroupDisposition | null>,
@@ -901,6 +920,155 @@ export function MarmotGroupDetailsScreen({
       />
     );
 
+  const profileError = state.error ? (
+    <Empty detail="" icon="chat" title={t("messages:marmot.accountError")}>
+      <Action onPress={state.retry}>{t("common:retry")}</Action>
+    </Empty>
+  ) : null;
+
+  function renderGroupProfile(ready?: {
+    actions: (shortcut?: ReactNode) => ReactNode;
+    tabs: ReactNode;
+    info: (status?: ReactNode) => ReactNode;
+    roster: () => ReactNode;
+  }) {
+    const activeTab = ready ? profileTab : "info";
+    function pages(shortcut?: ReactNode, status?: ReactNode) {
+      function overview(tab: typeof profileTab) {
+        return (
+          <View style={styles.groupOverview}>
+            {profileHeader(activeTab === tab, false)}
+            {ready?.actions(shortcut)}
+          </View>
+        );
+      }
+
+      return (
+        <View style={styles.groupStack}>
+          <View
+            pointerEvents={activeTab === "info" ? "auto" : "none"}
+            accessibilityElementsHidden={activeTab !== "info"}
+            importantForAccessibility={
+              activeTab === "info" ? "auto" : "no-hide-descendants"
+            }
+            style={[
+              styles.groupPage,
+              activeTab !== "info" && styles.groupPageHidden,
+            ]}
+          >
+            <ScrollView
+              style={styles.groupProfileScroll}
+              contentContainerStyle={styles.groupProfileBody}
+              stickyHeaderIndices={ready ? [1] : undefined}
+              keyboardShouldPersistTaps="handled"
+            >
+              {overview("info")}
+              {ready?.tabs}
+              {ready
+                ? ready.info(status)
+                : (profileError ?? (
+                    <LoadingStatus
+                      label={t("messages:marmot.openingGroupDetails")}
+                    />
+                  ))}
+            </ScrollView>
+          </View>
+          {ready && visitedProfileTabs.has("members") && (
+            <View
+              pointerEvents={profileTab === "members" ? "auto" : "none"}
+              accessibilityElementsHidden={profileTab !== "members"}
+              importantForAccessibility={
+                profileTab === "members" ? "auto" : "no-hide-descendants"
+              }
+              style={[
+                styles.groupPage,
+                profileTab !== "members" && styles.groupPageHidden,
+              ]}
+            >
+              <ScrollView
+                style={styles.groupProfileScroll}
+                contentContainerStyle={styles.groupProfileBody}
+                stickyHeaderIndices={[1]}
+                keyboardShouldPersistTaps="handled"
+              >
+                {overview("members")}
+                {ready.tabs}
+                {ready.roster()}
+              </ScrollView>
+            </View>
+          )}
+          {ready && visitedProfileTabs.has("media") && (
+            <View
+              pointerEvents={profileTab === "media" ? "auto" : "none"}
+              accessibilityElementsHidden={profileTab !== "media"}
+              importantForAccessibility={
+                profileTab === "media" ? "auto" : "no-hide-descendants"
+              }
+              style={[
+                styles.groupPage,
+                profileTab !== "media" && styles.groupPageHidden,
+              ]}
+            >
+              <SharedMediaLibrary
+                scope={{ kind: "group", group: id }}
+                header={
+                  <View style={styles.groupMediaHeader}>
+                    {overview("media")}
+                  </View>
+                }
+                tabs={ready.tabs}
+                scrollPositionRef={sharedMediaScrollPosition}
+                active={profileTab === "media"}
+              />
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    // Keep the measured avatar and name in the same scroll hierarchy while
+    // the native group window opens or retries.
+    return (
+      <Screen
+        topInset
+        scroll={false}
+        navigationHeader={
+          <View pointerEvents="box-none" style={styles.groupNavigation}>
+            {!sharedBack && (
+              <GlassBackButton
+                onPress={back}
+                style={styles.profileBack}
+                elevation={morph ? "none" : undefined}
+                dimOnPress={!morph}
+              />
+            )}
+          </View>
+        }
+      >
+        <MarmotActiveCall
+          group={id}
+          discovery={groupCalls}
+          enabled={Boolean(ready && member)}
+          members={details?.members}
+          canStart={
+            details?.lifecycle === "stable" &&
+            !details.pendingLeave &&
+            !details.disbanding
+          }
+          profile={({ shortcut, status }) => pages(shortcut, status)}
+        />
+      </Screen>
+    );
+  }
+
+  if (
+    !editing &&
+    isGroup &&
+    !details?.pendingInvitation &&
+    (!details || state.error)
+  )
+    return renderGroupProfile();
+
   if (
     state.error ||
     !details ||
@@ -913,41 +1081,34 @@ export function MarmotGroupDetailsScreen({
         navigationHeader={
           editing || details?.pendingInvitation ? (
             <ScreenHeader title={title} onBack={back} />
-          ) : morph ? (
+          ) : morph && !sharedBack ? (
             <ChatProfileBackButton onPress={back} />
           ) : undefined
         }
       >
         {profileHeader(true)}
-        {state.error ? (
-          <Empty
-            detail=""
-            icon="chat"
-            title={t("messages:marmot.accountError")}
-          >
-            <Action onPress={state.retry}>{t("common:retry")}</Action>
-          </Empty>
-        ) : !details ? null : details.pendingInvitation ? (
-          <Empty
-            detail=""
-            icon="invitations"
-            title={t("messages:marmot.inviteRequired")}
-          >
-            <Action onPress={() => router.replace(conversationRoute(id))}>
-              {t("messages:marmot.reviewInvitation")}
-            </Action>
-          </Empty>
-        ) : (
-          <Empty
-            detail=""
-            icon="lock"
-            title={t("messages:marmot.groupEditUnavailable")}
-          />
-        )}
+        {profileError ??
+          (!details ? null : details.pendingInvitation ? (
+            <Empty
+              detail=""
+              icon="invitations"
+              title={t("messages:marmot.inviteRequired")}
+            >
+              <Action onPress={() => router.replace(conversationRoute(id))}>
+                {t("messages:marmot.reviewInvitation")}
+              </Action>
+            </Empty>
+          ) : (
+            <Empty
+              detail=""
+              icon="lock"
+              title={t("messages:marmot.groupEditUnavailable")}
+            />
+          ))}
       </Screen>
     );
 
-  const roster = (
+  const roster = () => (
     <ListGroup title={t("messages:marmot.members")}>
       {editing && details.canInvite && (
         <ListRow
@@ -1310,7 +1471,16 @@ export function MarmotGroupDetailsScreen({
     { key: "media", label: t("messages:marmot.shortcutMedia") },
   ];
   const groupTabBar = (
-    <ProfileTabs value={profileTab} onChange={setProfileTab} tabs={groupTabs} />
+    <ProfileTabs
+      value={profileTab}
+      onChange={(tab) => {
+        setProfileTab(tab);
+        setVisitedProfileTabs((visited) =>
+          visited.has(tab) ? visited : new Set(visited).add(tab),
+        );
+      }}
+      tabs={groupTabs}
+    />
   );
   const ownGroupMember = details.members.find((person) => person.self);
   const activationKind =
@@ -1479,8 +1649,8 @@ export function MarmotGroupDetailsScreen({
     </>
   );
 
-  function renderGroupProfile(shortcut?: ReactNode, status?: ReactNode) {
-    const actions = member && (
+  const actions = (shortcut?: ReactNode) =>
+    member && (
       <GroupShortcuts>
         {shortcut}
         {muteShortcut}
@@ -1503,90 +1673,18 @@ export function MarmotGroupDetailsScreen({
         )}
       </GroupShortcuts>
     );
-    function overview(tab: typeof profileTab) {
-      return (
-        <View style={styles.groupOverview}>
-          {profileHeader(profileTab === tab, false)}
-          {actions}
-        </View>
-      );
-    }
 
-    return (
-      <View style={styles.groupStack}>
-        <View
-          pointerEvents={profileTab === "info" ? "auto" : "none"}
-          accessibilityElementsHidden={profileTab !== "info"}
-          importantForAccessibility={
-            profileTab === "info" ? "auto" : "no-hide-descendants"
-          }
-          style={[
-            styles.groupPage,
-            profileTab !== "info" && styles.groupPageHidden,
-          ]}
-        >
-          <ScrollView
-            style={styles.groupProfileScroll}
-            contentContainerStyle={styles.groupProfileBody}
-            stickyHeaderIndices={[1]}
-            keyboardShouldPersistTaps="handled"
-          >
-            {overview("info")}
-            {groupTabBar}
-            {groupInfoContent(status)}
-          </ScrollView>
-        </View>
-        <View
-          pointerEvents={profileTab === "members" ? "auto" : "none"}
-          accessibilityElementsHidden={profileTab !== "members"}
-          importantForAccessibility={
-            profileTab === "members" ? "auto" : "no-hide-descendants"
-          }
-          style={[
-            styles.groupPage,
-            profileTab !== "members" && styles.groupPageHidden,
-          ]}
-        >
-          <ScrollView
-            style={styles.groupProfileScroll}
-            contentContainerStyle={styles.groupProfileBody}
-            stickyHeaderIndices={[1]}
-            keyboardShouldPersistTaps="handled"
-          >
-            {overview("members")}
-            {groupTabBar}
-            {roster}
-          </ScrollView>
-        </View>
-        <View
-          pointerEvents={profileTab === "media" ? "auto" : "none"}
-          accessibilityElementsHidden={profileTab !== "media"}
-          importantForAccessibility={
-            profileTab === "media" ? "auto" : "no-hide-descendants"
-          }
-          style={[
-            styles.groupPage,
-            profileTab !== "media" && styles.groupPageHidden,
-          ]}
-        >
-          <SharedMediaLibrary
-            scope={{ kind: "group", group: id }}
-            header={
-              <View style={styles.groupMediaHeader}>{overview("media")}</View>
-            }
-            tabs={groupTabBar}
-            scrollPositionRef={sharedMediaScrollPosition}
-            active={profileTab === "media"}
-          />
-        </View>
-      </View>
-    );
-  }
+  if (!editing && isGroup)
+    return renderGroupProfile({
+      actions,
+      tabs: groupTabBar,
+      info: groupInfoContent,
+      roster,
+    });
 
   return (
     <Screen
       topInset
-      scroll={editing || !isGroup}
       navigationHeader={
         editing ? (
           <ScreenHeader
@@ -1603,16 +1701,7 @@ export function MarmotGroupDetailsScreen({
               ) : undefined
             }
           />
-        ) : isGroup ? (
-          <View style={styles.groupNavigation}>
-            <GlassBackButton
-              onPress={back}
-              style={styles.profileBack}
-              elevation={morph ? "none" : undefined}
-              dimOnPress={!morph}
-            />
-          </View>
-        ) : morph ? (
+        ) : morph && !sharedBack ? (
           <ChatProfileBackButton onPress={back} />
         ) : undefined
       }
@@ -1699,7 +1788,7 @@ export function MarmotGroupDetailsScreen({
               />
             </ListGroup>
           )}
-          {isGroup && showMembers && roster}
+          {isGroup && showMembers && roster()}
           {(details.relays.length > 0 || details.mediaV2) && (
             <ListGroup title={t("messages:marmot.groupConnections")}>
               {connections}
@@ -1735,23 +1824,6 @@ export function MarmotGroupDetailsScreen({
             </Action>
           )}
         </>
-      ) : isGroup ? (
-        member ? (
-          <MarmotActiveCall
-            group={id}
-            members={details.members}
-            canStart={
-              details.lifecycle === "stable" &&
-              !details.pendingLeave &&
-              !details.disbanding
-            }
-            profile={({ shortcut, status }) =>
-              renderGroupProfile(shortcut, status)
-            }
-          />
-        ) : (
-          renderGroupProfile()
-        )
       ) : (
         <>
           {profileHeader(true)}
@@ -1776,7 +1848,7 @@ export function MarmotGroupDetailsScreen({
               {muteStatus}
             </Ink>
           )}
-          {isGroup && roster}
+          {isGroup && roster()}
           {notice}
           <ListGroup
             title={isGroup ? t("messages:marmot.groupInformation") : undefined}
@@ -2096,6 +2168,8 @@ const styles = StyleSheet.create({
   groupNavigation: {
     marginHorizontal: space.lg,
     height: 44,
+    marginBottom: -space.lg,
+    zIndex: 1,
   },
   groupMediaHeader: { paddingHorizontal: space.lg, paddingBottom: space.lg },
   groupOverview: { gap: space.lg },

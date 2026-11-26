@@ -368,6 +368,7 @@ export const he = {
       blocked: "חשבון זה חסום.",
       accountError: "שירות ההודעות אינו זמין במכשיר זה.",
       openingChat: "השיחה נפתחת…",
+      openingGroupDetails: "פרטי הקבוצה נטענים…",
       operationError: "לא ניתן להשלים את הפעולה בשיחה.",
       members: "חברי הקבוצה",
       admin: "מנהל",

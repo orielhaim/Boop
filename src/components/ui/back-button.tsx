@@ -15,16 +15,18 @@ export const backButtonSize = 44;
 export function GlassBackIcon({
   color,
   elevation,
+  lensTint,
 }: {
   color?: string;
   elevation?: SurfaceElevation;
+  lensTint?: string;
 }) {
   const { colors } = useTheme();
   return (
     <GlassSurface
       preset="control"
       elevation={elevation}
-      lensTint
+      lensTint={lensTint ?? true}
       pointerEvents="none"
       style={styles.circle}
     >
@@ -37,11 +39,13 @@ export function GlassBackButton({
   onPress,
   style,
   elevation,
+  lensTint,
   dimOnPress = true,
 }: {
   onPress: () => void;
   style?: StyleProp<ViewStyle>;
   elevation?: SurfaceElevation;
+  lensTint?: string;
   dimOnPress?: boolean;
 }) {
   const { t } = useTranslation("common");
@@ -55,12 +59,20 @@ export function GlassBackButton({
       }}
       style={({ pressed }) => [style, dimOnPress && pressed && styles.pressed]}
     >
-      <GlassBackIcon elevation={elevation} />
+      <GlassBackIcon elevation={elevation} lensTint={lensTint} />
     </Pressable>
   );
 }
 
-export function ChatProfileBackButton({ onPress }: { onPress: () => void }) {
+export function ChatProfileBackButton({
+  onPress,
+  offset = 0,
+  lensTint,
+}: {
+  onPress: () => void;
+  offset?: number;
+  lensTint?: string;
+}) {
   const { top, left, right } = useSafeAreaInsets();
   const { i18n } = useTranslation();
   const rtl = directionFor(resolveLanguage(i18n.resolvedLanguage)) === "rtl";
@@ -68,11 +80,12 @@ export function ChatProfileBackButton({ onPress }: { onPress: () => void }) {
     <GlassBackButton
       onPress={onPress}
       elevation="none"
+      lensTint={lensTint}
       dimOnPress={false}
       style={[
         styles.profileBack,
         {
-          top: top + space.xs,
+          top: top + offset + space.xs,
           start: (rtl ? right : left) + space.sm,
         },
       ]}

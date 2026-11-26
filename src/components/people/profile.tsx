@@ -33,6 +33,10 @@ import {
 } from "@/components/glassyui/glass-sheet";
 import { GlassInput } from "@/components/glassyui/glass-input";
 import { ProfileElement } from "@/components/navigation/profile-elements";
+import {
+  useDismissProfile,
+  useSharedProfileBack,
+} from "@/components/navigation/profile-reopen";
 import { SharedMediaLibrary } from "@/components/shared-media/library";
 import {
   ProfileTabs,
@@ -58,7 +62,7 @@ import {
 } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
-import { useTheme } from "@/theme";
+import { space, useTheme } from "@/theme";
 import { AddressSheetContent } from "./address-sheet";
 import { PersonCallHistory, PersonGroups } from "./person-context";
 import { PersonAvatar } from "./person-avatar";
@@ -106,6 +110,7 @@ function ProfileContent({
 }) {
   const { height } = useWindowDimensions();
   const bannerHeight = Math.max(1, Math.min(148, height * 0.2));
+  const bannerOverlap = Math.min(70, Math.max(0, bannerHeight - space.sm));
   const profileMotion = useAnimateScrollView(bannerHeight);
   const mediaMotion = useAnimateScrollView(bannerHeight);
   const { t } = useTranslation(namespaces);
@@ -114,6 +119,8 @@ function ProfileContent({
   const { colors, reduceMotion, reduceTransparency } = useTheme();
   const focused = useIsFocused();
   const navigation = useNavigation();
+  const dismissProfile = useDismissProfile(morph);
+  const sharedBack = useSharedProfileBack(morph);
   const leaving = useRef(false);
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
   const privacyRevision = useSyncExternalStore(
@@ -188,6 +195,7 @@ function ProfileContent({
     id: string | null;
   }>();
   const [tabChoice, setSelectedTab] = useState<"media" | "groups">("groups");
+  const [visitedMedia, setVisitedMedia] = useState(false);
   const mediaScrollPosition = useRef(0);
   const mediaConversation =
     conversationRecord?.peer === publicKey &&
@@ -387,6 +395,7 @@ function ProfileContent({
   const website = profile?.website;
   const back = () => {
     if (leaving.current || !navigation.isFocused()) return;
+    if (dismissProfile()) return;
     leaving.current = true;
     if (router.canGoBack()) router.back();
     else router.replace("/people");
@@ -632,7 +641,14 @@ function ProfileContent({
     </View>
   );
   const profileTabs = (
-    <ProfileTabs tabs={tabs} value={selectedTab} onChange={setSelectedTab} />
+    <ProfileTabs
+      tabs={tabs}
+      value={selectedTab}
+      onChange={(tab) => {
+        if (tab === "media") setVisitedMedia(true);
+        setSelectedTab(tab);
+      }}
+    />
   );
   function renderOverview(motion: typeof profileMotion, active: boolean) {
     return (
@@ -652,12 +668,14 @@ function ProfileContent({
           >
             <ProfileBannerArtwork source={banner} />
           </Animated.View>
-          <GlassBackButton
-            style={styles.bannerBack}
-            elevation={morph ? "none" : undefined}
-            dimOnPress={!morph}
-            onPress={back}
-          />
+          {!sharedBack && (
+            <GlassBackButton
+              style={styles.bannerBack}
+              elevation={morph ? "none" : undefined}
+              dimOnPress={!morph}
+              onPress={back}
+            />
+          )}
           {menu.length > 0 && (
             <ActionMenu
               style={styles.bannerEnd}
@@ -681,12 +699,14 @@ function ProfileContent({
             </ActionMenu>
           )}
         </View>
-        <Animated.View style={[styles.overview, motion.body]}>
+        <Animated.View
+          style={[styles.overview, { marginTop: -bannerOverlap }, motion.body]}
+        >
           <View
             pointerEvents="none"
             style={[
               styles.overviewBackground,
-              { backgroundColor: colors.background },
+              { top: bannerOverlap, backgroundColor: colors.background },
             ]}
           />
           {personHero(active)}
@@ -786,7 +806,7 @@ function ProfileContent({
             profilePage
           )}
         </View>
-        {mediaAvailable && mediaConversation && (
+        {visitedMedia && mediaAvailable && mediaConversation && (
           <View
             pointerEvents={showingLibrary ? "auto" : "none"}
             accessibilityElementsHidden={!showingLibrary}
@@ -879,7 +899,6 @@ const styles = StyleSheet.create((theme) => ({
   hiddenLayer: { opacity: 0 },
   pages: { flex: 1 },
   overview: {
-    marginTop: -54,
     gap: theme.space.md,
     paddingHorizontal: theme.space.lg,
     paddingBottom: theme.space.md,
@@ -890,7 +909,7 @@ const styles = StyleSheet.create((theme) => ({
     overflow: "hidden",
     transformOrigin: "center top",
   },
-  overviewBackground: { ...StyleSheet.absoluteFill, top: 54 },
+  overviewBackground: { ...StyleSheet.absoluteFill },
   bannerBack: {
     position: "absolute",
     zIndex: 2,

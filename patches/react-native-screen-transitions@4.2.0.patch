@@ -1,0 +1,1947 @@
+diff --git a/lib/commonjs/navigators/blank-stack/components/activity/activity-screen.js b/lib/commonjs/navigators/blank-stack/components/activity/activity-screen.js
+index 3005e61..20e7ee6 100644
+--- a/lib/commonjs/navigators/blank-stack/components/activity/activity-screen.js
++++ b/lib/commonjs/navigators/blank-stack/components/activity/activity-screen.js
+@@ -22,14 +22,15 @@ const PointerEventsByActivity = {
+   inactive: "none",
+   closing: "none"
+ };
+-const ActivityScreen = exports.ActivityScreen = /*#__PURE__*/(0, _react.memo)(function ActivityScreen({
++const ActivityScreen = exports.ActivityScreen = (0, _react.memo)(function ActivityScreen({
+   children,
+-  routeKey
++  routeKey,
++  preloaded
+ }) {
+   const scene = (0, _blankStack.useBlankStackStore)(store => store.scenesByKey[routeKey]);
+   const paintDriverRouteKey = (0, _blankStack.useBlankStackStore)(store => store.paintDriverRouteKeyByRouteKey.get(routeKey));
+-  const inactiveBehavior = scene.descriptor.options.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
+-  const hasNestedState = "state" in scene.route;
++  const inactiveBehavior = scene?.descriptor.options?.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
++  const hasNestedState = scene && "state" in scene.route;
+   const paintDriverProgress = (0, _motion.useOptionalMotionStore)(paintDriverRouteKey ?? null, store => store.state.transitionProgress);
+ 
+   /**
+@@ -48,9 +49,12 @@ const ActivityScreen = exports.ActivityScreen = /*#__PURE__*/(0, _react.memo)(fu
+     return paintDriverProgress.get() >= 1;
+   });
+   const isPaintDriverSettledOnJS = (0, _useSharedValueState.useSharedValueState)(isPaintDriverSettled);
+-  let activityViewMode = scene.activity === "active" ? "normal" : "inert";
+-  let visible = scene.activity !== "inactive";
+-  if (scene.activity === "inactive") {
++  const activity = scene?.activity ?? "inactive";
++  let activityViewMode = activity === "active" ? "normal" : "inert";
++  let visible = activity !== "inactive";
++  if (preloaded) {
++    visible = true;
++  } else if (activity === "inactive") {
+     if (inactiveBehavior === "keep" || !isPaintDriverSettledOnJS) {
+       visible = true;
+     } else if (inactiveBehavior === "pause") {
+@@ -61,13 +65,15 @@ const ActivityScreen = exports.ActivityScreen = /*#__PURE__*/(0, _react.memo)(fu
+       visible = false;
+     }
+   }
+-  const shouldUnmount = inactiveBehavior === "unmount" && scene.activity === "inactive" && !hasNestedState && isPaintDriverSettledOnJS;
++  const shouldUnmount = !preloaded && inactiveBehavior === "unmount" && activity === "inactive" && !hasNestedState && isPaintDriverSettledOnJS;
+   if (shouldUnmount) {
+     return null;
+   }
+   return /*#__PURE__*/(0, _jsxRuntime.jsx)(_reactNative.View, {
+-    style: _reactNative.StyleSheet.absoluteFill,
+-    pointerEvents: PointerEventsByActivity[scene.activity],
++    style: [_reactNative.StyleSheet.absoluteFill, preloaded && styles.preloaded],
++    pointerEvents: preloaded ? "none" : PointerEventsByActivity[activity],
++    accessibilityElementsHidden: preloaded,
++    importantForAccessibility: preloaded ? "no-hide-descendants" : undefined,
+     collapsable: false,
+     children: /*#__PURE__*/(0, _jsxRuntime.jsx)(_activityView.ActivityView, {
+       mode: activityViewMode,
+@@ -76,4 +82,11 @@ const ActivityScreen = exports.ActivityScreen = /*#__PURE__*/(0, _react.memo)(fu
+     })
+   });
+ });
+-//# sourceMappingURL=activity-screen.js.map
+\ No newline at end of file
++
++// Keep native layout measurable while excluding the scene from paint and input.
++const styles = _reactNative.StyleSheet.create({
++  preloaded: {
++    opacity: 0
++  }
++});
++//# sourceMappingURL=activity-screen.js.map
+diff --git a/lib/commonjs/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js b/lib/commonjs/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
+index 7f4da04..3819a71 100644
+--- a/lib/commonjs/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
++++ b/lib/commonjs/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
+@@ -8,7 +8,6 @@ var _react = require("react");
+ var _useStableCallback = _interopRequireDefault(require("../../../../../hooks/use-stable-callback"));
+ var _useNavigationHelpers = require("../../../hooks/use-navigation-helpers");
+ var _blankStack = require("../../../state/blank-stack.provider");
+-var _resetStoresForScreen = require("./helpers/reset-stores-for-screen");
+ function _interopRequireDefault(e) { return e && e.__esModule ? e : { default: e }; }
+ function useCloseTransitionIntent(current) {
+   const handleCloseRoute = (0, _blankStack.useBlankStackStore)(store => store.handleCloseRoute);
+@@ -18,9 +17,9 @@ function useCloseTransitionIntent(current) {
+   } = (0, _useNavigationHelpers.useNavigationHelpers)();
+   const completeClose = (0, _useStableCallback.default)(() => {
+     handleCloseRoute?.({
+-      route: current.route
++      route: current.route,
++      completed: true
+     });
+-    (0, _resetStoresForScreen.resetStoresForScreen)(current.route.key);
+   });
+   (0, _react.useLayoutEffect)(() => {
+     if (closing) requestDismiss();
+@@ -29,4 +28,4 @@ function useCloseTransitionIntent(current) {
+     completeClose
+   };
+ }
+-//# sourceMappingURL=use-close-transition-intent.js.map
+\ No newline at end of file
++//# sourceMappingURL=use-close-transition-intent.js.map
+diff --git a/lib/commonjs/navigators/blank-stack/components/stack-view.js b/lib/commonjs/navigators/blank-stack/components/stack-view.js
+index 62e6952..9552cd8 100644
+--- a/lib/commonjs/navigators/blank-stack/components/stack-view.js
++++ b/lib/commonjs/navigators/blank-stack/components/stack-view.js
+@@ -18,9 +18,11 @@ var _useNavigationHelpers = require("../hooks/use-navigation-helpers");
+ var _blankStack = require("../state/blank-stack.provider");
+ var _activity = require("./activity");
+ var _blankStack2 = require("./lifecycle/blank-stack");
++var _resetStoresForScreen = require("./lifecycle/hooks/helpers/reset-stores-for-screen");
+ var _jsxRuntime = require("react/jsx-runtime");
+-const SceneMotion = /*#__PURE__*/(0, _react.memo)(function SceneMotion({
+-  children
++const SceneMotion = (0, _react.memo)(function SceneMotion({
++  children,
++  preloaded
+ }) {
+   const {
+     requestDismiss
+@@ -32,44 +34,55 @@ const SceneMotion = /*#__PURE__*/(0, _react.memo)(function SceneMotion({
+         onDismissRequest: requestDismiss,
+         children: children
+       })
+-    }), /*#__PURE__*/(0, _jsxRuntime.jsx)(_blankStack2.BlankStackLifecycle, {})]
++    }), !preloaded && /*#__PURE__*/(0, _jsxRuntime.jsx)(_blankStack2.BlankStackLifecycle, {})]
+   });
+ });
+-const BlankSceneRow = /*#__PURE__*/(0, _react.memo)(function BlankSceneRow({
+-  routeKey
++const BlankSceneRow = (0, _react.memo)(function BlankSceneRow({
++  routeKey,
++  preloadedDescriptor
+ }) {
+   const scene = (0, _blankStack.useBlankStackStore)(store => store.scenesByKey[routeKey]);
+-  const descriptors = (0, _react.useMemo)(() => scene && {
++  (0, _react.useLayoutEffect)(() => () => (0, _resetStoresForScreen.resetStoresForScreen)(routeKey), [routeKey]);
++  const descriptors = (0, _react.useMemo)(() => scene ? {
+     current: scene.descriptor,
+     previous: scene.previousDescriptor,
+     next: scene.nextDescriptor,
+     closingNext: scene.closingNextDescriptor
++  } : preloadedDescriptor && {
++    current: preloadedDescriptor
+   },
+   // Scenes are reused while none of their descriptors change.
+-  [scene]);
++  [scene, preloadedDescriptor]);
+ 
+   // A row can re-render from a store snapshot that no longer has its route (it was just removed)
+   // before the list above it re-renders and drops the row: render nothing until then.
+-  if (!scene || !descriptors) {
++  if (!descriptors) {
+     return null;
+   }
+   return /*#__PURE__*/(0, _jsxRuntime.jsx)(_activity.ActivityScreen, {
+     routeKey: routeKey,
++    preloaded: !scene,
+     children: /*#__PURE__*/(0, _jsxRuntime.jsx)(_builder.BuilderProvider, {
+       routeKey: routeKey,
+       descriptors: descriptors,
+       children: /*#__PURE__*/(0, _jsxRuntime.jsx)(SceneMotion, {
+-        children: scene.descriptor.render?.()
++        preloaded: !scene,
++        children: descriptors.current.render?.()
+       })
+     })
+   });
+ });
+-const BlankStackView = exports.BlankStackView = /*#__PURE__*/(0, _react.memo)(function BlankStackView() {
++const BlankStackView = exports.BlankStackView = (0, _react.memo)(function BlankStackView({
++  sceneContainer: Container = _activity.ActivityContainer,
++  preloadedDescriptors
++}) {
+   const routeKeys = (0, _blankStack.useBlankStackStore)(store => store?.routeKeys);
++  const renderedKeys = preloadedDescriptors.size ? [...routeKeys, ...Array.from(preloadedDescriptors.keys()).filter(key => !routeKeys.includes(key))] : routeKeys;
+   return /*#__PURE__*/(0, _jsxRuntime.jsxs)(_portal.PortalProvider, {
+-    children: [/*#__PURE__*/(0, _jsxRuntime.jsx)(_overlay.Overlay, {}), /*#__PURE__*/(0, _jsxRuntime.jsx)(_activity.ActivityContainer, {
+-      children: routeKeys.map(routeKey => /*#__PURE__*/(0, _jsxRuntime.jsx)(BlankSceneRow, {
+-        routeKey: routeKey
++    children: [/*#__PURE__*/(0, _jsxRuntime.jsx)(_overlay.Overlay, {}), /*#__PURE__*/(0, _jsxRuntime.jsx)(Container, {
++      children: renderedKeys.map(routeKey => /*#__PURE__*/(0, _jsxRuntime.jsx)(BlankSceneRow, {
++        routeKey: routeKey,
++        preloadedDescriptor: preloadedDescriptors.get(routeKey)
+       }, routeKey))
+     })]
+   });
+@@ -95,11 +108,26 @@ function SafeAreaProviderIfNeeded({
+     children: children
+   });
+ }
+-const BlankStack = exports.BlankStack = /*#__PURE__*/(0, _react.memo)(function BlankStack({
++const BlankStack = exports.BlankStack = (0, _react.memo)(function BlankStack({
+   state,
+   navigation,
+-  descriptors
++  descriptors,
++  sceneContainer,
++  preloadedRoutes
+ }) {
++  const preloadedDescriptors = (0, _react.useMemo)(() => {
++    const entries = new Map();
++    for (const route of preloadedRoutes ?? []) {
++      const source = descriptors[route.key];
++      if (source) entries.set(route.key, {
++        route,
++        navigation,
++        options: source.options,
++        render: source.render
++      });
++    }
++    return entries;
++  }, [descriptors, navigation, preloadedRoutes]);
+   return /*#__PURE__*/(0, _jsxRuntime.jsx)(_reactNativeGestureHandler.GestureHandlerRootView, {
+     style: styles.container,
+     children: /*#__PURE__*/(0, _jsxRuntime.jsx)(SafeAreaProviderIfNeeded, {
+@@ -107,7 +135,10 @@ const BlankStack = exports.BlankStack = /*#__PURE__*/(0, _react.memo)(function B
+         state: state,
+         navigation: navigation,
+         descriptors: descriptors,
+-        children: /*#__PURE__*/(0, _jsxRuntime.jsx)(BlankStackView, {})
++        children: /*#__PURE__*/(0, _jsxRuntime.jsx)(BlankStackView, {
++          sceneContainer: sceneContainer,
++          preloadedDescriptors: preloadedDescriptors
++        })
+       })
+     })
+   });
+@@ -117,4 +148,4 @@ const styles = _reactNative.StyleSheet.create({
+     flex: 1
+   }
+ });
+-//# sourceMappingURL=stack-view.js.map
+\ No newline at end of file
++//# sourceMappingURL=stack-view.js.map
+diff --git a/lib/commonjs/navigators/blank-stack/create-blank-stack-navigator.js b/lib/commonjs/navigators/blank-stack/create-blank-stack-navigator.js
+index ce68c75..3959a86 100644
+--- a/lib/commonjs/navigators/blank-stack/create-blank-stack-navigator.js
++++ b/lib/commonjs/navigators/blank-stack/create-blank-stack-navigator.js
+@@ -10,7 +10,9 @@ var _jsxRuntime = require("react/jsx-runtime");
+ const BlankStackNavigator = exports.BlankStackNavigator = (0, _standardNavigation.createStandardNavigator)(({
+   descriptors,
+   navigation,
+-  navigationState
++  navigationState,
++  sceneContainer,
++  preloadedRoutes
+ }) => {
+   if (!navigationState || !navigation) {
+     throw new Error("BlankStack requires navigation state and helpers from its integration.");
+@@ -18,7 +20,9 @@ const BlankStackNavigator = exports.BlankStackNavigator = (0, _standardNavigatio
+   return /*#__PURE__*/(0, _jsxRuntime.jsx)(_stackView.BlankStack, {
+     state: navigationState,
+     navigation: navigation,
+-    descriptors: descriptors
++    descriptors: descriptors,
++    sceneContainer: sceneContainer,
++    preloadedRoutes: preloadedRoutes
+   });
+ });
+-//# sourceMappingURL=create-blank-stack-navigator.js.map
+\ No newline at end of file
++//# sourceMappingURL=create-blank-stack-navigator.js.map
+diff --git a/lib/commonjs/navigators/blank-stack/state/blank-stack-controller.js b/lib/commonjs/navigators/blank-stack/state/blank-stack-controller.js
+index 1c605a0..b8cbb9d 100644
+--- a/lib/commonjs/navigators/blank-stack/state/blank-stack-controller.js
++++ b/lib/commonjs/navigators/blank-stack/state/blank-stack-controller.js
+@@ -4,6 +4,10 @@ Object.defineProperty(exports, "__esModule", {
+   value: true
+ });
+ exports.createBlankStackController = void 0;
++var _worklets = require("react-native-worklets");
++var _motion = require("../../../providers/motion");
++var _reanimated = require("react-native-reanimated");
++var _animateToProgress = require("../../../utils/animation/animate-to-progress");
+ var _closeActionReplay = require("../../../utils/navigation/close-action-replay");
+ var _buildBlankStackState = require("./helpers/build-blank-stack-state");
+ var _deriveBlankStackState = require("./helpers/derive-blank-stack-state");
+@@ -16,6 +20,8 @@ var _deriveBlankStackState = require("./helpers/derive-blank-stack-state");
+  */
+ const createBlankStackController = initialProps => {
+   const closingRouteKeys = new Set();
++  const dismissals = new Map();
++  const committingCloses = new Set();
+   let props = initialProps;
+   let previousRoutesSnapshot = initialProps.state.routes;
+   let snapshot = {
+@@ -51,6 +57,12 @@ const createBlankStackController = initialProps => {
+       closingRouteKeys
+     });
+     previousRoutesSnapshot = nextProps.state.routes;
++    for (const key of committingCloses) {
++      if (!previousRoutesSnapshot.some((route) => route.key === key)) committingCloses.delete(key);
++    }
++    for (const key of dismissals.keys()) {
++      if (!nextState.descriptors[key]) dismissals.delete(key);
++    }
+     if (nextState === snapshot.state) {
+       return;
+     }
+@@ -59,8 +71,11 @@ const createBlankStackController = initialProps => {
+     };
+   };
+   const handleCloseRoute = ({
+-    route
++    route,
++    completed
+   }) => {
++    // A close completion can already be queued when a reopen reverses it.
++    if (completed && (!closingRouteKeys.has(route.key) || dismissals.has(route.key))) return false;
+     const {
+       state,
+       navigation
+@@ -77,13 +92,13 @@ const createBlankStackController = initialProps => {
+       (0, _closeActionReplay.dispatchCloseAction)(action, closeAction => {
+         navigation.dispatch(closeAction);
+       });
+-      return;
++      return true;
+     }
+     closingRouteKeys.delete(route.key);
+     const current = snapshot.state;
+     const routeExists = current.routes.some(candidate => candidate.key === route.key);
+     if (!routeExists) {
+-      return;
++      return false;
+     }
+     const nextRoutes = current.routes.filter(candidate => candidate.key !== route.key);
+     const nextDescriptors = {
+@@ -100,6 +115,7 @@ const createBlankStackController = initialProps => {
+       })
+     };
+     emit();
++    return true;
+   };
+   const handleOpenRoute = ({
+     route
+@@ -118,15 +134,50 @@ const createBlankStackController = initialProps => {
+       }
+     }
+   };
++  const retarget = (route, target, onEnd) => {
++    let motion;
++    try {
++      motion = (0, _motion.getMotionStore)(route.key).state;
++    } catch {
++      // A scene may be dismissed before its motion provider mounts.
++      return false;
++    }
++    const { transitionProgress, targetProgress, animationProgress, dismissing, initiator } = motion;
++    const { clearLifecycleTransitionRequest } = motion.actions;
++    const spec = snapshot.state.descriptors[route.key]?.options.transitionSpec;
++    (0, _worklets.runOnUISync)(() => {
++      "worklet";
++      clearLifecycleTransitionRequest();
++      (0, _reanimated.cancelAnimation)(transitionProgress);
++      dismissing.set(0);
++      initiator.set(null);
++      // Reuse the measured pair and keep the navigation action independent of layout measurement.
++      (0, _animateToProgress.animateToProgress)({
++        target,
++        spec,
++        animations: motion,
++        targetProgress,
++        animationProgress,
++        emitWillAnimate: false,
++        onEnd: onEnd ? () => {
++          "worklet";
++          (0, _worklets.scheduleOnRN)(onEnd);
++        } : undefined,
++      });
++    });
++    return true;
++  };
+   const requestDismiss = ({
+-    route
++    route,
++    immediate
+   }) => {
+     const current = snapshot.state;
+     const routeIndex = current.routes.findIndex(candidate => candidate.key === route.key);
+     if (routeIndex <= 0) {
+       return false;
+     }
+-    if (closingRouteKeys.has(route.key)) {
++    if (closingRouteKeys.has(route.key) &&
++      (!immediate || dismissals.has(route.key) || committingCloses.has(route.key))) {
+       return true;
+     }
+     closingRouteKeys.add(route.key);
+@@ -139,16 +190,63 @@ const createBlankStackController = initialProps => {
+         previousState: current
+       })
+     };
++    if (immediate && routeIndex === current.routes.length - 1) {
++      const intent = Symbol();
++      dismissals.set(route.key, intent);
++      const finish = () => {
++        if (dismissals.get(route.key) !== intent) return;
++        dismissals.delete(route.key);
++        handleCloseRoute({ route, completed: true });
++      };
++      if (!retarget(route, "close", finish)) finish();
++    }
++    emit();
++    return true;
++  };
++
++  const reopenClosingRoute = (
++    fromKey,
++    matches,
++  ) => {
++    const current = snapshot.state;
++    const route = current.routes.at(-1);
++    const source = current.routes.at(-2);
++    if (!route || source?.key !== fromKey ||
++      !closingRouteKeys.has(route.key) || closingRouteKeys.has(fromKey) || committingCloses.has(route.key) ||
++      !matches(route)) return false;
++
++    const { state } = props;
++    if (state.routes[state.index]?.key !== route.key) return false;
++
++    const closingIntent = dismissals.get(route.key);
++    dismissals.delete(route.key);
++    if (!retarget(route, "open")) {
++      if (closingIntent) dismissals.set(route.key, closingIntent);
++      return false;
++    }
++    closingRouteKeys.delete(route.key);
++
++    snapshot = {
++      state: (0, _buildBlankStackState.buildBlankStackState)({
++        props,
++        routes: current.routes,
++        descriptors: current.sourceDescriptors,
++        closingRouteKeys,
++        previousState: current,
++      }),
++    };
+     emit();
+     return true;
+   };
++
+   return {
+     subscribe,
+     getSnapshot,
+     update,
+     handleCloseRoute,
+     handleOpenRoute,
+-    requestDismiss
++    requestDismiss,
++    reopenClosingRoute
+   };
+ };
+ exports.createBlankStackController = createBlankStackController;
+diff --git a/lib/commonjs/navigators/blank-stack/state/blank-stack.provider.js b/lib/commonjs/navigators/blank-stack/state/blank-stack.provider.js
+index d671135..07136d7 100644
+--- a/lib/commonjs/navigators/blank-stack/state/blank-stack.provider.js
++++ b/lib/commonjs/navigators/blank-stack/state/blank-stack.provider.js
+@@ -30,7 +30,8 @@ const {
+     state,
+     handleCloseRoute,
+     handleOpenRoute,
+-    requestDismiss
++    requestDismiss,
++    reopenClosingRoute
+   } = (0, _useBlankStackState.useBlankStackState)({
+     ...props,
+     state: stackState
+@@ -55,6 +56,7 @@ const {
+       paintDriverRouteKeyByRouteKey,
+       focusedIndex,
+       requestDismiss,
++      reopenClosingRoute,
+       shouldShowFloatOverlay: state.shouldShowFloatOverlay,
+       handleCloseRoute,
+       handleOpenRoute
+diff --git a/lib/commonjs/navigators/blank-stack/state/use-blank-stack-state.js b/lib/commonjs/navigators/blank-stack/state/use-blank-stack-state.js
+index 37a8977..00f0f91 100644
+--- a/lib/commonjs/navigators/blank-stack/state/use-blank-stack-state.js
++++ b/lib/commonjs/navigators/blank-stack/state/use-blank-stack-state.js
+@@ -18,7 +18,8 @@ const useBlankStackState = props => {
+     state: snapshot.state,
+     handleCloseRoute: controller.handleCloseRoute,
+     handleOpenRoute: controller.handleOpenRoute,
+-    requestDismiss: controller.requestDismiss
++    requestDismiss: controller.requestDismiss,
++    reopenClosingRoute: controller.reopenClosingRoute
+   };
+ };
+ exports.useBlankStackState = useBlankStackState;
+diff --git a/lib/commonjs/navigators/expo-router/create-blank-stack-props.js b/lib/commonjs/navigators/expo-router/create-blank-stack-props.js
+index 192cdd8..285787e 100644
+--- a/lib/commonjs/navigators/expo-router/create-blank-stack-props.js
++++ b/lib/commonjs/navigators/expo-router/create-blank-stack-props.js
+@@ -10,14 +10,16 @@ function createBlankStackProps({
+   navigation
+ }) {
+   const {
+-    routes
++    routes,
++    preloadedRoutes
+   } = (0, _getStackRoutes.getStackRoutes)(state);
+   return {
+     navigationState: routes === state.routes ? state : {
+       ...state,
+       routes
+     },
++    preloadedRoutes,
+     navigation
+   };
+ }
+-//# sourceMappingURL=create-blank-stack-props.js.map
+\ No newline at end of file
++//# sourceMappingURL=create-blank-stack-props.js.map
+diff --git a/lib/commonjs/utils/animation/animate-to-progress.js b/lib/commonjs/utils/animation/animate-to-progress.js
+index f0cc5f1..2e80755 100644
+--- a/lib/commonjs/utils/animation/animate-to-progress.js
++++ b/lib/commonjs/utils/animation/animate-to-progress.js
+@@ -38,7 +38,8 @@ const animateToProgress = ({
+   emitWillAnimate = true,
+   markEntering = true,
+   initialVelocity,
+-  isDragging
++  isDragging,
++  onEnd
+ }) => {
+   "worklet";
+ 
+@@ -78,6 +79,7 @@ const animateToProgress = ({
+       if (shouldClearEnteringOnFinish) {
+         entering.set(_constants.FALSE);
+       }
++      onEnd?.();
+       return;
+     }
+     if (activateMotion) {
+@@ -87,6 +89,7 @@ const animateToProgress = ({
+     transitionProgress.set((0, _animate.animate)(value, effectiveConfig, state => {
+       "worklet";
+ 
++      if (!state.intermediate) onEnd?.();
+       if (!state.finished) return;
+       if (isDragging?.get()) return;
+       progressSettled.set(_constants.TRUE);
+@@ -114,6 +117,7 @@ const animateToProgress = ({
+     requestAnimationFrame(() => {
+       "worklet";
+ 
++      if (Boolean(animations.closing.get()) !== isClosing) return;
+       startAnimation(false);
+     });
+     return;
+diff --git a/lib/commonjs/utils/animation/spring/spring.js b/lib/commonjs/utils/animation/spring/spring.js
+index 96e1bd0..8825447 100644
+--- a/lib/commonjs/utils/animation/spring/spring.js
++++ b/lib/commonjs/utils/animation/spring/spring.js
+@@ -65,6 +65,7 @@ const withInternalSpring = (toValue, userConfig, callback, animationProgress) =>
+       animation.settled = true;
+       callback?.({
+         finished: false,
++        intermediate: true,
+         settled: true
+       });
+     };
+diff --git a/lib/module/navigators/blank-stack/components/activity/activity-screen.js b/lib/module/navigators/blank-stack/components/activity/activity-screen.js
+index a18712a..be7c85a 100644
+--- a/lib/module/navigators/blank-stack/components/activity/activity-screen.js
++++ b/lib/module/navigators/blank-stack/components/activity/activity-screen.js
+@@ -18,14 +18,15 @@ const PointerEventsByActivity = {
+   inactive: "none",
+   closing: "none"
+ };
+-export const ActivityScreen = /*#__PURE__*/memo(function ActivityScreen({
++export const ActivityScreen = memo(function ActivityScreen({
+   children,
+-  routeKey
++  routeKey,
++  preloaded
+ }) {
+   const scene = useBlankStackStore(store => store.scenesByKey[routeKey]);
+   const paintDriverRouteKey = useBlankStackStore(store => store.paintDriverRouteKeyByRouteKey.get(routeKey));
+-  const inactiveBehavior = scene.descriptor.options.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
+-  const hasNestedState = "state" in scene.route;
++  const inactiveBehavior = scene?.descriptor.options?.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
++  const hasNestedState = scene && "state" in scene.route;
+   const paintDriverProgress = useOptionalMotionStore(paintDriverRouteKey ?? null, store => store.state.transitionProgress);
+ 
+   /**
+@@ -44,9 +45,12 @@ export const ActivityScreen = /*#__PURE__*/memo(function ActivityScreen({
+     return paintDriverProgress.get() >= 1;
+   });
+   const isPaintDriverSettledOnJS = useSharedValueState(isPaintDriverSettled);
+-  let activityViewMode = scene.activity === "active" ? "normal" : "inert";
+-  let visible = scene.activity !== "inactive";
+-  if (scene.activity === "inactive") {
++  const activity = scene?.activity ?? "inactive";
++  let activityViewMode = activity === "active" ? "normal" : "inert";
++  let visible = activity !== "inactive";
++  if (preloaded) {
++    visible = true;
++  } else if (activity === "inactive") {
+     if (inactiveBehavior === "keep" || !isPaintDriverSettledOnJS) {
+       visible = true;
+     } else if (inactiveBehavior === "pause") {
+@@ -57,13 +61,15 @@ export const ActivityScreen = /*#__PURE__*/memo(function ActivityScreen({
+       visible = false;
+     }
+   }
+-  const shouldUnmount = inactiveBehavior === "unmount" && scene.activity === "inactive" && !hasNestedState && isPaintDriverSettledOnJS;
++  const shouldUnmount = !preloaded && inactiveBehavior === "unmount" && activity === "inactive" && !hasNestedState && isPaintDriverSettledOnJS;
+   if (shouldUnmount) {
+     return null;
+   }
+   return /*#__PURE__*/_jsx(View, {
+-    style: StyleSheet.absoluteFill,
+-    pointerEvents: PointerEventsByActivity[scene.activity],
++    style: [StyleSheet.absoluteFill, preloaded && styles.preloaded],
++    pointerEvents: preloaded ? "none" : PointerEventsByActivity[activity],
++    accessibilityElementsHidden: preloaded,
++    importantForAccessibility: preloaded ? "no-hide-descendants" : undefined,
+     collapsable: false,
+     children: /*#__PURE__*/_jsx(ActivityView, {
+       mode: activityViewMode,
+@@ -72,4 +78,11 @@ export const ActivityScreen = /*#__PURE__*/memo(function ActivityScreen({
+     })
+   });
+ });
+-//# sourceMappingURL=activity-screen.js.map
+\ No newline at end of file
++
++// Keep native layout measurable while excluding the scene from paint and input.
++const styles = StyleSheet.create({
++  preloaded: {
++    opacity: 0
++  }
++});
++//# sourceMappingURL=activity-screen.js.map
+diff --git a/lib/module/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js b/lib/module/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
+index 10c0c7c..5e8260f 100644
+--- a/lib/module/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
++++ b/lib/module/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.js
+@@ -4,7 +4,6 @@ import { useLayoutEffect } from "react";
+ import useStableCallback from "../../../../../hooks/use-stable-callback";
+ import { useNavigationHelpers } from "../../../hooks/use-navigation-helpers";
+ import { useBlankStackStore } from "../../../state/blank-stack.provider";
+-import { resetStoresForScreen } from "./helpers/reset-stores-for-screen";
+ export function useCloseTransitionIntent(current) {
+   const handleCloseRoute = useBlankStackStore(store => store.handleCloseRoute);
+   const closing = useBlankStackStore(store => store.scenesByKey[current.route.key]?.activity === "closing");
+@@ -13,9 +12,9 @@ export function useCloseTransitionIntent(current) {
+   } = useNavigationHelpers();
+   const completeClose = useStableCallback(() => {
+     handleCloseRoute?.({
+-      route: current.route
++      route: current.route,
++      completed: true
+     });
+-    resetStoresForScreen(current.route.key);
+   });
+   useLayoutEffect(() => {
+     if (closing) requestDismiss();
+@@ -24,4 +23,4 @@ export function useCloseTransitionIntent(current) {
+     completeClose
+   };
+ }
+-//# sourceMappingURL=use-close-transition-intent.js.map
+\ No newline at end of file
++//# sourceMappingURL=use-close-transition-intent.js.map
+diff --git a/lib/module/navigators/blank-stack/components/stack-view.js b/lib/module/navigators/blank-stack/components/stack-view.js
+index c8810c8..4d60d3b 100644
+--- a/lib/module/navigators/blank-stack/components/stack-view.js
++++ b/lib/module/navigators/blank-stack/components/stack-view.js
+@@ -1,6 +1,6 @@
+ "use strict";
+ 
+-import { memo, useContext, useMemo } from "react";
++import { memo, useContext, useLayoutEffect, useMemo } from "react";
+ import { StyleSheet, View } from "react-native";
+ import { GestureHandlerRootView } from "react-native-gesture-handler";
+ import { SafeAreaInsetsContext, SafeAreaProvider } from "react-native-safe-area-context";
+@@ -14,9 +14,11 @@ import { useNavigationHelpers } from "../hooks/use-navigation-helpers";
+ import { BlankStackProvider, useBlankStackStore } from "../state/blank-stack.provider";
+ import { ActivityContainer, ActivityScreen } from "./activity";
+ import { BlankStackLifecycle } from "./lifecycle/blank-stack";
++import { resetStoresForScreen } from "./lifecycle/hooks/helpers/reset-stores-for-screen";
+ import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+-const SceneMotion = /*#__PURE__*/memo(function SceneMotion({
+-  children
++const SceneMotion = memo(function SceneMotion({
++  children,
++  preloaded
+ }) {
+   const {
+     requestDismiss
+@@ -28,44 +30,55 @@ const SceneMotion = /*#__PURE__*/memo(function SceneMotion({
+         onDismissRequest: requestDismiss,
+         children: children
+       })
+-    }), /*#__PURE__*/_jsx(BlankStackLifecycle, {})]
++    }), !preloaded && /*#__PURE__*/_jsx(BlankStackLifecycle, {})]
+   });
+ });
+-const BlankSceneRow = /*#__PURE__*/memo(function BlankSceneRow({
+-  routeKey
++const BlankSceneRow = memo(function BlankSceneRow({
++  routeKey,
++  preloadedDescriptor
+ }) {
+   const scene = useBlankStackStore(store => store.scenesByKey[routeKey]);
+-  const descriptors = useMemo(() => scene && {
++  useLayoutEffect(() => () => resetStoresForScreen(routeKey), [routeKey]);
++  const descriptors = useMemo(() => scene ? {
+     current: scene.descriptor,
+     previous: scene.previousDescriptor,
+     next: scene.nextDescriptor,
+     closingNext: scene.closingNextDescriptor
++  } : preloadedDescriptor && {
++    current: preloadedDescriptor
+   },
+   // Scenes are reused while none of their descriptors change.
+-  [scene]);
++  [scene, preloadedDescriptor]);
+ 
+   // A row can re-render from a store snapshot that no longer has its route (it was just removed)
+   // before the list above it re-renders and drops the row: render nothing until then.
+-  if (!scene || !descriptors) {
++  if (!descriptors) {
+     return null;
+   }
+   return /*#__PURE__*/_jsx(ActivityScreen, {
+     routeKey: routeKey,
++    preloaded: !scene,
+     children: /*#__PURE__*/_jsx(BuilderProvider, {
+       routeKey: routeKey,
+       descriptors: descriptors,
+       children: /*#__PURE__*/_jsx(SceneMotion, {
+-        children: scene.descriptor.render?.()
++        preloaded: !scene,
++        children: descriptors.current.render?.()
+       })
+     })
+   });
+ });
+-export const BlankStackView = /*#__PURE__*/memo(function BlankStackView() {
++export const BlankStackView = memo(function BlankStackView({
++  sceneContainer: Container = ActivityContainer,
++  preloadedDescriptors
++}) {
+   const routeKeys = useBlankStackStore(store => store?.routeKeys);
++  const renderedKeys = preloadedDescriptors.size ? [...routeKeys, ...Array.from(preloadedDescriptors.keys()).filter(key => !routeKeys.includes(key))] : routeKeys;
+   return /*#__PURE__*/_jsxs(PortalProvider, {
+-    children: [/*#__PURE__*/_jsx(Overlay, {}), /*#__PURE__*/_jsx(ActivityContainer, {
+-      children: routeKeys.map(routeKey => /*#__PURE__*/_jsx(BlankSceneRow, {
+-        routeKey: routeKey
++    children: [/*#__PURE__*/_jsx(Overlay, {}), /*#__PURE__*/_jsx(Container, {
++      children: renderedKeys.map(routeKey => /*#__PURE__*/_jsx(BlankSceneRow, {
++        routeKey: routeKey,
++        preloadedDescriptor: preloadedDescriptors.get(routeKey)
+       }, routeKey))
+     })]
+   });
+@@ -91,11 +104,26 @@ function SafeAreaProviderIfNeeded({
+     children: children
+   });
+ }
+-export const BlankStack = /*#__PURE__*/memo(function BlankStack({
++export const BlankStack = memo(function BlankStack({
+   state,
+   navigation,
+-  descriptors
++  descriptors,
++  sceneContainer,
++  preloadedRoutes
+ }) {
++  const preloadedDescriptors = useMemo(() => {
++    const entries = new Map();
++    for (const route of preloadedRoutes ?? []) {
++      const source = descriptors[route.key];
++      if (source) entries.set(route.key, {
++        route,
++        navigation,
++        options: source.options,
++        render: source.render
++      });
++    }
++    return entries;
++  }, [descriptors, navigation, preloadedRoutes]);
+   return /*#__PURE__*/_jsx(GestureHandlerRootView, {
+     style: styles.container,
+     children: /*#__PURE__*/_jsx(SafeAreaProviderIfNeeded, {
+@@ -103,7 +131,10 @@ export const BlankStack = /*#__PURE__*/memo(function BlankStack({
+         state: state,
+         navigation: navigation,
+         descriptors: descriptors,
+-        children: /*#__PURE__*/_jsx(BlankStackView, {})
++        children: /*#__PURE__*/_jsx(BlankStackView, {
++          sceneContainer: sceneContainer,
++          preloadedDescriptors: preloadedDescriptors
++        })
+       })
+     })
+   });
+@@ -113,4 +144,4 @@ const styles = StyleSheet.create({
+     flex: 1
+   }
+ });
+-//# sourceMappingURL=stack-view.js.map
+\ No newline at end of file
++//# sourceMappingURL=stack-view.js.map
+diff --git a/lib/module/navigators/blank-stack/create-blank-stack-navigator.js b/lib/module/navigators/blank-stack/create-blank-stack-navigator.js
+index 80d25e3..b8df52a 100644
+--- a/lib/module/navigators/blank-stack/create-blank-stack-navigator.js
++++ b/lib/module/navigators/blank-stack/create-blank-stack-navigator.js
+@@ -6,7 +6,9 @@ import { jsx as _jsx } from "react/jsx-runtime";
+ export const BlankStackNavigator = createStandardNavigator(({
+   descriptors,
+   navigation,
+-  navigationState
++  navigationState,
++  sceneContainer,
++  preloadedRoutes
+ }) => {
+   if (!navigationState || !navigation) {
+     throw new Error("BlankStack requires navigation state and helpers from its integration.");
+@@ -14,7 +16,9 @@ export const BlankStackNavigator = createStandardNavigator(({
+   return /*#__PURE__*/_jsx(BlankStack, {
+     state: navigationState,
+     navigation: navigation,
+-    descriptors: descriptors
++    descriptors: descriptors,
++    sceneContainer: sceneContainer,
++    preloadedRoutes: preloadedRoutes
+   });
+ });
+-//# sourceMappingURL=create-blank-stack-navigator.js.map
+\ No newline at end of file
++//# sourceMappingURL=create-blank-stack-navigator.js.map
+diff --git a/lib/module/navigators/blank-stack/state/blank-stack-controller.js b/lib/module/navigators/blank-stack/state/blank-stack-controller.js
+index e554bda..071e70d 100644
+--- a/lib/module/navigators/blank-stack/state/blank-stack-controller.js
++++ b/lib/module/navigators/blank-stack/state/blank-stack-controller.js
+@@ -1,5 +1,9 @@
+ "use strict";
+ 
++import { runOnUISync, scheduleOnRN } from "react-native-worklets";
++import { getMotionStore } from "../../../providers/motion";
++import { cancelAnimation } from "react-native-reanimated";
++import { animateToProgress } from "../../../utils/animation/animate-to-progress";
+ import { dispatchCloseAction } from "../../../utils/navigation/close-action-replay";
+ import { buildBlankStackState } from "./helpers/build-blank-stack-state";
+ import { deriveBlankStackState } from "./helpers/derive-blank-stack-state";
+@@ -12,6 +16,8 @@ import { deriveBlankStackState } from "./helpers/derive-blank-stack-state";
+  */
+ export const createBlankStackController = initialProps => {
+   const closingRouteKeys = new Set();
++  const dismissals = new Map();
++  const committingCloses = new Set();
+   let props = initialProps;
+   let previousRoutesSnapshot = initialProps.state.routes;
+   let snapshot = {
+@@ -47,6 +53,12 @@ export const createBlankStackController = initialProps => {
+       closingRouteKeys
+     });
+     previousRoutesSnapshot = nextProps.state.routes;
++    for (const key of committingCloses) {
++      if (!previousRoutesSnapshot.some((route) => route.key === key)) committingCloses.delete(key);
++    }
++    for (const key of dismissals.keys()) {
++      if (!nextState.descriptors[key]) dismissals.delete(key);
++    }
+     if (nextState === snapshot.state) {
+       return;
+     }
+@@ -55,8 +67,11 @@ export const createBlankStackController = initialProps => {
+     };
+   };
+   const handleCloseRoute = ({
+-    route
++    route,
++    completed
+   }) => {
++    // A close completion can already be queued when a reopen reverses it.
++    if (completed && (!closingRouteKeys.has(route.key) || dismissals.has(route.key))) return false;
+     const {
+       state,
+       navigation
+@@ -73,13 +88,13 @@ export const createBlankStackController = initialProps => {
+       dispatchCloseAction(action, closeAction => {
+         navigation.dispatch(closeAction);
+       });
+-      return;
++      return true;
+     }
+     closingRouteKeys.delete(route.key);
+     const current = snapshot.state;
+     const routeExists = current.routes.some(candidate => candidate.key === route.key);
+     if (!routeExists) {
+-      return;
++      return false;
+     }
+     const nextRoutes = current.routes.filter(candidate => candidate.key !== route.key);
+     const nextDescriptors = {
+@@ -96,6 +111,7 @@ export const createBlankStackController = initialProps => {
+       })
+     };
+     emit();
++    return true;
+   };
+   const handleOpenRoute = ({
+     route
+@@ -114,15 +130,50 @@ export const createBlankStackController = initialProps => {
+       }
+     }
+   };
++  const retarget = (route, target, onEnd) => {
++    let motion;
++    try {
++      motion = getMotionStore(route.key).state;
++    } catch {
++      // A scene may be dismissed before its motion provider mounts.
++      return false;
++    }
++    const { transitionProgress, targetProgress, animationProgress, dismissing, initiator } = motion;
++    const { clearLifecycleTransitionRequest } = motion.actions;
++    const spec = snapshot.state.descriptors[route.key]?.options.transitionSpec;
++    runOnUISync(() => {
++      "worklet";
++      clearLifecycleTransitionRequest();
++      cancelAnimation(transitionProgress);
++      dismissing.set(0);
++      initiator.set(null);
++      // Reuse the measured pair and keep the navigation action independent of layout measurement.
++      animateToProgress({
++        target,
++        spec,
++        animations: motion,
++        targetProgress,
++        animationProgress,
++        emitWillAnimate: false,
++        onEnd: onEnd ? () => {
++          "worklet";
++          scheduleOnRN(onEnd);
++        } : undefined,
++      });
++    });
++    return true;
++  };
+   const requestDismiss = ({
+-    route
++    route,
++    immediate
+   }) => {
+     const current = snapshot.state;
+     const routeIndex = current.routes.findIndex(candidate => candidate.key === route.key);
+     if (routeIndex <= 0) {
+       return false;
+     }
+-    if (closingRouteKeys.has(route.key)) {
++    if (closingRouteKeys.has(route.key) &&
++      (!immediate || dismissals.has(route.key) || committingCloses.has(route.key))) {
+       return true;
+     }
+     closingRouteKeys.add(route.key);
+@@ -135,16 +186,63 @@ export const createBlankStackController = initialProps => {
+         previousState: current
+       })
+     };
++    if (immediate && routeIndex === current.routes.length - 1) {
++      const intent = Symbol();
++      dismissals.set(route.key, intent);
++      const finish = () => {
++        if (dismissals.get(route.key) !== intent) return;
++        dismissals.delete(route.key);
++        handleCloseRoute({ route, completed: true });
++      };
++      if (!retarget(route, "close", finish)) finish();
++    }
++    emit();
++    return true;
++  };
++
++  const reopenClosingRoute = (
++    fromKey,
++    matches,
++  ) => {
++    const current = snapshot.state;
++    const route = current.routes.at(-1);
++    const source = current.routes.at(-2);
++    if (!route || source?.key !== fromKey ||
++      !closingRouteKeys.has(route.key) || closingRouteKeys.has(fromKey) || committingCloses.has(route.key) ||
++      !matches(route)) return false;
++
++    const { state } = props;
++    if (state.routes[state.index]?.key !== route.key) return false;
++
++    const closingIntent = dismissals.get(route.key);
++    dismissals.delete(route.key);
++    if (!retarget(route, "open")) {
++      if (closingIntent) dismissals.set(route.key, closingIntent);
++      return false;
++    }
++    closingRouteKeys.delete(route.key);
++
++    snapshot = {
++      state: buildBlankStackState({
++        props,
++        routes: current.routes,
++        descriptors: current.sourceDescriptors,
++        closingRouteKeys,
++        previousState: current,
++      }),
++    };
+     emit();
+     return true;
+   };
++
+   return {
+     subscribe,
+     getSnapshot,
+     update,
+     handleCloseRoute,
+     handleOpenRoute,
+-    requestDismiss
++    requestDismiss,
++    reopenClosingRoute
+   };
+ };
+ //# sourceMappingURL=blank-stack-controller.js.map
+\ No newline at end of file
+diff --git a/lib/module/navigators/blank-stack/state/blank-stack.provider.js b/lib/module/navigators/blank-stack/state/blank-stack.provider.js
+index 4750aee..aa609a0 100644
+--- a/lib/module/navigators/blank-stack/state/blank-stack.provider.js
++++ b/lib/module/navigators/blank-stack/state/blank-stack.provider.js
+@@ -25,7 +25,8 @@ const {
+     state,
+     handleCloseRoute,
+     handleOpenRoute,
+-    requestDismiss
++    requestDismiss,
++    reopenClosingRoute
+   } = useBlankStackState({
+     ...props,
+     state: stackState
+@@ -50,6 +51,7 @@ const {
+       paintDriverRouteKeyByRouteKey,
+       focusedIndex,
+       requestDismiss,
++      reopenClosingRoute,
+       shouldShowFloatOverlay: state.shouldShowFloatOverlay,
+       handleCloseRoute,
+       handleOpenRoute
+diff --git a/lib/module/navigators/blank-stack/state/use-blank-stack-state.js b/lib/module/navigators/blank-stack/state/use-blank-stack-state.js
+index f573713..bbf1eab 100644
+--- a/lib/module/navigators/blank-stack/state/use-blank-stack-state.js
++++ b/lib/module/navigators/blank-stack/state/use-blank-stack-state.js
+@@ -14,7 +14,8 @@ export const useBlankStackState = props => {
+     state: snapshot.state,
+     handleCloseRoute: controller.handleCloseRoute,
+     handleOpenRoute: controller.handleOpenRoute,
+-    requestDismiss: controller.requestDismiss
++    requestDismiss: controller.requestDismiss,
++    reopenClosingRoute: controller.reopenClosingRoute
+   };
+ };
+ //# sourceMappingURL=use-blank-stack-state.js.map
+\ No newline at end of file
+diff --git a/lib/module/navigators/expo-router/create-blank-stack-props.js b/lib/module/navigators/expo-router/create-blank-stack-props.js
+index 5993473..111360d 100644
+--- a/lib/module/navigators/expo-router/create-blank-stack-props.js
++++ b/lib/module/navigators/expo-router/create-blank-stack-props.js
+@@ -6,14 +6,16 @@ export function createBlankStackProps({
+   navigation
+ }) {
+   const {
+-    routes
++    routes,
++    preloadedRoutes
+   } = getStackRoutes(state);
+   return {
+     navigationState: routes === state.routes ? state : {
+       ...state,
+       routes
+     },
++    preloadedRoutes,
+     navigation
+   };
+ }
+-//# sourceMappingURL=create-blank-stack-props.js.map
+\ No newline at end of file
++//# sourceMappingURL=create-blank-stack-props.js.map
+diff --git a/lib/module/utils/animation/animate-to-progress.js b/lib/module/utils/animation/animate-to-progress.js
+index 0715364..611379e 100644
+--- a/lib/module/utils/animation/animate-to-progress.js
++++ b/lib/module/utils/animation/animate-to-progress.js
+@@ -33,7 +33,8 @@ export const animateToProgress = ({
+   emitWillAnimate = true,
+   markEntering = true,
+   initialVelocity,
+-  isDragging
++  isDragging,
++  onEnd
+ }) => {
+   "worklet";
+ 
+@@ -73,6 +74,7 @@ export const animateToProgress = ({
+       if (shouldClearEnteringOnFinish) {
+         entering.set(FALSE);
+       }
++      onEnd?.();
+       return;
+     }
+     if (activateMotion) {
+@@ -82,6 +84,7 @@ export const animateToProgress = ({
+     transitionProgress.set(animate(value, effectiveConfig, state => {
+       "worklet";
+ 
++      if (!state.intermediate) onEnd?.();
+       if (!state.finished) return;
+       if (isDragging?.get()) return;
+       progressSettled.set(TRUE);
+@@ -109,6 +112,7 @@ export const animateToProgress = ({
+     requestAnimationFrame(() => {
+       "worklet";
+ 
++      if (Boolean(animations.closing.get()) !== isClosing) return;
+       startAnimation(false);
+     });
+     return;
+diff --git a/lib/module/utils/animation/spring/spring.js b/lib/module/utils/animation/spring/spring.js
+index a35fe89..d7a9cb8 100644
+--- a/lib/module/utils/animation/spring/spring.js
++++ b/lib/module/utils/animation/spring/spring.js
+@@ -61,6 +61,7 @@ export const withInternalSpring = (toValue, userConfig, callback, animationProgr
+       animation.settled = true;
+       callback?.({
+         finished: false,
++        intermediate: true,
+         settled: true
+       });
+     };
+diff --git a/lib/typescript/navigators/blank-stack/components/activity/activity-screen.d.ts b/lib/typescript/navigators/blank-stack/components/activity/activity-screen.d.ts
+index 868444d..91fe411 100644
+--- a/lib/typescript/navigators/blank-stack/components/activity/activity-screen.d.ts
++++ b/lib/typescript/navigators/blank-stack/components/activity/activity-screen.d.ts
+@@ -2,7 +2,8 @@ import type * as React from "react";
+ interface ActivityScreenProps {
+     children: React.ReactNode;
+     routeKey: string;
++    preloaded: boolean;
+ }
+-export declare const ActivityScreen: React.MemoExoticComponent<({ children, routeKey, }: ActivityScreenProps) => React.JSX.Element | null>;
++export declare const ActivityScreen: React.MemoExoticComponent<({ children, routeKey, preloaded, }: ActivityScreenProps) => React.JSX.Element | null>;
+ export {};
+ //# sourceMappingURL=activity-screen.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/navigators/blank-stack/components/stack-view.d.ts b/lib/typescript/navigators/blank-stack/components/stack-view.d.ts
+index 61cee64..28cf1b0 100644
+--- a/lib/typescript/navigators/blank-stack/components/stack-view.d.ts
++++ b/lib/typescript/navigators/blank-stack/components/stack-view.d.ts
+@@ -1,4 +1,6 @@
+ import type { BlankStackProviderProps } from "../../../types/providers/blank-stack-provider.types";
+-export declare const BlankStackView: import("react").MemoExoticComponent<() => import("react").JSX.Element>;
+-export declare const BlankStack: import("react").MemoExoticComponent<({ state, navigation, descriptors, }: BlankStackProviderProps) => import("react").JSX.Element>;
++import type { BaseStackDescriptor, BaseStackRoute } from "../../../types/stack.types";
++type StackViewProps = { sceneContainer?: import("react").ComponentType<{ children: import("react").ReactNode }>; preloadedRoutes?: BaseStackRoute[]; };
++export declare const BlankStackView: import("react").MemoExoticComponent<(props: StackViewProps & { preloadedDescriptors: ReadonlyMap<string, BaseStackDescriptor> }) => import("react").JSX.Element>;
++export declare const BlankStack: import("react").MemoExoticComponent<({ state, navigation, descriptors, sceneContainer, preloadedRoutes, }: BlankStackProviderProps & StackViewProps) => import("react").JSX.Element>;
+ //# sourceMappingURL=stack-view.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/navigators/blank-stack/create-blank-stack-navigator.d.ts b/lib/typescript/navigators/blank-stack/create-blank-stack-navigator.d.ts
+index c4fd09c..eb61bec 100644
+--- a/lib/typescript/navigators/blank-stack/create-blank-stack-navigator.d.ts
++++ b/lib/typescript/navigators/blank-stack/create-blank-stack-navigator.d.ts
+@@ -1,9 +1,12 @@
++import type { ComponentType, ReactNode } from "react";
+ import type { BlankStackNavigationOptions } from "../../types/blank-stack.types";
+ import type { BaseStackNavigation, BaseStackRoute, BaseStackState } from "../../types/stack.types";
+ export type BlankStackStandardEventMap = {};
+ export type BlankStackStandardNavigatorProps = {
+     navigationState?: BaseStackState<BaseStackRoute>;
+     navigation?: BaseStackNavigation;
++    preloadedRoutes?: BaseStackRoute[];
++    sceneContainer?: ComponentType<{ children: ReactNode }>;
+ };
+ export declare const BlankStackNavigator: import("standard-navigation").StandardNavigator<BlankStackNavigationOptions, BlankStackStandardEventMap, BlankStackStandardNavigatorProps>;
+ //# sourceMappingURL=create-blank-stack-navigator.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/navigators/blank-stack/state/helpers/types.d.ts b/lib/typescript/navigators/blank-stack/state/helpers/types.d.ts
+index 853217e..4fbc404 100644
+--- a/lib/typescript/navigators/blank-stack/state/helpers/types.d.ts
++++ b/lib/typescript/navigators/blank-stack/state/helpers/types.d.ts
+@@ -27,9 +27,12 @@ export type BlankStackController = {
+     }) => void;
+     handleCloseRoute: (payload: {
+         route: BaseStackRoute;
+-    }) => void;
++        completed?: boolean;
++    }) => boolean;
++    reopenClosingRoute: (fromKey: string, matches: (route: BaseStackRoute) => boolean) => boolean;
+     requestDismiss: (payload: {
+         route: BaseStackRoute;
++        immediate?: boolean;
+     }) => boolean;
+ };
+ export type ReconciledRoutes = {
+diff --git a/lib/typescript/navigators/blank-stack/state/use-blank-stack-state.d.ts b/lib/typescript/navigators/blank-stack/state/use-blank-stack-state.d.ts
+index 9cd791c..012a57b 100644
+--- a/lib/typescript/navigators/blank-stack/state/use-blank-stack-state.d.ts
++++ b/lib/typescript/navigators/blank-stack/state/use-blank-stack-state.d.ts
+@@ -1,14 +1,15 @@
++import type { BlankStackController } from "./blank-stack-controller";
+ import type { BlankStackProviderProps } from "../../../types/providers/blank-stack-provider.types";
+ export declare const useBlankStackState: (props: BlankStackProviderProps) => {
+     state: import("./helpers/types").LocalRoutesState;
+-    handleCloseRoute: (payload: {
+-        route: import("../../../types").BaseStackRoute;
+-    }) => void;
++    handleCloseRoute: BlankStackController["handleCloseRoute"];
+     handleOpenRoute: (payload: {
+         route: import("../../../types").BaseStackRoute;
+     }) => void;
++    reopenClosingRoute: BlankStackController["reopenClosingRoute"];
+     requestDismiss: (payload: {
+         route: import("../../../types").BaseStackRoute;
++        immediate?: boolean;
+     }) => boolean;
+ };
+ //# sourceMappingURL=use-blank-stack-state.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/types/providers/blank-stack-provider.types.d.ts b/lib/typescript/types/providers/blank-stack-provider.types.d.ts
+index c8969a4..1604ee2 100644
+--- a/lib/typescript/types/providers/blank-stack-provider.types.d.ts
++++ b/lib/typescript/types/providers/blank-stack-provider.types.d.ts
+@@ -18,13 +18,16 @@ export interface BlankStackStoreValue {
+     focusedIndex: number;
+     requestDismiss?: (payload: {
+         route: BaseStackRoute;
++        immediate?: boolean;
+     }) => boolean;
++    reopenClosingRoute?: (fromKey: string, matches: (route: BaseStackRoute) => boolean) => boolean;
+     shouldShowFloatOverlay: boolean;
+     handleOpenRoute?: (payload: {
+         route: BaseStackRoute;
+     }) => void;
+     handleCloseRoute?: (payload: {
+         route: BaseStackRoute;
+-    }) => void;
++        completed?: boolean;
++    }) => boolean;
+ }
+ //# sourceMappingURL=blank-stack-provider.types.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/types/stack.types.d.ts b/lib/typescript/types/stack.types.d.ts
+index 2407366..8f3e237 100644
+--- a/lib/typescript/types/stack.types.d.ts
++++ b/lib/typescript/types/stack.types.d.ts
+@@ -1,3 +1,4 @@
++import type { ReactNode } from "react";
+ import type { ScreenTransitionConfig } from "./screen.types";
+ export type StackTransitionOptions = ScreenTransitionConfig;
+ /**
+@@ -39,7 +40,7 @@ export interface BaseStackDescriptor<TRoute extends BaseStackRoute = BaseStackRo
+     route: TRoute;
+     navigation: TNavigation;
+     options: StackTransitionOptions;
+-    render?: () => React.JSX.Element | null;
++    render?: () => ReactNode;
+ }
+ /**
+  * Route and descriptor pair consumed by the shared transition renderer.
+diff --git a/lib/typescript/utils/animation/animate-to-progress.d.ts b/lib/typescript/utils/animation/animate-to-progress.d.ts
+index 5c1fca8..0196489 100644
+--- a/lib/typescript/utils/animation/animate-to-progress.d.ts
++++ b/lib/typescript/utils/animation/animate-to-progress.d.ts
+@@ -18,11 +18,12 @@ interface AnimateToProgressProps {
+     /** Optional initial velocity for spring-based progress (units: progress/sec). */
+     initialVelocity?: number;
+     isDragging?: SharedValue<number>;
++    onEnd?: () => void;
+ }
+ export declare const resolveAnimationProgressRange: (currentProgress: number, targetProgress: number) => {
+     from: number;
+     to: number;
+ };
+-export declare const animateToProgress: ({ target, spec, animations, targetProgress, animationProgress, emitWillAnimate, markEntering, initialVelocity, isDragging, }: AnimateToProgressProps) => void;
++export declare const animateToProgress: ({ target, spec, animations, targetProgress, animationProgress, emitWillAnimate, markEntering, initialVelocity, isDragging, onEnd, }: AnimateToProgressProps) => void;
+ export {};
+ //# sourceMappingURL=animate-to-progress.d.ts.map
+\ No newline at end of file
+diff --git a/lib/typescript/utils/animation/state.d.ts b/lib/typescript/utils/animation/state.d.ts
+index 910ba59..7c514e0 100644
+--- a/lib/typescript/utils/animation/state.d.ts
++++ b/lib/typescript/utils/animation/state.d.ts
+@@ -2,6 +2,7 @@ import type { SharedValue } from "react-native-reanimated";
+ export type AnimationState = {
+     finished: boolean;
+     settled: boolean;
++    intermediate?: true;
+ };
+ export type AnimationStateCallback = (state: AnimationState) => void;
+ export type AnimationProgressDriver = {
+diff --git a/src/navigators/blank-stack/components/activity/activity-screen.tsx b/src/navigators/blank-stack/components/activity/activity-screen.tsx
+index 788b448..7b0e0af 100644
+--- a/src/navigators/blank-stack/components/activity/activity-screen.tsx
++++ b/src/navigators/blank-stack/components/activity/activity-screen.tsx
+@@ -26,11 +26,13 @@ const PointerEventsByActivity = {
+ interface ActivityScreenProps {
+ 	children: React.ReactNode;
+ 	routeKey: string;
++	preloaded: boolean;
+ }
+ 
+ export const ActivityScreen = memo(function ActivityScreen({
+ 	children,
+ 	routeKey,
++	preloaded,
+ }: ActivityScreenProps) {
+ 	const scene = useBlankStackStore((store) => store.scenesByKey[routeKey]);
+ 	const paintDriverRouteKey = useBlankStackStore((store) =>
+@@ -38,10 +40,10 @@ export const ActivityScreen = memo(function ActivityScreen({
+ 	);
+ 
+ 	const inactiveBehavior =
+-		(scene.descriptor.options as { inactiveBehavior?: InactiveBehavior })
+-			.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
++		(scene?.descriptor.options as { inactiveBehavior?: InactiveBehavior } | undefined)
++			?.inactiveBehavior ?? DEFAULT_INACTIVE_BEHAVIOR;
+ 
+-	const hasNestedState = "state" in scene.route;
++	const hasNestedState = scene && "state" in scene.route;
+ 
+ 	const paintDriverProgress = useOptionalMotionStore(
+ 		paintDriverRouteKey ?? null,
+@@ -67,11 +69,14 @@ export const ActivityScreen = memo(function ActivityScreen({
+ 
+ 	const isPaintDriverSettledOnJS = useSharedValueState(isPaintDriverSettled);
+ 
++	const activity = scene?.activity ?? "inactive";
+ 	let activityViewMode: ActivityViewMode =
+-		scene.activity === "active" ? "normal" : "inert";
+-	let visible = scene.activity !== "inactive";
++		activity === "active" ? "normal" : "inert";
++	let visible = activity !== "inactive";
+ 
+-	if (scene.activity === "inactive") {
++	if (preloaded) {
++		visible = true;
++	} else if (activity === "inactive") {
+ 		if (inactiveBehavior === "keep" || !isPaintDriverSettledOnJS) {
+ 			visible = true;
+ 		} else if (inactiveBehavior === "pause") {
+@@ -84,8 +89,8 @@ export const ActivityScreen = memo(function ActivityScreen({
+ 	}
+ 
+ 	const shouldUnmount =
+-		inactiveBehavior === "unmount" &&
+-		scene.activity === "inactive" &&
++		!preloaded && inactiveBehavior === "unmount" &&
++		activity === "inactive" &&
+ 		!hasNestedState &&
+ 		isPaintDriverSettledOnJS;
+ 
+@@ -95,8 +100,10 @@ export const ActivityScreen = memo(function ActivityScreen({
+ 
+ 	return (
+ 		<View
+-			style={StyleSheet.absoluteFill}
+-			pointerEvents={PointerEventsByActivity[scene.activity]}
++			style={[StyleSheet.absoluteFill, preloaded && styles.preloaded]}
++			pointerEvents={preloaded ? "none" : PointerEventsByActivity[activity]}
++			accessibilityElementsHidden={preloaded}
++			importantForAccessibility={preloaded ? "no-hide-descendants" : undefined}
+ 			collapsable={false}
+ 		>
+ 			<ActivityView mode={activityViewMode} visible={visible}>
+@@ -105,3 +112,6 @@ export const ActivityScreen = memo(function ActivityScreen({
+ 		</View>
+ 	);
+ });
++
++// Keep native layout measurable while excluding the scene from paint and input.
++const styles = StyleSheet.create({ preloaded: { opacity: 0 } });
+diff --git a/src/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.ts b/src/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.ts
+index d7eb5fc..279f153 100644
+--- a/src/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.ts
++++ b/src/navigators/blank-stack/components/lifecycle/hooks/use-close-transition-intent.ts
+@@ -3,7 +3,6 @@ import useStableCallback from "../../../../../hooks/use-stable-callback";
+ import type { BaseDescriptor } from "../../../../../providers/builder";
+ import { useNavigationHelpers } from "../../../hooks/use-navigation-helpers";
+ import { useBlankStackStore } from "../../../state/blank-stack.provider";
+-import { resetStoresForScreen } from "./helpers/reset-stores-for-screen";
+ 
+ export function useCloseTransitionIntent(current: BaseDescriptor) {
+ 	const handleCloseRoute = useBlankStackStore(
+@@ -17,8 +16,7 @@ export function useCloseTransitionIntent(current: BaseDescriptor) {
+ 	const { requestDismiss } = useNavigationHelpers();
+ 
+ 	const completeClose = useStableCallback(() => {
+-		handleCloseRoute?.({ route: current.route });
+-		resetStoresForScreen(current.route.key);
++		handleCloseRoute?.({ route: current.route, completed: true });
+ 	});
+ 
+ 	useLayoutEffect(() => {
+diff --git a/src/navigators/blank-stack/components/stack-view.tsx b/src/navigators/blank-stack/components/stack-view.tsx
+index 5014b3c..738b9fa 100644
+--- a/src/navigators/blank-stack/components/stack-view.tsx
++++ b/src/navigators/blank-stack/components/stack-view.tsx
+@@ -1,4 +1,4 @@
+-import { memo, type ReactNode, useContext, useMemo } from "react";
++import { memo, type ComponentType, type ReactNode, useContext, useLayoutEffect, useMemo } from "react";
+ import { StyleSheet, View } from "react-native";
+ import { GestureHandlerRootView } from "react-native-gesture-handler";
+ import {
+@@ -11,6 +11,7 @@ import { ScreenLayers } from "../../../components/screen-layers";
+ import { BuilderProvider } from "../../../providers/builder";
+ import { MotionProvider } from "../../../providers/motion";
+ import { OrchestratorProvider } from "../../../providers/orchestrator";
++import type { BaseStackDescriptor, BaseStackRoute } from "../../../types/stack.types";
+ import type { BlankStackProviderProps } from "../../../types/providers/blank-stack-provider.types";
+ import { useNavigationHelpers } from "../hooks/use-navigation-helpers";
+ import {
+@@ -19,11 +20,14 @@ import {
+ } from "../state/blank-stack.provider";
+ import { ActivityContainer, ActivityScreen } from "./activity";
+ import { BlankStackLifecycle } from "./lifecycle/blank-stack";
++import { resetStoresForScreen } from "./lifecycle/hooks/helpers/reset-stores-for-screen";
+ 
+ const SceneMotion = memo(function SceneMotion({
+ 	children,
++	preloaded,
+ }: {
+ 	children: ReactNode;
++	preloaded: boolean;
+ }) {
+ 	const { requestDismiss } = useNavigationHelpers();
+ 	return (
+@@ -33,54 +37,68 @@ const SceneMotion = memo(function SceneMotion({
+ 					{children}
+ 				</ScreenLayers>
+ 			</OrchestratorProvider>
+-			<BlankStackLifecycle />
++			{!preloaded && <BlankStackLifecycle />}
+ 		</MotionProvider>
+ 	);
+ });
+ 
+ interface RouteKeyProps {
+ 	routeKey: string;
++	preloadedDescriptor?: BaseStackDescriptor;
+ }
+ 
+-const BlankSceneRow = memo(function BlankSceneRow({ routeKey }: RouteKeyProps) {
++const BlankSceneRow = memo(function BlankSceneRow({ routeKey, preloadedDescriptor }: RouteKeyProps) {
+ 	const scene = useBlankStackStore((store) => store.scenesByKey[routeKey]);
++	useLayoutEffect(() => () => resetStoresForScreen(routeKey), [routeKey]);
+ 	const descriptors = useMemo(
+ 		() =>
+-			scene && {
++			scene ? {
+ 				current: scene.descriptor,
+ 				previous: scene.previousDescriptor,
+ 				next: scene.nextDescriptor,
+ 				closingNext: scene.closingNextDescriptor,
+-			},
++			} : preloadedDescriptor && { current: preloadedDescriptor },
+ 		// Scenes are reused while none of their descriptors change.
+-		[scene],
++		[scene, preloadedDescriptor],
+ 	);
+ 
+ 	// A row can re-render from a store snapshot that no longer has its route (it was just removed)
+ 	// before the list above it re-renders and drops the row: render nothing until then.
+-	if (!scene || !descriptors) {
++	if (!descriptors) {
+ 		return null;
+ 	}
+ 
+ 	return (
+-		<ActivityScreen routeKey={routeKey}>
++		<ActivityScreen routeKey={routeKey} preloaded={!scene}>
+ 			<BuilderProvider routeKey={routeKey} descriptors={descriptors}>
+-				<SceneMotion>{scene.descriptor.render?.()}</SceneMotion>
++				<SceneMotion preloaded={!scene}>{descriptors.current.render?.()}</SceneMotion>
+ 			</BuilderProvider>
+ 		</ActivityScreen>
+ 	);
+ });
+ 
+-export const BlankStackView = memo(function BlankStackView() {
++type SceneContainerProps = { children: ReactNode };
++type StackViewProps = {
++	sceneContainer?: ComponentType<SceneContainerProps>;
++	preloadedRoutes?: BaseStackRoute[];
++};
++
++export const BlankStackView = memo(function BlankStackView({
++	sceneContainer: Container = ActivityContainer,
++	preloadedDescriptors,
++}: StackViewProps & { preloadedDescriptors: ReadonlyMap<string, BaseStackDescriptor> }) {
+ 	const routeKeys = useBlankStackStore((store) => store?.routeKeys);
++	const renderedKeys = preloadedDescriptors.size
++		? [...routeKeys, ...Array.from(preloadedDescriptors.keys()).filter((key) => !routeKeys.includes(key))]
++		: routeKeys;
+ 	return (
+ 		<PortalProvider>
+ 			<Overlay />
+-			<ActivityContainer>
+-				{routeKeys.map((routeKey) => (
+-					<BlankSceneRow key={routeKey} routeKey={routeKey} />
++			<Container>
++				{renderedKeys.map((routeKey) => (
++					<BlankSceneRow key={routeKey} routeKey={routeKey} preloadedDescriptor={preloadedDescriptors.get(routeKey)} />
+ 				))}
+-			</ActivityContainer>
++			</Container>
+ 		</PortalProvider>
+ 	);
+ });
+@@ -103,8 +121,23 @@ export const BlankStack = memo(function BlankStack({
+ 	state,
+ 	navigation,
+ 	descriptors,
+-}: BlankStackProviderProps) {
+-	return (
++	sceneContainer,
++	preloadedRoutes,
++}: BlankStackProviderProps & StackViewProps) {
++    const preloadedDescriptors = useMemo(() => {
++        const entries = new Map<string, BaseStackDescriptor>();
++        for (const route of preloadedRoutes ?? []) {
++            const source = descriptors[route.key];
++            if (source) entries.set(route.key, {
++                route,
++                navigation,
++                options: source.options,
++                render: source.render,
++            });
++        }
++        return entries;
++    }, [descriptors, navigation, preloadedRoutes]);
++    return (
+ 		<GestureHandlerRootView style={styles.container}>
+ 			<SafeAreaProviderIfNeeded>
+ 				<BlankStackProvider
+@@ -112,7 +145,7 @@ export const BlankStack = memo(function BlankStack({
+ 					navigation={navigation}
+ 					descriptors={descriptors}
+ 				>
+-					<BlankStackView />
++					<BlankStackView sceneContainer={sceneContainer} preloadedDescriptors={preloadedDescriptors} />
+ 				</BlankStackProvider>
+ 			</SafeAreaProviderIfNeeded>
+ 		</GestureHandlerRootView>
+diff --git a/src/navigators/blank-stack/create-blank-stack-navigator.tsx b/src/navigators/blank-stack/create-blank-stack-navigator.tsx
+index 7875a75..0ecac2c 100644
+--- a/src/navigators/blank-stack/create-blank-stack-navigator.tsx
++++ b/src/navigators/blank-stack/create-blank-stack-navigator.tsx
+@@ -1,3 +1,4 @@
++import type { ComponentType, ReactNode } from "react";
+ import { createStandardNavigator } from "standard-navigation";
+ import type { BlankStackNavigationOptions } from "../../types/blank-stack.types";
+ import type {
+@@ -12,13 +13,15 @@ export type BlankStackStandardEventMap = {};
+ export type BlankStackStandardNavigatorProps = {
+ 	navigationState?: BaseStackState<BaseStackRoute>;
+ 	navigation?: BaseStackNavigation;
++	preloadedRoutes?: BaseStackRoute[];
++	sceneContainer?: ComponentType<{ children: ReactNode }>;
+ };
+ 
+ export const BlankStackNavigator = createStandardNavigator<
+ 	BlankStackNavigationOptions,
+ 	BlankStackStandardEventMap,
+ 	BlankStackStandardNavigatorProps
+->(({ descriptors, navigation, navigationState }) => {
++>(({ descriptors, navigation, navigationState, sceneContainer, preloadedRoutes }) => {
+ 	if (!navigationState || !navigation) {
+ 		throw new Error(
+ 			"BlankStack requires navigation state and helpers from its integration.",
+@@ -30,6 +33,8 @@ export const BlankStackNavigator = createStandardNavigator<
+ 			state={navigationState}
+ 			navigation={navigation}
+ 			descriptors={descriptors}
++			sceneContainer={sceneContainer}
++			preloadedRoutes={preloadedRoutes}
+ 		/>
+ 	);
+ });
+diff --git a/src/navigators/blank-stack/state/blank-stack-controller.ts b/src/navigators/blank-stack/state/blank-stack-controller.ts
+index 70cd8ec..1808afc 100644
+--- a/src/navigators/blank-stack/state/blank-stack-controller.ts
++++ b/src/navigators/blank-stack/state/blank-stack-controller.ts
+@@ -1,3 +1,7 @@
++import { runOnUISync, scheduleOnRN } from "react-native-worklets";
++import { getMotionStore } from "../../../providers/motion";
++import { cancelAnimation } from "react-native-reanimated";
++import { animateToProgress } from "../../../utils/animation/animate-to-progress";
+ import type { BlankStackProviderProps } from "../../../types/providers/blank-stack-provider.types";
+ import type { BaseStackRoute } from "../../../types/stack.types";
+ import { dispatchCloseAction } from "../../../utils/navigation/close-action-replay";
+@@ -21,6 +25,8 @@ export const createBlankStackController = (
+ 	initialProps: BlankStackProviderProps,
+ ): BlankStackControllerType => {
+ 	const closingRouteKeys = new Set<string>();
++	const dismissals = new Map<string, symbol>();
++	const committingCloses = new Set<string>();
+ 	let props = initialProps;
+ 	let previousRoutesSnapshot = initialProps.state.routes;
+ 	let snapshot: BlankStackControllerSnapshot = {
+@@ -61,6 +67,12 @@ export const createBlankStackController = (
+ 			closingRouteKeys,
+ 		});
+ 		previousRoutesSnapshot = nextProps.state.routes;
++		for (const key of committingCloses) {
++			if (!previousRoutesSnapshot.some((route) => route.key === key)) committingCloses.delete(key);
++		}
++		for (const key of dismissals.keys()) {
++			if (!nextState.descriptors[key]) dismissals.delete(key);
++		}
+ 
+ 		if (nextState === snapshot.state) {
+ 			return;
+@@ -71,10 +83,17 @@ export const createBlankStackController = (
+ 		};
+ 	};
+ 
+-	const handleCloseRoute = ({ route }: { route: BaseStackRoute }) => {
++	const handleCloseRoute = ({
++		route,
++		completed,
++	}: { route: BaseStackRoute; completed?: boolean }) => {
++		// A close completion can already be queued when a reopen reverses it.
++		if (completed && (!closingRouteKeys.has(route.key) || dismissals.has(route.key))) return false;
+ 		const { state, navigation } = props;
+ 
+ 		if (state.routes.some((candidate) => candidate.key === route.key)) {
++			if (committingCloses.has(route.key)) return false;
++			committingCloses.add(route.key);
+ 			const action = {
+ 				type: "POP",
+ 				payload: { count: 1 },
+@@ -84,7 +103,7 @@ export const createBlankStackController = (
+ 			dispatchCloseAction(action, (closeAction) => {
+ 				navigation.dispatch(closeAction);
+ 			});
+-			return;
++			return true;
+ 		}
+ 
+ 		closingRouteKeys.delete(route.key);
+@@ -95,7 +114,7 @@ export const createBlankStackController = (
+ 		);
+ 
+ 		if (!routeExists) {
+-			return;
++			return false;
+ 		}
+ 
+ 		const nextRoutes = current.routes.filter(
+@@ -115,6 +134,7 @@ export const createBlankStackController = (
+ 			}),
+ 		};
+ 		emit();
++		return true;
+ 	};
+ 
+ 	const handleOpenRoute = ({ route }: { route: BaseStackRoute }) => {
+@@ -138,7 +158,41 @@ export const createBlankStackController = (
+ 		}
+ 	};
+ 
+-	const requestDismiss = ({ route }: { route: BaseStackRoute }): boolean => {
++	const retarget = (route: BaseStackRoute, target: "open" | "close", onEnd?: () => void) => {
++		let motion;
++		try {
++			motion = getMotionStore(route.key).state;
++		} catch {
++			// A scene may be dismissed before its motion provider mounts.
++			return false;
++		}
++		const { transitionProgress, targetProgress, animationProgress, dismissing, initiator } = motion;
++		const { clearLifecycleTransitionRequest } = motion.actions;
++		const spec = snapshot.state.descriptors[route.key]?.options.transitionSpec;
++		runOnUISync(() => {
++			"worklet";
++			clearLifecycleTransitionRequest();
++			cancelAnimation(transitionProgress);
++			dismissing.set(0);
++			initiator.set(null);
++			// Reuse the measured pair and keep the navigation action independent of layout measurement.
++			animateToProgress({
++				target,
++				spec,
++				animations: motion,
++				targetProgress,
++				animationProgress,
++				emitWillAnimate: false,
++				onEnd: onEnd ? () => {
++					"worklet";
++					scheduleOnRN(onEnd);
++				} : undefined,
++			});
++		});
++		return true;
++	};
++
++	const requestDismiss: BlankStackControllerType["requestDismiss"] = ({ route, immediate }) => {
+ 		const current = snapshot.state;
+ 		const routeIndex = current.routes.findIndex(
+ 			(candidate) => candidate.key === route.key,
+@@ -148,11 +202,57 @@ export const createBlankStackController = (
+ 			return false;
+ 		}
+ 
+-		if (closingRouteKeys.has(route.key)) {
++		if (closingRouteKeys.has(route.key) &&
++			(!immediate || dismissals.has(route.key) || committingCloses.has(route.key))) {
+ 			return true;
+ 		}
+ 
+ 		closingRouteKeys.add(route.key);
++		snapshot = {
++			state: buildBlankStackState({
++				props,
++				routes: current.routes,
++				descriptors: current.sourceDescriptors,
++				closingRouteKeys,
++				previousState: current,
++			}),
++		};
++		if (immediate && routeIndex === current.routes.length - 1) {
++			const intent = Symbol();
++			dismissals.set(route.key, intent);
++			const finish = () => {
++				if (dismissals.get(route.key) !== intent) return;
++				dismissals.delete(route.key);
++				handleCloseRoute({ route, completed: true });
++			};
++			if (!retarget(route, "close", finish)) finish();
++		}
++		emit();
++		return true;
++	};
++
++	const reopenClosingRoute: BlankStackControllerType["reopenClosingRoute"] = (
++		fromKey,
++		matches,
++	) => {
++		const current = snapshot.state;
++		const route = current.routes.at(-1);
++		const source = current.routes.at(-2);
++		if (!route || source?.key !== fromKey ||
++			!closingRouteKeys.has(route.key) || closingRouteKeys.has(fromKey) || committingCloses.has(route.key) ||
++			!matches(route)) return false;
++
++		const { state } = props;
++		if (state.routes[state.index]?.key !== route.key) return false;
++
++		const closingIntent = dismissals.get(route.key);
++		dismissals.delete(route.key);
++		if (!retarget(route, "open")) {
++			if (closingIntent) dismissals.set(route.key, closingIntent);
++			return false;
++		}
++		closingRouteKeys.delete(route.key);
++
+ 		snapshot = {
+ 			state: buildBlankStackState({
+ 				props,
+@@ -173,5 +273,6 @@ export const createBlankStackController = (
+ 		handleCloseRoute,
+ 		handleOpenRoute,
+ 		requestDismiss,
++		reopenClosingRoute,
+ 	};
+ };
+diff --git a/src/navigators/blank-stack/state/blank-stack.provider.tsx b/src/navigators/blank-stack/state/blank-stack.provider.tsx
+index a030210..2bd8f3c 100644
+--- a/src/navigators/blank-stack/state/blank-stack.provider.tsx
++++ b/src/navigators/blank-stack/state/blank-stack.provider.tsx
+@@ -33,7 +33,7 @@ const {
+ 	BlankStackStoreValue
+ >(
+ 	({ state: stackState, children, ...props }) => {
+-		const { state, handleCloseRoute, handleOpenRoute, requestDismiss } =
++		const { state, handleCloseRoute, handleOpenRoute, requestDismiss, reopenClosingRoute } =
+ 			useBlankStackState({
+ 				...props,
+ 				state: stackState,
+@@ -71,6 +71,7 @@ const {
+ 				paintDriverRouteKeyByRouteKey,
+ 				focusedIndex,
+ 				requestDismiss,
++				reopenClosingRoute,
+ 				shouldShowFloatOverlay: state.shouldShowFloatOverlay,
+ 				handleCloseRoute,
+ 				handleOpenRoute,
+diff --git a/src/navigators/blank-stack/state/helpers/types.ts b/src/navigators/blank-stack/state/helpers/types.ts
+index cfda411..ba66090 100644
+--- a/src/navigators/blank-stack/state/helpers/types.ts
++++ b/src/navigators/blank-stack/state/helpers/types.ts
+@@ -35,8 +35,9 @@ export type BlankStackController = {
+ 	getSnapshot: () => BlankStackControllerSnapshot;
+ 	update: (props: BlankStackProviderProps) => void;
+ 	handleOpenRoute: (payload: { route: BaseStackRoute }) => void;
+-	handleCloseRoute: (payload: { route: BaseStackRoute }) => void;
+-	requestDismiss: (payload: { route: BaseStackRoute }) => boolean;
++	handleCloseRoute: (payload: { route: BaseStackRoute; completed?: boolean }) => boolean;
++	requestDismiss: (payload: { route: BaseStackRoute; immediate?: boolean; }) => boolean;
++	reopenClosingRoute: (fromKey: string, matches: (route: BaseStackRoute) => boolean) => boolean;
+ };
+ 
+ export type ReconciledRoutes = {
+diff --git a/src/navigators/blank-stack/state/use-blank-stack-state.ts b/src/navigators/blank-stack/state/use-blank-stack-state.ts
+index 808a9a9..00462e1 100644
+--- a/src/navigators/blank-stack/state/use-blank-stack-state.ts
++++ b/src/navigators/blank-stack/state/use-blank-stack-state.ts
+@@ -26,5 +26,6 @@ export const useBlankStackState = (props: BlankStackProviderProps) => {
+ 		handleCloseRoute: controller.handleCloseRoute,
+ 		handleOpenRoute: controller.handleOpenRoute,
+ 		requestDismiss: controller.requestDismiss,
++		reopenClosingRoute: controller.reopenClosingRoute,
+ 	};
+ };
+diff --git a/src/navigators/expo-router/create-blank-stack-props.ts b/src/navigators/expo-router/create-blank-stack-props.ts
+index ea73a19..88a7ac8 100644
+--- a/src/navigators/expo-router/create-blank-stack-props.ts
++++ b/src/navigators/expo-router/create-blank-stack-props.ts
+@@ -13,10 +13,11 @@ export function createBlankStackProps({
+ 	state: BaseStackState<BaseStackRoute>;
+ 	navigation: BaseStackNavigation;
+ }): BlankStackStandardNavigatorProps {
+-	const { routes } = getStackRoutes(state);
++	const { routes, preloadedRoutes } = getStackRoutes(state);
+ 
+ 	return {
+ 		navigationState: routes === state.routes ? state : { ...state, routes },
++		preloadedRoutes,
+ 		navigation,
+ 	};
+ }
+diff --git a/src/types/providers/blank-stack-provider.types.ts b/src/types/providers/blank-stack-provider.types.ts
+index 900fa56..13c58eb 100644
+--- a/src/types/providers/blank-stack-provider.types.ts
++++ b/src/types/providers/blank-stack-provider.types.ts
+@@ -30,8 +30,9 @@ export interface BlankStackStoreValue {
+ 	scenesByKey: Record<string, BaseStackScene<BaseStackDescriptor>>;
+ 	paintDriverRouteKeyByRouteKey: ReadonlyMap<string, string>;
+ 	focusedIndex: number;
+-	requestDismiss?: (payload: { route: BaseStackRoute }) => boolean;
++	requestDismiss?: (payload: { route: BaseStackRoute; immediate?: boolean; }) => boolean;
++	reopenClosingRoute?: (fromKey: string, matches: (route: BaseStackRoute) => boolean) => boolean;
+ 	shouldShowFloatOverlay: boolean;
+ 	handleOpenRoute?: (payload: { route: BaseStackRoute }) => void;
+-	handleCloseRoute?: (payload: { route: BaseStackRoute }) => void;
++	handleCloseRoute?: (payload: { route: BaseStackRoute; completed?: boolean }) => boolean;
+ }
+diff --git a/src/types/stack.types.ts b/src/types/stack.types.ts
+index 7cd282b..8654c04 100644
+--- a/src/types/stack.types.ts
++++ b/src/types/stack.types.ts
+@@ -1,3 +1,4 @@
++import type { ReactNode } from "react";
+ import type { ScreenTransitionConfig } from "./screen.types";
+ 
+ export type StackTransitionOptions = ScreenTransitionConfig;
+@@ -46,7 +47,7 @@ export interface BaseStackDescriptor<
+ 	route: TRoute;
+ 	navigation: TNavigation;
+ 	options: StackTransitionOptions;
+-	render?: () => React.JSX.Element | null;
++	render?: () => ReactNode;
+ }
+ 
+ /**
+diff --git a/src/utils/animation/animate-to-progress.ts b/src/utils/animation/animate-to-progress.ts
+index 0b34fc7..8804c7a 100644
+--- a/src/utils/animation/animate-to-progress.ts
++++ b/src/utils/animation/animate-to-progress.ts
+@@ -22,6 +22,7 @@ interface AnimateToProgressProps {
+ 	/** Optional initial velocity for spring-based progress (units: progress/sec). */
+ 	initialVelocity?: number;
+ 	isDragging?: SharedValue<number>;
++	onEnd?: () => void;
+ }
+ 
+ const setTransitionLifecycleFlags = (
+@@ -65,6 +66,7 @@ export const animateToProgress = ({
+ 	markEntering = true,
+ 	initialVelocity,
+ 	isDragging,
++	onEnd,
+ }: AnimateToProgressProps) => {
+ 	"worklet";
+ 
+@@ -107,6 +109,7 @@ export const animateToProgress = ({
+ 			if (shouldClearEnteringOnFinish) {
+ 				entering.set(FALSE);
+ 			}
++			onEnd?.();
+ 			return;
+ 		}
+ 
+@@ -120,6 +123,7 @@ export const animateToProgress = ({
+ 				effectiveConfig,
+ 				(state) => {
+ 					"worklet";
++					if (!state.intermediate) onEnd?.();
+ 					if (!state.finished) return;
+ 					if (isDragging?.get()) return;
+ 
+@@ -155,6 +159,7 @@ export const animateToProgress = ({
+ 		emitMotionStart(animations);
+ 		requestAnimationFrame(() => {
+ 			"worklet";
++			if (Boolean(animations.closing.get()) !== isClosing) return;
+ 			startAnimation(false);
+ 		});
+ 		return;
+diff --git a/src/utils/animation/spring/spring.ts b/src/utils/animation/spring/spring.ts
+index c866fe2..d1ab15c 100644
+--- a/src/utils/animation/spring/spring.ts
++++ b/src/utils/animation/spring/spring.ts
+@@ -108,6 +108,7 @@ export const withInternalSpring = ((
+ 			animation.settled = true;
+ 			callback?.({
+ 				finished: false,
++				intermediate: true,
+ 				settled: true,
+ 			});
+ 		};
+diff --git a/src/utils/animation/state.ts b/src/utils/animation/state.ts
+index 4c2e7bb..6ed05be 100644
+--- a/src/utils/animation/state.ts
++++ b/src/utils/animation/state.ts
+@@ -3,6 +3,7 @@ import type { SharedValue } from "react-native-reanimated";
+ export type AnimationState = {
+ 	finished: boolean;
+ 	settled: boolean;
++	intermediate?: true;
+ };
+ 
+ export type AnimationStateCallback = (state: AnimationState) => void;

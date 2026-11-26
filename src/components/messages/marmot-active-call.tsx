@@ -1,4 +1,4 @@
-import { router } from "expo-router";
+import { router, useNavigation } from "expo-router";
 import {
   type ComponentProps,
   createContext,
@@ -25,14 +25,13 @@ import {
   tapFeedback,
 } from "@/components/ui/kit";
 import { discoverGroupCall } from "@/core/calling/group-presence";
-import { marmot } from "@/core/marmot/native";
-import { useMarmotWindow } from "./marmot-window";
+import type { useGroupCallWindow } from "./marmot-window";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
 
 type GroupCallStart = { disabled: boolean; onPress: () => void };
-type ProfileCallPresentation = { shortcut: ReactNode; status?: ReactNode };
+type ProfileCallPresentation = { shortcut?: ReactNode; status?: ReactNode };
 const GroupCallStartContext = createContext<GroupCallStart | null>(null);
 
 export function GroupCallHeaderButton({
@@ -73,27 +72,27 @@ export function GroupCallHeaderButton({
 export function MarmotActiveCall({
   group,
   members,
+  discovery,
   canStart,
+  enabled = true,
   profile,
   header,
 }: {
   group: string;
   members?: readonly { id: string; name?: string | null; label?: string }[];
+  discovery: ReturnType<typeof useGroupCallWindow>;
   canStart: boolean;
+  enabled?: boolean;
   profile?: (call: ProfileCallPresentation) => ReactNode;
   header?: ReactNode;
 }) {
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
+  const navigation = useNavigation();
   const { colors } = useTheme();
   const { calling, privacy, lock } = useLocal();
   const state = useStore(calling.store);
   const lockState = useSyncExternalStore(lock.subscribe, lock.getState);
-  const open = useCallback(() => marmot.openGroupCall(group), [group]);
-  const discovery = useMarmotWindow(
-    open,
-    !lockState.locked && lockState.active,
-  );
   const announcements = discovery.snapshot?.announcements;
   const privacyRevision = useSyncExternalStore(
     privacy.subscribe,
@@ -122,7 +121,7 @@ export function MarmotActiveCall({
     function update() {
       if (!active) return;
       const next =
-        !lockState.locked && lockState.active
+        enabled && !lockState.locked && lockState.active
           ? discoverGroupCall(
               announcements ?? [],
               (key) => roster.has(key) && !privacy.isBlocked(key),
@@ -138,6 +137,7 @@ export function MarmotActiveCall({
       clearTimeout(timeout);
     };
   }, [
+    enabled,
     lockState.active,
     lockState.locked,
     announcements,
@@ -147,27 +147,39 @@ export function MarmotActiveCall({
   ]);
 
   useEffect(() => {
-    if (!current || current.id !== pending.current || lockState.locked) return;
+    if (
+      !enabled ||
+      !current ||
+      current.id !== pending.current ||
+      lockState.locked
+    )
+      return;
     pending.current = undefined;
     router.push({
       pathname: "/call/[key]",
       params: { key: current.peerKey, callId: current.id },
     });
-  }, [current, lockState.locked]);
+  }, [current, enabled, lockState.locked]);
   useEffect(() => {
-    if (!unavailable || pending.current !== unavailable.callId) return;
+    if (!enabled || !unavailable || pending.current !== unavailable.callId)
+      return;
     pending.current = undefined;
     if (!lockState.locked)
       dialog.show({
         title: t("messages:marmot.groupCallUnavailable"),
         tone: "error",
       });
-  }, [dialog, lockState.locked, t, unavailable]);
+  }, [dialog, enabled, lockState.locked, t, unavailable]);
 
   const startGroupCall = useCallback(() => {
     const window = discovery.window?.getState();
     const currentLock = lock.getState();
-    if (currentLock.locked || !currentLock.active || window?.status !== "ready")
+    if (
+      !navigation.isFocused() ||
+      currentLock.locked ||
+      !currentLock.active ||
+      window?.status !== "ready"
+    )
       return;
     const latest = discoverGroupCall(
       window.snapshot.announcements,
@@ -188,9 +200,20 @@ export function MarmotActiveCall({
           tone: "error",
         });
     });
-  }, [calling, dialog, discovery.window, group, lock, privacy, roster, t]);
+  }, [
+    calling,
+    dialog,
+    discovery.window,
+    group,
+    lock,
+    navigation,
+    privacy,
+    roster,
+    t,
+  ]);
 
   if (lockState.locked) return null;
+  if (!enabled) return profile?.({}) ?? null;
   const active =
     discovered &&
     (unavailable?.callId !== discovered.call ||
@@ -266,6 +289,7 @@ export function MarmotActiveCall({
         Boolean(state.groupLobby && !lobby) ||
         Boolean(state.call && state.call.phase !== "ended")),
     onPress: () => {
+      if (!navigation.isFocused() || lock.getState().locked) return;
       if (current) {
         router.push({
           pathname: "/call/[key]",

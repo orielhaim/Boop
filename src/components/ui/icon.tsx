@@ -182,7 +182,7 @@ const icons = {
   forward: ArrowBendUpRightIcon,
   edit: PencilSimpleIcon,
   leave: SignOutIcon,
-  erase: BackspaceIcon,
+  backspace: BackspaceIcon,
   trash: TrashIcon,
   mic: MicrophoneSlashIcon,
   microphone: MicrophoneIcon,
@@ -241,7 +241,7 @@ const mirroredInRtl = new Set<IconName>([
   "continue",
   "reply",
   "forward",
-  "erase",
+  "backspace",
   "unarchive",
 ]);
 
