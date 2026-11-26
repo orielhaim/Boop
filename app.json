@@ -2,7 +2,7 @@
   "expo": {
     "name": "Boop",
     "slug": "boop",
-    "version": "0.1.1-beta.4",
+    "version": "0.1.1-beta.5",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": ["boop", "nostr"],
@@ -20,7 +20,7 @@
     },
     "android": {
       "allowBackup": false,
-      "versionCode": 7,
+      "versionCode": 8,
       "adaptiveIcon": {
         "backgroundColor": "#414DC3",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
