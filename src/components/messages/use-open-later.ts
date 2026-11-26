@@ -20,7 +20,7 @@ type Window = MarmotWindow<MarmotConversation, "older" | "newer">;
 export function useOpenLater(
   window: Window | undefined,
   snapshot: MarmotConversation | undefined,
-  active: boolean,
+  { active, canPresent }: { active: boolean; canPresent: boolean },
   hidden: readonly string[],
   blockState: ReturnType<BlockedUsers["snapshot"]>,
   isFocused: () => boolean,
@@ -87,7 +87,8 @@ export function useOpenLater(
   }, [active, blockState, db, hidden, snapshot, window]);
 
   return {
-    states: active && result?.window === window ? result?.states : undefined,
+    states:
+      canPresent && result?.window === window ? result?.states : undefined,
     retry: (id: string) => resolver.current?.retry(id),
   };
 }

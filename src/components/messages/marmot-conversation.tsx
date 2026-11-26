@@ -689,17 +689,13 @@ function MarmotConversationContent({
     snapshot,
     speech,
   ]);
+  const canPresentOpenLater = Boolean(
+    foreground && !locked && snapshot?.canSend && !snapshot.invited && !blocked,
+  );
   const openLater = useOpenLater(
     window,
     snapshot,
-    Boolean(
-      focused &&
-      foreground &&
-      !locked &&
-      snapshot?.canSend &&
-      !snapshot.invited &&
-      !blocked,
-    ),
+    { active: focused && canPresentOpenLater, canPresent: canPresentOpenLater },
     hidden,
     blockState,
     navigation.isFocused,
@@ -2289,7 +2285,6 @@ function MarmotConversationContent({
                 const message = props.currentMessage;
                 const row = message?.row;
                 const overlayTime =
-                  keepChatWindow &&
                   !locked &&
                   !blocked &&
                   message?.singleVisual &&
@@ -2344,7 +2339,6 @@ function MarmotConversationContent({
                   !row.deleted &&
                   !row.invalidationStatus &&
                   (row.eventKind === 9 || row.eventKind === 1111) &&
-                  keepChatWindow &&
                   !locked &&
                   !blocked &&
                   !snapshot?.invited &&
@@ -3090,14 +3084,20 @@ function MarmotConversationContent({
                 if (row?.eventKind === timeLockKind)
                   return (
                     <MarmotLocked
-                      state={openLater.states?.get(row.id)}
+                      state={
+                        row.invalidationStatus ||
+                        (row.expiresAt != null &&
+                          row.expiresAt * 1000 <= Date.now())
+                          ? undefined
+                          : openLater.states?.get(row.id)
+                      }
                       retry={() => openLater.retry(row.id)}
                       rtl={kit.rtl}
                       outgoing={row.sender === self}
                     />
                   );
                 if (attachmentUpload || row?.attachments.length)
-                  return keepChatWindow && !locked && !blocked ? (
+                  return !locked && !blocked ? (
                     <MarmotAttachments
                       group={id}
                       conversation={title}
@@ -3119,18 +3119,21 @@ function MarmotConversationContent({
                 return row &&
                   (row.eventKind === 9 || row.eventKind === 1111) ? (
                   <>
-                    <MarmotLink
-                      group={id}
-                      id={row.id}
-                      body={row.text}
-                      author={row.sender}
-                      eligible={
-                        focused &&
-                        visible.has(row.id) &&
-                        !blocked &&
-                        !privacy.isBlocked(row.sender)
-                      }
-                    />
+                    {!row.invalidationStatus &&
+                      !locked &&
+                      !blocked &&
+                      !privacy.isBlocked(row.sender) && (
+                        <MarmotLink
+                          group={id}
+                          id={row.id}
+                          body={row.text}
+                          author={row.sender}
+                          eligible={
+                            focused && foreground && visible.has(row.id)
+                          }
+                          isFocused={navigation.isFocused}
+                        />
+                      )}
                     {currentMessage.originalText && (
                       <Action
                         size="sm"

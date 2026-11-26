@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, AppState, View } from "react-native";
 import { useDialog } from "@/components/ui/dialog";
@@ -18,19 +18,23 @@ export function MarmotLink({
   body,
   author,
   eligible,
+  isFocused,
 }: {
   group: string;
   id: string;
   body: string;
   author: string;
   eligible: boolean;
+  isFocused: () => boolean;
 }) {
   const { t } = useTranslation(namespaces);
   const { colors } = useTheme();
   const dialog = useDialog();
   const { previews, lock, downloads } = useLocal();
-  const blob = eligible ? firstBlossomDownload(body, author) : undefined;
-  const url = eligible && !blob ? firstPreviewUrl(body) : undefined;
+  const { blob, url } = useMemo(() => {
+    const blob = firstBlossomDownload(body, author);
+    return { blob, url: blob ? undefined : firstPreviewUrl(body) };
+  }, [author, body]);
   const subscribe = useCallback(
     (listener: () => void) =>
       url ? previews.subscribe(url, listener) : () => {},
@@ -42,16 +46,20 @@ export function MarmotLink({
   );
   const state = useSyncExternalStore(subscribe, snapshot);
   const policy = useSyncExternalStore(subscribe, previews.policy);
+  const canInteract = useCallback(
+    () =>
+      eligible &&
+      isFocused() &&
+      AppState.currentState === "active" &&
+      !lock.getState().locked,
+    [eligible, isFocused, lock],
+  );
   const request = useCallback(
     (explicit: boolean) => {
-      if (!url) return;
-      previews.request(
-        { peer: group, id, url },
-        explicit,
-        () => AppState.currentState === "active" && !lock.getState().locked,
-      );
+      if (!url || !canInteract()) return;
+      previews.request({ peer: group, id, url }, explicit, canInteract);
     },
-    [group, id, lock, previews, url],
+    [canInteract, group, id, previews, url],
   );
   useEffect(() => {
     if (policy === "always" && !state) request(false);
@@ -61,8 +69,7 @@ export function MarmotLink({
       <Action
         size="sm"
         onPress={() => {
-          if (AppState.currentState !== "active" || lock.getState().locked)
-            return;
+          if (!canInteract()) return;
           try {
             downloads.enqueue(blob);
             router.push("/downloads");
