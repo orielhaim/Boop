@@ -4,14 +4,8 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
-import {
-  Card,
-  Empty,
-  Icon,
-  Row,
-  Section,
-  tapFeedback,
-} from "@/components/ui/kit";
+import { Card, Icon, Row, Section, tapFeedback } from "@/components/ui/kit";
+import { IllustratedEmptyState } from "@/components/ui/illustrated-empty-state";
 import { PersonAvatar } from "@/components/people/person-avatar";
 import { usePerson } from "@/components/people/use-person";
 import { useAvatarVisibility } from "@/core/avatars/use-avatar";
@@ -21,6 +15,7 @@ import { namespaces, resolveLanguage } from "@/i18n";
 import { formatDateTime, isolateText } from "@/i18n/format";
 import { useLocal } from "@/services/local-context";
 import { space, useTheme } from "@/theme";
+import { CallSignalArtwork } from "./call-signal-artwork";
 
 const outcomes = {
   answered: "calls:answered",
@@ -63,8 +58,13 @@ export function CallHistory({
       initialNumToRender={8}
       maxToRenderPerBatch={8}
       windowSize={3}
-      contentContainerStyle={styles.list}
-      ListHeaderComponent={<Section>{t("calls:recents")}</Section>}
+      contentContainerStyle={[
+        styles.list,
+        calls.length === 0 && styles.emptyList,
+      ]}
+      ListHeaderComponent={
+        calls.length > 0 ? <Section>{t("calls:recents")}</Section> : undefined
+      }
       renderItem={({ item: entry }) => (
         <CallHistoryRow
           entry={entry}
@@ -83,8 +83,8 @@ export function CallHistory({
         />
       )}
       ListEmptyComponent={
-        <Empty
-          icon="history"
+        <IllustratedEmptyState
+          artwork={<CallSignalArtwork />}
           title={t("calls:noRecents")}
           detail={t("calls:emptyHistory")}
         />
@@ -159,4 +159,5 @@ const styles = StyleSheet.create({
     paddingBottom: space.lg,
     gap: space.xs,
   },
+  emptyList: { flexGrow: 1, paddingBottom: space.sm },
 });

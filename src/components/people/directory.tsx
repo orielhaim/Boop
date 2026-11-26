@@ -33,7 +33,8 @@ import {
   useShimmerProgress,
 } from "@/components/ui/molecules/Shimmer/Shimmer";
 import { useAvatar, useAvatarVisibility } from "@/core/avatars/use-avatar";
-import { CompactHeader, QuietState } from "@/components/ui/messenger-ui";
+import { IllustratedEmptyState } from "@/components/ui/illustrated-empty-state";
+import { CompactHeader } from "@/components/ui/messenger-ui";
 import { toNpub } from "@/core/identity/keys";
 import {
   contactByKey,
@@ -45,6 +46,7 @@ import { directionFor, namespaces, resolveLanguage } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useAppPreferences } from "@/stores/preferences";
 import { space, useTheme } from "@/theme";
+import { ContactCardArtwork } from "./contact-card-artwork";
 import { PersonAvatar } from "./person-avatar";
 import { usePublicProfile } from "./use-person";
 
@@ -244,13 +246,16 @@ export function PeopleDirectory() {
             keyboardDismissMode="on-drag"
             onScroll={onScroll}
             scrollEventThrottle={16}
-            contentContainerStyle={styles.list}
+            contentContainerStyle={[
+              styles.list,
+              items.length === 0 && !term && styles.emptyList,
+            ]}
             ListEmptyComponent={
               term ? (
                 <Ink muted>{t("contacts:noResults")}</Ink>
               ) : (
-                <QuietState
-                  icon="person"
+                <IllustratedEmptyState
+                  artwork={<ContactCardArtwork />}
                   title={t("contacts:empty")}
                   detail={t("contacts:emptyHint")}
                 />
@@ -490,6 +495,7 @@ const styles = StyleSheet.create({
     paddingTop: space.sm,
     paddingBottom: 72,
   },
+  emptyList: { flexGrow: 1, paddingBottom: space.sm },
   row: {
     flexDirection: "row",
     alignItems: "center",
