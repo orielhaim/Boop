@@ -17,8 +17,16 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Keyboard, Linking, useWindowDimensions, View } from "react-native";
-import Animated from "react-native-reanimated";
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Keyboard,
+  Linking,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { GestureDetector } from "react-native-gesture-handler";
+import Animated, { useComposedEventHandler } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { AvatarPicker } from "@/components/avatars/picker";
 import {
@@ -33,20 +41,18 @@ import {
   ProfileTabs,
   type ProfileTab,
 } from "@/components/shared-media/profile-tabs";
-import { ListGroup, ListRow } from "@/components/ui/list-group";
+import { ActionMenu, type ActionMenuProps } from "@/components/ui/action-menu";
 import { useDialog } from "@/components/ui/dialog";
-import {
-  ChatProfileBackButton,
-  GlassBackButton,
-} from "@/components/ui/back-button";
-import { Empty, Icon, Ink, Screen } from "@/components/ui/kit";
-import { CompactAction } from "@/components/ui/messenger-ui";
+import { GlassBackButton } from "@/components/ui/back-button";
+import { Action, Empty, Icon, Ink, Screen } from "@/components/ui/kit";
+import { CompactAction, QuietState } from "@/components/ui/messenger-ui";
 import { useBlockAction } from "@/components/ui/privacy-actions";
-import { SaveButton } from "@/components/ui/save-button";
 import { AuraLift } from "@/components/ui/organisms/aura-lift";
+import { useAnimateScrollView } from "@/components/ui/templates/parallax-header/hooks/useAnimatedScrollView";
 import { useAvatar } from "@/core/avatars/use-avatar";
 import { parsePublicIdentity, toNpub } from "@/core/identity/keys";
 import { marmot } from "@/core/marmot/native";
+import { nameOrAddress } from "@/db/contacts";
 import {
   contactByKey,
   removeContact,
@@ -58,7 +64,7 @@ import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
 import { AddressSheetContent } from "./address-sheet";
 import { useIdentitySheet } from "./identity-sheet";
-import { PersonContext } from "./person-context";
+import { PersonCallHistory, PersonGroups } from "./person-context";
 import { PersonAvatar } from "./person-avatar";
 import { usePersonIdentity, useVerifiedIdentifier } from "./use-person";
 
@@ -108,6 +114,13 @@ function ProfileContent({
 }) {
   const onScroll = useMinimizeOnScroll();
   const { height } = useWindowDimensions();
+  const bannerHeight = Math.max(1, Math.min(148, height * 0.2));
+  const profileMotion = useAnimateScrollView(bannerHeight);
+  const mediaMotion = useAnimateScrollView(bannerHeight);
+  const profileScroll = useComposedEventHandler([
+    profileMotion.onScroll,
+    tab ? onScroll : null,
+  ]);
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
   const {
@@ -121,7 +134,7 @@ function ProfileContent({
     profileEditor,
     profiles,
   } = useLocal();
-  const { colors, reduceTransparency } = useTheme();
+  const { colors, reduceMotion, reduceTransparency } = useTheme();
   const focused = useIsFocused();
   const navigation = useNavigation();
   const leaving = useRef(false);
@@ -134,7 +147,11 @@ function ProfileContent({
     profileEditor.subscribe,
     profileEditor.getSnapshot,
   );
-  const { contact, profile, name } = usePersonIdentity(publicKey);
+  const {
+    contact: observedContact,
+    profile,
+    name: observedName,
+  } = usePersonIdentity(publicKey);
   const publicPhoto = useAvatar(publicKey, true, false, true);
   const own = identity.publicKey === publicKey;
   const pendingProfile = own ? draft : undefined;
@@ -176,12 +193,33 @@ function ProfileContent({
   const address = toNpub(publicKey);
   const showIdentitySheet = useIdentitySheet();
   const [addressOpen, setAddressOpen] = useState(false);
-  const [contactEditor, setContactEditor] = useState<{
-    kind: "add" | "rename";
-    name: string;
-  }>();
+  const [contactEdit, setContactEdit] = useState<
+    | { kind: "rename"; name: string }
+    | {
+        kind: "saved";
+        added: boolean;
+        commit?: {
+          row: NonNullable<typeof observedContact>;
+          previous: typeof observedContact;
+        };
+      }
+  >();
+  const contactEditor = contactEdit?.kind === "saved" ? undefined : contactEdit;
+  // Use the committed row until the live query delivers its next snapshot.
+  const commit = contactEdit?.kind === "saved" ? contactEdit.commit : undefined;
+  if (
+    contactEdit?.kind === "saved" &&
+    contactEdit.commit &&
+    contactEdit.commit.previous !== observedContact
+  ) {
+    setContactEdit({ kind: "saved", added: contactEdit.added });
+  }
+  const committedContact = commit?.row;
+  const contact = committedContact ?? observedContact;
+  const name = committedContact
+    ? nameOrAddress(committedContact.name || profile?.name, publicKey)
+    : observedName;
   const [contactEditorError, setContactEditorError] = useState(false);
-  const [contactAdded, setContactAdded] = useState(false);
   const [picking, setPicking] = useState(false);
   const imagesRequested = useSyncExternalStore(
     useCallback(
@@ -197,9 +235,9 @@ function ProfileContent({
     privacyRevision: number;
     id: string | null;
   }>();
-  const [selectedTab, setSelectedTab] = useState<"profile" | "media">(
-    "profile",
-  );
+  const [tabChoice, setSelectedTab] = useState<
+    "profile" | "media" | "groups"
+  >();
   const mediaScrollPosition = useRef(0);
   const mediaConversation =
     conversationRecord?.peer === publicKey &&
@@ -215,7 +253,17 @@ function ProfileContent({
     lockState.active &&
     !lockState.locked &&
     sessionStatus === "ready";
-  const showingMedia = mediaAvailable && selectedTab === "media";
+  const hasMediaTab = chatsEnabled && !own && !restricted;
+  const selectedTab = own
+    ? tabChoice === "groups"
+      ? "groups"
+      : "profile"
+    : hasMediaTab && tabChoice === "media"
+      ? "media"
+      : "groups";
+  const showingMedia = selectedTab === "media";
+  const showingGroups = selectedTab === "groups";
+  const showingLibrary = showingMedia && mediaAvailable;
 
   useEffect(() => {
     let current = true;
@@ -280,30 +328,27 @@ function ProfileContent({
     marmotSession,
   ]);
 
-  if (mediaConversation === null && selectedTab === "media")
-    setSelectedTab("profile");
-
   useFocusEffect(
     useCallback(() => {
       leaving.current = false;
       return () => {
         setAddressOpen(false);
-        setContactEditor(undefined);
+        setContactEdit(undefined);
       };
-    }, [setAddressOpen, setContactEditor]),
+    }, [setAddressOpen, setContactEdit]),
   );
   useEffect(
     () =>
       lock.subscribe(() => {
         const state = lock.getState();
-        if (state.locked || !state.active) setContactEditor(undefined);
+        if (state.locked || !state.active) setContactEdit(undefined);
       }),
     [lock],
   );
   useEffect(
     () =>
       privacy.blocks.subscribe(() => {
-        if (privacy.isBlocked(publicKey)) setContactEditor(undefined);
+        if (privacy.isBlocked(publicKey)) setContactEdit(undefined);
       }),
     [privacy, publicKey],
   );
@@ -344,6 +389,43 @@ function ProfileContent({
     }
   }
 
+  function saveProfileContact(edit: { kind: "add" | "rename"; name: string }) {
+    if (own || !navigation.isFocused()) return;
+    const state = lock.getState();
+    if (!state.active || state.locked || privacy.isBlocked(publicKey)) return;
+
+    try {
+      const name = edit.name.trim();
+      const saved = db.transaction((tx) => {
+        const query = contactByKey(tx, publicKey);
+        const previous = query.get();
+        if (edit.kind === "add" && previous) return null;
+        if (edit.kind === "add") {
+          saveContact(tx, publicKey, name);
+        } else {
+          if (!previous) throw new Error("Contact was removed");
+          updateContactPreferences(tx, publicKey, { name });
+        }
+        const row = query.get();
+        if (!row) throw new Error("Missing saved contact");
+        return row;
+      });
+      if (!saved) return;
+      // Remove the tray in the same render that starts the profile's success effect.
+      setContactEdit({
+        kind: "saved",
+        added: edit.kind === "add",
+        commit: { row: saved, previous: observedContact },
+      });
+    } catch {
+      if (edit.kind === "rename") setContactEditorError(true);
+      else void dialog.show({ title: t("contacts:saveError"), tone: "error" });
+      return;
+    }
+    Keyboard.dismiss();
+    AccessibilityInfo.announceForAccessibility(t("common:saved"));
+  }
+
   if (picking)
     return (
       <Screen>
@@ -377,20 +459,136 @@ function ProfileContent({
     }
     setAddressOpen(true);
   };
-  const tabs: ProfileTab<"profile" | "media">[] = mediaAvailable
-    ? [
-        { key: "profile", label: t("messages:sharedMedia.info") },
-        { key: "media", label: t("messages:marmot.shortcutMedia") },
-      ]
-    : [];
-  const profileTabs = mediaAvailable ? (
-    <ProfileTabs tabs={tabs} value={selectedTab} onChange={setSelectedTab} />
-  ) : undefined;
-  const personHero = (
+  const canManageProfile = focused && lockState.active && !lockState.locked;
+  const canRequestImages =
+    !restricted &&
+    !avatars.autoLoads(publicKey) &&
+    !imagesRequested &&
+    Boolean(profile?.picture || details.banner);
+
+  function openContactEditor() {
+    if (!contact || !navigation.isFocused() || privacy.isBlocked(publicKey))
+      return;
+    setContactEditorError(false);
+    setContactEdit({ kind: "rename", name: contact.name });
+  }
+
+  function confirmAddContact() {
+    void dialog.show({
+      title: t("contacts:confirmAdd", { name: displayName }),
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
+        {
+          label: t("contacts:addToContacts"),
+          tone: "primary",
+          onSelect: () =>
+            saveProfileContact({ kind: "add", name: profile?.name ?? "" }),
+        },
+      ],
+    });
+  }
+
+  const menu: (ActionMenuProps["actions"][number] & {
+    id: string;
+    run: () => void;
+  })[] = [];
+  if (!own && canManageProfile) {
+    if (canRequestImages) {
+      menu.push({
+        id: "loadImages",
+        icon: "download",
+        image: "arrow.down.circle",
+        title: t("messenger:loadImages"),
+        run: () => avatars.requestProfileImages(publicKey),
+      });
+    }
+    if (contact) {
+      if (!restricted) {
+        menu.push({
+          id: "nickname",
+          icon: "edit",
+          image: "pencil",
+          title: t("contacts:changeNickname"),
+          run: openContactEditor,
+        });
+      }
+      menu.push({
+        id: "favorite",
+        icon: "star",
+        image: contact.favorite ? "star.slash" : "star",
+        title: t(
+          contact.favorite ? "contacts:removeFavorite" : "contacts:addFavorite",
+        ),
+        run: () =>
+          write(() =>
+            updateContactPreferences(db, publicKey, {
+              favorite: !contact.favorite,
+            }),
+          ),
+      });
+      if (!restricted) {
+        menu.push({
+          id: "changePhoto",
+          icon: "photo",
+          image: "camera",
+          title: t("settings:photoChange"),
+          run: () => setPicking(true),
+        });
+        if (avatars.hasOverride(publicKey)) {
+          menu.push({
+            id: "removePhoto",
+            icon: "trash",
+            image: "trash",
+            title: t("settings:photoRemove"),
+            run: () => write(() => avatars.saveOverride(publicKey, null)),
+          });
+        }
+      }
+    }
+    if (!block.disabled) {
+      menu.push({
+        id: "block",
+        icon: block.blocked ? "check" : "warning",
+        image: block.blocked ? "checkmark.shield" : "hand.raised",
+        title: block.label,
+        attributes: { destructive: !block.blocked },
+        run: block.onPress,
+      });
+    }
+    if (contact) {
+      menu.push({
+        id: "removeContact",
+        icon: "trash",
+        image: "person.crop.circle.badge.minus",
+        title: t("messenger:removePerson"),
+        attributes: { destructive: true },
+        run: () =>
+          void dialog.show({
+            title: t("messenger:removePerson"),
+            dismissible: false,
+            actions: [
+              { label: t("common:cancel"), tone: "cancel" },
+              {
+                label: t("messenger:removePerson"),
+                tone: "danger",
+                onSelect: () => write(() => removeContact(db, publicKey)),
+              },
+            ],
+          }),
+      });
+    }
+  }
+  const tabs: ProfileTab<"profile" | "media" | "groups">[] = [];
+  if (own) tabs.push({ key: "profile", label: t("messages:sharedMedia.info") });
+  if (hasMediaTab)
+    tabs.push({ key: "media", label: t("messages:marmot.shortcutMedia") });
+  tabs.push({ key: "groups", label: t("contacts:groupsTab") });
+  const personHero = (active: boolean) => (
     <View style={styles.hero}>
       <View style={styles.identityLine}>
         <Transition.Boundary
           id={`avatar:${publicKey}`}
+          enabled={active}
           accessibilityRole={canViewPhoto ? "button" : undefined}
           accessibilityLabel={
             canViewPhoto ? t("messenger:viewProfilePhoto") : undefined
@@ -409,7 +607,7 @@ function ProfileContent({
             : {})}
           style={[styles.avatar, { backgroundColor: colors.background }]}
         >
-          <ProfileElement profile={morph} part="avatar">
+          <ProfileElement profile={active ? morph : undefined} part="avatar">
             <PersonAvatar
               publicKey={publicKey}
               name={displayName}
@@ -421,7 +619,7 @@ function ProfileContent({
           </ProfileElement>
         </Transition.Boundary>
         <View style={styles.identity}>
-          <ProfileElement profile={morph} part="name">
+          <ProfileElement profile={active ? morph : undefined} part="name">
             <Ink
               kind="profileName"
               accessibilityRole="header"
@@ -485,6 +683,12 @@ function ProfileContent({
     </View>
   ) : (
     <View style={styles.actions}>
+      <CompactAction
+        icon="qr"
+        iconOnly
+        label={t("security:showIdentityQr")}
+        onPress={showQr}
+      />
       {chatsEnabled && (
         <CompactAction
           prominent
@@ -514,302 +718,260 @@ function ProfileContent({
       />
     </View>
   );
-  return (
-    <Screen scroll={false} tab={tab} topInset>
-      <View
-        style={[
-          styles.banner,
-          {
-            height: Math.min(148, height * 0.2),
-            backgroundColor: colors.selected,
-          },
-        ]}
-      >
-        {!reduceTransparency && (
-          <LinearGradient
-            colors={[colors.heroStart, colors.selected, colors.heroEnd]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-        )}
-        {banner ? (
-          <Image
-            source={banner}
-            contentFit="cover"
-            style={StyleSheet.absoluteFill}
-          />
-        ) : (
-          <View
-            pointerEvents="none"
-            style={[styles.orbit, { borderColor: colors.line }]}
-          />
-        )}
-        {!tab && !morph && (
-          <GlassBackButton style={styles.bannerBack} onPress={back} />
-        )}
-        <CompactAction
-          icon="qr"
-          iconOnly
-          style={styles.bannerQr}
-          label={t("security:showIdentityQr")}
-          onPress={showQr}
-        />
-      </View>
-      <View style={styles.overview}>
-        {personHero}
-        {profileActions}
-      </View>
-      {profileTabs}
-      <View style={styles.pages}>
+  const profileTabs = (
+    <ProfileTabs tabs={tabs} value={selectedTab} onChange={setSelectedTab} />
+  );
+  function renderOverview(motion: typeof profileMotion, active: boolean) {
+    return (
+      <View>
         <View
-          pointerEvents={showingMedia ? "none" : "auto"}
-          accessibilityElementsHidden={showingMedia}
-          importantForAccessibility={
-            showingMedia ? "no-hide-descendants" : "auto"
-          }
           style={[
-            StyleSheet.absoluteFill,
-            styles.profileLayer,
-            showingMedia && styles.hiddenLayer,
+            styles.banner,
+            {
+              height: bannerHeight,
+              backgroundColor: colors.selected,
+            },
           ]}
         >
-          <Animated.ScrollView
-            style={styles.pages}
-            contentContainerStyle={styles.body}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            onScroll={tab ? onScroll : undefined}
-            scrollEventThrottle={16}
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.bannerArtwork, motion.artwork]}
           >
-            {(about || details.website) && (
-              <View style={[styles.details, { borderColor: colors.line }]}>
-                {about && <Ink selectable>{about}</Ink>}
-                {details.website && (
-                  <View style={styles.link}>
-                    <Icon name="language" size={16} />
-                    <Ink
-                      kind="label"
-                      numberOfLines={1}
-                      style={[styles.primary, { color: colors.accent }]}
-                      accessibilityRole="link"
-                      onPress={() => {
-                        if (details.website)
-                          void Linking.openURL(details.website).catch(() =>
-                            setNotice(t("contacts:unavailable")),
-                          );
-                      }}
-                    >
-                      {new URL(details.website).hostname}
-                    </Ink>
-                  </View>
-                )}
+            {!reduceTransparency && (
+              <LinearGradient
+                colors={[colors.heroStart, colors.selected, colors.heroEnd]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+            )}
+            {banner ? (
+              <Image
+                source={banner}
+                contentFit="cover"
+                style={StyleSheet.absoluteFill}
+              />
+            ) : (
+              <View
+                pointerEvents="none"
+                style={[styles.orbit, { borderColor: colors.line }]}
+              />
+            )}
+          </Animated.View>
+          {!tab && (
+            <GlassBackButton
+              style={styles.bannerBack}
+              elevation={morph ? "none" : undefined}
+              dimOnPress={!morph}
+              onPress={back}
+            />
+          )}
+          {own ? (
+            <CompactAction
+              icon="qr"
+              iconOnly
+              style={styles.bannerEnd}
+              label={t("security:showIdentityQr")}
+              onPress={showQr}
+            />
+          ) : menu.length > 0 ? (
+            <ActionMenu
+              style={styles.bannerEnd}
+              label={t("contacts:profileOptions")}
+              actions={menu.map(({ run, ...action }) => action)}
+              onSelect={(id) => {
+                const state = lock.getState();
+                if (!navigation.isFocused() || !state.active || state.locked)
+                  return;
+                menu.find((action) => action.id === id)?.run();
+              }}
+            >
+              <View style={styles.profileMenu}>
+                <Icon
+                  name="more"
+                  size={22}
+                  weight="bold"
+                  color={colors.accent}
+                />
               </View>
-            )}
-            {!restricted &&
-              !avatars.autoLoads(publicKey) &&
-              !imagesRequested &&
-              Boolean(profile?.picture || details.banner) && (
-                <CompactAction
-                  icon="download"
-                  label={t("messenger:loadImages")}
-                  onPress={() => avatars.requestProfileImages(publicKey)}
-                />
-              )}
-            {!own && (
-              <GlassSheet
-                open={
-                  focused &&
-                  lockState.active &&
-                  !restricted &&
-                  !lockState.locked &&
-                  !!contactEditor
-                }
-                onOpenChange={(open) => {
-                  if (!open) setContactEditor(undefined);
-                }}
-              >
-                <GlassSheetContent>
-                  {contactEditor && (
-                    <>
-                      <GlassSheetTitle>
-                        {t(
-                          contactEditor.kind === "add"
-                            ? "contacts:saveAs"
-                            : "messenger:nickname",
-                        )}
-                      </GlassSheetTitle>
-                      <GlassInput
-                        label={t("contacts:nickname")}
-                        value={contactEditor.name}
-                        onChangeText={(name) => {
-                          setContactEditor({ ...contactEditor, name });
-                          setContactEditorError(false);
-                        }}
-                        maxLength={128}
-                      />
-                      {contactEditorError && (
-                        <Ink
-                          accessibilityRole="alert"
-                          accessibilityLiveRegion="polite"
-                        >
-                          {t("contacts:saveError")}
-                        </Ink>
-                      )}
-                      <SaveButton
-                        label={t("contacts:save")}
-                        savedDecoration={
-                          contactAdded ? <AuraLift /> : undefined
-                        }
-                        onSave={() => {
-                          try {
-                            const state = lock.getState();
-                            if (
-                              !state.active ||
-                              state.locked ||
-                              privacy.isBlocked(publicKey)
-                            ) {
-                              setContactEditorError(true);
-                              return false;
-                            }
-                            const name = contactEditor.name.trim();
-                            const added = db.transaction((tx) => {
-                              if (contactByKey(tx, publicKey).get()) {
-                                updateContactPreferences(tx, publicKey, {
-                                  name,
-                                });
-                                return false;
-                              }
-                              saveContact(tx, publicKey, name);
-                              return true;
-                            });
-                            setContactAdded(added);
-                            Keyboard.dismiss();
-                            return true;
-                          } catch {
-                            setContactEditorError(true);
-                            return false;
-                          }
-                        }}
-                        onSaved={() => setContactEditor(undefined)}
-                      />
-                    </>
-                  )}
-                </GlassSheetContent>
-              </GlassSheet>
-            )}
-            {!own && (
-              <ListGroup>
-                {!restricted && (
-                  <ListRow
-                    title={t(
-                      contact ? "messenger:nickname" : "contacts:saveAs",
-                    )}
-                    detail={contact?.name || undefined}
-                    onPress={() => {
-                      setContactEditorError(false);
-                      setContactEditor({
-                        kind: contact ? "rename" : "add",
-                        name: contact ? contact.name : (profile?.name ?? ""),
-                      });
-                    }}
-                  />
-                )}
-                {contact && (
-                  <>
-                    <ListRow
-                      title={t(
-                        contact.favorite
-                          ? "contacts:removeFavorite"
-                          : "contacts:addFavorite",
-                      )}
-                      onPress={() =>
-                        write(() =>
-                          updateContactPreferences(db, publicKey, {
-                            favorite: !contact.favorite,
-                          }),
-                        )
-                      }
-                    />
-                    {!restricted && (
-                      <>
-                        <ListRow
-                          title={t("settings:photoChange")}
-                          detail={t("settings:photoLocalHelp")}
-                          onPress={() => setPicking(true)}
-                        />
-                        {avatars.hasOverride(publicKey) && (
-                          <ListRow
-                            title={t("settings:photoRemove")}
-                            onPress={() =>
-                              write(() => avatars.saveOverride(publicKey, null))
-                            }
-                          />
-                        )}
-                        <ListRow
-                          title={t("video:automatic")}
-                          detail={contact.allowIncomingVideo ? "✓" : undefined}
-                          onPress={() =>
-                            write(() =>
-                              updateContactPreferences(db, publicKey, {
-                                allowIncomingVideo: !contact.allowIncomingVideo,
-                              }),
-                            )
-                          }
-                        />
-                      </>
-                    )}
-                    <ListRow
-                      title={t("messenger:removePerson")}
-                      onPress={() =>
-                        void dialog.show({
-                          title: t("messenger:removePerson"),
-                          dismissible: false,
-                          actions: [
-                            { label: t("common:cancel"), tone: "cancel" },
-                            {
-                              label: t("messenger:removePerson"),
-                              tone: "danger",
-                              onSelect: () =>
-                                write(() => removeContact(db, publicKey)),
-                            },
-                          ],
-                        })
-                      }
-                    />
-                  </>
-                )}
-                <ListRow
-                  title={block.label}
-                  onPress={block.disabled ? undefined : block.onPress}
-                />
-              </ListGroup>
-            )}
-            {!own && !restricted && <PersonContext publicKey={publicKey} />}
-            {notice && <Ink accessibilityLiveRegion="polite">{notice}</Ink>}
-          </Animated.ScrollView>
+            </ActionMenu>
+          ) : null}
         </View>
-        {mediaConversation && (
+        <Animated.View style={[styles.overview, motion.body]}>
           <View
-            pointerEvents={showingMedia ? "auto" : "none"}
-            accessibilityElementsHidden={!showingMedia}
-            importantForAccessibility={
-              showingMedia ? "auto" : "no-hide-descendants"
-            }
+            pointerEvents="none"
             style={[
-              StyleSheet.absoluteFill,
-              styles.profileLayer,
-              !showingMedia && styles.hiddenLayer,
+              styles.overviewBackground,
+              { backgroundColor: colors.background },
             ]}
+          />
+          {personHero(active)}
+          {profileActions}
+          {(about || details.website) && (
+            <View style={styles.details}>
+              {about && <Ink selectable>{about}</Ink>}
+              {details.website && (
+                <View style={styles.link}>
+                  <Icon name="language" size={16} />
+                  <Ink
+                    kind="label"
+                    numberOfLines={1}
+                    style={[styles.primary, { color: colors.accent }]}
+                    accessibilityRole="link"
+                    onPress={() => {
+                      if (details.website)
+                        void Linking.openURL(details.website).catch(() =>
+                          setNotice(t("contacts:unavailable")),
+                        );
+                    }}
+                  >
+                    {new URL(details.website).hostname}
+                  </Ink>
+                </View>
+              )}
+            </View>
+          )}
+          {active && !own && !restricted && (
+            <PersonCallHistory publicKey={publicKey} />
+          )}
+          {!own && !contact && !restricted && canManageProfile && (
+            <Action
+              onPress={confirmAddContact}
+              variant="soft"
+              style={styles.addContact}
+            >
+              <Icon name="addPerson" size={20} color={colors.accent} />
+              {t("contacts:addToContacts")}
+            </Action>
+          )}
+        </Animated.View>
+        {notice && (
+          <Ink style={styles.notice} accessibilityLiveRegion="polite">
+            {notice}
+          </Ink>
+        )}
+      </View>
+    );
+  }
+  const profilePage = (
+    <Animated.ScrollView
+      style={styles.pages}
+      stickyHeaderIndices={[1]}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      onScroll={profileScroll}
+      scrollEventThrottle={16}
+      alwaysBounceVertical={false}
+      bounces={!profileMotion.reduceMotion}
+      overScrollMode={profileMotion.reduceMotion ? "auto" : "never"}
+    >
+      {renderOverview(profileMotion, !showingLibrary)}
+      <Animated.View style={profileMotion.body}>{profileTabs}</Animated.View>
+      <Animated.View style={[styles.body, profileMotion.body]}>
+        {showingMedia ? (
+          mediaConversation === undefined ? (
+            <ActivityIndicator />
+          ) : (
+            <QuietState icon="media" title={t("messages:sharedMedia.empty")} />
+          )
+        ) : showingGroups ? (
+          chatsEnabled &&
+          !restricted &&
+          canManageProfile && <PersonGroups publicKey={publicKey} />
+        ) : null}
+        {showingGroups && (!chatsEnabled || restricted) && (
+          <QuietState icon="people" title={t("common:unavailable")} />
+        )}
+      </Animated.View>
+    </Animated.ScrollView>
+  );
+
+  return (
+    <Screen scroll={false} tab={tab} topInset>
+      <View style={styles.pages}>
+        <View
+          pointerEvents={showingLibrary ? "none" : "auto"}
+          accessibilityElementsHidden={showingLibrary}
+          importantForAccessibility={
+            showingLibrary ? "no-hide-descendants" : "auto"
+          }
+          style={[styles.profileLayer, showingLibrary && styles.hiddenLayer]}
+        >
+          {profileMotion.android && !profileMotion.reduceMotion ? (
+            <GestureDetector gesture={profileMotion.androidGesture}>
+              {profilePage}
+            </GestureDetector>
+          ) : (
+            profilePage
+          )}
+        </View>
+        {mediaAvailable && mediaConversation && (
+          <View
+            pointerEvents={showingLibrary ? "auto" : "none"}
+            accessibilityElementsHidden={!showingLibrary}
+            importantForAccessibility={
+              showingLibrary ? "auto" : "no-hide-descendants"
+            }
+            style={[styles.profileLayer, !showingLibrary && styles.hiddenLayer]}
           >
             <SharedMediaLibrary
               scope={{ kind: "direct", group: mediaConversation }}
+              header={renderOverview(mediaMotion, showingLibrary)}
+              tabs={profileTabs}
+              onAnimatedScroll={mediaMotion.onScroll}
               scrollPositionRef={mediaScrollPosition}
-              active={showingMedia}
+              active={showingLibrary && focused}
             />
           </View>
         )}
       </View>
+      {!own && contactEdit?.kind !== "saved" && (
+        <GlassSheet
+          open={
+            focused &&
+            lockState.active &&
+            !restricted &&
+            !lockState.locked &&
+            !!contactEditor
+          }
+          onOpenChange={(open) => {
+            if (!open) setContactEdit(undefined);
+          }}
+        >
+          <GlassSheetContent>
+            {contactEditor && (
+              <>
+                <GlassSheetTitle>
+                  {t("contacts:changeNickname")}
+                </GlassSheetTitle>
+                <GlassInput
+                  label={t("contacts:nickname")}
+                  value={contactEditor.name}
+                  onChangeText={(name) => {
+                    setContactEdit({ ...contactEditor, name });
+                    setContactEditorError(false);
+                  }}
+                  maxLength={128}
+                />
+                {contactEditorError && (
+                  <Ink
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="polite"
+                  >
+                    {t("contacts:saveError")}
+                  </Ink>
+                )}
+                <Action
+                  size="lg"
+                  onPress={() => saveProfileContact(contactEditor)}
+                >
+                  {t("common:save")}
+                </Action>
+              </>
+            )}
+          </GlassSheetContent>
+        </GlassSheet>
+      )}
       {!own && (
         <GlassSheet open={focused && addressOpen} onOpenChange={setAddressOpen}>
           <GlassSheetContent>
@@ -817,7 +979,11 @@ function ProfileContent({
           </GlassSheetContent>
         </GlassSheet>
       )}
-      {morph && <ChatProfileBackButton onPress={back} />}
+      {focused &&
+        !reduceMotion &&
+        !reduceTransparency &&
+        contactEdit?.kind === "saved" &&
+        contactEdit.added && <AuraLift scope="profile" />}
     </Screen>
   );
 }
@@ -830,8 +996,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.space.md,
     paddingBottom: theme.space.xxl,
   },
-  profileLayer: { flex: 1, zIndex: 1 },
-  hiddenLayer: { opacity: 0, zIndex: 0 },
+  profileLayer: { ...StyleSheet.absoluteFill },
+  hiddenLayer: { opacity: 0 },
   pages: { flex: 1 },
   overview: {
     marginTop: -54,
@@ -839,19 +1005,33 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.space.lg,
     paddingBottom: theme.space.md,
   },
-  banner: {
+  banner: { position: "relative" },
+  bannerArtwork: {
+    ...StyleSheet.absoluteFill,
     overflow: "hidden",
+    transformOrigin: "center top",
   },
+  overviewBackground: { ...StyleSheet.absoluteFill, top: 54 },
   bannerBack: {
     position: "absolute",
+    zIndex: 2,
     start: theme.space.sm,
     top: theme.space.sm,
   },
-  bannerQr: {
+  bannerEnd: {
     position: "absolute",
     top: theme.space.sm,
     end: theme.space.sm,
   },
+  profileMenu: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.raised,
+    borderRadius: theme.radius.round,
+  },
+  addContact: { alignSelf: "center" },
   orbit: {
     position: "absolute",
     width: 280,
@@ -885,10 +1065,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   primary: { flex: 1 },
   details: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: theme.space.md,
     gap: theme.space.sm,
   },
+  notice: { marginHorizontal: theme.space.lg },
   link: {
     flexDirection: "row",
     alignItems: "center",

@@ -68,6 +68,7 @@ type DockProps = Omit<TabListProps, "asChild" | "children"> & {
   items: readonly DockItem[];
   bottomOffset: number;
   hidden: boolean;
+  interactive: boolean;
   accountAvatar: ReactNode;
   accountLabel: string;
   accountName: string;
@@ -86,6 +87,7 @@ export function ExpandableDock({
   items,
   bottomOffset,
   hidden,
+  interactive,
   accountAvatar,
   accountLabel,
   accountName,
@@ -153,6 +155,7 @@ export function ExpandableDock({
       const pending = requestAnimationFrame(closeProfile);
       return () => cancelAnimationFrame(pending);
     }
+    if (!interactive) return;
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
@@ -161,7 +164,7 @@ export function ExpandableDock({
       },
     );
     return () => subscription.remove();
-  }, [closeProfile, hidden, profileOpen]);
+  }, [closeProfile, hidden, interactive, profileOpen]);
 
   const press = useSharedValue(0);
   const dragOriginX = useSharedValue(0);
@@ -410,7 +413,9 @@ export function ExpandableDock({
   return (
     <View
       {...props}
-      pointerEvents="box-none"
+      pointerEvents={interactive ? "box-none" : "none"}
+      accessibilityElementsHidden={!interactive}
+      importantForAccessibility={interactive ? "auto" : "no-hide-descendants"}
       style={[styles.root, style, hidden && styles.hidden]}
     >
       {profileOpen && (

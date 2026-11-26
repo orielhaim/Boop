@@ -8,9 +8,9 @@ import {
 import {
   createContext,
   useContext,
-  useEffect,
   useId,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type Ref,
   type ComponentRef,
@@ -39,18 +39,6 @@ import {
 import { resolveGlassMaterial, type GlassMaterialInput } from "./material";
 
 const moduleName = "LiquidGlassEngine";
-const nativeAndroid =
-  Platform.OS === "android"
-    ? requireOptionalNativeModule<{ supportsRecordedBackdrop: boolean }>(
-        moduleName,
-      )
-    : null;
-const BackdropView = nativeAndroid?.supportsRecordedBackdrop
-  ? requireNativeView<ViewProps & { sourceId?: string }>(
-      moduleName,
-      "GlassBackdropView",
-    )
-  : null;
 interface OpticsProps extends ViewProps {
   sourceId?: string;
   captureEnabled?: boolean;
@@ -60,11 +48,34 @@ interface OpticsProps extends ViewProps {
   geometry?: number[];
   optics?: number[];
 }
-const OpticsView = nativeAndroid?.supportsRecordedBackdrop
-  ? Animated.createAnimatedComponent(
+
+function registerAndroidViews() {
+  return {
+    BackdropView: requireNativeView<ViewProps & { sourceId?: string }>(
+      moduleName,
+      "GlassBackdropView",
+    ),
+    OpticsView: Animated.createAnimatedComponent(
       requireNativeView<OpticsProps>(moduleName, "GlassOpticsView"),
-    )
-  : null;
+    ),
+  };
+}
+
+let androidViews: ReturnType<typeof registerAndroidViews> | undefined;
+
+function getAndroidViews() {
+  if (Platform.OS !== "android") return;
+  if (androidViews) return androidViews;
+  // A lookup while the JS bundle is loading can precede Expo's native registry.
+  // Only retain successful registration so mounting a screen can recover.
+  const module = requireOptionalNativeModule<{
+    supportsRecordedBackdrop: boolean;
+  }>(moduleName);
+  if (module?.supportsRecordedBackdrop) {
+    androidViews = registerAndroidViews();
+  }
+  return androidViews;
+}
 
 function hasSystemGlass() {
   if (Platform.OS !== "ios") return false;
@@ -81,7 +92,7 @@ const AnimatedSystemGlass = systemGlass
   : null;
 
 export function getGlassCapabilities() {
-  if (OpticsView)
+  if (getAndroidViews())
     return {
       backend: "android-render-node",
       maxShapes: MAX_GLASS_SHAPES,
@@ -107,6 +118,15 @@ interface BackdropScope {
 
 const BackdropContext = createContext<BackdropScope | null>(null);
 
+function subscribeToAppState(notify: () => void) {
+  const subscription = AppState.addEventListener("change", notify);
+  return () => subscription.remove();
+}
+
+function isForeground() {
+  return AppState.currentState === "active" || AppState.currentState === null;
+}
+
 export function useGlassSceneEnabled(enabled: boolean) {
   const scope = useContext(BackdropContext);
   return enabled && (scope?.active ?? true);
@@ -121,15 +141,11 @@ export function GlassProvider({
 }) {
   const parent = useContext(BackdropContext);
   const id = useId();
-  const [foreground, setForeground] = useState(
-    () => AppState.currentState === "active" || AppState.currentState === null,
+  const foreground = useSyncExternalStore(
+    subscribeToAppState,
+    isForeground,
+    isForeground,
   );
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) =>
-      setForeground(state === "active"),
-    );
-    return () => subscription.remove();
-  }, []);
   return (
     <BackdropContext.Provider
       value={{ id, active: active && foreground && (parent?.active ?? true) }}
@@ -142,6 +158,7 @@ export function GlassProvider({
 /** Render one source per provider. Use a sibling renderer to sample it. */
 export function GlassBackdrop(props: ViewProps) {
   const backdrop = useContext(BackdropContext);
+  const BackdropView = getAndroidViews()?.BackdropView;
   if (!BackdropView || !backdrop) return <View {...props} />;
   return (
     <BackdropView
@@ -186,6 +203,7 @@ export function GlassContentLens({
   enabled = true,
   ...props
 }: GlassContentLensProps) {
+  const OpticsView = getAndroidViews()?.OpticsView;
   const active = useGlassSceneEnabled(enabled);
   const resolved = resolveGlassMaterial(material);
   const color = processColor(matteColor);
@@ -221,6 +239,7 @@ export function GlassRenderer({
   systemSpacing,
   ...viewProps
 }: GlassRendererProps) {
+  const OpticsView = getAndroidViews()?.OpticsView;
   const source = useContext(BackdropContext);
   const active = enabled && (source?.active ?? true);
   const material = resolveGlassMaterial(input);

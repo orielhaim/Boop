@@ -168,7 +168,8 @@ function DockNavigator() {
       <ExpandableDock
         items={visibleTabs.map(({ item }) => item)}
         bottomOffset={bottomOffset}
-        hidden={keyboardVisible || !focused}
+        hidden={keyboardVisible}
+        interactive={focused}
         closeLabel={t("common:close")}
         direction={direction}
         accountName={accountName}
@@ -298,7 +299,7 @@ function DockNavigator() {
         };
 
   return (
-    <GlassBackdropProvider active={focused}>
+    <GlassBackdropProvider>
       <TabBarInsetProvider bottomOffset={keyboardVisible ? null : bottomOffset}>
         <View style={styles.navigator}>
           <NavigationContent>

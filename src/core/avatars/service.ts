@@ -404,13 +404,12 @@ export function createAvatars<Result>(
         if (!callbacks.size) listeners.delete(key);
       };
     },
-    resolve(peer: string, wide = false, profile = false) {
+    resolve(peer: string, wide = false) {
       if (!peer || !isCurrent() || privacy.isBlocked(peer)) return undefined;
       const key = wide ? `${peer}:banner` : peer;
       const uri = override(key);
       if (uri) return uri;
-      const approved = profile ? grant(key) : undefined;
-      const previous = approved?.[field(key)];
+      const previous = grant(key)?.[field(key)];
       const source = sourceFor(key);
       if (!source)
         return previous && !directory.profile(peer)
@@ -418,7 +417,6 @@ export function createAvatars<Result>(
           : undefined;
       const local = authored(key, source);
       if (local) return local;
-      if (!approved && !autoLoads(peer)) return undefined;
       return (
         disk.cached(cacheName(source)) ??
         (previous ? disk.cached(previous) : undefined)

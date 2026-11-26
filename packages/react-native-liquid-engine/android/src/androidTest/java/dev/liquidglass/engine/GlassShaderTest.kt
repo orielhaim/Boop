@@ -70,11 +70,20 @@ class GlassShaderTest {
     })
   }
 
+  @Test
+  fun aMagnifiedStrokeStaysContinuousAcrossTheCenterOfACapsule() {
+    val pixels = render(0f, 0f, content = true, magnification = 0.4f)
+    assertTrue("The stroke must cross the center of the lens without a seam", pixels.all {
+      it[3] > 240
+    })
+  }
+
   private fun render(
     merge: Float,
     strength: Float,
     varied: Boolean = false,
     content: Boolean = false,
+    magnification: Float = 0f,
   ): List<List<Int>> {
     val size = 96
     val renderer = HardwareRenderer()
@@ -85,7 +94,10 @@ class GlassShaderTest {
         source.setPosition(0, 0, size, size)
         val contentCanvas = source.beginRecording()
         val paint = Paint()
-        if (content) {
+        if (magnification > 0f) {
+          paint.color = Color.BLACK
+          contentCanvas.drawRect(12f, 46f, 78f, 50f, paint)
+        } else if (content) {
           paint.color = Color.BLACK
           contentCanvas.drawRect(4f, 30f, 8f, 66f, paint)
           contentCanvas.drawRect(18f, 30f, 24f, 66f, paint)
@@ -99,11 +111,15 @@ class GlassShaderTest {
 
         val shader = shader()
         val rects = FloatArray(32)
-        floatArrayOf(30f, 48f, 16f, 16f, 66f, 48f, 16f, 16f).copyInto(rects)
+        if (magnification > 0f) {
+          floatArrayOf(48f, 48f, 38f, 16f).copyInto(rects)
+        } else {
+          floatArrayOf(30f, 48f, 16f, 16f, 66f, 48f, 16f, 16f).copyInto(rects)
+        }
         val transforms = FloatArray(32)
         transforms[0] = 1f
         transforms[4] = 1f
-        shader.setIntUniform("shapeCount", 2)
+        shader.setIntUniform("shapeCount", if (magnification > 0f) 1 else 2)
         shader.setFloatUniform("shapeRect", rects)
         shader.setFloatUniform("shapeRadii", FloatArray(32) { 16f })
         shader.setFloatUniform("shapeTransform", transforms)
@@ -112,7 +128,7 @@ class GlassShaderTest {
         shader.setFloatUniform("colorControls", 1f, 1f, 1f, 0f)
         shader.setFloatUniform("lighting", 0f, 0f, 0f, 0f)
         shader.setFloatUniform("finish", 0f, 0f, 0f, if (content) 0.45f else 0f)
-        shader.setFloatUniform("extras", 0f, 0.75f, 14f, 1f)
+        shader.setFloatUniform("extras", magnification, 0.75f, 14f, 1f)
         shader.setFloatUniform("tint", 0f, 0f, 0f, 0f)
         val matte = if (content) 1f else 0f
         shader.setFloatUniform("fallback", matte, matte, matte, 1f)
@@ -143,7 +159,11 @@ class GlassShaderTest {
         val image = checkNotNull(reader.acquireNextImage())
         image.use {
           val plane = image.planes.first()
-          val points = if (content) (0 until size).map { it to 48 } else listOf(48 to 48, 16 to 48)
+          val points = when {
+            magnification > 0f -> (46..49).map { 27 to it }
+            content -> (0 until size).map { it to 48 }
+            else -> listOf(48 to 48, 16 to 48)
+          }
           return points.map { (x, y) ->
             val offset = y * plane.rowStride + x * plane.pixelStride
             (0..3).map { channel -> plane.buffer.get(offset + channel).toInt() and 0xff }

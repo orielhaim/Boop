@@ -1324,8 +1324,6 @@ export function MarmotGroupDetailsScreen({
         return t("devices:eligible");
       case "notAdmin":
         return t("devices:notAdmin");
-      case "alreadyEnabled":
-        return t("devices:alreadyEnabled");
       case "legacyGroup":
         return t("devices:legacyGroup");
       case "membersNeedUpdate":
@@ -1343,7 +1341,8 @@ export function MarmotGroupDetailsScreen({
   const accountDevices = member &&
     isGroup &&
     !editing &&
-    (deviceActivation || deviceActivationError) && (
+    (deviceActivationError ||
+      (activationKind && activationKind !== "alreadyEnabled")) && (
       <ListGroup title={t("devices:groupSupport")}>
         <ListRow
           title={

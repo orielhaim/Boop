@@ -87,8 +87,7 @@ export const en = {
     recoverSetupDetail:
       "Boop will keep the most recent recovery record and ask you to enter your identity key again.",
     setupUnlinked: "This device was unlinked from the account.",
-    sharedGroups: "Shared groups",
-    noSharedGroups: "No matches in recent groups",
+    noSharedGroups: "No shared groups",
     identityMismatch:
       "The saved key does not match this installation. Restore the original secure storage before retrying.",
     openingTagline: "Mind your own business",
@@ -259,7 +258,11 @@ export const en = {
     ownQrError: "Scan someone else’s address.",
     scanHint: "Position the QR code inside the frame.",
     save: "Save contact",
-    saveAs: "Save as contact",
+    addToContacts: "Add to Contacts",
+    confirmAdd: "Add {{name}} to contacts?",
+    changeNickname: "Change Nickname",
+    groupsTab: "Groups",
+    profileOptions: "Profile options",
     openProfile: "Open profile for {{name}}",
   },
   messages: {
@@ -777,7 +780,6 @@ export const en = {
     always: "Always allow",
     toggle: "Show or hide call controls",
     swap: "Swap full-screen and floating video",
-    automatic: "Automatically allow incoming video",
     active: "Video active",
     error_permission: "Allow camera access in Settings to share video.",
     error_capture: "The camera could not be opened.",

@@ -8,6 +8,7 @@ import {
 } from "@expo/ui/jetpack-compose";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
+import { Icon } from "@/components/ui/icon";
 import type { ActionMenuProps } from "./action-menu";
 import { useTheme } from "@/theme";
 
@@ -48,7 +49,7 @@ export function ActionMenu({
             </RNHostView>
           </DropdownMenu.Trigger>
           <DropdownMenu.Items>
-            {actions.map(({ id, title, state, attributes }, index) => {
+            {actions.map(({ id, title, state, attributes, icon }, index) => {
               const select = () => {
                 setOpen(false);
                 onSelect(id ?? title);
@@ -67,12 +68,27 @@ export function ActionMenu({
                     }}
                     onClick={select}
                   >
+                    {icon && (
+                      <SelectableDropdownMenuItem.LeadingIcon>
+                        <RNHostView matchContents>
+                          <Icon name={icon} size={20} color={colors.text} />
+                        </RNHostView>
+                      </SelectableDropdownMenuItem.LeadingIcon>
+                    )}
                     <SelectableDropdownMenuItem.Text>
                       <Text>{title}</Text>
                     </SelectableDropdownMenuItem.Text>
-                    <SelectableDropdownMenuItem.SelectedLeadingIcon>
-                      <Text>{"✓"}</Text>
-                    </SelectableDropdownMenuItem.SelectedLeadingIcon>
+                    {icon ? (
+                      state === "on" && (
+                        <SelectableDropdownMenuItem.TrailingContent>
+                          <Text>{"✓"}</Text>
+                        </SelectableDropdownMenuItem.TrailingContent>
+                      )
+                    ) : (
+                      <SelectableDropdownMenuItem.SelectedLeadingIcon>
+                        <Text>{"✓"}</Text>
+                      </SelectableDropdownMenuItem.SelectedLeadingIcon>
+                    )}
                   </SelectableDropdownMenuItem>
                 );
               }
@@ -86,6 +102,21 @@ export function ActionMenu({
                       : undefined
                   }
                 >
+                  {icon && (
+                    <DropdownMenuItem.LeadingIcon>
+                      <RNHostView matchContents>
+                        <Icon
+                          name={icon}
+                          size={20}
+                          color={
+                            attributes?.destructive
+                              ? colors.danger
+                              : colors.text
+                          }
+                        />
+                      </RNHostView>
+                    </DropdownMenuItem.LeadingIcon>
+                  )}
                   <DropdownMenuItem.Text>
                     <Text>{title}</Text>
                   </DropdownMenuItem.Text>

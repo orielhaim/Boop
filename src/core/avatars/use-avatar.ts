@@ -24,7 +24,7 @@ export function useAvatar(
       (listener) => (key ? avatars.subscribe(key, listener) : () => {}),
       [avatars, key],
     ),
-    () => (key ? avatars.resolve(key, banner, profile) : undefined),
+    () => (key ? avatars.resolve(key, banner) : undefined),
   );
 }
 

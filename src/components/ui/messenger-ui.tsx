@@ -31,7 +31,7 @@ export function QuietState({
 }: {
   icon: IconName;
   title: string;
-  detail: string;
+  detail?: string;
   children?: ReactNode;
 }) {
   return (

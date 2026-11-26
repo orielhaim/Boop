@@ -67,14 +67,20 @@ type Wave = Size &
 const captureTimeout = 300;
 let hardwareCaptureAvailable = true;
 
-const androidSnapshot = requireOptionalNativeModule<{
+type AndroidSnapshot = {
   copy: (
     tag: number,
     width: number,
     height: number,
   ) => Promise<Uint8Array | null>;
   awaitFrameCover?: (tag: number, x: number, y: number) => Promise<boolean>;
-}>("BoopThemeSnapshot");
+};
+
+function getAndroidSnapshot() {
+  return Platform.OS === "android"
+    ? requireOptionalNativeModule<AndroidSnapshot>("BoopThemeSnapshot")
+    : null;
+}
 
 const androidOverlay = {
   backingView: "SurfaceView",
@@ -130,6 +136,7 @@ async function capture(
   canCapture: () => boolean,
 ): Promise<Snapshot> {
   if (Platform.OS === "android") {
+    const androidSnapshot = getAndroidSnapshot();
     const tag = findNodeHandle(view);
     if (!canCapture() || tag == null || !androidSnapshot) {
       throw new Error("Theme capture unavailable");
@@ -421,6 +428,7 @@ export function ThemeSwitcher({
       await nextFrame();
       let covered = true;
       const tag = canvas.current && findNodeHandle(canvas.current);
+      const androidSnapshot = getAndroidSnapshot();
       if (tag != null && androidSnapshot?.awaitFrameCover) {
         const { x, y } = newest.probe;
         covered = await androidSnapshot.awaitFrameCover(

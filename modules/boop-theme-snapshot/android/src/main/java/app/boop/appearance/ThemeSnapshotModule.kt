@@ -9,6 +9,7 @@ import android.view.PixelCopy
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowManager
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
@@ -32,12 +33,14 @@ class ThemeSnapshotModule : Module() {
         return@Coroutine null
       }
       withContext(Dispatchers.Main) {
-        val frame = copyFrame(tag, width, height) ?: return@withContext null
+        val window = appContext.currentActivity?.window ?: return@withContext null
+        val frame = copyFrame(window, tag, width, height) ?: return@withContext null
         try {
-          withContext(Dispatchers.Default) {
+          val pixels = withContext(Dispatchers.Default) {
             if (frame.rowBytes != width * 4) null
             else ByteBuffer.allocate(frame.byteCount).also(frame::copyPixelsToBuffer).array()
           }
+          pixels.takeIf { canCapture(window) && window.decorView.hasWindowFocus() }
         } finally {
           frame.recycle()
         }
@@ -51,12 +54,12 @@ class ThemeSnapshotModule : Module() {
 
   private suspend fun awaitFrameCover(tag: Int, x: Double, y: Double): Boolean {
     if (!x.isFinite() || !y.isFinite()) return false
-    val root = appContext.currentActivity?.window?.decorView?.findViewById<View>(tag)
-      ?: return false
+    val window = appContext.currentActivity?.window ?: return false
+    val root = window.decorView.findViewById<View>(tag) ?: return false
     val pixel = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     try {
       return withTimeoutOrNull(450) {
-        while (root.isAttachedToWindow) {
+        while (root.isAttachedToWindow && canCapture(window) && window.decorView.hasWindowFocus()) {
           val overlay = root.surfaceView()
           val holder = overlay?.holder
           if (holder != null && holder.surface.isValid) {
@@ -73,7 +76,8 @@ class ThemeSnapshotModule : Module() {
                   continuation.resume(false)
                 }
               }
-              if (copied && Color.alpha(pixel.getPixel(0, 0)) != 0) return@withTimeoutOrNull true
+              if (copied && canCapture(window) && window.decorView.hasWindowFocus() &&
+                  Color.alpha(pixel.getPixel(0, 0)) != 0) return@withTimeoutOrNull true
             }
           }
           delay(16)
@@ -92,32 +96,40 @@ class ThemeSnapshotModule : Module() {
       else -> null
     }
 
-  private suspend fun copyFrame(tag: Int, width: Int, height: Int): Bitmap? {
-    val window = appContext.currentActivity?.window ?: return null
-    if (!window.decorView.hasWindowFocus()) return null
-    if (window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0) {
-      return null
-    }
-    val view = window.decorView.findViewById<View>(tag) ?: return null
-    if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return null
+  private fun canCapture(window: Window): Boolean =
+    appContext.currentActivity?.window === window &&
+      window.decorView.isAttachedToWindow &&
+      window.decorView.windowVisibility == View.VISIBLE &&
+      window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE == 0
 
-    val origin = IntArray(2).also(view::getLocationInWindow)
-    val bounds = Rect(origin[0], origin[1], origin[0] + view.width, origin[1] + view.height)
-    val frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    return suspendCoroutine { continuation ->
-      try {
-        PixelCopy.request(window, bounds, frame, { result ->
-          if (result == PixelCopy.SUCCESS) {
-            continuation.resume(frame)
-          } else {
-            frame.recycle()
-            continuation.resume(null)
-          }
-        }, mainHandler)
-      } catch (_: IllegalArgumentException) {
+  private suspend fun copyFrame(window: Window, tag: Int, width: Int, height: Int): Bitmap? {
+    repeat(4) { attempt ->
+      if (!canCapture(window)) return null
+      val view = window.decorView.findViewById<View>(tag) ?: return null
+      if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return null
+      if (window.decorView.hasWindowFocus()) {
+        val origin = IntArray(2).also(view::getLocationInWindow)
+        val bounds = Rect(origin[0], origin[1], origin[0] + view.width, origin[1] + view.height)
+        val frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val result = requestCopy(window, bounds, frame)
+        if (result == PixelCopy.SUCCESS && canCapture(window) && window.decorView.hasWindowFocus()) {
+          return frame
+        }
         frame.recycle()
-        continuation.resume(null)
+        if (result != PixelCopy.ERROR_SOURCE_NO_DATA) return null
+      }
+      // The activity can be visible before its first frame or window focus is ready.
+      if (attempt < 3) delay(16)
+    }
+    return null
+  }
+
+  private suspend fun requestCopy(window: Window, bounds: Rect, frame: Bitmap): Int =
+    suspendCoroutine { continuation ->
+      try {
+        PixelCopy.request(window, bounds, frame, continuation::resume, mainHandler)
+      } catch (_: IllegalArgumentException) {
+        continuation.resume(PixelCopy.ERROR_SOURCE_INVALID)
       }
     }
-  }
 }

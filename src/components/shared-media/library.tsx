@@ -20,7 +20,12 @@ import {
   type FlatListProps,
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, { LinearTransition } from "react-native-reanimated";
+import Animated, {
+  LinearTransition,
+  type ScrollHandlerProcessed,
+  useAnimatedScrollHandler,
+  useComposedEventHandler,
+} from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
@@ -142,12 +147,14 @@ export function SharedMediaLibrary({
   scope,
   header,
   tabs,
+  onAnimatedScroll,
   scrollPositionRef,
   active = true,
 }: {
   scope: SharedMediaScope;
   header?: ReactNode;
   tabs?: ReactNode;
+  onAnimatedScroll?: ScrollHandlerProcessed;
   scrollPositionRef?: { current: number };
   active?: boolean;
 }) {
@@ -632,6 +639,38 @@ export function SharedMediaLibrary({
       </View>
     </View>
   );
+  function recordScroll(y: number) {
+    offset.current = y;
+    if (
+      !categoryOffsets.current.has(viewKey) &&
+      categoryOffsets.current.size >= 24
+    ) {
+      const oldest = categoryOffsets.current.keys().next().value;
+      if (oldest) categoryOffsets.current.delete(oldest);
+    }
+    categoryOffsets.current.set(viewKey, y);
+    if (scrollPositionRef) scrollPositionRef.current = y;
+  }
+
+  const recordAnimatedScroll = useAnimatedScrollHandler({
+    onScroll(event, context: { time?: number }) {
+      const time = performance.now();
+      if (context.time === undefined || time - context.time >= 64) {
+        context.time = time;
+        scheduleOnRN(recordScroll, event.contentOffset.y);
+      }
+    },
+    onEndDrag(event) {
+      scheduleOnRN(recordScroll, event.contentOffset.y);
+    },
+    onMomentumEnd(event) {
+      scheduleOnRN(recordScroll, event.contentOffset.y);
+    },
+  });
+  const animatedScroll = useComposedEventHandler([
+    onAnimatedScroll ?? null,
+    recordAnimatedScroll,
+  ]);
 
   return (
     <View style={[styles.root, { direction: rtl ? "rtl" : "ltr" }]}>
@@ -664,19 +703,12 @@ export function SharedMediaLibrary({
           maxToRenderPerBatch={9}
           windowSize={7}
           onViewableItemsChanged={onVisible}
-          onScroll={(event) => {
-            offset.current = event.nativeEvent.contentOffset.y;
-            if (
-              !categoryOffsets.current.has(viewKey) &&
-              categoryOffsets.current.size >= 24
-            ) {
-              const oldest = categoryOffsets.current.keys().next().value;
-              if (oldest) categoryOffsets.current.delete(oldest);
-            }
-            categoryOffsets.current.set(viewKey, offset.current);
-            if (scrollPositionRef) scrollPositionRef.current = offset.current;
-          }}
-          scrollEventThrottle={64}
+          onScroll={
+            onAnimatedScroll
+              ? animatedScroll
+              : (event) => recordScroll(event.nativeEvent.contentOffset.y)
+          }
+          scrollEventThrottle={onAnimatedScroll ? 16 : 64}
           onScrollToIndexFailed={({ index, averageItemLength }) => {
             list.current?.scrollToOffset({
               offset: Math.max(

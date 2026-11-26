@@ -297,7 +297,7 @@ for (const change of ["policy", "block", "delete", "identity"] as const) {
   });
 }
 
-test("cache hides on policy and source changes and reuses eligible validated bytes", async () => {
+test("validated avatar bytes remain visible when automatic downloads are disabled", async () => {
   const f = fixture("contacts", true);
   try {
     await Bun.sleep(120);
@@ -310,7 +310,9 @@ test("cache hides on policy and source changes and reuses eligible validated byt
     expect(first).toStartWith("file:///cache/");
     f.context.policy = "nobody";
     f.avatars.invalidate();
-    expect(f.avatars.resolve(key)).toBeUndefined();
+    expect(f.avatars.resolve(key)).toBe(first);
+    await Bun.sleep(150);
+    expect(f.requests).toHaveLength(1);
     f.context.policy = "contacts";
     f.avatars.invalidate();
     expect(f.avatars.resolve(key)).toBe(first);
@@ -346,22 +348,20 @@ test("explicit photo and banner downloads finish after leaving and refresh on th
     expect(f.cancelled).toEqual([]);
     for (const request of f.requests) request.finish(12);
     await Bun.sleep(20);
-    const firstPhoto = f.avatars.resolve(key, false, true);
-    const firstBanner = f.avatars.resolve(key, true, true);
+    const firstPhoto = f.avatars.resolve(key);
+    const firstBanner = f.avatars.resolve(key, true);
     expect(firstPhoto).toStartWith("file:///cache/");
     expect(firstBanner).toStartWith("file:///cache/");
-    expect(f.avatars.resolve(key)).toBeUndefined();
 
     const reopened = f.reopen();
-    expect(reopened.resolve(key, false, true)).toBe(firstPhoto);
-    expect(reopened.resolve(key, true, true)).toBe(firstBanner);
-    expect(reopened.resolve(key)).toBeUndefined();
+    expect(reopened.resolve(key)).toBe(firstPhoto);
+    expect(reopened.resolve(key, true)).toBe(firstBanner);
 
     const nextPhoto = "https://photos.example.com/updated.jpg";
     const nextBanner = "https://photos.example.com/updated-cover.jpg";
     f.profile({ ...photo(nextPhoto), banner: nextBanner });
-    expect(f.avatars.resolve(key, false, true)).toBe(firstPhoto);
-    expect(f.avatars.resolve(key, true, true)).toBe(firstBanner);
+    expect(f.avatars.resolve(key)).toBe(firstPhoto);
+    expect(f.avatars.resolve(key, true)).toBe(firstBanner);
     await Bun.sleep(150);
     expect(f.requests).toHaveLength(2);
     f.avatars.watch(key, false, true);
@@ -375,14 +375,14 @@ test("explicit photo and banner downloads finish after leaving and refresh on th
     ).toEqual([nextPhoto, nextBanner].sort());
     for (const request of f.requests.slice(2)) request.finish(12);
     await Bun.sleep(20);
-    expect(f.avatars.resolve(key, false, true)).not.toBe(firstPhoto);
-    expect(f.avatars.resolve(key, true, true)).not.toBe(firstBanner);
+    expect(f.avatars.resolve(key)).not.toBe(firstPhoto);
+    expect(f.avatars.resolve(key, true)).not.toBe(firstBanner);
     f.context.blocked = true;
     f.avatars.requestProfileImages(key);
     f.avatars.invalidate();
     await Bun.sleep(150);
     expect(f.requests).toHaveLength(4);
-    expect(f.avatars.resolve(key, false, true)).toBeUndefined();
+    expect(f.avatars.resolve(key)).toBeUndefined();
   } finally {
     f.close();
   }
@@ -418,7 +418,7 @@ test("a photo policy change revokes consent and cancels its in-flight download",
     expect(f.cancelled).toEqual([request.id]);
     request.finish(200);
     await Bun.sleep(0);
-    expect(f.avatars.resolve(key, false, true)).toBeUndefined();
+    expect(f.avatars.resolve(key)).toBeUndefined();
     expect([...f.cache]).toEqual([]);
     f.context.policy = "contacts";
     f.avatars.invalidate();

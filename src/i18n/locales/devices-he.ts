@@ -218,7 +218,6 @@ export const devicesHe: Record<keyof typeof devicesEn, string> = {
   groupEnableHelp:
     "מכשירים מתאימים של אותו חשבון יוכלו להצטרף ולעזוב דרך המכשירים האחרים של החשבון. אי אפשר לבטל את השינוי.",
   notAdmin: "מנהל הקבוצה יכול להפעיל את האפשרות הזאת.",
-  alreadyEnabled: "הקבוצה תומכת במכשירים מקושרים.",
   legacyGroup: "הקבוצה משתמשת בפורמט קודם.",
   membersNeedUpdate: "חלק מחברי הקבוצה צריכים לעדכן את היישום.",
   devicesNeedReplacement: "לחלק מחברי הקבוצה נדרש מכשיר תואם.",

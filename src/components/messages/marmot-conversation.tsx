@@ -4,6 +4,12 @@ import {
 } from "@/core/marmot/message-projection";
 import { quoteText } from "@/core/marmot/message-content";
 import { PreparedMessageText } from "./prepared-message-text";
+import {
+  AttachmentTray,
+  AttachmentTrayBoundary,
+  AttachmentTrayTrigger,
+  createAttachmentTray,
+} from "./attachment-tray";
 import { useContacts } from "@/db/contacts";
 import { useAudioActions } from "@/components/audio/actions";
 import { VoiceUploadAttachment } from "@/components/audio/attachment";
@@ -428,6 +434,7 @@ function MarmotConversationContent({
   const [inlineSends, setInlineSends] = useState<InlineUpload[]>([]);
   const [activeUpload, setActiveUpload] = useState<string>();
   const [attachmentQueue] = useState(createAttachmentUploadQueue);
+  const [attachmentTray] = useState(createAttachmentTray);
   const [openedAt] = useState(Date.now);
   useEffect(() => {
     const cancel = attachmentQueue.cancelAll;
@@ -2196,7 +2203,7 @@ function MarmotConversationContent({
       </View>
       {(!invited || requestVisible) && (
         <>
-          <View style={styles.chat}>
+          <AttachmentTrayBoundary tray={attachmentTray}>
             <Chat<ChatMessage>
               {...kit}
               labels={
@@ -2473,6 +2480,13 @@ function MarmotConversationContent({
               attachments={{
                 isEnabled: canAttach,
                 isGalleryGridEnabled: false,
+                renderAttachmentMenu: (props) => (
+                  <AttachmentTrayTrigger
+                    {...props}
+                    allowed={focused && !locked && canAttach}
+                    tray={attachmentTray}
+                  />
+                ),
                 onPick: (attachments, { caption }) => {
                   try {
                     const files: MarmotUpload[] = [];
@@ -3170,7 +3184,10 @@ function MarmotConversationContent({
                 isViewOnceEnabled: false,
               }}
             />
-          </View>
+          </AttachmentTrayBoundary>
+          {focused && !locked && canAttach && (
+            <AttachmentTray tray={attachmentTray} />
+          )}
           {panel === "poll" && canSend && (
             <MarmotPollComposer
               group={id}

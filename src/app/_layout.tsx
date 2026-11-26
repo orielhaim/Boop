@@ -157,27 +157,6 @@ function Boot() {
     startup.phase === "loaded" && startup.data.status === "ready"
       ? startup.data
       : undefined;
-  const lifecycleSubscribe = useCallback(
-    (listener: () => void) =>
-      ready?.accountLifecycle.subscribe(listener) ?? (() => {}),
-    [ready],
-  );
-  const lifecycleSnapshot = useCallback(
-    () =>
-      ready?.accountLifecycle.getState() ?? {
-        phase: "idle",
-        action: null,
-        outcome: null,
-        deleteKeyPackages: null,
-        error: null,
-        localDataPurged: false,
-      },
-    [ready],
-  );
-  const accountLifecycle = useSyncExternalStore(
-    lifecycleSubscribe,
-    lifecycleSnapshot,
-  );
   const failed = startup.phase === "failed" ? startup.failure : undefined;
   const covered = !handedOff || (!welcome && !revealed);
   const lock = ready?.lock;
@@ -251,11 +230,7 @@ function Boot() {
               }
             >
               {ready ? (
-                accountLifecycle.phase === "idle" ? (
-                  <ProtectedApplication data={ready} />
-                ) : (
-                  <AccountLifecycleGate data={ready} state={accountLifecycle} />
-                )
+                <AccountSession data={ready} />
               ) : (
                 <ScreenInsets padding={space.xxl} style={styles.boot}>
                   <OpeningMark />
@@ -320,6 +295,16 @@ function BootSurface({ children }: { children: ReactNode }) {
         {children}
       </View>
     </ThemeProvider>
+  );
+}
+
+function AccountSession({ data }: { data: LocalServices }) {
+  const lifecycle = data.accountLifecycle;
+  const state = useSyncExternalStore(lifecycle.subscribe, lifecycle.getState);
+  return state.phase === "idle" ? (
+    <ProtectedApplication data={data} />
+  ) : (
+    <AccountLifecycleGate data={data} state={state} />
   );
 }
 

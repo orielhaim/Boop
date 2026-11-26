@@ -42,7 +42,7 @@ float contour(float2 p, float4 rect, float4 radii, float4 transform) {
   return edge + min(max(d.x, d.y), 0.0) - radius;
 }
 
-float2 field(float2 p) {
+float3 field(float2 p) {
   float d = contour(p, shapeRect[0], shapeRadii[0], shapeTransform[0]);
   float2 center = shapeRect[0].xy;
   for (int i = 1; i < 8; ++i) {
@@ -59,7 +59,7 @@ float2 field(float2 p) {
       center = mix(shapeRect[i].xy, center, mixRatio);
     }
   }
-  return float2(d, length(p - center));
+  return float3(d, p - center);
 }
 
 struct Material {
@@ -118,7 +118,7 @@ float diffuse(float2 n, float2 p, float3 light) {
 
 half4 main(float2 p) {
   if (shapeCount == 0) return refractContent != 0 ? backdrop.eval(p) : half4(0.0);
-  float2 sd = field(p);
+  float3 sd = field(p);
   Material m = materialAt(p);
   float coverage = 1.0 - smoothstep(-extras.y, extras.y, sd.x);
   if (coverage <= 0.0) {
@@ -133,8 +133,10 @@ half4 main(float2 p) {
   float depth = clamp(-sd.x / max(m.optics.z, 0.001), 0.0, 1.0);
   float slope = (1.0 - depth) * (1.0 - depth);
   float bend = m.optics.y * m.optics.w * slope;
-  float magnify = m.extras.x * min(sd.y, m.optics.z) * (1.0 - slope);
-  float2 samplePoint = p - normal * (bend + magnify);
+  // Magnification follows the center, so it stays continuous where the rim normal flips.
+  float2 radial = sd.yz;
+  float zoom = m.extras.x * (1.0 - slope) * min(1.0, m.optics.z / max(length(radial), 0.001));
+  float2 samplePoint = p - normal * bend - radial * zoom;
   float2 spread = normal * bend * m.finish.w;
   if (refractContent != 0) {
     half4 original = backdrop.eval(p);

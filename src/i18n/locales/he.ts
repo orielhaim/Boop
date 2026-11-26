@@ -85,8 +85,7 @@ export const he = {
     recoverSetupDetail:
       "Boop תשמור את רשומת השחזור האחרונה ותבקש להזין מחדש את מפתח הזהות.",
     setupUnlinked: "המכשיר הזה נותק מהחשבון.",
-    sharedGroups: "קבוצות משותפות",
-    noSharedGroups: "לא נמצאו התאמות בקבוצות האחרונות",
+    noSharedGroups: "אין קבוצות משותפות",
     identityMismatch:
       "המפתח השמור אינו תואם להתקנה זו. יש לשחזר את האחסון המאובטח המקורי ולנסות שוב.",
     openingTagline: "תתעסקו בעניינים שלכם",
@@ -252,7 +251,11 @@ export const he = {
     ownQrError: "יש לסרוק כתובת של מישהו אחר.",
     scanHint: "יש למקם את קוד ה־QR בתוך המסגרת.",
     save: "שמירת איש הקשר",
-    saveAs: "שמירה כאיש קשר",
+    addToContacts: "הוספה לאנשי קשר",
+    confirmAdd: "להוסיף את {{name}} לאנשי הקשר?",
+    changeNickname: "שינוי כינוי",
+    groupsTab: "קבוצות",
+    profileOptions: "אפשרויות פרופיל",
     openProfile: "פתיחת הפרופיל של {{name}}",
   },
   messages: {
@@ -759,7 +762,6 @@ export const he = {
     always: "לאפשר תמיד",
     toggle: "הצגה או הסתרה של פקדי השיחה",
     swap: "החלפה בין הסרטון המלא לחלון הצף",
-    automatic: "לאפשר אוטומטית וידאו נכנס",
     active: "וידאו פעיל",
     error_permission: "כדי לשתף וידאו יש לאפשר גישה למצלמה בהגדרות.",
     error_capture: "לא ניתן לפתוח את המצלמה.",

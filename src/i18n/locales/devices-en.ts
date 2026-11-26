@@ -231,7 +231,6 @@ export const devicesEn = {
   groupEnableHelp:
     "Eligible devices of the same account can join and leave through the other devices of that account. This change can’t be undone.",
   notAdmin: "A group admin can turn this on.",
-  alreadyEnabled: "Linked devices are supported in this group.",
   legacyGroup: "This group uses an earlier format.",
   membersNeedUpdate: "Some group members need to update their app.",
   devicesNeedReplacement: "Some group members need a compatible device.",
