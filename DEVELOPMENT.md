@@ -8,7 +8,9 @@ bun run android
 bun start
 ```
 
-Select the active Metro server in the development launcher. Rebuild after native dependency or configuration changes. Use `app.json` and Expo config plugins for changes that must survive prebuild.
+Select the active Metro server in the development launcher. Stop Metro before changing dependencies, then restart it with `bun start --clear` and relaunch the client. Fast Refresh can mix old and new modules when dependencies change in a running session.
+
+Rebuild after native dependency or configuration changes. If the Android linker references a symbol from the previous version of a dependency, run that library's Gradle `clean` task before rebuilding. Use `app.json` and Expo config plugins for changes that must survive prebuild.
 
 ## Validate changes
 

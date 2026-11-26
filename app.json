@@ -167,7 +167,12 @@
         }
       ],
       "expo-asset",
-      ["expo-screen-orientation", { "initialOrientation": "PORTRAIT_UP" }],
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
+        }
+      ],
       [
         "expo-video",
         {
@@ -199,7 +204,9 @@
           "speechRecognitionPermission": "Allow Boop to transcribe saved voice messages using on-device speech recognition."
         }
       ],
-      "react-native-webgpu"
+      "react-native-webgpu",
+      "expo-image",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -14,13 +14,13 @@ import {
   AppState,
   BackHandler,
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   Text,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { StyleSheet } from "react-native-unistyles";
 import Animated, {
   cancelAnimation,
@@ -515,194 +515,191 @@ function WelcomeForm({
         </View>
       )}
       {isForm ? (
-        <KeyboardAvoidingView
+        <KeyboardAwareScrollView
           style={styles.fill}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          bottomOffset={18}
+          onScroll={scrollForm}
+          scrollEventThrottle={16}
+          contentContainerStyle={[
+            styles.formScroll,
+            {
+              paddingHorizontal: sidePadding,
+              paddingTop: insets.top + 7,
+              paddingBottom: insets.bottom + 18,
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
+          pointerEvents={hold ? "none" : "auto"}
+          accessibilityElementsHidden={hold}
+          importantForAccessibility={hold ? "no-hide-descendants" : "auto"}
         >
-          <Animated.ScrollView
-            onScroll={scrollForm}
-            scrollEventThrottle={16}
-            contentContainerStyle={[
-              styles.formScroll,
-              {
-                paddingHorizontal: sidePadding,
-                paddingTop: insets.top + 7,
-                paddingBottom: insets.bottom + 18,
-              },
-            ]}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
-            pointerEvents={hold ? "none" : "auto"}
-            accessibilityElementsHidden={hold}
-            importantForAccessibility={hold ? "no-hide-descendants" : "auto"}
-          >
-            <Animated.View style={[styles.formFrame, formEntry]}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("common:back")}
-                onPress={back}
-                style={({ pressed }) => [
-                  styles.back,
-                  {
-                    backgroundColor: pressed ? colors.selected : colors.raised,
-                    borderColor: colors.line,
-                  },
-                ]}
+          <Animated.View style={[styles.formFrame, formEntry]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("common:back")}
+              onPress={back}
+              style={({ pressed }) => [
+                styles.back,
+                {
+                  backgroundColor: pressed ? colors.selected : colors.raised,
+                  borderColor: colors.line,
+                },
+              ]}
+            >
+              <Icon name="back" size={21} color={palette.ink} />
+            </Pressable>
+            <View style={styles.formLead} />
+            <View
+              style={styles.formArt}
+              onLayout={({ nativeEvent: { layout } }) =>
+                setFormTop(insets.top + 7 + layout.y + layout.height / 2)
+              }
+            />
+            {!hold && (
+              <Animated.View
+                key={candidate ? "review" : mode}
+                entering={enter}
+                style={styles.formBody}
               >
-                <Icon name="back" size={21} color={palette.ink} />
-              </Pressable>
-              <View style={styles.formLead} />
-              <View
-                style={styles.formArt}
-                onLayout={({ nativeEvent: { layout } }) =>
-                  setFormTop(insets.top + 7 + layout.y + layout.height / 2)
-                }
-              />
-              {!hold && (
-                <Animated.View
-                  key={candidate ? "review" : mode}
-                  entering={enter}
-                  style={styles.formBody}
+                <Text
+                  accessibilityRole="header"
+                  style={[styles.heading, { color: palette.ink }]}
                 >
-                  <Text
-                    accessibilityRole="header"
-                    style={[styles.heading, { color: palette.ink }]}
-                  >
-                    {formTitle}
-                  </Text>
-                  <Text style={[styles.description, { color: colors.muted }]}>
-                    {t(
-                      candidate
-                        ? "messenger:reviewAddressHint"
-                        : mode === "create"
-                          ? "messenger:publicIntro"
-                          : "messenger:privateKeyHelp",
-                    )}
-                  </Text>
-                  {mode === "create" ? (
-                    <>
-                      <OpeningField
-                        label={t("messenger:publicName")}
-                        autoCapitalize="words"
-                        value={name}
-                        maxLength={128}
-                        onChangeText={setName}
-                      />
-                      <OpeningField
-                        label={t("messenger:optionalAbout")}
-                        value={about}
-                        maxLength={1000}
-                        multiline
-                        onChangeText={setAbout}
-                      />
-                    </>
-                  ) : candidate && active ? (
-                    <View
-                      style={[
-                        styles.addressPanel,
-                        {
-                          borderColor: colors.line,
-                          backgroundColor: colors.raised,
-                        },
-                      ]}
-                    >
-                      <Icon name="key" size={22} color={colors.accent} />
-                      <Text
-                        selectable
-                        style={[styles.address, { color: palette.ink }]}
-                      >
-                        {toNpub(candidate.publicKey)}
-                      </Text>
-                    </View>
-                  ) : showSecrets ? (
-                    <>
-                      <OpeningField
-                        label={t("messenger:privateKey")}
-                        {...secureInput}
-                        maxLength={168}
-                        value={input}
-                        onChangeText={(value) => {
-                          setInput(value);
-                          setPassword("");
-                          setNotice(undefined);
-                        }}
-                      />
-                      {backupKind(input) === "encrypted" && (
-                        <Animated.View entering={enter}>
-                          <OpeningField
-                            label={t("security:backupPassword")}
-                            {...secureInput}
-                            maxLength={512}
-                            value={password}
-                            onChangeText={setPassword}
-                          />
-                        </Animated.View>
-                      )}
-                    </>
-                  ) : null}
-                  {notice && (
-                    <Animated.Text
-                      entering={enter}
-                      accessibilityLiveRegion="polite"
-                      style={[styles.notice, { color: colors.danger }]}
-                    >
-                      {t(
-                        notice === "protection"
-                          ? "security:backupFailed"
-                          : `messenger:${notice}`,
-                      )}
-                    </Animated.Text>
+                  {formTitle}
+                </Text>
+                <Text style={[styles.description, { color: colors.muted }]}>
+                  {t(
+                    candidate
+                      ? "messenger:reviewAddressHint"
+                      : mode === "create"
+                        ? "messenger:publicIntro"
+                        : "messenger:privateKeyHelp",
                   )}
-                </Animated.View>
-              )}
-              <View style={styles.spacer} />
-              {!hold && (
-                <View style={styles.actions}>
-                  {notice === "saveFailed" ? (
-                    <OpeningButton
-                      primary
-                      label={t("common:retry")}
-                      onPress={() => {
-                        if (canUseIdentity()) advance();
+                </Text>
+                {mode === "create" ? (
+                  <>
+                    <OpeningField
+                      label={t("messenger:publicName")}
+                      autoCapitalize="words"
+                      value={name}
+                      maxLength={128}
+                      onChangeText={setName}
+                    />
+                    <OpeningField
+                      label={t("messenger:optionalAbout")}
+                      value={about}
+                      maxLength={1000}
+                      multiline
+                      onChangeText={setAbout}
+                    />
+                  </>
+                ) : candidate && active ? (
+                  <View
+                    style={[
+                      styles.addressPanel,
+                      {
+                        borderColor: colors.line,
+                        backgroundColor: colors.raised,
+                      },
+                    ]}
+                  >
+                    <Icon name="key" size={22} color={colors.accent} />
+                    <Text
+                      selectable
+                      style={[styles.address, { color: palette.ink }]}
+                    >
+                      {toNpub(candidate.publicKey)}
+                    </Text>
+                  </View>
+                ) : showSecrets ? (
+                  <>
+                    <OpeningField
+                      label={t("messenger:privateKey")}
+                      {...secureInput}
+                      maxLength={168}
+                      value={input}
+                      onChangeText={(value) => {
+                        setInput(value);
+                        setPassword("");
+                        setNotice(undefined);
                       }}
                     />
-                  ) : mode === "create" ? (
+                    {backupKind(input) === "encrypted" && (
+                      <Animated.View entering={enter}>
+                        <OpeningField
+                          label={t("security:backupPassword")}
+                          {...secureInput}
+                          maxLength={512}
+                          value={password}
+                          onChangeText={setPassword}
+                        />
+                      </Animated.View>
+                    )}
+                  </>
+                ) : null}
+                {notice && (
+                  <Animated.Text
+                    entering={enter}
+                    accessibilityLiveRegion="polite"
+                    style={[styles.notice, { color: colors.danger }]}
+                  >
+                    {t(
+                      notice === "protection"
+                        ? "security:backupFailed"
+                        : `messenger:${notice}`,
+                    )}
+                  </Animated.Text>
+                )}
+              </Animated.View>
+            )}
+            <View style={styles.spacer} />
+            {!hold && (
+              <View style={styles.actions}>
+                {notice === "saveFailed" ? (
+                  <OpeningButton
+                    primary
+                    label={t("common:retry")}
+                    onPress={() => {
+                      if (canUseIdentity()) advance();
+                    }}
+                  />
+                ) : mode === "create" ? (
+                  <OpeningButton
+                    primary
+                    label={t("messenger:create")}
+                    disabled={!name.trim()}
+                    onPress={() => void install({ name, about })}
+                  />
+                ) : candidate && active ? (
+                  <OpeningButton
+                    primary
+                    label={t("messenger:confirmImport")}
+                    icon="check"
+                    onPress={() =>
+                      void install({ importToken: candidate.token })
+                    }
+                  />
+                ) : showSecrets ? (
+                  <>
                     <OpeningButton
                       primary
-                      label={t("messenger:create")}
-                      disabled={!name.trim()}
-                      onPress={() => void install({ name, about })}
+                      label={t("messenger:reviewIdentity")}
+                      disabled={picking || !input.trim()}
+                      onPress={() => void review()}
                     />
-                  ) : candidate && active ? (
                     <OpeningButton
-                      primary
-                      label={t("messenger:confirmImport")}
-                      icon="check"
-                      onPress={() =>
-                        void install({ importToken: candidate.token })
-                      }
+                      label={t("messenger:importFile")}
+                      icon="download"
+                      disabled={picking}
+                      onPress={() => void chooseFile()}
                     />
-                  ) : showSecrets ? (
-                    <>
-                      <OpeningButton
-                        primary
-                        label={t("messenger:reviewIdentity")}
-                        disabled={picking || !input.trim()}
-                        onPress={() => void review()}
-                      />
-                      <OpeningButton
-                        label={t("messenger:importFile")}
-                        icon="download"
-                        disabled={picking}
-                        onPress={() => void chooseFile()}
-                      />
-                    </>
-                  ) : null}
-                </View>
-              )}
-            </Animated.View>
-          </Animated.ScrollView>
-        </KeyboardAvoidingView>
+                  </>
+                ) : null}
+              </View>
+            )}
+          </Animated.View>
+        </KeyboardAwareScrollView>
       ) : null}
       {hold && (
         <Animated.View

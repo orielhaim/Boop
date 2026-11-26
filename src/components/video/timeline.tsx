@@ -26,7 +26,7 @@ import { GlassSurface } from "@/components/glassyui/glass-surface";
 import { mediaMaterial } from "@/theme/tokens";
 import { updateVideoPlayer } from "@/core/video/player-settings";
 import { notifySubtitleSeek } from "@/core/video/subtitles/sync";
-import { createScrubGesture } from "./scrub-gesture";
+import { useScrubGesture } from "./scrub-gesture";
 import { createScrubPreview } from "./scrub-preview";
 
 export const formatTime = (seconds: number) => {
@@ -286,30 +286,16 @@ export function useVideoTimeline({
     return { transform: [{ translateX: position }] };
   });
 
-  const scrubGesture = useMemo(
-    () =>
-      // eslint-disable-next-line react-hooks/refs -- Gesture Handler registers these callbacks here and invokes them on input.
-      createScrubGesture({
-        duration,
-        railWidth: railWidthValue,
-        progress: scrubProgress,
-        playbackProgress: progressValue,
-        active: scrubActive,
-        begin: beginScrub,
-        seek: commitSeek,
-        finish: finishScrub,
-      }),
-    [
-      beginScrub,
-      commitSeek,
-      duration,
-      finishScrub,
-      progressValue,
-      railWidthValue,
-      scrubActive,
-      scrubProgress,
-    ],
-  );
+  const scrubGesture = useScrubGesture({
+    duration,
+    railWidth: railWidthValue,
+    progress: scrubProgress,
+    playbackProgress: progressValue,
+    active: scrubActive,
+    begin: beginScrub,
+    seek: commitSeek,
+    finish: finishScrub,
+  });
 
   const railEmphasis = useAnimatedStyle(() => {
     const active = scrubActive.get();

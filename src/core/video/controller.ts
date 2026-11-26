@@ -282,14 +282,19 @@ export function createVideoController(deps: {
       const engine = deps.engine();
       session.engine = engine;
       const { player } = engine;
-      if (handle.expiresAt !== null) {
-        const expire = () => {
-          if (current === session) void close();
+      const { expiresAt } = handle;
+      if (expiresAt !== null) {
+        const watchExpiry = () => {
+          session.expiry = setTimeout(
+            () => {
+              if (current !== session) return;
+              if (Date.now() >= expiresAt) void close();
+              else watchExpiry();
+            },
+            Math.max(0, Math.min(2_147_483_647, expiresAt - Date.now())),
+          );
         };
-        session.expiry = setTimeout(
-          expire,
-          Math.min(2_147_483_647, handle.expiresAt - Date.now()),
-        );
+        watchExpiry();
       }
       let initialized = false;
       let prepared = false;

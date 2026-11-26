@@ -6,7 +6,7 @@ import {
   type VideoPlayer,
 } from "expo-video";
 import { useTranslation } from "react-i18next";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -16,7 +16,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
 import Animated, {
   FadeIn,
   FadeOut,
@@ -132,21 +132,18 @@ export function FloatingVideo({
   const startX = useSharedValue(0);
   const startY = useSharedValue(0);
 
-  const drag = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(!pipActive)
-        .minDistance(6)
-        .onStart(() => {
-          startX.set(x.get());
-          startY.set(y.get());
-        })
-        .onUpdate((event) => {
-          x.set(dragFloatingAnchor(startX.get(), event.translationX, travelX));
-          y.set(dragFloatingAnchor(startY.get(), event.translationY, travelY));
-        }),
-    [pipActive, startX, startY, travelX, travelY, x, y],
-  );
+  const drag = usePanGesture({
+    enabled: !pipActive,
+    minDistance: 6,
+    onActivate: () => {
+      startX.set(x.get());
+      startY.set(y.get());
+    },
+    onUpdate: ({ translationX, translationY }) => {
+      x.set(dragFloatingAnchor(startX.get(), translationX, travelX));
+      y.set(dragFloatingAnchor(startY.get(), translationY, travelY));
+    },
+  });
   const position = useAnimatedStyle(() => ({
     transform: [
       { translateX: left + travelX * x.get() },

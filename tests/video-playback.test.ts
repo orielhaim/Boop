@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { VideoPlayer } from "expo-video";
 import { createPlaybackOwnership } from "@/core/media/playback-ownership";
 import type { MediaHandle } from "@/core/media/source";
@@ -134,6 +134,46 @@ test("protected videos never read co-selected subtitles, and a replaced session 
       },
     ]),
   ).toBe(0);
+});
+
+test("a protected video with a long retention period stays open until its deadline", async () => {
+  const start = Date.now();
+  const maxTimeout = 2_147_483_647;
+  const expiresAt = start + maxTimeout + 60_000;
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  const timers = spyOn(globalThis, "setTimeout");
+  const { video } = fixture(async () => ({
+    kind: "local",
+    file: { name: "protected.mp4", path: "/protected", type: "video/mp4" },
+    uri: "file:///protected",
+    expiresAt,
+    async release() {},
+  }));
+  try {
+    expect(await video.open(clip("protected"))).toBe(true);
+    const player = video.store.getState().current?.player;
+    expect(player).toBeDefined();
+    const firstWake = timers.mock.calls.find(
+      ([, delay]) => delay === maxTimeout,
+    );
+    if (!firstWake) throw new Error("Expected a timer at the platform limit");
+    clock.mockReturnValue(start + maxTimeout);
+    firstWake[0]();
+    expect(video.store.getState().current?.player).toBe(player);
+
+    const finalWake = timers.mock.calls.find(([, delay]) => delay === 60_000);
+    if (!finalWake) throw new Error("Expected a timer for the remaining time");
+    clock.mockReturnValue(expiresAt);
+    finalWake[0]();
+    expect(video.store.getState().current).toBeUndefined();
+  } finally {
+    for (const timer of timers.mock.results) {
+      if (timer.type === "return") clearTimeout(timer.value);
+    }
+    timers.mockRestore();
+    clock.mockRestore();
+    await video.close();
+  }
 });
 
 function fixture(

@@ -42,9 +42,9 @@ import {
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import {
-  Gesture,
   GestureDetector,
   GestureHandlerRootView,
+  usePanGesture,
 } from "react-native-gesture-handler";
 import Animated, {
   LinearTransition,
@@ -230,27 +230,25 @@ export function GlassTray({
     return () => cancelAnimation(slide);
   }, [finishPage, history.previous, history.revision, reduce, slide]);
 
-  const gesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(open)
-        .activeOffsetY(5)
-        .failOffsetX([-16, 16])
-        .onBegin(() => cancelAnimation(drag))
-        .onUpdate(({ translationY }) => {
-          if (!reduce) drag.set(Math.max(0, translationY));
-        })
-        .onEnd(({ translationY, velocityY }) => {
-          if (
-            translationY > Math.min(95, extent.get() * 0.26) ||
-            (translationY > 18 && velocityY > 600)
-          ) {
-            scheduleOnRN(close);
-          }
-        })
-        .onFinalize(() => drag.set(reduce ? 0 : withSpring(0, motion.travel))),
-    [close, drag, extent, open, reduce],
-  );
+  const gesture = usePanGesture({
+    enabled: open,
+    activeOffsetY: 5,
+    failOffsetX: [-16, 16],
+    onActivate: () => cancelAnimation(drag),
+    onUpdate: ({ translationY }) => {
+      if (!reduce) drag.set(Math.max(0, translationY));
+    },
+    onDeactivate: ({ canceled, translationY, velocityY }) => {
+      if (
+        !canceled &&
+        (translationY > Math.min(95, extent.get() * 0.26) ||
+          (translationY > 18 && velocityY > 600))
+      ) {
+        scheduleOnRN(close);
+      }
+      drag.set(reduce ? 0 : withSpring(0, motion.travel));
+    },
+  });
 
   const landscape = width > height && width >= 660;
   const direction = history.direction * (rtl ? -1 : 1);

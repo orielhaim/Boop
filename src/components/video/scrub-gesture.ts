@@ -1,8 +1,12 @@
-import { Gesture } from "react-native-gesture-handler";
+import {
+  useCompetingGestures,
+  usePanGesture,
+  useTapGesture,
+} from "react-native-gesture-handler";
 import type { SharedValue } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 
-export function createScrubGesture({
+export function useScrubGesture({
   duration,
   railWidth,
   progress,
@@ -26,21 +30,20 @@ export function createScrubGesture({
     return Math.max(0, Math.min(1, x / railWidth.get()));
   };
   const enabled = Number.isFinite(duration) && duration > 0;
-  const drag = Gesture.Pan()
-    .enabled(enabled)
-    .minDistance(6)
-    .onStart((event) => {
+  const drag = usePanGesture({
+    enabled,
+    minDistance: 6,
+    onActivate: (event) => {
       const value = fraction(event.x);
       progress.set(value);
       active.set(true);
       scheduleOnRN(begin, value * duration);
-    })
-    .onUpdate((event) => {
+    },
+    onUpdate: (event) => {
       progress.set(fraction(event.x));
-    })
-    .onFinalize((event, success) => {
-      if (!active.get()) return;
-      if (success) {
+    },
+    onDeactivate: (event) => {
+      if (!event.canceled) {
         const value = fraction(event.x);
         playbackProgress.set(value);
         scheduleOnRN(finish, value * duration);
@@ -48,12 +51,14 @@ export function createScrubGesture({
         scheduleOnRN(finish);
       }
       active.set(false);
-    });
-  const tap = Gesture.Tap()
-    .enabled(enabled)
-    .maxDistance(6)
-    .onEnd((event, success) => {
-      if (success) scheduleOnRN(seek, fraction(event.x) * duration);
-    });
-  return Gesture.Race(drag, tap);
+    },
+  });
+  const tap = useTapGesture({
+    enabled,
+    maxDistance: 6,
+    onDeactivate: (event) => {
+      if (!event.canceled) scheduleOnRN(seek, fraction(event.x) * duration);
+    },
+  });
+  return useCompetingGestures(drag, tap);
 }
