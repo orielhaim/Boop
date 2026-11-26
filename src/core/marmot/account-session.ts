@@ -16,6 +16,58 @@ const terminal = new Set([
   "SecretNotFound",
 ]);
 
+export function createMarmotCatchUp({
+  allowed,
+  wake,
+  catchUp,
+}: {
+  allowed: () => boolean;
+  wake: () => Promise<void>;
+  catchUp: () => Promise<void>;
+}) {
+  let pending = false;
+  let wakePending = false;
+  let running = false;
+  const recovery = createRecovery(run);
+
+  function run() {
+    if (running || !pending || !allowed()) return;
+    running = true;
+    pending = false;
+    const shouldWake = wakePending;
+    wakePending = false;
+    void (async () => {
+      if (shouldWake) await wake().catch(() => undefined);
+      if (!allowed()) {
+        pending = true;
+        return;
+      }
+      await catchUp();
+      recovery.reset();
+    })().then(
+      () => {
+        running = false;
+        run();
+      },
+      () => {
+        running = false;
+        pending = true;
+        if (allowed()) recovery.schedule();
+      },
+    );
+  }
+
+  return {
+    request(shouldWake = false) {
+      pending = true;
+      wakePending ||= shouldWake;
+      recovery.reset();
+      run();
+    },
+    pause: recovery.cancel,
+  };
+}
+
 export function createMarmotSession({
   open,
   close,

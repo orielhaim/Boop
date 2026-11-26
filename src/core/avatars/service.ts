@@ -2,12 +2,13 @@ import { eq } from "drizzle-orm";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
-import { contactByKey } from "@/db/queries";
+import { contactByKey, preference, setPreference } from "@/db/queries";
+import { z } from "zod";
 import { contacts } from "@/db/schema";
 import type * as schema from "@/db/schema";
 import type { Privacy } from "../privacy";
 import { blossomHash, publicMediaUrl as publicImageUrl } from "../media/url";
-import { photoAllowed } from "./protocol";
+import { photoAllowed, profilePhotoPolicies } from "./protocol";
 import type { createProfileDirectory } from "../profiles/directory";
 
 export type AvatarTransport = {
@@ -45,6 +46,16 @@ const maxVisibleAuthors = 32;
 const maxDownloads = 3;
 const maxAttemptsPerSource = 6;
 const filenamePattern = /^[a-f0-9-]{36}\.jpg$/u;
+const publicKeyPattern = /^[a-f0-9]{64}$/u;
+const cachedName = z.string().regex(/^[a-f0-9]{64}\.jpg$/u);
+const imageConsentKey = "privacy.profileImageConsent";
+const imageConsent = z.object({
+  policy: z.enum(profilePhotoPolicies),
+  peers: z.record(
+    z.string().regex(publicKeyPattern),
+    z.object({ photo: cachedName.optional(), banner: cachedName.optional() }),
+  ),
+});
 
 export function createAvatars<Result>(
   db: BaseSQLiteDatabase<"sync", Result, typeof schema>,
@@ -61,7 +72,9 @@ export function createAvatars<Result>(
   draftFiles: () => string[],
 ) {
   const visible = new Map<string, number>();
-  const exceptions = new Map<string, number>();
+  const profileVisible = new Map<string, number>();
+  const profileSubscriptions = new Map<string, () => void>();
+  const requested = new Map<string, string>();
   const jobs = new Map<string, { id: string; source: string }>();
   const failures = new Map<
     string,
@@ -72,6 +85,13 @@ export function createAvatars<Result>(
   let scheduledAt = 0;
   let active = false;
   let policy = privacy.photoPolicy();
+  let consent: z.infer<typeof imageConsent>["peers"] = {};
+  try {
+    const stored = imageConsent.parse(
+      JSON.parse(preference(db, imageConsentKey) ?? "null"),
+    );
+    if (stored.policy === policy) consent = stored.peers;
+  } catch {}
   let initialized = false;
   let pausedUntil = 0;
 
@@ -82,21 +102,49 @@ export function createAvatars<Result>(
     const name = contactByKey(db, key).get()?.localAvatarFile;
     return name && filenamePattern.test(name) ? disk.local(name) : undefined;
   };
-  const permitted = (key: string) => {
+  const allowed = (key: string) => {
     const peer = author(key);
-    return (
-      isCurrent() &&
-      !privacy.isBlocked(peer) &&
-      (exceptions.has(peer) ||
-        photoAllowed(privacy.photoPolicy(), false, privacy.isContact(peer)))
-    );
+    return isCurrent() && !privacy.isBlocked(peer);
   };
+  const autoLoads = (peer: string) =>
+    photoAllowed(
+      privacy.photoPolicy(),
+      privacy.isBlocked(peer),
+      privacy.isContact(peer),
+    );
+  const grant = (key: string) =>
+    policy === privacy.photoPolicy() ? consent[author(key)] : undefined;
   const sourceFor = (key: string) => {
     const profile = directory.profile(author(key));
     return banner(key) ? profile?.banner : profile?.picture;
   };
   const cacheName = (source: string) =>
     `${bytesToHex(sha256(new TextEncoder().encode(source)))}.jpg`;
+  const field = (key: string) => (banner(key) ? "banner" : "photo");
+  const canFetch = (key: string, source: string) =>
+    active &&
+    allowed(key) &&
+    !override(key) &&
+    sourceFor(key) === source &&
+    (requested.get(key) === source ||
+      (profileVisible.has(key) && grant(key) !== undefined) ||
+      (visible.has(key) && autoLoads(author(key))));
+
+  function saveConsent() {
+    setPreference(
+      db,
+      imageConsentKey,
+      JSON.stringify({ policy, peers: consent }),
+    );
+  }
+
+  function remember(key: string, source: string) {
+    const approved = grant(key);
+    const name = cacheName(source);
+    if (!approved || approved[field(key)] === name) return;
+    approved[field(key)] = name;
+    saveConsent();
+  }
 
   const authored = (key: string, source: string) =>
     author(key) === owner
@@ -114,24 +162,26 @@ export function createAvatars<Result>(
     scheduledAt = at;
     timer = setTimeout(tick, delay);
   }
+  function reconcile(key: string) {
+    const source = requested.get(key);
+    if (source && (!allowed(key) || override(key) || sourceFor(key) !== source))
+      requested.delete(key);
+    const job = jobs.get(key);
+    if (job && !canFetch(key, job.source)) {
+      jobs.delete(key);
+      native?.cancel(job.id);
+    }
+  }
   function invalidate() {
     const next = privacy.photoPolicy();
     if (policy !== next) {
       policy = next;
-      exceptions.clear();
+      consent = {};
+      requested.clear();
+      saveConsent();
     }
-    for (const [key, job] of jobs) {
-      if (
-        !active ||
-        !visible.has(key) ||
-        !permitted(key) ||
-        override(key) ||
-        sourceFor(key) !== job.source
-      ) {
-        jobs.delete(key);
-        native?.cancel(job.id);
-      }
-    }
+    for (const key of new Set([...requested.keys(), ...jobs.keys()]))
+      reconcile(key);
     for (const key of listeners.keys()) changed(key);
     schedule();
   }
@@ -150,25 +200,11 @@ export function createAvatars<Result>(
   let running = 0;
   async function fetchPhoto(key: string, source: string) {
     const url = publicImageUrl(source);
-    if (
-      !native ||
-      !url ||
-      !active ||
-      !visible.has(key) ||
-      !permitted(key) ||
-      override(key)
-    )
-      return;
+    if (!native || !url || !canFetch(key, source)) return;
     const id = disk.newId();
     const job = { id, source };
     const filename = `${id}.jpg`;
-    const current = () =>
-      active &&
-      jobs.get(key) === job &&
-      permitted(key) &&
-      !override(key) &&
-      visible.has(key) &&
-      sourceFor(key) === source;
+    const current = () => jobs.get(key) === job && canFetch(key, source);
     jobs.set(key, job);
     running++;
     let retained = false;
@@ -195,6 +231,7 @@ export function createAvatars<Result>(
         throw new Error("Invalid cached avatar");
       disk.commitCached(filename, cacheName(source));
       retained = true;
+      remember(key, source);
       failures.delete(key);
       changed(key);
       disk.pruneCache();
@@ -215,7 +252,10 @@ export function createAvatars<Result>(
       }
     } finally {
       if (!retained) disk.removeCached(filename);
-      if (jobs.get(key) === job) jobs.delete(key);
+      if (jobs.get(key) === job) {
+        if (requested.get(key) === source) requested.delete(key);
+        jobs.delete(key);
+      }
       running--;
       schedule();
     }
@@ -229,7 +269,7 @@ export function createAvatars<Result>(
         initializeFiles();
       } catch {}
     }
-    const keys = [...visible.keys()]
+    const keys = [...new Set([...visible.keys(), ...requested.keys()])]
       .reverse()
       .filter((key) => !privacy.isBlocked(author(key)))
       .slice(0, maxVisibleAuthors);
@@ -242,10 +282,14 @@ export function createAvatars<Result>(
     let retryAt = Infinity;
     for (const key of keys) {
       if (running >= maxDownloads) break;
-      if (jobs.has(key) || !permitted(key) || override(key)) continue;
       const source = sourceFor(key);
-      if (!source || disk.cached(cacheName(source)) || authored(key, source))
+      if (!source || jobs.has(key) || !canFetch(key, source)) continue;
+      if (disk.cached(cacheName(source))) {
+        remember(key, source);
+        requested.delete(key);
         continue;
+      }
+      if (authored(key, source)) continue;
       const failure = failures.get(key);
       if (failure?.source === source) {
         if (failure.count >= maxAttemptsPerSource) continue;
@@ -258,26 +302,54 @@ export function createAvatars<Result>(
     }
     if (Number.isFinite(retryAt)) schedule(retryAt - now);
   }
-  function watch(key: string, wide = false) {
-    if (!/^[a-f0-9]{64}$/u.test(key)) return () => {};
+  function watch(key: string, wide = false, profile = false) {
+    if (!publicKeyPattern.test(key)) return () => {};
     const media = wide ? `${key}:banner` : key;
     visible.set(media, (visible.get(media) ?? 0) + 1);
-    const stopProfile = directory.watch(key);
-    const stopUpdates = directory.subscribe(key, () => invalidate());
+    if (profile)
+      profileVisible.set(media, (profileVisible.get(media) ?? 0) + 1);
+    const bannerKey = `${key}:banner`;
+    if (!profileSubscriptions.has(key)) {
+      const stopWatching = directory.watch(key);
+      const stopUpdates = directory.subscribe(key, () => {
+        const approved = grant(key);
+        const updated = directory.profile(key);
+        if (approved && updated) {
+          const forgetPhoto = approved.photo && !updated.picture;
+          const forgetBanner = approved.banner && !updated.banner;
+          if (forgetPhoto) delete approved.photo;
+          if (forgetBanner) delete approved.banner;
+          if (forgetPhoto || forgetBanner) saveConsent();
+        }
+        reconcile(key);
+        reconcile(bannerKey);
+        changed(key);
+        schedule();
+      });
+      profileSubscriptions.set(key, () => {
+        stopWatching();
+        stopUpdates();
+      });
+    }
     schedule();
     return () => {
-      stopProfile();
-      stopUpdates();
+      if (profile) {
+        const count = profileVisible.get(media) ?? 0;
+        if (count <= 1) profileVisible.delete(media);
+        else profileVisible.set(media, count - 1);
+      }
       const count = visible.get(media) ?? 0;
-      if (count <= 1) {
-        visible.delete(media);
-        const job = jobs.get(media);
-        if (job) {
-          jobs.delete(media);
-          native?.cancel(job.id);
-        }
-      } else visible.set(media, count - 1);
-      schedule();
+      if (count <= 1) visible.delete(media);
+      else visible.set(media, count - 1);
+      if (!visible.has(key) && !visible.has(bannerKey)) {
+        profileSubscriptions.get(key)?.();
+        profileSubscriptions.delete(key);
+      }
+      const job = jobs.get(media);
+      if (job && !canFetch(media, job.source)) {
+        jobs.delete(media);
+        native?.cancel(job.id);
+      }
     };
   }
   return {
@@ -286,31 +358,43 @@ export function createAvatars<Result>(
       if (active === value) return;
       active = value;
       if (!active) {
-        exceptions.clear();
+        requested.clear();
         clearTimeout(timer);
         timer = undefined;
       }
       invalidate();
     },
     watch,
-    allowVisit(key: string) {
-      if (!active || !isCurrent() || privacy.isBlocked(key)) return () => {};
-      exceptions.set(key, (exceptions.get(key) ?? 0) + 1);
+    requestProfileImages(peer: string) {
+      if (!active || !publicKeyPattern.test(peer) || !allowed(peer)) return;
+      if (!grant(peer)) {
+        if (Object.keys(consent).length >= 256) {
+          const oldest = Object.keys(consent)[0];
+          if (oldest) delete consent[oldest];
+        }
+        consent[peer] = {};
+        saveConsent();
+      }
+      for (const key of [peer, `${peer}:banner`]) {
+        const source = sourceFor(key);
+        if (
+          !source ||
+          !publicImageUrl(source) ||
+          override(key) ||
+          authored(key, source)
+        )
+          continue;
+        if (disk.cached(cacheName(source))) remember(key, source);
+        else {
+          failures.delete(key);
+          requested.set(key, source);
+        }
+      }
       invalidate();
-      return () => {
-        const count = exceptions.get(key) ?? 0;
-        if (count <= 1) exceptions.delete(key);
-        else exceptions.set(key, count - 1);
-        invalidate();
-      };
     },
-    autoLoads(key: string) {
-      return photoAllowed(
-        privacy.photoPolicy(),
-        privacy.isBlocked(key),
-        privacy.isContact(key),
-      );
-    },
+    autoLoads,
+    profileImagesRequested: (peer: string) =>
+      allowed(peer) && grant(peer) !== undefined,
     subscribe(key: string, listener: () => void) {
       const callbacks = listeners.get(key) ?? new Set();
       callbacks.add(listener);
@@ -320,16 +404,24 @@ export function createAvatars<Result>(
         if (!callbacks.size) listeners.delete(key);
       };
     },
-    resolve(peer: string, wide = false) {
+    resolve(peer: string, wide = false, profile = false) {
       if (!peer || !isCurrent() || privacy.isBlocked(peer)) return undefined;
       const key = wide ? `${peer}:banner` : peer;
       const uri = override(key);
       if (uri) return uri;
+      const approved = profile ? grant(key) : undefined;
+      const previous = approved?.[field(key)];
       const source = sourceFor(key);
-      if (!source) return undefined;
+      if (!source)
+        return previous && !directory.profile(peer)
+          ? disk.cached(previous)
+          : undefined;
+      const local = authored(key, source);
+      if (local) return local;
+      if (!approved && !autoLoads(peer)) return undefined;
       return (
-        authored(key, source) ??
-        (permitted(key) ? disk.cached(cacheName(source)) : undefined)
+        disk.cached(cacheName(source)) ??
+        (previous ? disk.cached(previous) : undefined)
       );
     },
     keepUploaded(
@@ -375,6 +467,9 @@ export function createAvatars<Result>(
       for (const job of jobs.values()) native?.cancel(job.id);
       jobs.clear();
       failures.clear();
+      requested.clear();
+      consent = {};
+      saveConsent();
       try {
         disk.clearCache();
       } finally {

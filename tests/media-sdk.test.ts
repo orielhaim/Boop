@@ -9,6 +9,7 @@ import {
   parseServerOrigins,
 } from "../src/core/media/servers";
 import { createMediaUploads } from "../src/core/media/uploads";
+import { sendOnAttachmentServers } from "../src/core/marmot/media-send";
 
 const first = "https://first.example.com";
 const second = "https://second.example.com";
@@ -163,6 +164,47 @@ test("preflight rejections are typed and prevent sending bytes", async () => {
       status,
       code,
     });
+  }
+});
+
+test("a server that requires a real hash can still receive the encrypted camera upload", async () => {
+  const { settings } = settingsFor();
+  for (const status of [400, 409, 413, 415]) {
+    const calls: string[] = [];
+    const uploads = createMediaUploads(
+      signer,
+      {
+        sha256,
+        async request(_url, options) {
+          calls.push("HEAD");
+          expect(options.body).toBeUndefined();
+          expect(options.headers?.["X-Content-Type"]).toBe(
+            "application/octet-stream",
+          );
+          return new Response(null, { status });
+        },
+      },
+      settings,
+      () => {},
+    );
+    const active = signal();
+    const delivery = sendOnAttachmentServers({
+      origins: [first],
+      isEnabled: () => true,
+      signal: active,
+      check: (origin) => uploads.check(origin, "attachment", active, 1024),
+      async send() {
+        calls.push("encrypted upload");
+        return "accepted";
+      },
+    });
+    if (status < 410) {
+      expect(await delivery).toBe("accepted");
+      expect(calls).toEqual(["HEAD", "encrypted upload"]);
+    } else {
+      await expect(delivery).rejects.toMatchObject({ status });
+      expect(calls).toEqual(["HEAD"]);
+    }
   }
 });
 

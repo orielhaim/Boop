@@ -89,7 +89,7 @@ test("Off and untouched On Demand dispatch zero HTTP requests and an explicit lo
     authorize: () => true,
     html: async (url: string) => {
       calls.push(url);
-      return html;
+      return { text: html, url };
     },
     image: async (url: string) => {
       calls.push(url);
@@ -126,6 +126,38 @@ test("Off and untouched On Demand dispatch zero HTTP requests and an explicit lo
   policy = "off";
   afterRestart.revalidate();
   expect(afterRestart.snapshot(page)).toBeUndefined();
+});
+
+test("reads late metadata from a redirected page and caches it under the original link", async () => {
+  using sqlite = new Database(":memory:");
+  const cache = openLinkPreviewCache(database(sqlite), () => {});
+  const finalUrl = "https://video.example.org/watch/clip";
+  const imageUrls: string[] = [];
+  const previews = createLinkPreviews({
+    ...cache,
+    policy: () => "on-demand",
+    authorize: () => true,
+    html: async () => ({
+      text: `<head><!--${" ".repeat(850_000)}-->
+        <meta property="og:title" content="Film">
+        <meta property="og:image" content="./poster.png"></head>`,
+      url: finalUrl,
+    }),
+    image: async (url) => {
+      imageUrls.push(url);
+      return "poster.jpg";
+    },
+    removeImage() {},
+  });
+  previews.request(target, true, () => true);
+  await Bun.sleep(0);
+  expect(imageUrls).toEqual(["https://video.example.org/watch/poster.png"]);
+  expect(previews.snapshot(page)).toMatchObject({
+    title: "Film",
+    url: page,
+    siteName: "video.example.org",
+  });
+  expect(cache.cached(finalUrl)).toBeUndefined();
 });
 
 test("Always only loads visible accepted messages and rechecks block and lock state", async () => {
@@ -165,7 +197,7 @@ test("Always only loads visible accepted messages and rechecks block and lock st
     authorize: viewport.authorizePreview,
     html: async (url) => {
       calls.push(url);
-      return "<title>Accepted</title>";
+      return { text: "<title>Accepted</title>", url };
     },
     image: async () => {
       throw new Error("Unexpected image");
@@ -192,7 +224,7 @@ test("cancels running and queued work on policy change and ignores stale results
   const db = database(sqlite);
   let policy: LinkPreviewPolicy = "always";
   const calls: AbortSignal[] = [];
-  const result = Promise.withResolvers<string>();
+  const result = Promise.withResolvers<{ text: string; url: string }>();
   const previews = createLinkPreviews({
     ...openLinkPreviewCache(db, () => {}),
     policy: () => policy,
@@ -212,7 +244,7 @@ test("cancels running and queued work on policy change and ignores stale results
   policy = "on-demand";
   previews.revalidate();
   expect(calls.every((signal) => signal.aborted)).toBe(true);
-  result.resolve(html);
+  result.resolve({ text: html, url: page });
   await Bun.sleep(0);
   expect(calls).toHaveLength(2);
   expect(previews.snapshot(`${page}0`)).toBeUndefined();
@@ -229,10 +261,11 @@ test("invalid destination, rejected redirects, oversized HTML and timeout fail w
     authorize: () => true,
     async html(url) {
       calls.push(url);
-      if (url.endsWith("/oversized")) return "x".repeat(512 * 1024 + 1);
+      if (url.endsWith("/oversized"))
+        return { text: "x".repeat(1024 * 1024 + 1), url };
       if (url.endsWith("/timeout"))
         throw new Error("Native transfer timed out");
-      throw new Error("Native transfer rejected redirect");
+      return { text: html, url: "https://127.0.0.1/" };
     },
     image: async () => {
       throw new Error("Unexpected image");
@@ -295,7 +328,7 @@ test("clearing link previews deletes cached files and discards the result of an 
     fetchedAt: Date.now(),
     expiresAt,
   });
-  const pending = Promise.withResolvers<string>();
+  const pending = Promise.withResolvers<{ text: string; url: string }>();
   const previews = createLinkPreviews({
     ...storage,
     policy: () => "on-demand",
@@ -308,7 +341,7 @@ test("clearing link previews deletes cached files and discards the result of an 
   previews.request(target, true, () => true);
   expect(previews.snapshot(page)).toBe("loading");
   previews.clear(storage.clear);
-  pending.resolve(html);
+  pending.resolve({ text: html, url: page });
   await Bun.sleep(0);
 
   expect(removed).toEqual(["old.jpg"]);

@@ -80,7 +80,7 @@ export const GlassSurface = forwardRef<
         {...props}
         ref={ref}
         style={[
-          { borderRadius: base, borderCurve: "continuous" },
+          { borderRadius: base },
           elevation !== "none" && {
             boxShadow: cinematic
               ? mediaMaterial.shadow
@@ -89,9 +89,10 @@ export const GlassSurface = forwardRef<
                 : colors.shadow,
           },
           style,
+          { borderCurve: "circular" },
         ]}
         enabled={!preferences.reduceTransparency}
-        shape={{ radius: corners, kind: "continuous" }}
+        shape={{ radius: corners, kind: "roundedRect" }}
         material={{
           ...optics[preset],
           tint: tint ? [red, green, blue, 0.92] : glassTint(fill),

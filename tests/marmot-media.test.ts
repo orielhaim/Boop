@@ -1,10 +1,76 @@
 import { expect, test } from "bun:test";
 import {
+  createAttachmentUploadQueue,
+  localAttachmentUpload,
   mediaUploadArguments,
   pendingMediaDraft,
   sendOnAttachmentServers,
   waitForAttachmentForeground,
 } from "../src/core/marmot/media-send";
+
+test("camera metadata is normalized before the encrypted file-send bridge", () => {
+  const capture = localAttachmentUpload(
+    "file:/data/user/0/app.boop/cache/camera%20shot.jpg",
+    "",
+    "image/*",
+    "image",
+  );
+  expect(mediaUploadArguments([capture])).toEqual([
+    {
+      path: "/data/user/0/app.boop/cache/camera shot.jpg",
+      name: "image.jpg",
+      type: "image/jpeg",
+    },
+  ]);
+  expect(
+    localAttachmentUpload(
+      "file:///cache/video.mp4",
+      "clip.mp4",
+      "Video/MP4",
+      "video",
+    ),
+  ).toEqual({ path: "/cache/video.mp4", name: "clip.mp4", type: "video/mp4" });
+});
+
+test("a failed voice upload releases the slot for music and video, and its token remains retryable", async () => {
+  const queue = createAttachmentUploadQueue();
+  const voice = Promise.withResolvers<void>();
+  const sent: string[] = [];
+  const first = queue.enqueue("voice-token", () => voice.promise);
+  const failed = first.catch((reason: unknown) => reason);
+  const music = queue.enqueue("music-token", async () => {
+    sent.push("track.mp3");
+  });
+  const video = queue.enqueue("video-token", async () => {
+    sent.push("clip.mp4");
+  });
+  await Promise.resolve();
+  expect(sent).toEqual([]);
+  voice.reject(new Error("upload failed"));
+  expect(await failed).toEqual(new Error("upload failed"));
+  await Promise.all([music, video]);
+  await queue.enqueue("voice-token", async () => {
+    sent.push("voice.m4a");
+  });
+  expect(sent).toEqual(["track.mp3", "clip.mp4", "voice.m4a"]);
+});
+
+test("cancelled queued uploads never read their source files", async () => {
+  const queue = createAttachmentUploadQueue();
+  const running = Promise.withResolvers<void>();
+  const active = queue.enqueue("first", () => running.promise);
+  let sourceReads = 0;
+  const cancelled = queue
+    .enqueue("second", async () => {
+      sourceReads += 1;
+    })
+    .catch((reason: unknown) => reason);
+  queue.cancel("second");
+  running.resolve();
+  await active;
+  expect(await cancelled).toMatchObject({ name: "AbortError" });
+  expect(sourceReads).toBe(0);
+});
 
 test("picked music crosses the native string-map boundary without undefined image metadata", () => {
   expect(

@@ -242,9 +242,9 @@ test("leaving a conversation or losing access before its deadline prevents a bea
   let allowed = true;
   let calls = 0;
   let state: OpenLaterState | undefined;
-  const startsAt = performance.now() + 30;
+  let now = roundTime - 30;
   const options = {
-    now: () => Math.floor(roundTime + performance.now() - startsAt),
+    now: () => now,
     read: () => null,
     save: () => {},
     allowed: () => allowed,
@@ -259,15 +259,17 @@ test("leaving a conversation or losing access before its deadline prevents a bea
   const leaving = createOpenLaterResolver(options);
   const revoked = createOpenLaterResolver(options);
   const rows = [{ id: "locked", text: JSON.stringify(historical) }];
-  leaving.scan(rows);
-  leaving.stop();
-  revoked.scan(rows);
-  expect(state?.kind).toBe("locked");
-  allowed = false;
   try {
+    leaving.scan(rows);
+    leaving.stop();
+    revoked.scan(rows);
+    expect(state?.kind).toBe("locked");
+    allowed = false;
+    now = roundTime;
     await waitFor(() => state === undefined);
     expect(calls).toBe(0);
   } finally {
+    leaving.stop();
     revoked.stop();
   }
 });

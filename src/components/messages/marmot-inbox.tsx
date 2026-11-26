@@ -29,6 +29,7 @@ import { usePresentedPerson } from "@/components/people/use-person";
 import { toNpub } from "@/core/identity/keys";
 import { isChatMuted } from "@/core/marmot/chat-mute";
 import { marmot, type MarmotChatRow } from "@/core/marmot/native";
+import { presentChatPreview } from "@/core/marmot/chat-preview";
 import {
   hasMention,
   quoteText,
@@ -39,7 +40,7 @@ import { contactByKey } from "@/db/queries";
 import { namespaces } from "@/i18n";
 import { useDialog } from "@/components/ui/dialog";
 import { useLocal } from "@/services/local-context";
-import { space } from "@/theme";
+import { space, useTheme } from "@/theme";
 import { useChatAppearance } from "./appearance";
 import { useChatClock, useMuteDuration } from "./chat-mute";
 import { EmptyInbox } from "./empty-inbox";
@@ -63,16 +64,22 @@ type ChatRow = ChatListItem & {
   peer?: string;
   avatarAsset?: MarmotChatRow["avatarAsset"];
   previewContent?: Content | null;
+  activity?: Extract<
+    ReturnType<typeof presentChatPreview>,
+    { kind: "activity" }
+  >;
 };
 
 function asChat(
   row: MarmotChatRow,
   fallback: string,
   invitationTitle: string,
-  preview: string | undefined,
+  preview: ReturnType<typeof presentChatPreview>,
   now: number,
   emptyPreview?: string,
 ): ChatRow {
+  const activity = preview?.kind === "activity" ? preview : undefined;
+  const message = row.preview;
   return {
     id: row.id,
     title: row.invited
@@ -94,16 +101,27 @@ function asChat(
     unreadCount: Math.max(row.unread, row.manualUnread ? 1 : 0),
     draft: row.invited ? undefined : (row.draft ?? undefined),
     emptyPreview,
+    activity,
     previewContent:
-      preview === row.preview?.text ? row.preview?.content : undefined,
+      preview?.kind === "text" ||
+      (activity?.detail && activity.detail === message?.text?.trim())
+        ? message?.content
+        : undefined,
     lastMessage:
-      row.invited || preview == null
+      row.invited || !preview || !message
         ? undefined
         : {
-            _id: row.preview?.id ?? row.id,
-            text: preview,
+            _id: message.id,
+            text:
+              preview.kind === "text" ? preview.text : (preview.detail ?? ""),
             createdAt: row.updatedAt * 1_000,
-            user: { _id: row.preview?.sender ?? row.id },
+            system: activity?.system,
+            pending: message.delivery === "pending",
+            isFailed: message.delivery === "failed",
+            user: {
+              _id: message.sender,
+              name: message.senderName ?? undefined,
+            },
           },
   };
 }
@@ -219,11 +237,7 @@ export function MarmotInbox({
           : row.preview?.expiresAt != null &&
               row.preview.expiresAt * 1000 <= now
             ? undefined
-            : row.preview?.kind === 24881
-              ? t("messages:lockedMessage")
-              : row.preview?.kind === 24883
-                ? t("messages:marmot.locationPreview")
-                : (row.preview?.text ?? undefined);
+            : row.preview && presentChatPreview(row.preview);
       if (row.invited) {
         const inviter = inviters?.[row.id];
         if (inviter) {
@@ -246,7 +260,14 @@ export function MarmotInbox({
         row.previewSelection === "empty"
           ? t("messages:sayHello")
           : undefined;
-      return asChat(row, fallback, invitationTitle, preview, now, emptyPreview);
+      return asChat(
+        row,
+        fallback,
+        invitationTitle,
+        preview ?? undefined,
+        now,
+        emptyPreview,
+      );
     });
   const showEmptyInbox = Boolean(
     snapshot &&
@@ -550,13 +571,15 @@ function MarmotChatCell({
   visible,
   ...props
 }: ChatListCellProps<ChatRow> & { visible: boolean }) {
+  const { t, i18n } = useTranslation(namespaces);
+  const { colors } = useTheme();
   const { name, photo: avatar } = usePresentedPerson(
     props.chat.peer ?? "",
     props.chat.title,
     visible,
   );
   const groupAvatar = usePreparedGroupAvatar(props.chat.avatarAsset, visible);
-  const { draft, lastMessage, previewContent } = props.chat;
+  const { activity, draft, lastMessage, previewContent } = props.chat;
   const mentions = /(?:nostr:|@)npub1/i;
   const { members } = useMentionMembers(
     props.chat.id,
@@ -569,6 +592,25 @@ function MarmotChatCell({
     () => new Map(members?.map((member) => [member.npub, member.label])),
     [members],
   );
+  const detail =
+    lastMessage &&
+    (previewContent
+      ? quoteText(previewContent, lastMessage.text, names)
+      : lastMessage.text);
+  const activityLabel = activity && t(activity.label);
+  const label =
+    activityLabel && activity?.count && activity.count > 1
+      ? t("messages:chatPreview.count", {
+          type: activityLabel,
+          countText: new Intl.NumberFormat(i18n.resolvedLanguage).format(
+            activity.count,
+          ),
+        })
+      : activityLabel;
+  const text =
+    label && detail
+      ? t("messages:chatPreview.detail", { type: label, detail })
+      : (label ?? detail ?? "");
   return (
     <ChatListCell
       {...props}
@@ -584,18 +626,19 @@ function MarmotChatCell({
         avatarIdentity: props.chat.peer ?? props.chat.id,
         title: props.chat.peer ? name : props.chat.title,
         draft: draft && projectMentions(draft, names).text,
-        lastMessage: lastMessage && {
-          ...lastMessage,
-          text: previewContent
-            ? quoteText(previewContent, lastMessage.text, names)
-            : lastMessage.text,
-        },
+        lastMessage: lastMessage && { ...lastMessage, text },
+        previewIcon: activity && (
+          <View style={styles.previewIcon}>
+            <Icon name={activity.icon} size={15} color={colors.muted} />
+          </View>
+        ),
       }}
     />
   );
 }
 
 const styles = StyleSheet.create({
+  previewIcon: { marginEnd: space.xs },
   listWithFab: { paddingBottom: 88 },
   grow: { flexGrow: 1 },
   empty: { padding: space.xl },

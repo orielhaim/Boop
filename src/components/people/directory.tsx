@@ -62,7 +62,9 @@ export function PeopleDirectory() {
   const { t, i18n } = useTranslation(namespaces);
   const { colors } = useTheme();
   const tabs = useTabFabVisibility();
-  const favoritesDisplay = useAppPreferences((state) => state.favoritesDisplay);
+  const [favoritesDisplay, setFavoritesDisplay] = useState(
+    () => useAppPreferences.getState().favoritesDisplay,
+  );
   const separateCallsTab = useAppPreferences((state) => state.separateCallsTab);
   const section = tabs?.peopleSection ?? "contacts";
   const showCalls = !separateCallsTab && section === "calls";
@@ -79,6 +81,15 @@ export function PeopleDirectory() {
     kind: "actions" | "confirmRemoval";
   }>();
   const [contactActionError, setContactActionError] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setFavoritesDisplay(useAppPreferences.getState().favoritesDisplay);
+      return useAppPreferences.subscribe((state, previous) => {
+        if (state.favoritesDisplay !== previous.favoritesDisplay)
+          setFavoritesDisplay(state.favoritesDisplay);
+      });
+    }, []),
+  );
   useFocusEffect(useCallback(() => () => setContactMenu(undefined), []));
   useEffect(
     () =>

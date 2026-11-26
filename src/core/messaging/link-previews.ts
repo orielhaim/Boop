@@ -128,10 +128,12 @@ type Job = {
   abort: AbortController;
 };
 
+type PreviewDocument = { text: string; url: string };
+
 type Dependencies = {
   policy: () => LinkPreviewPolicy;
   authorize: (target: Target) => boolean;
-  html: (url: string, signal: AbortSignal) => Promise<string>;
+  html: (url: string, signal: AbortSignal) => Promise<PreviewDocument>;
   image: (url: string, signal: AbortSignal) => Promise<string>;
   save: (preview: CachedPreview) => void;
   removeImage: (image: string) => void;
@@ -196,10 +198,12 @@ export function createLinkPreviews(deps: Dependencies) {
       job.abort.abort();
     }, 24_000);
     try {
-      const html = await deps.html(url, signal);
+      const document = await deps.html(url, signal);
       if (!valid(job)) return;
-      if (html.length > 512 * 1024) throw new Error("preview-size");
-      const metadata = extractPreview(html, url);
+      if (document.text.length > 1024 * 1024) throw new Error("preview-size");
+      const finalUrl = normalizePreviewUrl(document.url);
+      if (!finalUrl) throw new Error("preview-destination");
+      const metadata = extractPreview(document.text, finalUrl.href);
       if (!metadata) throw new Error("preview-metadata");
       const { imageUrl, ...fields } = metadata;
       if (imageUrl && valid(job)) {

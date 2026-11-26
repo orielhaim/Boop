@@ -1,7 +1,7 @@
 import { Image } from "expo-image";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { AppState, Linking, View } from "react-native";
+import { ActivityIndicator, AppState, View } from "react-native";
 import { useDialog } from "@/components/ui/dialog";
 import { StyleSheet } from "react-native-unistyles";
 import { router } from "expo-router";
@@ -10,7 +10,7 @@ import { firstPreviewUrl } from "@/core/messaging/link-previews";
 import { firstBlossomDownload } from "@/core/downloads/blossom";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
-import { space } from "@/theme";
+import { radius, space, useTheme } from "@/theme";
 
 export function MarmotLink({
   group,
@@ -26,6 +26,7 @@ export function MarmotLink({
   eligible: boolean;
 }) {
   const { t } = useTranslation(namespaces);
+  const { colors } = useTheme();
   const dialog = useDialog();
   const { previews, lock, downloads } = useLocal();
   const blob = eligible ? firstBlossomDownload(body, author) : undefined;
@@ -79,24 +80,41 @@ export function MarmotLink({
   if (!url || policy === "off") return null;
   if (typeof state !== "object") {
     return (
-      <Action
-        size="sm"
-        disabled={state === "loading"}
-        onPress={() => request(true)}
-      >
-        {state === "loading"
-          ? t("messages:previewLoading")
-          : state === "failed"
-            ? t("common:retry")
-            : t("messages:previewLoad")}
-      </Action>
+      <View style={[styles.card, styles.tile]}>
+        {state === "loading" ? (
+          <View
+            accessible
+            accessibilityRole="progressbar"
+            accessibilityLabel={t("messages:previewLoading")}
+            accessibilityState={{ busy: true }}
+            style={styles.loading}
+          >
+            <ActivityIndicator color={colors.accent} />
+            <Ink kind="caption" muted style={styles.centered}>
+              {t("messages:previewLoading")}
+            </Ink>
+          </View>
+        ) : (
+          <Action
+            size="sm"
+            style={styles.previewAction}
+            onPress={() => request(true)}
+          >
+            {t(
+              state === "failed"
+                ? "messages:previewRetry"
+                : "messages:previewLoad",
+            )}
+          </Action>
+        )}
+      </View>
     );
   }
   const thumbnail = previews.imageUri(state.image);
   return (
     <View style={styles.card}>
       {thumbnail && (
-        <Image source={thumbnail} style={styles.image} contentFit="cover" />
+        <Image source={thumbnail} style={styles.tile} contentFit="cover" />
       )}
       <Ink kind="caption">{state.siteName}</Ink>
       {state.title && <Ink numberOfLines={2}>{state.title}</Ink>}
@@ -105,19 +123,24 @@ export function MarmotLink({
           {state.description}
         </Ink>
       )}
-      <Action
-        size="sm"
-        onPress={() => {
-          void Linking.openURL(url).catch(() => undefined);
-        }}
-      >
-        {new URL(url).hostname}
-      </Action>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const styles = StyleSheet.create(({ colors }) => ({
   card: { margin: space.sm, gap: space.xs },
-  image: { width: 96, height: 64 },
-});
+  tile: {
+    width: 216,
+    maxWidth: "100%",
+    aspectRatio: 2.25,
+    alignItems: "center",
+    alignSelf: "flex-start",
+    justifyContent: "center",
+    backgroundColor: colors.recessed,
+    borderRadius: radius.control,
+    overflow: "hidden",
+  },
+  previewAction: { alignSelf: "center", maxWidth: "92%" },
+  loading: { alignItems: "center", gap: space.sm, padding: space.sm },
+  centered: { textAlign: "center" },
+}));

@@ -1,6 +1,7 @@
 import { acceptedAttachments } from "@/core/marmot/message-projection";
 import {
   AudioAttachment,
+  AudioUploadAttachment,
   VoiceMessageAttachment,
 } from "@/components/audio/attachment";
 import { audioFile, type Track } from "@/core/audio/types";
@@ -8,6 +9,7 @@ import type { MarmotDownload } from "@/core/downloads/types";
 import {
   localMediaUri as localUri,
   openLocalAttachment,
+  shareLocalAttachment,
 } from "@/core/media/open-local-attachment";
 import {
   type IMessage,
@@ -24,7 +26,6 @@ import { Directory, File } from "expo-file-system";
 import { Image, type ImageRef } from "expo-image";
 import { BlurTargetView, BlurView } from "expo-blur";
 import { saveToLibraryAsync } from "expo-media-library/legacy";
-import { shareAsync } from "expo-sharing";
 import Transition from "react-native-screen-transitions";
 import {
   type ComponentProps,
@@ -209,7 +210,7 @@ function Poster({
   );
 }
 
-export function VideoTimestampBackground() {
+export function MediaTimestampBackground() {
   const target = useGlassBackdropTarget();
   const { preferences } = useGlassTheme();
   return (
@@ -263,7 +264,7 @@ export type PendingVideoFile = {
   poster?: ImageRef;
 };
 
-export type VideoUpload = {
+export type AttachmentUpload = {
   id: string;
   files: readonly PendingVideoFile[];
   progress?: number;
@@ -285,7 +286,7 @@ export function MarmotAttachments({
   group: string;
   conversation: string;
   row?: MarmotMessage;
-  upload?: VideoUpload;
+  upload?: AttachmentUpload;
   message: IMessage;
   presentation: AttachmentPresentation;
   gallery: GalleryItem[];
@@ -335,7 +336,8 @@ export function MarmotAttachments({
     <View
       style={
         entries.length === 1 &&
-        (message.videoNote ||
+        (timestampBackdrop ||
+          message.videoNote ||
           Array.from(assets.values()).some(({ item }) =>
             videoFile(item.name, item.type),
           ) ||
@@ -382,7 +384,16 @@ export function MarmotAttachments({
             />
           );
         }
-        if (!asset && preview && pending)
+        if (!asset && preview && pending) {
+          if (audioFile(preview.file.name, preview.file.type))
+            return (
+              <AudioUploadAttachment
+                key={item.index}
+                title={preview.file.name}
+                progress={pending.progress ?? 0}
+                retry={pending.retry}
+              />
+            );
           return (
             <MessageFile
               key={item.index}
@@ -398,6 +409,7 @@ export function MarmotAttachments({
               position="right"
             />
           );
+        }
         return (
           asset && (
             <Attachment
@@ -409,6 +421,7 @@ export function MarmotAttachments({
               presentation={presentation}
               foreground={foreground}
               visible={visible}
+              timestampBackdrop={timestampBackdrop}
               openPhoto={() => setSelected(attachmentKey(asset.target))}
             />
           )
@@ -470,10 +483,7 @@ export async function exportMarmotAttachment(
       const location = await Directory.pickDirectoryAsync();
       if (location) await source.copy(location);
     } else {
-      await shareAsync(source.uri, {
-        mimeType: file.type,
-        dialogTitle: item.name,
-      });
+      await shareLocalAttachment(file);
     }
   });
 }
@@ -570,6 +580,7 @@ function Attachment({
   conversation,
   foreground,
   visible,
+  timestampBackdrop,
   ...props
 }: AttachmentProps & {
   dialog: ReturnType<typeof useDialog>;
@@ -577,6 +588,7 @@ function Attachment({
   conversation: string;
   foreground: boolean;
   visible: boolean;
+  timestampBackdrop: boolean;
 }) {
   const { t } = useTranslation("messages");
   const {
@@ -585,6 +597,8 @@ function Attachment({
   } = props;
   const { state, key, uri, shown } = useAttachment(props);
   const { identity } = useLocal();
+  const backdrop = useGlassBackdropTarget();
+  const { preferences } = useGlassTheme();
   const transcript = useVoiceTranscript(
     source,
     state.kind === "cached" || state.kind === "local",
@@ -609,17 +623,23 @@ function Attachment({
 
   let body;
   if (isPhoto && uri) {
-    body = (
+    const image = (
       <MessageImage
         currentMessage={{ ...shown, image: uri }}
         imageStyle={frame}
         onOpen={openPhoto}
       />
     );
+    body =
+      timestampBackdrop && backdrop && !preferences.reduceTransparency ? (
+        <BlurTargetView ref={backdrop}>{image}</BlurTargetView>
+      ) : (
+        image
+      );
   } else if (isPhoto) {
     body = (
       <View style={[styles.placeholder, frame]}>
-        <Poster item={item} />
+        <Poster item={item} timestampBackdrop={timestampBackdrop} />
         <VideoTransferOverlay message={shown} />
         {item.duration != null && (
           <Ink kind="caption" style={styles.duration}>
@@ -706,7 +726,7 @@ function VideoAttachment({
   dialog: ReturnType<typeof useDialog>;
   metadata: Item | PendingVideoFile["file"];
   poster?: ImageRef;
-  upload?: VideoUpload;
+  upload?: AttachmentUpload;
   position?: "left" | "right";
   foreground: boolean;
   frame?: { width: number; height: number; borderRadius: number };

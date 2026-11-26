@@ -23,11 +23,10 @@ import {
 } from "react-native";
 import { StyleSheet, UnistylesRuntime } from "react-native-unistyles";
 import {
-  cancelAnimation,
-  Easing,
+  makeMutable,
+  type SharedValue,
   useDerivedValue,
-  useSharedValue,
-  withTiming,
+  useFrameCallback,
 } from "react-native-reanimated";
 import {
   AlphaType,
@@ -50,12 +49,19 @@ type Snapshot = {
   image: SkImage;
   release: () => void;
 };
-type Transition = Size &
-  Pick<Snapshot, "image"> & {
-    target: ThemeName;
-    liveArea: LayoutRectangle | null;
-    reveal: () => void;
-    finish: () => void;
+type Opening = {
+  x: number;
+  y: number;
+  end: number;
+  progress: SharedValue<number>;
+};
+type Wave = Size &
+  Snapshot & {
+    id: number;
+    target: Presentation;
+    opening: Opening;
+    probe: { x: number; y: number };
+    elapsed: SharedValue<number>;
   };
 
 const captureTimeout = 300;
@@ -67,7 +73,24 @@ const androidSnapshot = requireOptionalNativeModule<{
     width: number,
     height: number,
   ) => Promise<Uint8Array | null>;
+  awaitFrameCover?: (tag: number, x: number, y: number) => Promise<boolean>;
 }>("BoopThemeSnapshot");
+
+const androidOverlay = {
+  backingView: "SurfaceView",
+  zOrderOnTop: true,
+  opaque: false,
+} as const;
+
+function nextFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function disposeWave(wave: Wave) {
+  wave.elapsed.set(-1);
+  // Skia may still present a recording referencing this image after React unmounts it.
+  setTimeout(wave.release, 50);
+}
 
 const ThemeControlContext = createContext<{
   keepControlLive: (view: CaptureView) => () => void;
@@ -223,6 +246,7 @@ export function ThemeSwitcher({
   children: (theme: ThemeName) => ReactNode;
 }) {
   const view = useRef<CaptureView>(null);
+  const canvas = useRef<CaptureView>(null);
   const [liveControl, setLiveControl] = useState<CaptureView | null>(null);
   const keepControlLive = useCallback((control: CaptureView) => {
     setLiveControl(control);
@@ -237,11 +261,15 @@ export function ThemeSwitcher({
   );
   const [{ width, height }, setSize] = useState<Size>({ width: 0, height: 0 });
   const [rendered, setRendered] = useState<Presentation>({ theme, choice });
-  const [transition, setTransition] = useState<Transition | null>(null);
+  const [waves, setWaves] = useState<Wave[]>([]);
+  const sequence = useRef(0);
+  const owned = useRef(new Map<number, Wave>());
+  const cancelCapture = useRef<(() => void) | null>(null);
+  const awaitingPresentation = useRef<Wave | null>(null);
+  const readyToAnimate = useRef<Wave | null>(null);
   const animated = enabled && active && width > 0 && height > 0;
   const displayedTheme = animated ? rendered.theme : theme;
-  const displayedChoice = displayedTheme === theme ? choice : rendered.choice;
-  const committed = useRef(displayedTheme);
+  const displayedChoice = animated ? rendered.choice : choice;
   const control = useMemo(
     () => ({ keepControlLive, displayedChoice }),
     [displayedChoice, keepControlLive],
@@ -255,89 +283,174 @@ export function ThemeSwitcher({
     }
   }, [animated]);
 
+  const retire = useCallback((id: number) => {
+    const wave = owned.current.get(id);
+    if (!wave) return;
+    owned.current.delete(id);
+    disposeWave(wave);
+    setWaves((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  useLayoutEffect(() => {
+    const snapshots = owned.current;
+    return () => {
+      snapshots.forEach(disposeWave);
+      snapshots.clear();
+      awaitingPresentation.current = null;
+      readyToAnimate.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    for (const wave of owned.current.values()) {
+      if (animated && wave.width === width && wave.height === height) continue;
+      if (awaitingPresentation.current === wave)
+        awaitingPresentation.current = null;
+      if (readyToAnimate.current === wave) readyToAnimate.current = null;
+      retire(wave.id);
+    }
+  }, [animated, width, height, retire]);
+
+  // The capture belongs to this surface even when another theme is requested.
+  useLayoutEffect(
+    () => () => cancelCapture.current?.(),
+    [animated, width, height],
+  );
+
   useLayoutEffect(() => {
     if (UnistylesRuntime.themeName !== displayedTheme) {
       UnistylesRuntime.setTheme(displayedTheme);
     }
-    committed.current = displayedTheme;
-  }, [displayedTheme]);
+    const wave = readyToAnimate.current;
+    if (!wave || wave.target !== rendered) return;
+    readyToAnimate.current = null;
+    void nextFrame().then(() => {
+      if (owned.current.has(wave.id)) wave.elapsed.set(0);
+    });
+  }, [displayedTheme, rendered]);
 
   useLayoutEffect(() => {
     const source = view.current;
-    const commit = () => {
+    if (cancelCapture.current || awaitingPresentation.current) return;
+    const target = { theme, choice };
+    const commit = () =>
       setRendered((current) =>
-        current.theme === theme && current.choice === choice
-          ? current
-          : { theme, choice },
+        current.theme === theme && current.choice === choice ? current : target,
       );
-    };
-    if (
-      !animated ||
-      !source ||
-      !isForeground() ||
-      committed.current === theme
-    ) {
+    if (!animated || !source || !isForeground() || rendered.theme === theme) {
       commit();
       return;
     }
-
     let pending = true;
-    let snapshot: Snapshot | undefined;
-
-    function retire() {
-      const outgoing = snapshot;
-      if (!outgoing) return;
-      snapshot = undefined;
-      setTransition((current) =>
-        current?.image === outgoing.image ? null : current,
-      );
-      // Let Skia retire the overlay's recording before destroying its texture.
-      setTimeout(outgoing.release, 50);
-    }
-
-    const timeout = setTimeout(() => {
-      pending = false;
-      commit();
-      retire();
-    }, captureTimeout);
-
     const canCapture = () => pending && isForeground();
-    const acquiring = capture(source, { width, height }, canCapture).then(
-      (outgoing) => {
-        if (canCapture()) snapshot = outgoing;
-        else outgoing.release();
-      },
-    );
-    void Promise.all([measureLiveArea(source, liveControl), acquiring]).then(
-      ([liveArea]) => {
-        if (!snapshot || !canCapture()) return;
-        clearTimeout(timeout);
-        setTransition({
-          image: snapshot.image,
-          target: theme,
-          liveArea,
-          width,
-          height,
-          reveal: () => {
-            if (canCapture()) commit();
-          },
-          finish: retire,
-        });
-      },
-      () => {
-        if (pending) commit();
-        pending = false;
-        clearTimeout(timeout);
-        retire();
-      },
-    );
-
-    return () => {
+    const clear = () => {
       pending = false;
       clearTimeout(timeout);
-      retire();
+      if (cancelCapture.current === clear) cancelCapture.current = null;
     };
-  }, [animated, choice, height, liveControl, theme, width]);
+    const timeout = setTimeout(() => {
+      clear();
+      if (owned.current.size === 0) commit();
+    }, captureTimeout);
+    cancelCapture.current = clear;
+
+    const prepare = async () => {
+      // Wait for the currently selected palette to reach the native window.
+      await nextFrame();
+      if (!canCapture()) return;
+      const measuring = measureLiveArea(source, liveControl);
+      const snapshot = await capture(source, { width, height }, canCapture);
+      try {
+        const liveArea = await Promise.race([
+          measuring,
+          nextFrame().then(() => null),
+        ]);
+        if (!canCapture()) {
+          snapshot.release();
+          return;
+        }
+        const x = liveArea ? liveArea.x + liveArea.width / 2 : width / 2;
+        const y = liveArea ? liveArea.y + liveArea.height / 2 : height / 2;
+        const previous = Array.from(owned.current.values()).at(-1)?.opening;
+        const wave: Wave = {
+          ...snapshot,
+          width,
+          height,
+          id: ++sequence.current,
+          target,
+          probe: { x: previous?.x ?? x, y: previous?.y ?? y },
+          elapsed: makeMutable(-1),
+          opening: {
+            x,
+            y,
+            end:
+              Math.hypot(Math.max(x, width - x), Math.max(y, height - y)) + 1,
+            progress: makeMutable(0),
+          },
+        };
+        clear();
+        awaitingPresentation.current = wave;
+        owned.current.set(wave.id, wave);
+        setWaves((current) => [...current, wave]);
+      } catch (error) {
+        snapshot.release();
+        throw error;
+      }
+    };
+    void prepare().catch(() => {
+      if (canCapture() && owned.current.size === 0) commit();
+      clear();
+    });
+  }, [
+    animated,
+    choice,
+    height,
+    liveControl,
+    rendered.theme,
+    theme,
+    waves.length,
+    width,
+  ]);
+
+  const newest = waves.at(-1);
+  useLayoutEffect(() => {
+    if (!newest || awaitingPresentation.current !== newest) return;
+    let current = true;
+    const present = async () => {
+      // The previous opening stays transparent until the incoming cover is drawn.
+      await nextFrame();
+      let covered = true;
+      const tag = canvas.current && findNodeHandle(canvas.current);
+      if (tag != null && androidSnapshot?.awaitFrameCover) {
+        const { x, y } = newest.probe;
+        covered = await androidSnapshot.awaitFrameCover(
+          tag,
+          x / width,
+          y / height,
+        );
+      } else {
+        await nextFrame();
+      }
+      if (!current || awaitingPresentation.current !== newest) return;
+      awaitingPresentation.current = null;
+      if (covered) {
+        readyToAnimate.current = newest;
+        setRendered(newest.target);
+      } else {
+        retire(newest.id);
+        if (owned.current.size === 0) setRendered(newest.target);
+      }
+    };
+    void present().catch(() => {
+      if (!current || awaitingPresentation.current !== newest) return;
+      awaitingPresentation.current = null;
+      retire(newest.id);
+      if (owned.current.size === 0) setRendered(newest.target);
+    });
+    return () => {
+      current = false;
+    };
+  }, [newest, width, height, retire]);
 
   function onLayout({ nativeEvent }: LayoutChangeEvent) {
     const { width, height } = nativeEvent.layout;
@@ -348,13 +461,9 @@ export function ThemeSwitcher({
     );
   }
 
-  const overlay =
-    animated &&
-    transition?.target === theme &&
-    transition.width === width &&
-    transition.height === height
-      ? transition
-      : null;
+  const visible = animated
+    ? waves.filter((wave) => wave.width === width && wave.height === height)
+    : [];
 
   return (
     <View style={styles.fill}>
@@ -368,51 +477,99 @@ export function ThemeSwitcher({
           {children(displayedTheme)}
         </ThemeControlContext.Provider>
       </View>
-      {((animated && liveControl) || overlay) && (
-        <Canvas
-          colorSpace="srgb"
+      {visible.map((wave) => (
+        <WaveMotion key={wave.id} wave={wave} retire={retire} />
+      ))}
+      {((animated && liveControl) || visible.length > 0) && (
+        <View
+          ref={canvas}
+          collapsable={false}
           pointerEvents="none"
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
           style={StyleSheet.absoluteFill}
         >
-          {overlay && (
-            <ThemeReveal
-              transition={overlay}
-              revealing={displayedTheme === theme}
-            />
-          )}
-        </Canvas>
+          <Canvas
+            android={androidOverlay}
+            colorSpace="srgb"
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={StyleSheet.absoluteFill}
+          >
+            {visible.toReversed().map((wave, index, newestFirst) => (
+              <ThemeReveal
+                key={wave.id}
+                wave={wave}
+                openings={newestFirst
+                  .slice(0, index + 1)
+                  .map((item) => item.opening)}
+              />
+            ))}
+          </Canvas>
+        </View>
       )}
     </View>
   );
 }
 
-function ThemeReveal({
-  transition,
-  revealing,
+function WaveMotion({
+  wave,
+  retire,
 }: {
-  transition: Transition;
-  revealing: boolean;
+  wave: Wave;
+  retire: (id: number) => void;
 }) {
-  const { image, width, height, liveArea, reveal, finish } = transition;
-  const progress = useSharedValue(0);
-  const originX = liveArea ? liveArea.x + liveArea.width / 2 : width / 2;
-  const originY = liveArea ? liveArea.y + liveArea.height / 2 : height / 2;
-  const maxRadius =
-    Math.hypot(
-      Math.max(originX, width - originX),
-      Math.max(originY, height - originY),
-    ) + 1;
-  // Start beyond the live capsule so the first palette change is visible
-  // around the selector even before the radius advances.
-  const initialRadius = liveArea ? liveArea.height * 0.85 : 0;
-  const opening = useDerivedValue<SkRRect>(() => {
-    const radius = initialRadius + (maxRadius - initialRadius) * progress.get();
+  const {
+    id,
+    elapsed,
+    opening: { progress },
+  } = wave;
+  const duration = motion.themeReveal;
+  useFrameCallback(({ timeSincePreviousFrame }) => {
+    const previous = elapsed.get();
+    if (previous < 0) return;
+    // A delayed frame must not skip a visible portion of the reveal.
+    const step = Math.min(timeSincePreviousFrame ?? 1000 / 60, 1000 / 30);
+    const next = Math.min(previous + step, duration);
+    const fraction = next / duration;
+    progress.set(fraction + fraction * fraction * (1 - fraction));
+    elapsed.set(next === duration ? -1 : next);
+    if (next === duration) scheduleOnRN(retire, id);
+  });
+  return null;
+}
+
+function ThemeReveal({ wave, openings }: { wave: Wave; openings: Opening[] }) {
+  const { image, width, height } = wave;
+  // A newer opening reveals the live palette through every older snapshot.
+  return openings.reduce<ReactNode>(
+    (snapshot, opening) => (
+      <RevealMask opening={opening}>{snapshot}</RevealMask>
+    ),
+    <Image
+      image={image}
+      x={0}
+      y={0}
+      width={width}
+      height={height}
+      fit="fill"
+    />,
+  );
+}
+
+function RevealMask({
+  opening,
+  children,
+}: {
+  opening: Opening;
+  children: ReactNode;
+}) {
+  const { x, y, end, progress } = opening;
+  const circle = useDerivedValue<SkRRect>(() => {
+    const radius = end * progress.get();
     return {
       rect: {
-        x: originX - radius,
-        y: originY - radius,
+        x: x - radius,
+        y: y - radius,
         width: 2 * radius,
         height: 2 * radius,
       },
@@ -420,48 +577,9 @@ function ThemeReveal({
       ry: radius,
     };
   });
-  const selector = liveArea && {
-    rect: liveArea,
-    rx: liveArea.height / 2,
-    ry: liveArea.height / 2,
-  };
-
-  useLayoutEffect(() => {
-    progress.set(0);
-    // Submit the outgoing frame before revealing the new palette and selection.
-    let frame = requestAnimationFrame(() => {
-      if (liveArea) reveal();
-      else frame = requestAnimationFrame(reveal);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [liveArea, progress, reveal]);
-
-  useLayoutEffect(() => {
-    if (!revealing) return;
-    progress.set(
-      withTiming(
-        1,
-        { duration: motion.themeReveal, easing: Easing.out(Easing.cubic) },
-        (finished) => {
-          if (finished) scheduleOnRN(finish);
-        },
-      ),
-    );
-    return () => cancelAnimation(progress);
-  }, [finish, progress, revealing]);
-
   return (
-    <Group clip={selector ?? undefined} invertClip>
-      <Group clip={opening} invertClip>
-        <Image
-          image={image}
-          x={0}
-          y={0}
-          width={width}
-          height={height}
-          fit="fill"
-        />
-      </Group>
+    <Group clip={circle} invertClip>
+      {children}
     </Group>
   );
 }

@@ -52,9 +52,10 @@ function windowFor(initial: MarmotConversation, onJump?: (id: string) => void) {
   };
   let closes = 0;
   const subscribers = new Set<() => void>();
-  const window: Window = {
+  let refreshFromNative = () => {};
+  const window = {
     getState: () => state,
-    subscribe(listener) {
+    subscribe(listener: () => void) {
       subscribers.add(listener);
       return () => subscribers.delete(listener);
     },
@@ -67,11 +68,14 @@ function windowFor(initial: MarmotConversation, onJump?: (id: string) => void) {
     async anchor() {
       throw new Error("Unexpected anchor");
     },
-    async jump(id) {
+    async jump(id: string) {
       if (!onJump) throw new Error("Unexpected jump");
       onJump(id);
     },
-  };
+    refresh() {
+      refreshFromNative();
+    },
+  } satisfies Window & { refresh(): void };
   function publish(next: ReturnType<Window["getState"]>) {
     state = next;
     for (const listener of subscribers) listener();
@@ -79,6 +83,9 @@ function windowFor(initial: MarmotConversation, onJump?: (id: string) => void) {
   return {
     window,
     publish,
+    setNativeSnapshot(next: MarmotConversation) {
+      refreshFromNative = () => publish({ status: "ready", snapshot: next });
+    },
     closes: () => closes,
     observed: () => subscribers.size,
   };
@@ -102,6 +109,27 @@ async function until(check: () => boolean) {
 }
 
 describe("protected conversation cache", () => {
+  test("reconciles the open chat with native state on foreground without a new event", async () => {
+    const fixture = windowFor(snapshot([message("before")]));
+    const cache = createConversationCache({
+      canOpen: () => true,
+      open: async () => fixture.window,
+    });
+    cache.setAvailable(true);
+    try {
+      cache.acquire("chat");
+      await until(() => Boolean(cache.get("chat")?.snapshot));
+      cache.setForeground(false);
+      fixture.setNativeSnapshot(snapshot([message("arrived while away")], "2"));
+      expect(cache.get("chat")?.snapshot?.messages[0]?.text).toBe("before");
+      cache.setForeground(true);
+      expect(cache.get("chat")?.snapshot?.messages[0]?.text).toBe(
+        "arrived while away",
+      );
+    } finally {
+      cache.setAvailable(false);
+    }
+  });
   test("coalesces idle notifications while serving the latest MDK snapshot immediately", async () => {
     const fixture = windowFor(snapshot([message("initial")]));
     const cache = createConversationCache({

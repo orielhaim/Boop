@@ -311,11 +311,20 @@ private func project(_ snapshot: ChatListWindowSnapshotFfi) -> Document {
         "updatedAt": Double(chat.activitySortAt),
         "previewSelection": selection,
         "preview": bridgeValue(chat.lastMessage.map { message -> Document in
-          ["id": message.messageIdHex, "sender": message.sender, "kind": Double(message.kind),
-           "text": bridgeValue(message.deleted ? nil : message.plaintext),
+          let system = message.groupSystem.flatMap { $0.provenance == .authenticatedGroupState ? $0 : nil }
+          let hasText = !message.deleted && (message.kind == 9 || message.kind == 1111)
+          return ["id": message.messageIdHex, "sender": message.sender, "kind": Double(message.kind),
+           "senderName": bridgeValue(message.senderDisplayName), "deleted": message.deleted,
+           "attachmentKind": bridgeValue(message.attachmentKind.map { wireName($0) }),
+           "attachmentCount": Double(message.attachmentCount),
+           "attachmentPresentation": bridgeValue(message.attachmentPresentation),
+           "system": bridgeValue(system.map { event -> Document in
+             ["type": event.systemType, "name": bridgeValue(event.name)]
+           }),
+           "sticker": message.sticker != nil, "delivery": wireName(message.deliveryState),
+           "text": bridgeValue(hasText || (!message.deleted && message.kind == 1068) ? message.plaintext : nil),
            "expiresAt": bridgeValue(message.retentionExpiresAt.map(Double.init)),
-           "content": bridgeValue(!message.deleted && (message.kind == 9 || message.kind == 1111)
-             ? messageContent(message.contentTokens) : nil)]
+           "content": bridgeValue(hasText ? messageContent(message.contentTokens) : nil)]
         }),
         "draft": bridgeValue(draft),
       ]

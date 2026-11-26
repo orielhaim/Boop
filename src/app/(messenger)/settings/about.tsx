@@ -2,6 +2,7 @@ import { ScreenHeader } from "@/components/navigation/screen-header";
 import Constants from "expo-constants";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { View } from "react-native";
 import { useDialog } from "@/components/ui/dialog";
 import { ListGroup, ListRow } from "@/components/ui/list-group";
 import { BoopLogo } from "@/components/ui/boop-logo";
@@ -19,7 +20,9 @@ export default function About() {
   const config = Constants.expoConfig;
   return (
     <Screen navigationHeader={<ScreenHeader title={t("settings:about")} />}>
-      <BoopLogo size={56} />
+      <View style={{ alignItems: "center" }}>
+        <BoopLogo size={56} />
+      </View>
       <ListGroup title="Boop">
         <ListRow
           title={t("settings:version")}

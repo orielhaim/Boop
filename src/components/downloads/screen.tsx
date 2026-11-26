@@ -5,7 +5,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Directory, File } from "expo-file-system";
 import { useNetworkState } from "expo-network";
 import { router, useFocusEffect } from "expo-router";
-import { shareAsync } from "expo-sharing";
 import {
   memo,
   useCallback,
@@ -40,6 +39,7 @@ import {
 import {
   localMediaUri,
   openLocalAttachment,
+  shareLocalAttachment,
 } from "@/core/media/open-local-attachment";
 import { openDownloadedVideo } from "@/core/video/open";
 import { videoFile } from "@/core/video/types";
@@ -176,10 +176,7 @@ const DownloadRow = memo(function DownloadRow({
         if (!valid) return;
         if (action === "external") await openLocalAttachment(file, true);
         else if (action === "share") {
-          await shareAsync(localMediaUri(file.path), {
-            mimeType: file.type,
-            dialogTitle: file.name,
-          });
+          await shareLocalAttachment(file);
         } else if (directory) {
           const output = directory.createFile(file.name, file.type);
           try {

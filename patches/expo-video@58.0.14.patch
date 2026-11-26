@@ -83,7 +83,7 @@ index f353cc8..33623db 100644
        ref.prepare()
        promise?.resolve()
 diff --git a/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt b/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
-index 1792ff2..be83804 100644
+index 1792ff2..565b329 100644
 --- a/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
 +++ b/android/src/main/java/expo/modules/video/managers/PictureInPictureManager.kt
 @@ -12,6 +12,8 @@ import androidx.media3.common.util.UnstableApi
@@ -139,18 +139,42 @@ index 1792ff2..be83804 100644
      val newCandidate = findAutoPiPViewCandidate(strongVideoViews)
      currentPiPViewCandidate = WeakReference(newCandidate)
  
-@@ -86,6 +101,10 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -85,20 +100,34 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+   }
  
    fun enterPictureInPicture(videoView: VideoView) {
-     val mainActivity = mainActivity.get() ?: return
+-    val mainActivity = mainActivity.get() ?: return
++    val mainActivity = mainActivity.get()
++      ?: throw PictureInPictureEnterException("No activity for Picture-in-Picture")
 +    val owner = callPiPHost
 +    if (owner?.isCallPiPReserved() == true || owner?.claimVideoPiP() == false) {
 +      throw PictureInPictureEnterException("Call Picture-in-Picture has priority")
 +    }
  
-     currentPiPViewCandidate = WeakReference(videoView)
-     applyPipParamsForView(videoView)
-@@ -99,6 +118,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+-    currentPiPViewCandidate = WeakReference(videoView)
+-    applyPipParamsForView(videoView)
++    try {
++      currentPiPViewCandidate = WeakReference(videoView)
++      applyPipParamsForView(videoView)
+ 
+-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-      mainActivity.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
+-    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+-      @Suppress("DEPRECATION")
+-      mainActivity.enterPictureInPictureMode()
++      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++        if (!mainActivity.enterPictureInPictureMode(PictureInPictureParams.Builder().build())) {
++          throw PictureInPictureEnterException("Android refused to enter Picture-in-Picture")
++        }
++      } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
++        @Suppress("DEPRECATION")
++        mainActivity.enterPictureInPictureMode()
++      }
++    } catch (error: Exception) {
++      owner?.releaseVideoPiP()
++      findAndSetupPipCandidate()
++      throw error
+     }
    }
  
    private fun applyPipParamsForView(view: VideoView) {
@@ -158,7 +182,7 @@ index 1792ff2..be83804 100644
      mainActivity.get()?.let {
        applyRectHint(it, calculateRectHint(view.playerView))
        applyPiPParams(it, autoEnterPiP, view.pipParams.aspectRatio)
-@@ -106,6 +126,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -106,6 +135,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
    }
  
    override fun onPiPParamsChanged(videoView: VideoView, oldPiPParams: PiPParams, newPiPParams: PiPParams) {
@@ -166,7 +190,7 @@ index 1792ff2..be83804 100644
      val pipParamsInfluenceRectHint = pipParamChangeInfluenceRectHint(oldPiPParams, newPiPParams)
      if (paramChangeInfluencesAutoEnter(oldPiPParams, newPiPParams)) {
        findAndSetupPipCandidate()
-@@ -119,9 +140,13 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -119,9 +149,13 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
    }
  
    override fun onPictureInPictureStart() {
@@ -180,7 +204,7 @@ index 1792ff2..be83804 100644
      candidate?.let {
        layoutForPiPEnter(it)
      }
-@@ -135,17 +160,22 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -135,17 +169,22 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
  
    override fun onPictureInPictureStop() {
      if (!isInPiP) {
@@ -205,7 +229,7 @@ index 1792ff2..be83804 100644
    }
  
    override fun onVideoViewRegistered(videoView: VideoView, allVideoViews: Collection<VideoView>) {
-@@ -162,24 +192,38 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -162,24 +201,38 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
    override fun onVideoViewUnregistered(videoView: VideoView, allVideoViews: Collection<VideoView>) {
      videoViews.retainAll { it.get() != videoView }
  
@@ -249,7 +273,7 @@ index 1792ff2..be83804 100644
      }
  
      // We receive this event before any info on app entering PiP
-@@ -203,6 +247,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -203,6 +256,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
          it.playerView.useController = it.useNativeControls
        }
      }
@@ -257,7 +281,7 @@ index 1792ff2..be83804 100644
    }
  
    private fun addPiPHelperFragment() {
-@@ -228,7 +273,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
+@@ -228,7 +282,7 @@ class PictureInPictureManager(appContext: AppContext) : PictureInPictureFragment
    }
  
    private fun electAutoPipViewCandidate() {
@@ -1476,3 +1500,125 @@ new file mode 100644
 +  fun releaseVideoPiP()
 +  fun onCallPiPReservationChanged()
 +}
+diff --git a/android/src/main/java/expo/modules/video/VideoView.kt b/android/src/main/java/expo/modules/video/VideoView.kt
+index bc00806..8c1ba86 100644
+--- a/android/src/main/java/expo/modules/video/VideoView.kt
++++ b/android/src/main/java/expo/modules/video/VideoView.kt
+@@ -264,8 +264,13 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+       throw PictureInPictureEnterException("No player attached to the VideoView")
+     }
+ 
+-    pipParams = pipParams.copy(willEnter = true)
+-    VideoManager.pictureInPicture.enterPictureInPicture(this)
++    pipParams = pipParams.copy(willEnter = true, aspectRatio = calculateCurrentPipAspectRatio())
++    try {
++      VideoManager.pictureInPicture.enterPictureInPicture(this)
++    } catch (error: Exception) {
++      pipParams = pipParams.copy(willEnter = false)
++      throw error
++    }
+   }
+ 
+   /**
+@@ -332,6 +337,7 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+ 
+   override fun onRenderedFirstFrame(player: VideoPlayer) {
+     if (player.currentVideoView == this) {
++      pipParams = pipParams.copy(aspectRatio = calculateCurrentPipAspectRatio())
+       shouldHideSurfaceView = false
+       applySurfaceViewVisibility()
+       onFirstFrameRender(Unit)
+@@ -352,7 +358,10 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     // On every re-layout ExoPlayer resets the timeBar to be enabled.
+     // We need to disable it to keep scrubbing impossible.
+ 
+-    pipParams = pipParams.copy(rectHint = calculateRectHint(playerView))
++    pipParams = pipParams.copy(
++      rectHint = calculateRectHint(playerView),
++      aspectRatio = calculateCurrentPipAspectRatio()
++    )
+     playerView.setTimeBarInteractive(videoPlayer?.requiresLinearPlayback ?: true)
+   }
+ 
+diff --git a/android/src/main/java/expo/modules/video/records/VideoSize.kt b/android/src/main/java/expo/modules/video/records/VideoSize.kt
+index b303895..00805b5 100644
+--- a/android/src/main/java/expo/modules/video/records/VideoSize.kt
++++ b/android/src/main/java/expo/modules/video/records/VideoSize.kt
+@@ -5,12 +5,29 @@ import expo.modules.kotlin.records.Field
+ import expo.modules.kotlin.records.Record
+ import java.io.Serializable
+ import expo.modules.kotlin.types.OptimizedRecord
++import kotlin.math.roundToInt
++
++private fun displayWidth(width: Int, pixelRatio: Float): Int {
++  val scaled = width * pixelRatio
++  return if (width > 0 && scaled.isFinite() && scaled > 0) {
++    scaled.roundToInt().coerceAtLeast(1)
++  } else {
++    width
++  }
++}
++
++private fun Format.isQuarterTurn() = rotationDegrees == 90 || rotationDegrees == 270
+ 
+ @OptimizedRecord
+ data class VideoSize(
+   @Field val width: Int = 0,
+   @Field val height: Int = 0
+ ) : Record, Serializable {
+-  constructor(size: androidx.media3.common.VideoSize) : this(size.width, size.height)
+-  constructor(format: Format) : this(format.width, format.height)
++  constructor(size: androidx.media3.common.VideoSize) : this(
++    displayWidth(size.width, size.pixelWidthHeightRatio), size.height
++  )
++  constructor(format: Format) : this(
++    if (format.isQuarterTurn()) format.height else displayWidth(format.width, format.pixelWidthHeightRatio),
++    if (format.isQuarterTurn()) displayWidth(format.width, format.pixelWidthHeightRatio) else format.height
++  )
+ }
+diff --git a/android/src/main/java/expo/modules/video/utils/PictureInPictureUtils.kt b/android/src/main/java/expo/modules/video/utils/PictureInPictureUtils.kt
+index 7bf7b82..5c7e01f 100644
+--- a/android/src/main/java/expo/modules/video/utils/PictureInPictureUtils.kt
++++ b/android/src/main/java/expo/modules/video/utils/PictureInPictureUtils.kt
+@@ -13,6 +13,7 @@ import androidx.media3.ui.PlayerView
+ import expo.modules.video.PictureInPictureConfigurationException
+ import expo.modules.video.VideoView.Companion.isPictureInPictureSupported
+ import expo.modules.video.enums.ContentFit
++import expo.modules.video.records.VideoSize as DisplayVideoSize
+ 
+ @OptIn(UnstableApi::class)
+ internal fun calculateRectHint(playerView: PlayerView): Rect {
+@@ -38,10 +39,12 @@ internal fun calculateRectHint(playerView: PlayerView): Rect {
+ }
+ 
+ internal fun calculatePiPAspectRatio(videoSize: VideoSize, viewWidth: Int, viewHeight: Int, contentFit: ContentFit): Rational {
+-  var aspectRatio = if (contentFit == ContentFit.CONTAIN) {
+-    Rational(videoSize.width, videoSize.height)
+-  } else {
+-    Rational(viewWidth, viewHeight)
++  val displaySize = DisplayVideoSize(videoSize)
++  var aspectRatio = when {
++    contentFit == ContentFit.CONTAIN && displaySize.width > 0 && displaySize.height > 0 ->
++      Rational(displaySize.width, displaySize.height)
++    viewWidth > 0 && viewHeight > 0 -> Rational(viewWidth, viewHeight)
++    else -> Rational(16, 9)
+   }
+   // AspectRatio for the activity in picture-in-picture, must be between 2.39:1 and 1:2.39 (inclusive).
+   // https://developer.android.com/reference/android/app/PictureInPictureParams.Builder#setAspectRatio(android.util.Rational)
+diff --git a/ios/Records/Tracks.swift b/ios/Records/Tracks.swift
+index dac369e..361db2d 100644
+--- a/ios/Records/Tracks.swift
++++ b/ios/Records/Tracks.swift
+@@ -98,7 +98,11 @@ internal struct VideoTrack: Record, Equatable {
+     let peakBitrate = await assetTrack.getPeakBitrate()
+ 
+     if let cgSize = try? await assetTrack.load(.naturalSize), cgSize.width.isFinite, cgSize.height.isFinite {
+-      size = VideoSize.from(cgSize)
++      let transform = (try? await assetTrack.load(.preferredTransform)) ?? .identity
++      let displaySize = CGRect(origin: .zero, size: cgSize).applying(transform).size
++      if displaySize.width.isFinite, displaySize.height.isFinite {
++        size = VideoSize.from(displaySize)
++      }
+     }
+ 
+     return VideoTrack(

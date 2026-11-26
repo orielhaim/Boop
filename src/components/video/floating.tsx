@@ -6,7 +6,7 @@ import {
   type VideoPlayer,
 } from "expo-video";
 import { useTranslation } from "react-i18next";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -18,39 +18,46 @@ import {
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
-  cancelAnimation,
   FadeIn,
   FadeOut,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useKeyboardState } from "react-native-keyboard-controller";
 import { GlassSurface } from "@/components/glassyui/glass-surface";
+import { useDialog } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
+import {
+  dragFloatingAnchor,
+  floatingVideoLayout,
+  videoAspectRatio,
+} from "@/core/video/floating-layout";
 import { useTheme } from "@/theme";
 import { StyleSheet } from "react-native-unistyles";
-import { mediaMaterial, motion } from "@/theme/tokens";
-import { ControlGroup, MediaControl } from "./media-controls";
+import { mediaMaterial } from "@/theme/tokens";
+import { MediaControl } from "./media-controls";
 import { useVideoControls } from "./interaction";
+import type { CaptionBounds } from "./captions";
 
 export type FloatingVideoProps = {
   player: VideoPlayer;
   title?: string;
+  dimensions?: string | null;
   poster?: ImageSource | string;
   onClose: () => void;
   onExpand: () => void;
   background?: boolean;
   allowPiP?: boolean;
   onPictureInPictureChange?: (active: boolean) => void;
-  captions?: (controlsVisible: boolean) => ReactNode;
+  captions?: (bounds?: CaptionBounds) => ReactNode;
   style?: StyleProp<ViewStyle>;
 };
 
 export function FloatingVideo({
   player,
   title,
+  dimensions,
   poster,
   onClose,
   onExpand,
@@ -61,11 +68,29 @@ export function FloatingVideo({
   style,
 }: FloatingVideoProps) {
   const { t } = useTranslation("video");
+  const dialog = useDialog();
+  const viewRef = useRef<VideoView>(null);
+  const pipStarting = useRef(false);
   const { isPlaying } = useEvent(player, "playingChange", {
     isPlaying: player.playing,
   });
   const systemPiP = !background && allowPiP && isPictureInPictureSupported();
   const [pipActive, setPipActive] = useState(false);
+  async function startSystemPiP() {
+    const view = viewRef.current;
+    if (!systemPiP || !view || pipStarting.current || pipActive) return;
+    pipStarting.current = true;
+    try {
+      await view.startPictureInPicture();
+    } catch {
+      void dialog.show({
+        title: t("viewer.pictureInPictureUnavailable"),
+        tone: "error",
+      });
+    } finally {
+      pipStarting.current = false;
+    }
+  }
   const { visible, toggle, reveal } = useVideoControls(
     !isPlaying || background,
   );
@@ -84,210 +109,221 @@ export function FloatingVideo({
   const opening = !background && !firstFrameRendered && status !== "error";
   const fraction = duration > 0 ? Math.min(1, currentTime / duration) : 0;
   const insets = useSafeAreaInsets();
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const window = useWindowDimensions();
+  const [viewport, setViewport] = useState<{ width: number; height: number }>();
+  const [topControlsHeight, setTopControlsHeight] = useState(44);
+  const [bottomControlsHeight, setBottomControlsHeight] = useState(44);
   const { reduceMotion } = useTheme();
   const keyboard = useKeyboardState((state) => state.isVisible);
-  const track = player.videoTrack?.size;
-  const ratio =
-    track && track.width > 0 && track.height > 0
-      ? track.width / track.height
-      : 16 / 9;
-  const maxWidth = Math.min(260, Math.max(164, windowWidth * 0.62));
-  const maxHeight = Math.min(windowHeight * 0.43, 238);
-  const width = background
-    ? Math.min(310, windowWidth - 24)
-    : Math.max(146, Math.min(maxWidth, maxHeight * ratio));
-  const height = background ? 72 : Math.min(maxHeight, width / ratio);
-  const left = insets.left + 12;
-  const right = Math.max(left, windowWidth - insets.right - width - 12);
-  const top = insets.top + 14;
-  const bottom = keyboard
-    ? top
-    : Math.max(top, windowHeight - insets.bottom - height - 88);
-  const rightDock = useSharedValue(true);
-  const bottomDock = useSharedValue(true);
-  const x = useSharedValue(right);
-  const y = useSharedValue(bottom);
+  const { videoTrack } = useEvent(player, "videoTrackChange", {
+    videoTrack: player.videoTrack,
+  });
+  const track =
+    videoTrack ?? player.availableVideoTracks.find((item) => item.isSupported);
+  const { width, height, left, top, travelX, travelY } = floatingVideoLayout({
+    viewport: viewport ?? window,
+    insets,
+    aspectRatio: videoAspectRatio(track?.size, dimensions),
+    keyboard,
+    background,
+  });
+  const x = useSharedValue(1);
+  const y = useSharedValue(1);
   const startX = useSharedValue(0);
   const startY = useSharedValue(0);
-
-  useEffect(() => {
-    x.set(rightDock.get() ? right : left);
-    y.set(bottomDock.get() ? bottom : top);
-  }, [bottom, bottomDock, left, right, rightDock, top, x, y]);
 
   const drag = useMemo(
     () =>
       Gesture.Pan()
-        .minDistance(14)
+        .enabled(!pipActive)
+        .minDistance(6)
         .onStart(() => {
-          cancelAnimation(x);
-          cancelAnimation(y);
           startX.set(x.get());
           startY.set(y.get());
         })
         .onUpdate((event) => {
-          x.set(
-            Math.max(left, Math.min(right, startX.get() + event.translationX)),
-          );
-          y.set(
-            Math.max(top, Math.min(bottom, startY.get() + event.translationY)),
-          );
-        })
-        .onEnd(({ velocityX, velocityY }) => {
-          rightDock.set(x.get() + velocityX * 0.12 >= (left + right) / 2);
-          bottomDock.set(y.get() + velocityY * 0.12 >= (top + bottom) / 2);
-          const nextX = rightDock.get() ? right : left;
-          const nextY = bottomDock.get() ? bottom : top;
-          x.set(reduceMotion ? nextX : withSpring(nextX, motion.travel));
-          y.set(reduceMotion ? nextY : withSpring(nextY, motion.travel));
+          x.set(dragFloatingAnchor(startX.get(), event.translationX, travelX));
+          y.set(dragFloatingAnchor(startY.get(), event.translationY, travelY));
         }),
-    [
-      bottom,
-      bottomDock,
-      left,
-      reduceMotion,
-      right,
-      rightDock,
-      startX,
-      startY,
-      top,
-      x,
-      y,
-    ],
+    [pipActive, startX, startY, travelX, travelY, x, y],
   );
   const position = useAnimatedStyle(() => ({
-    transform: [{ translateX: x.get() }, { translateY: y.get() }],
+    transform: [
+      { translateX: left + travelX * x.get() },
+      { translateY: top + travelY * y.get() },
+    ],
   }));
 
   return (
-    <GestureDetector gesture={drag}>
-      <Animated.View
-        style={[
-          styles.positioner,
-          { top: 0, left: 0, width, height },
-          position,
-          style,
-        ]}
-      >
-        <GlassSurface
-          preset="cinematic"
-          elevation="raised"
-          style={styles.surface}
-          accessibilityRole="none"
+    <View
+      pointerEvents="box-none"
+      style={styles.overlay}
+      onLayout={({ nativeEvent: { layout } }) => {
+        const { width, height } = layout;
+        if (width <= 0 || height <= 0) return;
+        setViewport((previous) =>
+          previous?.width === width && previous.height === height
+            ? previous
+            : { width, height },
+        );
+      }}
+    >
+      <GestureDetector gesture={drag}>
+        <Animated.View
+          style={[styles.positioner, { width, height }, position, style]}
         >
-          {!background && (
-            <VideoView
-              player={player}
-              style={styles.video}
-              contentFit="contain"
-              nativeControls={false}
-              surfaceType="textureView"
-              allowsPictureInPicture={Boolean(systemPiP)}
-              startsPictureInPictureAutomatically={Boolean(
-                systemPiP && isPlaying,
-              )}
-              onPictureInPictureStart={() => {
-                setPipActive(true);
-                onPictureInPictureChange?.(true);
-              }}
-              onPictureInPictureStop={() => {
-                setPipActive(false);
-                onPictureInPictureChange?.(false);
-              }}
-              onFirstFrameRender={() => setFirstFrameRendered(true)}
-            />
-          )}
-          {poster && opening ? (
-            <Image
-              source={poster}
-              contentFit="contain"
-              cachePolicy="none"
-              style={styles.poster}
-            />
-          ) : null}
-          {opening && !pipActive && (
-            <View pointerEvents="none" style={styles.loader}>
-              <ActivityIndicator
-                color={mediaMaterial.ink}
-                accessibilityLabel={t("viewer.loading")}
+          <GlassSurface
+            preset="cinematic"
+            elevation="raised"
+            style={styles.surface}
+            accessibilityRole="none"
+          >
+            {!background && (
+              <VideoView
+                ref={viewRef}
+                player={player}
+                style={styles.video}
+                contentFit="contain"
+                nativeControls={false}
+                surfaceType="textureView"
+                allowsPictureInPicture={Boolean(systemPiP)}
+                startsPictureInPictureAutomatically={Boolean(
+                  systemPiP && isPlaying,
+                )}
+                onPictureInPictureStart={() => {
+                  setPipActive(true);
+                  onPictureInPictureChange?.(true);
+                }}
+                onPictureInPictureStop={() => {
+                  setPipActive(false);
+                  onPictureInPictureChange?.(false);
+                }}
+                onFirstFrameRender={() => setFirstFrameRendered(true)}
               />
-            </View>
-          )}
-          {!background &&
-            !pipActive &&
-            firstFrameRendered &&
-            captions?.(visible)}
-          {!pipActive &&
-            (background ? (
-              <View style={styles.audioRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("viewer.expand")}
-                  onPress={onExpand}
-                  style={styles.audioMain}
-                >
-                  <View style={styles.audioIcon}>
-                    <Icon name="audio" size={21} color={mediaMaterial.accent} />
-                  </View>
-                  <View style={styles.audioLabels}>
-                    {title && (
-                      <Text style={styles.title} numberOfLines={1}>
-                        {title}
-                      </Text>
-                    )}
-                    <Text style={styles.subtitle} numberOfLines={1}>
-                      {t("viewer.listening")}
-                    </Text>
-                  </View>
-                </Pressable>
-                <MediaControl
-                  label={t(isPlaying ? "viewer.pause" : "viewer.play")}
-                  icon={isPlaying ? "pause" : "play"}
-                  onPress={() => (isPlaying ? player.pause() : player.play())}
-                />
-                <MediaControl
-                  label={t("viewer.close")}
-                  icon="close"
-                  onPress={onClose}
+            )}
+            {poster && opening ? (
+              <Image
+                source={poster}
+                contentFit="contain"
+                cachePolicy="none"
+                style={styles.poster}
+              />
+            ) : null}
+            {opening && !pipActive && (
+              <View pointerEvents="none" style={styles.loader}>
+                <ActivityIndicator
+                  color={mediaMaterial.ink}
+                  accessibilityLabel={t("viewer.loading")}
                 />
               </View>
-            ) : (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t(
-                    isPlaying
-                      ? visible
-                        ? "viewer.hideControls"
-                        : "viewer.showControls"
-                      : "viewer.expand",
-                  )}
-                  accessibilityActions={[
-                    { name: "expand", label: t("viewer.expand") },
-                  ]}
-                  onAccessibilityAction={(event) => {
-                    if (event.nativeEvent.actionName === "expand") onExpand();
-                  }}
-                  onPress={isPlaying ? toggle : onExpand}
-                  style={styles.videoMain}
-                />
-                {visible && (
-                  <Animated.View
-                    entering={reduceMotion ? undefined : FadeIn.duration(160)}
-                    exiting={reduceMotion ? undefined : FadeOut.duration(120)}
-                    pointerEvents="box-none"
-                    style={styles.videoControls}
+            )}
+            {!background &&
+              !pipActive &&
+              firstFrameRendered &&
+              captions?.(
+                visible
+                  ? {
+                      top: topControlsHeight + 8,
+                      bottom: bottomControlsHeight + 8,
+                      left: 4,
+                      right: 4,
+                    }
+                  : undefined,
+              )}
+            {!pipActive &&
+              (background ? (
+                <View style={styles.audioRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("viewer.expand")}
+                    onPress={onExpand}
+                    style={styles.audioMain}
                   >
-                    <View style={styles.actions} pointerEvents="box-none">
-                      <MediaControl
-                        glass
-                        label={t("viewer.expand")}
-                        icon="fullscreen"
-                        onPress={onExpand}
+                    <View style={styles.audioIcon}>
+                      <Icon
+                        name="audio"
+                        size={21}
+                        color={mediaMaterial.accent}
                       />
-                      <ControlGroup>
+                    </View>
+                    <View style={styles.audioLabels}>
+                      {title && (
+                        <Text style={styles.title} numberOfLines={1}>
+                          {title}
+                        </Text>
+                      )}
+                      <Text style={styles.subtitle} numberOfLines={1}>
+                        {t("viewer.listening")}
+                      </Text>
+                    </View>
+                  </Pressable>
+                  <MediaControl
+                    label={t(isPlaying ? "viewer.pause" : "viewer.play")}
+                    icon={isPlaying ? "pause" : "play"}
+                    onPress={() => (isPlaying ? player.pause() : player.play())}
+                  />
+                  <MediaControl
+                    label={t("viewer.close")}
+                    icon="close"
+                    onPress={onClose}
+                  />
+                </View>
+              ) : (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t(
+                      isPlaying
+                        ? visible
+                          ? "viewer.hideControls"
+                          : "viewer.showControls"
+                        : "viewer.expand",
+                    )}
+                    accessibilityActions={[
+                      { name: "expand", label: t("viewer.expand") },
+                    ]}
+                    onAccessibilityAction={(event) => {
+                      if (event.nativeEvent.actionName === "expand") onExpand();
+                    }}
+                    onPress={isPlaying ? toggle : onExpand}
+                    style={styles.videoMain}
+                  />
+                  {visible && (
+                    <Animated.View
+                      entering={reduceMotion ? undefined : FadeIn.duration(160)}
+                      exiting={reduceMotion ? undefined : FadeOut.duration(120)}
+                      pointerEvents="box-none"
+                      style={styles.videoControls}
+                    >
+                      <View
+                        style={[styles.actions, styles.topActions]}
+                        pointerEvents="box-none"
+                        onLayout={({ nativeEvent }) =>
+                          setTopControlsHeight(nativeEvent.layout.height)
+                        }
+                      >
                         <MediaControl
+                          glass
+                          label={t("viewer.expand")}
+                          icon="fullscreen"
+                          onPress={onExpand}
+                        />
+                        <MediaControl
+                          glass
+                          label={t("viewer.close")}
+                          icon="close"
+                          onPress={onClose}
+                        />
+                      </View>
+                      <View
+                        style={[styles.actions, styles.bottomActions]}
+                        pointerEvents="box-none"
+                        onLayout={({ nativeEvent }) =>
+                          setBottomControlsHeight(nativeEvent.layout.height)
+                        }
+                      >
+                        <MediaControl
+                          glass
                           label={t(isPlaying ? "viewer.pause" : "viewer.play")}
                           icon={isPlaying ? "pause" : "play"}
                           onPress={() => {
@@ -296,34 +332,38 @@ export function FloatingVideo({
                             else player.play();
                           }}
                         />
-                        <MediaControl
-                          label={t("viewer.close")}
-                          icon="close"
-                          onPress={onClose}
-                        />
-                      </ControlGroup>
-                    </View>
-                  </Animated.View>
-                )}
-              </>
-            ))}
-          {!pipActive && (
-            <View pointerEvents="none" style={styles.rim}>
-              <View style={styles.track}>
-                <View
-                  style={[styles.progress, { width: fraction * 100 + "%" }]}
-                />
+                        {systemPiP && firstFrameRendered && (
+                          <MediaControl
+                            glass
+                            label={t("viewer.systemPictureInPicture")}
+                            icon="pictureInPicture"
+                            onPress={() => void startSystemPiP()}
+                          />
+                        )}
+                      </View>
+                    </Animated.View>
+                  )}
+                </>
+              ))}
+            {!pipActive && (
+              <View pointerEvents="none" style={styles.rim}>
+                <View style={styles.track}>
+                  <View
+                    style={[styles.progress, { width: fraction * 100 + "%" }]}
+                  />
+                </View>
               </View>
-            </View>
-          )}
-        </GlassSurface>
-      </Animated.View>
-    </GestureDetector>
+            )}
+          </GlassSurface>
+        </Animated.View>
+      </GestureDetector>
+    </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  positioner: { position: "absolute", zIndex: 50, direction: "ltr" },
+  overlay: { ...StyleSheet.absoluteFillObject, zIndex: 50, direction: "ltr" },
+  positioner: { position: "absolute", top: 0, start: 0 },
   surface: {
     flex: 1,
     borderRadius: theme.radius.group,
@@ -347,12 +387,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: {
     position: "absolute",
-    top: 4,
     left: 4,
     right: 4,
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "space-between",
   },
+  topActions: { top: 4 },
+  bottomActions: { bottom: 4 },
   audioRow: {
     flex: 1,
     flexDirection: "row",

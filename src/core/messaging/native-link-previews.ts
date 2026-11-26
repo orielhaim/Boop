@@ -33,7 +33,7 @@ export function createNativeLinkPreviews(
     const file = new File(root, `${id}.${image ? "jpg" : "html"}`);
     try {
       root.create({ idempotent: true, intermediates: true });
-      const size = await media.downloadPreview(
+      const { size, url: finalUrl } = await media.downloadPreview(
         id,
         url,
         file.uri,
@@ -42,7 +42,7 @@ export function createNativeLinkPreviews(
       );
       if (signal.aborted || !size || file.size !== size)
         throw new Error("preview-unavailable");
-      return file;
+      return { file, url: finalUrl };
     } catch (error) {
       removeMediaFile(file);
       throw error;
@@ -54,15 +54,15 @@ export function createNativeLinkPreviews(
     policy: privacy.linkPreviewPolicy,
     authorize: authorizer.authorizePreview,
     async html(url, signal) {
-      const file = await transfer(url, false, signal);
+      const { file, url: finalUrl } = await transfer(url, false, signal);
       try {
-        return await file.text();
+        return { text: await file.text(), url: finalUrl };
       } finally {
         removeMediaFile(file);
       }
     },
     async image(url, signal) {
-      return (await transfer(url, true, signal)).name;
+      return (await transfer(url, true, signal)).file.name;
     },
   });
   privacy.subscribe(previews.revalidate);

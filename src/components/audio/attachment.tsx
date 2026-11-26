@@ -1,6 +1,6 @@
 import type { PlaybackSource } from "@hzblj/expo-speech";
 import { MessageAudio, type IMessage } from "@kesha-antonov/react-native-chat";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Pressable, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -70,7 +70,7 @@ function AttachmentProgress({
   );
 }
 
-function VoiceAction({
+function AttachmentAction({
   icon,
   label,
   onPress,
@@ -115,7 +115,7 @@ export function VoiceUploadAttachment({
       position="right"
       controlledPlayback={{
         control: retry ? (
-          <VoiceAction
+          <AttachmentAction
             icon="refresh"
             label={t("common:retry")}
             onPress={retry}
@@ -235,7 +235,7 @@ export function VoiceMessageAttachment({
   ) : props.checking ? (
     <AttachmentProgress label={t("audio:loading")} outgoing={props.outgoing} />
   ) : !props.ready || failed ? (
-    <VoiceAction
+    <AttachmentAction
       icon={props.ready ? "refresh" : "download"}
       label={props.ready ? t("common:retry") : t("messages:voiceDownload")}
       onPress={press}
@@ -264,6 +264,62 @@ export function VoiceMessageAttachment({
   );
 }
 
+function AudioFileRow({
+  title,
+  outgoing,
+  control,
+}: {
+  title: string;
+  outgoing: boolean;
+  control: ReactNode;
+}) {
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.file, styles.row]}>
+      {control}
+      <Ink
+        numberOfLines={2}
+        style={[styles.title, outgoing && { color: colors.outgoingInk }]}
+      >
+        {title}
+      </Ink>
+    </View>
+  );
+}
+
+export function AudioUploadAttachment({
+  title,
+  progress,
+  retry,
+}: {
+  title: string;
+  progress: number;
+  retry?: () => void;
+}) {
+  const { t } = useTranslation(["audio", "common"]);
+  return (
+    <AudioFileRow
+      title={title}
+      outgoing
+      control={
+        retry ? (
+          <AttachmentAction
+            icon="refresh"
+            label={t("common:retry")}
+            onPress={retry}
+          />
+        ) : (
+          <AttachmentProgress
+            label={t("audio:loading")}
+            outgoing
+            progress={progress}
+          />
+        )
+      }
+    />
+  );
+}
+
 export function AudioAttachment(props: TrackProps) {
   const { track, ready, checking, downloading, progress, outgoing } = props;
   const { colors } = useTheme();
@@ -273,38 +329,36 @@ export function AudioAttachment(props: TrackProps) {
   const label = !ready ? t("download") : t(playing ? "pause" : "play");
 
   return (
-    <View style={[styles.file, styles.row]}>
-      {waiting || checking ? (
-        <AttachmentProgress
-          label={waiting && !blocked ? t("cancel") : t("loading")}
-          progress={downloading ? progress : undefined}
-          outgoing={outgoing}
-          cancel={waiting && !blocked && !checking ? press : undefined}
-        />
-      ) : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          accessibilityHint={
-            current?.phase === "error" ? t("unavailable") : undefined
-          }
-          disabled={blocked}
-          onPress={press}
-          style={[styles.play, { backgroundColor: colors.selected }]}
-        >
-          <Icon
-            name={!ready ? "download" : playing ? "pause" : "play"}
-            size={22}
+    <AudioFileRow
+      title={track.title}
+      outgoing={outgoing}
+      control={
+        waiting || checking ? (
+          <AttachmentProgress
+            label={waiting && !blocked ? t("cancel") : t("loading")}
+            progress={downloading ? progress : undefined}
+            outgoing={outgoing}
+            cancel={waiting && !blocked && !checking ? press : undefined}
           />
-        </Pressable>
-      )}
-      <Ink
-        numberOfLines={2}
-        style={[styles.title, outgoing && { color: colors.outgoingInk }]}
-      >
-        {track.title}
-      </Ink>
-    </View>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityHint={
+              current?.phase === "error" ? t("unavailable") : undefined
+            }
+            disabled={blocked}
+            onPress={press}
+            style={[styles.play, { backgroundColor: colors.selected }]}
+          >
+            <Icon
+              name={!ready ? "download" : playing ? "pause" : "play"}
+              size={22}
+            />
+          </Pressable>
+        )
+      }
+    />
   );
 }
 

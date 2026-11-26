@@ -1,7 +1,10 @@
 package app.boop.marmot
 
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -29,6 +32,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 private const val ATTACHMENT_STALL_TIMEOUT_MS = 180_000L
 private const val ATTACHMENT_CANCEL_TIMEOUT_MS = 10_000L
+private const val ATTACHMENT_HANDOFF_REQUEST = 18438
 
 class BoopMarmotModule : Module() {
   private val lifecycle = Mutex()
@@ -46,6 +50,7 @@ class BoopMarmotModule : Module() {
   private val sharedMedia = SharedMediaHistory()
   private val windows = mutableMapOf<String, NativeWindow>()
   private val uploads = mutableMapOf<String, MediaFileTransferControlFfi>()
+  private var attachmentHandoff: CompletableDeferred<Unit>? = null
   private var session: Session? = null
   private var signerAccount: String? = null
   private var marmotRuntime: Marmot? = null
@@ -1056,13 +1061,59 @@ class BoopMarmotModule : Module() {
       withSession {
         MediaFileTransferControlFfi().use { control ->
           it.kit.openAttachmentHandoff(it.account, group, AttachmentLocalTargetFfi(id, source, index.toUInt()), control)?.let { file ->
+            AttachmentHandoffProvider.register(it.account, file.lease, file.path, file.fileName, file.mediaType)
             mapOf("lease" to file.lease, "path" to file.path, "type" to file.mediaType, "name" to file.fileName)
           }
         }
       }
     }
     AsyncFunction("releaseAttachment") Coroutine { lease: String ->
+      AttachmentHandoffProvider.release(lease)
       withSession { it.kit.releaseAttachmentHandoff(lease) }
+    }
+    AsyncFunction("handoffAttachment") Coroutine { lease: String, share: Boolean, excludeBoop: Boolean ->
+      val result = withSession { active ->
+        withContext(Dispatchers.Main.immediate) {
+          if (attachmentHandoff != null) throw problem("TransferInProgress")
+          if (!downloadsForeground) throw problem("MediaUnavailable")
+          val activity = appContext.currentActivity ?: throw problem("ContextUnavailable")
+          val (uri, mime) = AttachmentHandoffProvider.uri(activity, active.account, lease)
+            ?: throw problem("MediaUnavailable")
+          val result = CompletableDeferred<Unit>()
+          fun launch(intent: Intent) {
+            intent.clipData = ClipData.newRawUri(null, uri)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val target = if (share || excludeBoop || intent.action == Intent.ACTION_SEND) {
+              Intent.createChooser(intent, null).apply {
+                if (excludeBoop) putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(activity.componentName))
+              }
+            } else intent
+            activity.startActivityForResult(target, ATTACHMENT_HANDOFF_REQUEST)
+          }
+          fun shareFile() = launch(Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri))
+          attachmentHandoff = result
+          try {
+            if (share) shareFile()
+            else try {
+              launch(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime))
+            } catch (_: ActivityNotFoundException) {
+              shareFile()
+            }
+          } catch (error: Throwable) {
+            attachmentHandoff = null
+            throw error
+          }
+          result
+        }
+      }
+      result.await()
+    }
+    OnActivityResult { _, payload ->
+      if (payload.requestCode == ATTACHMENT_HANDOFF_REQUEST) {
+        val result = attachmentHandoff
+        attachmentHandoff = null
+        result?.complete(Unit)
+      }
     }
     AsyncFunction("storageUsage").Coroutine<Double> {
       withSession {
@@ -1374,6 +1425,7 @@ class BoopMarmotModule : Module() {
       }
     } finally {
       active.callsDrained.await()
+      AttachmentHandoffProvider.retire(active.account)
       lifecycle.withLock {
         if (closeRuntime) stopRuntime()
         else if (pauseMessaging) pauseRuntime()

@@ -344,7 +344,7 @@ export interface GlassSurfaceProps extends ViewProps {
 }
 
 export function GlassSurface({
-  shape = { radius: 22, kind: "continuous" },
+  shape = { radius: 22, kind: "roundedRect" },
   material,
   opaqueColor,
   enabled,

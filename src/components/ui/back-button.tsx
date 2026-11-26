@@ -73,7 +73,7 @@ export function ChatProfileBackButton({ onPress }: { onPress: () => void }) {
         styles.profileBack,
         {
           top: top + space.xs,
-          ...(rtl ? { right: right + space.sm } : { left: left + space.sm }),
+          start: (rtl ? right : left) + space.sm,
         },
       ]}
     />

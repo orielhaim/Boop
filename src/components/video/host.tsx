@@ -73,25 +73,27 @@ export function VideoFrame({ children }: { children: ReactNode }) {
         path !== "/video-player" &&
         player && (
           <FloatingVideo
+            key={current.id}
             player={player}
+            dimensions={current.source.dimensions}
             background={current.background}
-            captions={(controlsVisible) =>
+            captions={(bounds) =>
               external && (
                 <Captions
                   player={player}
                   track={external}
                   offset={current.subtitles.offset}
                   appearance={captionAppearance}
-                  controlsVisible={controlsVisible}
+                  controlsVisible={Boolean(bounds)}
+                  bounds={bounds}
                   compact
                 />
               )
             }
             allowPiP={current.allowPiP && preferences.pipMode === "system"}
-            onPictureInPictureChange={(active) => {
-              if (current.player)
-                video.pictureInPicture(current.player, active);
-            }}
+            onPictureInPictureChange={(active) =>
+              video.pictureInPicture(player, active)
+            }
             title={current.source.title}
             poster={
               current.source.thumbhash

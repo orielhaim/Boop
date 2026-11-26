@@ -136,8 +136,12 @@ public final class AvatarTransportModule: Module {
         defer { self.removeJob(id) }
         do {
           guard #available(iOS 17.0, *) else { throw AvatarTransferError.unavailable }
-          let size = try await downloadMedia(url, output, hash, previewImage, job, nip05: nip05)
-          promise.resolve(size)
+          let result = try await downloadMedia(url, output, hash, previewImage, job, nip05: nip05)
+          if previewImage != nil && !nip05 {
+            promise.resolve(["size": result.size, "url": result.url.absoluteString] as [String: Any])
+          } else {
+            promise.resolve(result.size)
+          }
         } catch AvatarTransferError.hash {
           promise.reject("MEDIA_INTEGRITY", "Media hash mismatch")
         } catch {
@@ -463,7 +467,7 @@ private func downloadBlossomMedia(
 @available(iOS 17.0, *)
 private func readMediaResponse(
   _ url: URL, _ accept: String, _ types: Set<String>, _ limit: Int, _ job: DownloadJob,
-  allowRedirect: Bool
+  allowRedirect: Bool, readPrefix: Bool
 ) async throws -> MediaResponse {
   try job.check()
   guard let host = blossomHost(url) else { throw AvatarTransferError.destination }
@@ -496,12 +500,13 @@ private func readMediaResponse(
     return .redirect(next)
   }
   guard http.statusCode == 200, types.contains(response.mimeType ?? ""),
-        response.expectedContentLength <= limit
+        (readPrefix || response.expectedContentLength <= limit)
   else { throw AvatarTransferError.response }
   var data = Data()
   for try await byte in stream {
     guard data.count < limit else { throw AvatarTransferError.size }
     data.append(byte)
+    if readPrefix && data.count == limit { break }
   }
   return .body(data)
 }
@@ -520,10 +525,10 @@ private func mediaHash(_ url: URL) -> String? {
 @available(iOS 17.0, *)
 private func downloadMedia(
   _ input: String, _ output: String, _ hash: String?, _ previewImage: Bool?, _ job: DownloadJob, nip05: Bool
-) async throws -> Int {
+) async throws -> (size: Int, url: URL) {
   let html = previewImage == false && !nip05
   let images = !html && !nip05
-  let limit = nip05 ? 64 * 1024 : html ? 512 * 1024 : maxBytes
+  let limit = nip05 ? 64 * 1024 : html ? 1024 * 1024 : maxBytes
   try job.check()
   guard var url = URL(string: input), blossomHost(url) != nil,
         let destination = URL(string: output), destination.isFileURL,
@@ -537,12 +542,15 @@ private func downloadMedia(
   let accept = nip05 ? "application/json" : html ? "text/html" : "image/jpeg, image/png, image/webp"
   let types: Set<String> = nip05 ? ["application/json", "text/plain"] : html ? ["text/html"] : imageTypes
   let redirectHash = previewImage == nil && mediaHash(url) == hash ? hash : nil
+  let preview = previewImage != nil && !nip05
   var data: Data
   var redirects = 0
   read: while true {
-    switch try await readMediaResponse(url, accept, types, limit, job, allowRedirect: redirectHash != nil) {
+    switch try await readMediaResponse(url, accept, types, limit, job, allowRedirect: preview || redirectHash != nil, readPrefix: html) {
     case .redirect(let next):
-      guard let redirectHash, redirects < 3, mediaHash(next) == redirectHash else { throw AvatarTransferError.destination }
+      guard redirects < 3, blossomHost(next) != nil,
+            redirectHash == nil || mediaHash(next) == redirectHash
+      else { throw AvatarTransferError.destination }
       url = next
       redirects += 1
     case .body(let body):
@@ -557,7 +565,7 @@ private func downloadMedia(
     try Task.checkCancellation()
     guard !data.isEmpty else { throw AvatarTransferError.size }
     try data.write(to: target, options: [.withoutOverwriting])
-    return data.count
+    return (data.count, url)
   }
   let options = [kCGImageSourceShouldCache: false] as CFDictionary
   guard let source = CGImageSourceCreateWithData(data as CFData, options),
@@ -583,7 +591,7 @@ private func downloadMedia(
   try Task.checkCancellation()
   let bytes = buffer as Data
   try bytes.write(to: target, options: .atomic)
-  return bytes.count
+  return (bytes.count, url)
 }
 
 @available(iOS 17.0, *)

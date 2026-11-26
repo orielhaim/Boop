@@ -165,14 +165,15 @@ function CaptionTimeline({
       pointerEvents="none"
       style={[
         styles.viewport,
-        compact
-          ? { left: 4, right: 4, top: controlsVisible ? 51 : 4, bottom: 7 }
-          : (bounds ?? {
-              left: insets.left + 16,
-              right: insets.right + 16,
-              top: insets.top + 16,
-              bottom: insets.bottom + 20,
-            }),
+        bounds ??
+          (compact
+            ? { left: 4, right: 4, top: controlsVisible ? 51 : 4, bottom: 7 }
+            : {
+                left: insets.left + 16,
+                right: insets.right + 16,
+                top: insets.top + 16,
+                bottom: insets.bottom + 20,
+              }),
         appearance.position === "top" && styles.top,
       ]}
     >

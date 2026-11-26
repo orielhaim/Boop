@@ -7,9 +7,9 @@ import {
   windowDelta,
   windowRevision,
 } from "./window-projection";
-import { messageContent } from "./message-content";
 import { acceptedAttachment, message } from "./message-projection";
 import { mediaUploadArguments } from "./media-send";
+import { chatPreview } from "./chat-preview";
 
 export type MarmotRelays = {
   general: readonly string[];
@@ -96,16 +96,7 @@ const chatRow = z.object({
   manualUnread: z.boolean(),
   updatedAt: z.number().nonnegative(),
   previewSelection: z.enum(["draft", "message", "invitation", "empty"]),
-  preview: z
-    .object({
-      id: z.string(),
-      sender: z.string(),
-      kind: z.number().int().nonnegative(),
-      text: z.string().nullish(),
-      expiresAt: z.number().nonnegative().nullish(),
-      content: messageContent.nullish(),
-    })
-    .nullish(),
+  preview: chatPreview.nullish(),
   draft: z.string().nullish(),
 });
 
@@ -797,6 +788,11 @@ type Bridge = {
     index: number,
   ): Promise<unknown>;
   releaseAttachment(lease: string): Promise<void>;
+  handoffAttachment(
+    lease: string,
+    share: boolean,
+    excludeBoop: boolean,
+  ): Promise<void>;
   storageUsage(): Promise<number>;
   clearDownloads(): Promise<void>;
   retainedAttachmentBytes(
@@ -861,6 +857,7 @@ type WindowState<S> =
 export type MarmotWindow<S, Direction> = {
   getState(): WindowState<S>;
   subscribe(listener: () => void): () => void;
+  refresh(): void;
   page(direction: Direction): Promise<void>;
   anchor(target: string): Promise<void>;
   jump(target: string): Promise<void>;
@@ -1242,6 +1239,7 @@ async function openWindow<S extends Revision, Direction extends string>(
   }
   return {
     getState: () => state,
+    refresh,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -1676,6 +1674,8 @@ export const marmot = {
       .parse(await native().openAttachment(group, id, source, index));
   },
   releaseAttachment: (lease: string) => native().releaseAttachment(lease),
+  handoffAttachment: (lease: string, share: boolean, excludeBoop: boolean) =>
+    native().handoffAttachment(lease, share, excludeBoop),
   storageUsage: () => native().storageUsage(),
   clearDownloads: () => native().clearDownloads(),
   retainedAttachmentBytes: (

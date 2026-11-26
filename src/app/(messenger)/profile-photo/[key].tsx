@@ -14,7 +14,7 @@ import { namespaces } from "@/i18n";
 export default function ProfilePhoto() {
   const { key } = useLocalSearchParams<{ key: string }>();
   const publicKey = typeof key === "string" ? parsePublicKey(key) : null;
-  const publishedPhoto = useAvatar(publicKey, false);
+  const publishedPhoto = useAvatar(publicKey, false, false, true);
   const { identity, profileEditor } = useLocal();
   const { draft, photoPreview } = useSyncExternalStore(
     profileEditor.subscribe,

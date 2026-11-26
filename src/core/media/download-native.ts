@@ -25,7 +25,7 @@ type NativeAvatarTransport = Pick<AvatarTransport, "cancel"> & {
     url: string,
     output: string,
     image: boolean,
-  ): Promise<number>;
+  ): Promise<number | { size: number; url: string }>;
   downloadNip05?(id: string, url: string, output: string): Promise<number>;
   prepare(id: string): void;
   blossomCommand(
@@ -98,7 +98,8 @@ export async function downloadPreviewFile(
   const cancel = () => native.cancel(id);
   signal.addEventListener("abort", cancel, { once: true });
   try {
-    return await native.downloadPreview(id, url, output, image);
+    const result = await native.downloadPreview(id, url, output, image);
+    return typeof result === "number" ? { size: result, url } : result;
   } finally {
     signal.removeEventListener("abort", cancel);
   }

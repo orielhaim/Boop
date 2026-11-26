@@ -260,7 +260,7 @@ export function RelaySettings() {
                   ...(bootstrap.includes(url)
                     ? [t("connections:bootstrap")]
                     : []),
-                ].join(" � ")}
+                ].join(" · ")}
                 trailing={
                   <Icon
                     name={show ? "collapse" : "expand"}

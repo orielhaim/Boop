@@ -128,6 +128,16 @@ export function createMediaUploads(
         record(origin, role, { checkedAt: now(), preflight: status });
         return status;
       } catch (error) {
+        if (
+          role === "attachment" &&
+          error instanceof BlossomError &&
+          (error.status === 400 || error.status === 409)
+        ) {
+          // This probe has a synthetic hash. MarmotKit signs the real ciphertext
+          // hash for the upload, which still has to pass the server's checks.
+          record(origin, role, { checkedAt: now(), preflight: "unsupported" });
+          return "unsupported" as const;
+        }
         if (error instanceof BlossomError) failure(origin, role, error, size);
         throw error;
       }

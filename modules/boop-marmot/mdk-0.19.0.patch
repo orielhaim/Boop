@@ -1313,4 +1313,195 @@ index a2df2df..61ac3a6 100644
 +    assert_eq!(preview.retention_expires_at, None);
      assert_eq!(preview.deletion_source, DeletionSource::default());
  }
+
+
+diff --git a/crates/marmot-app/src/runtime/subscriptions.rs b/crates/marmot-app/src/runtime/subscriptions.rs
+index c9ee604..63dfb45 100644
+--- a/crates/marmot-app/src/runtime/subscriptions.rs
++++ b/crates/marmot-app/src/runtime/subscriptions.rs
+@@ -9,6 +9,8 @@ use std::time::Duration;
+ use cgka_traits::app_event::{
+     GROUP_SYSTEM_TYPE_ADMIN_ADDED, GROUP_SYSTEM_TYPE_ADMIN_REMOVED, GROUP_SYSTEM_TYPE_MEMBER_ADDED,
+     GROUP_SYSTEM_TYPE_MEMBER_LEFT, GROUP_SYSTEM_TYPE_MEMBER_REMOVED, GROUP_SYSTEM_TYPE_TAG,
++    GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED, GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED,
++    GROUP_SYSTEM_TYPE_GROUP_DISBANDED, GROUP_SYSTEM_TYPE_GROUP_RENAMED,
+ };
+ use cgka_traits::{GroupId, storage::StorageError};
+ use serde::{Deserialize, Serialize};
+@@ -861,6 +863,10 @@ fn change_advances_chat_list(
+                                     | GROUP_SYSTEM_TYPE_MEMBER_LEFT
+                                     | GROUP_SYSTEM_TYPE_ADMIN_ADDED
+                                     | GROUP_SYSTEM_TYPE_ADMIN_REMOVED
++                                    | GROUP_SYSTEM_TYPE_GROUP_RENAMED
++                                    | GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED
++                                    | GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED
++                                    | GROUP_SYSTEM_TYPE_GROUP_DISBANDED
+                             )
+                         })
+                 })
+diff --git a/crates/marmot-app/src/runtime/tests.rs b/crates/marmot-app/src/runtime/tests.rs
+index 05ab530..94af162 100644
+--- a/crates/marmot-app/src/runtime/tests.rs
++++ b/crates/marmot-app/src/runtime/tests.rs
+@@ -1679,7 +1679,7 @@ fn direct_conversation_group_system_projection_does_not_claim_new_chat_list_acti
+ }
  
+ #[test]
+-fn unrelated_group_system_projection_does_not_claim_new_chat_list_activity() {
++fn metadata_group_system_projection_advances_chat_list_activity() {
+     let mut record = timeline_test_record("rename", 10);
+     record.kind = cgka_traits::app_event::MARMOT_APP_EVENT_KIND_GROUP_SYSTEM;
+     record.tags = vec![vec![
+@@ -1693,7 +1693,7 @@ fn unrelated_group_system_projection_does_not_claim_new_chat_list_activity() {
+ 
+     assert_eq!(
+         ChatListUpdateTrigger::from_timeline_changes(&[change], true),
+-        ChatListUpdateTrigger::SnapshotRefresh,
++        ChatListUpdateTrigger::NewLastMessage,
+     );
+ }
+ 
+diff --git a/crates/marmot-uniffi/src/conversions/chat_list.rs b/crates/marmot-uniffi/src/conversions/chat_list.rs
+index 5fb31d4..84a16e0 100644
+--- a/crates/marmot-uniffi/src/conversions/chat_list.rs
++++ b/crates/marmot-uniffi/src/conversions/chat_list.rs
+@@ -75,6 +75,8 @@ pub struct ChatListMessagePreviewFfi {
+     pub deletion_source: super::timeline::DeletionSourceFfi,
+     pub attachment_kind: Option<ChatListAttachmentKindFfi>,
+     pub attachment_count: u32,
++    /// `voice` or `round`, from unique Boop media metadata on one accepted attachment.
++    pub attachment_presentation: Option<String>,
+     pub delivery_state: ChatListMessageDeliveryStateFfi,
+ }
+ 
+@@ -122,6 +124,7 @@ impl From<ChatListMessageDeliveryState> for ChatListMessageDeliveryStateFfi {
+ impl From<ChatListMessagePreview> for ChatListMessagePreviewFfi {
+     fn from(value: ChatListMessagePreview) -> Self {
+         let content_tokens = markdown_content_tokens(value.kind, &value.tags, &value.plaintext);
++        let attachment_presentation = chat_list_attachment_presentation(value.attachment_kind, value.attachment_count, &value.tags);
+         let sticker = super::sticker::presented_sticker_ref(value.kind, &value.tags, value.deleted);
+         Self {
+             group_system: value.group_system.map(Into::into),
+@@ -139,11 +142,30 @@ impl From<ChatListMessagePreview> for ChatListMessagePreviewFfi {
+             deletion_source: value.deletion_source.into(),
+             attachment_kind: value.attachment_kind.map(Into::into),
+             attachment_count: value.attachment_count,
++            attachment_presentation,
+             delivery_state: value.delivery_state.into(),
+         }
+     }
+ }
+ 
++fn chat_list_attachment_presentation(
++    kind: Option<ChatListAttachmentKind>,
++    count: u32,
++    tags: &[Vec<String>],
++) -> Option<String> {
++    if count != 1 { return None; }
++    let matches = tags.iter().filter(|tag|
++        tag.first().is_some_and(|name| name == "boop-media") && tag.get(1).is_some_and(|index| index == "0")
++    ).collect::<Vec<_>>();
++    let [tag] = matches.as_slice() else { return None; };
++    if tag.len() != 6 { return None; }
++    match (kind?, tag[5].as_str()) {
++        (ChatListAttachmentKind::Audio, "voice") => Some("voice".to_owned()),
++        (ChatListAttachmentKind::Video, "round") => Some("round".to_owned()),
++        _ => None,
++    }
++}
++
+ #[derive(Clone, Copy, Debug, uniffi::Enum)]
+ pub enum ChatConversationKindFfi {
+     Unknown,
+@@ -707,6 +729,15 @@ mod tests {
+         ));
+     }
+ 
++    #[test]
++    fn attachment_presentation_requires_one_matching_unique_media_tag() {
++        let voice = vec!["boop-media", "0", "12", "3.5", "", "voice"].into_iter().map(str::to_owned).collect::<Vec<_>>();
++        assert_eq!(chat_list_attachment_presentation(Some(ChatListAttachmentKind::Audio), 1, &[voice.clone()]), Some("voice".to_owned()));
++        assert_eq!(chat_list_attachment_presentation(Some(ChatListAttachmentKind::Video), 1, &[voice.clone()]), None);
++        assert_eq!(chat_list_attachment_presentation(Some(ChatListAttachmentKind::Audio), 2, &[voice.clone()]), None);
++        assert_eq!(chat_list_attachment_presentation(Some(ChatListAttachmentKind::Audio), 1, &[voice.clone(), voice]), None);
++    }
++
+     #[test]
+     fn chat_list_avatar_debug_redacts_key_material() {
+         let key_hex = "aa".repeat(32);
+diff --git a/crates/storage-sqlite/src/app/chat_list.rs b/crates/storage-sqlite/src/app/chat_list.rs
+index 5b293c2..4eebf73 100644
+--- a/crates/storage-sqlite/src/app/chat_list.rs
++++ b/crates/storage-sqlite/src/app/chat_list.rs
+@@ -22,6 +22,8 @@ use cgka_traits::app_components::{GROUP_AVATAR_URL_COMPONENT_ID, decode_group_av
+ use cgka_traits::app_event::{
+     GROUP_SYSTEM_TYPE_ADMIN_ADDED, GROUP_SYSTEM_TYPE_ADMIN_REMOVED, GROUP_SYSTEM_TYPE_MEMBER_ADDED,
+     GROUP_SYSTEM_TYPE_MEMBER_LEFT, GROUP_SYSTEM_TYPE_MEMBER_REMOVED, GROUP_SYSTEM_TYPE_TAG,
++    GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED, GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED,
++    GROUP_SYSTEM_TYPE_GROUP_DISBANDED, GROUP_SYSTEM_TYPE_GROUP_RENAMED,
+     MARMOT_APP_EVENT_KIND_CHAT, MARMOT_APP_EVENT_KIND_GROUP_SYSTEM,
+ };
+ use cgka_traits::storage::{LeaveRequest, StorageError, StorageResult};
+@@ -1171,16 +1173,20 @@ fn dirty_unread_messages_are_covered_tx(
+ /// projects kind-1210 group-system rows into preview, activity, and unread state
+ /// (#822). Version 3 materializes per-message unread membership so incremental
+ /// refreshes do not rescan the unread window. Version 5 counts NIP-22 thread
+-/// messages as chat activity. The persisted column keeps its legacy `mention_counts_version` name
++/// messages as chat activity. Version 6 adds Boop Open Later/location kinds and all authenticated group-state activity types.
+ /// for schema compatibility, but now gates the complete derived-row contract.
+-const CHAT_LIST_PROJECTION_VERSION: i64 = 5;
++const CHAT_LIST_PROJECTION_VERSION: i64 = 6;
+ 
+-const CHAT_LIST_GROUP_ACTIVITY_TYPES: [&str; 5] = [
++const CHAT_LIST_GROUP_ACTIVITY_TYPES: [&str; 9] = [
+     GROUP_SYSTEM_TYPE_MEMBER_ADDED,
+     GROUP_SYSTEM_TYPE_MEMBER_REMOVED,
+     GROUP_SYSTEM_TYPE_MEMBER_LEFT,
+     GROUP_SYSTEM_TYPE_ADMIN_ADDED,
+     GROUP_SYSTEM_TYPE_ADMIN_REMOVED,
++    GROUP_SYSTEM_TYPE_GROUP_RENAMED,
++    GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED,
++    GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED,
++    GROUP_SYSTEM_TYPE_GROUP_DISBANDED,
+ ];
+ 
+ /// SQL predicate for activity that should behave like a chat message in the
+@@ -1195,10 +1201,11 @@ pub(crate) fn chat_list_activity_filter_sql(column_prefix: &str) -> String {
+         .collect::<Vec<_>>()
+         .join(", ");
+     format!(
+-        "({column_prefix}kind IN ({MARMOT_APP_EVENT_KIND_CHAT}, {MARMOT_APP_EVENT_KIND_POLL}) OR \
++        "({column_prefix}kind IN ({MARMOT_APP_EVENT_KIND_CHAT}, {MARMOT_APP_EVENT_KIND_POLL}, 24881, 24883) OR \
+          ({column_prefix}kind = {NIP22_COMMENT_KIND} AND \
+           {column_prefix}reply_to_message_id_hex IS NOT NULL) OR \
+          ({column_prefix}kind = {MARMOT_APP_EVENT_KIND_GROUP_SYSTEM} AND \
++          {column_prefix}direction = 'system' AND {column_prefix}source_message_id_hex IS NULL AND \
+           {column_prefix}tags_json IN ({group_activity_tags}) AND \
+           EXISTS (SELECT 1 FROM account_groups AS activity_group \
+                   WHERE activity_group.group_id_hex = {column_prefix}group_id_hex \
+diff --git a/crates/storage-sqlite/src/app/chat_list/tests.rs b/crates/storage-sqlite/src/app/chat_list/tests.rs
+index f725088..8e0fe2e 100644
+--- a/crates/storage-sqlite/src/app/chat_list/tests.rs
++++ b/crates/storage-sqlite/src/app/chat_list/tests.rs
+@@ -12,7 +12,8 @@ use cgka_traits::app_components::{
+ };
+ use cgka_traits::app_event::{
+     AppMessageRetentionDecision, EVENT_REF_TAG, GROUP_SYSTEM_TYPE_ADMIN_ADDED,
+-    GROUP_SYSTEM_TYPE_ADMIN_REMOVED, GROUP_SYSTEM_TYPE_GROUP_RENAMED,
++    GROUP_SYSTEM_TYPE_ADMIN_REMOVED, GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED,
++    GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED, GROUP_SYSTEM_TYPE_GROUP_DISBANDED, GROUP_SYSTEM_TYPE_GROUP_RENAMED,
+     GROUP_SYSTEM_TYPE_MEMBER_ADDED, GROUP_SYSTEM_TYPE_MEMBER_LEFT,
+     GROUP_SYSTEM_TYPE_MEMBER_REMOVED, GROUP_SYSTEM_TYPE_TAG, MARMOT_APP_EVENT_KIND_CHAT,
+     MARMOT_APP_EVENT_KIND_GROUP_SYSTEM, MARMOT_APP_EVENT_KIND_REACTION,
+@@ -2533,7 +2534,10 @@ fn group_system_activity_follows_type_sender_and_conversation_kind() {
+     let cases = signaling.into_iter().chain([
+         ("own-admin", LOCAL, admin, None, false, true, 0),
+         ("names-me", REMOTE, admin, Some(LOCAL), false, true, 1),
+-        ("renamed", REMOTE, renamed, None, false, false, 0),
++        ("renamed", REMOTE, renamed, None, false, true, 1),
++        ("avatar", REMOTE, GROUP_SYSTEM_TYPE_GROUP_AVATAR_CHANGED, None, false, true, 1),
++        ("retention", REMOTE, GROUP_SYSTEM_TYPE_DISAPPEARING_TIMER_CHANGED, None, false, true, 1),
++        ("disbanded", REMOTE, GROUP_SYSTEM_TYPE_GROUP_DISBANDED, None, false, true, 1),
+         ("direct-admin", REMOTE, admin, None, true, false, 0),
+     ]);
+     for (id, sender, system_type, subject, direct, signals, unread) in cases {

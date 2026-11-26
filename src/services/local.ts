@@ -13,12 +13,12 @@ import { createPlaybackOwnership } from "@/core/media/playback-ownership";
 import {
   localMediaUri,
   openLocalAttachment,
+  shareLocalAttachment,
 } from "@/core/media/open-local-attachment";
 import { createVideoController } from "@/core/video/controller";
 import { createVideoEngine } from "@/core/video/engine";
 import { videoImportDirectory } from "@/core/video/import-cache";
 import { pipModes, seekIntervals, type VideoSource } from "@/core/video/types";
-import { shareAsync } from "expo-sharing";
 import { saveToLibraryAsync } from "expo-media-library/legacy";
 import {
   addBatteryStateListener,
@@ -88,7 +88,10 @@ import {
   selectAccount,
 } from "@/core/identity";
 import { createChatPreferences } from "@/core/marmot/chat-preferences";
-import { createMarmotSession } from "@/core/marmot/account-session";
+import {
+  createMarmotCatchUp,
+  createMarmotSession,
+} from "@/core/marmot/account-session";
 import { createMarmotViewport } from "@/core/marmot/viewport";
 import {
   marmot,
@@ -815,17 +818,13 @@ async function start() {
           }),
         );
       },
-      async handoff({ file, uri }, action, signal) {
+      async handoff({ file }, action, signal) {
         signal.throwIfAborted();
         if (action === "external")
           await openLocalAttachment(file, true, signal);
         else if (action === "save")
           await saveToLibraryAsync(localMediaUri(file.path));
-        else
-          await shareAsync(uri, {
-            mimeType: file.type,
-            dialogTitle: file.name,
-          });
+        else await shareLocalAttachment(file, signal);
       },
       position: videoPositions.get,
       checkpoint: videoPositions.set,
@@ -909,7 +908,18 @@ async function start() {
       let discovery = accountRelays.snapshot().discovery;
       let mounted = true;
       let eligible = false;
-      let catchUp: Promise<void> | undefined;
+      let networkRevision = 0;
+      let lastNetwork: NetworkRoute | undefined;
+      const messagingCatchUp = createMarmotCatchUp({
+        allowed: () =>
+          mounted &&
+          active() &&
+          chatPreferences.enabled() &&
+          marmotSession.status() === "ready" &&
+          lastNetwork?.connected !== false,
+        wake: marmot.notifyConnectivityRestored,
+        catchUp: marmot.catchUp,
+      });
       let closeRelayLiveness: (() => void) | undefined;
       function observeRelayLiveness() {
         if (isCurrent() && eligible && marmotSession.status() === "ready") {
@@ -989,23 +999,12 @@ async function start() {
         callSignaling.stop();
         relays.stop();
       }
-      function catchUpMessaging() {
-        if (catchUp || !chatPreferences.enabled()) return;
-        catchUp = marmotSession
-          .ready()
-          .then(async () => {
-            if (mounted && active()) await marmot.catchUp();
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            catchUp = undefined;
-          });
-      }
       function updateRelayEligibility() {
         const next = active();
         if (!mounted || !isCurrent() || next === eligible) return;
         eligible = next;
         if (!next) {
+          messagingCatchUp.pause();
           observeRelayLiveness();
           if (lock.getState().locked) {
             callSignaling.stop();
@@ -1019,7 +1018,7 @@ async function start() {
         marmotSession.reconnected();
         observeRelayLiveness();
         void accountRelays.refresh(true).catch(() => undefined);
-        catchUpMessaging();
+        messagingCatchUp.request(true);
       }
       function syncPrivacyAndRouting() {
         torrents.sync();
@@ -1042,9 +1041,15 @@ async function start() {
         conversations.setForeground(state === "active");
         syncPrivacyAndRouting();
         updateBackupConditions();
+        if (state === "active") {
+          const revision = networkRevision;
+          void getNetworkStateAsync()
+            .then((network) => {
+              if (revision === networkRevision) updateNetwork(network);
+            })
+            .catch(() => undefined);
+        }
       };
-      let networkRevision = 0;
-      let lastNetwork: NetworkRoute | undefined;
       let outboundWake = false;
       function updateNetwork(
         state: Awaited<ReturnType<typeof getNetworkStateAsync>>,
@@ -1076,14 +1081,7 @@ async function start() {
         if (chatPreferences.enabled()) {
           marmotSession.reconnected();
           observeRelayLiveness();
-          void marmotSession
-            .ready()
-            .then(async () => {
-              if (mounted && active() && lastNetwork?.connected)
-                await marmot.notifyConnectivityRestored();
-            })
-            .catch(() => undefined);
-          catchUpMessaging();
+          messagingCatchUp.request(true);
         }
       }
       const disposers: (() => void)[] = [];
@@ -1096,6 +1094,7 @@ async function start() {
       const stop = () => {
         if (!mounted) return;
         mounted = false;
+        messagingCatchUp.pause();
         pluginSessionLive = false;
         torrents.sync();
         conversations.setAvailable(false);
@@ -1229,7 +1228,10 @@ async function start() {
             updateConversations();
             speech.sync();
             if (next) connectMessaging();
-            else void marmotSession.stop(true).catch(() => undefined);
+            else {
+              messagingCatchUp.pause();
+              void marmotSession.stop(true).catch(() => undefined);
+            }
           }),
         );
         own(
@@ -1248,7 +1250,7 @@ async function start() {
             speech.accountReady();
             if (marmotSession.status() === "ready") {
               downloads.accountReady();
-              if (active()) catchUpMessaging();
+              if (active()) messagingCatchUp.request();
             }
             admitDownloadedVoice();
             void speech.reconcile();
@@ -1269,11 +1271,6 @@ async function start() {
             updateNetwork(state);
           }),
         );
-        void getNetworkStateAsync()
-          .then((state) => {
-            if (mounted && networkRevision === 0) updateNetwork(state);
-          })
-          .catch(() => undefined);
       } catch (error) {
         stop();
         throw error;

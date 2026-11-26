@@ -358,7 +358,9 @@ function DialogCard({
                   accessibilityRole="header"
                   accessibilityLabel={dialog.request.title}
                 >
-                  <Ink kind="heading">{dialog.request.title}</Ink>
+                  <Ink kind="heading" style={styles.title}>
+                    {dialog.request.title}
+                  </Ink>
                 </View>
                 {dialog.request.message ? (
                   <Ink kind="body" muted selectable>
@@ -474,7 +476,7 @@ const styles = StyleSheet.create(({ colors, glass, radius, space }) => ({
   },
   contents: { padding: space.xl, gap: space.lg },
   badge: {
-    alignSelf: "flex-start",
+    alignSelf: "center",
     alignItems: "center",
     justifyContent: "center",
     width: 44,
@@ -491,6 +493,7 @@ const styles = StyleSheet.create(({ colors, glass, radius, space }) => ({
     },
   },
   copy: { gap: space.sm },
+  title: { textAlign: "center" },
   actionsInline: { flexDirection: "row", gap: space.sm },
   actionsStacked: { gap: space.sm },
   inline: { flex: 1 },

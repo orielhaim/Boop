@@ -78,7 +78,14 @@ diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
 -              <ChatListAvatar id={chat.id} title={chat.title} uri={chat.avatar} size={AVATAR_SIZE} isOnline={chat.isOnline} isSelected={isSelected} />
 +              <ChatListAvatar id={chat.avatarIdentity ?? chat.id} title={chat.title} uri={chat.avatar} size={AVATAR_SIZE} isOnline={chat.isOnline} isSelected={isSelected} />
              </View>
-@@ -322,7 +322,7 @@
+@@ -316,13 +316,14 @@
+                     }]}>{preview.prefix}</Text>}
++                              {chat.previewIcon}
+                               {!!thumbnail && <Image source={{
+                       uri: thumbnail
+                     }} onError={() => setFailedThumbnail(thumbnail)} style={styles.thumbnail} />}
+                               <Text style={[styles.message, styles.shrink, {
+                       color: colors.message
                      }]} numberOfLines={1}>
                                  {preview.attachment ? <Text style={{
                          color: colors.attachment
@@ -90,7 +97,7 @@ diff --git a/lib/ChatList/ChatListCell.js b/lib/ChatList/ChatListCell.js
 diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
 --- a/lib/ChatList/types.d.ts
 +++ b/lib/ChatList/types.d.ts
-@@ -18,8 +18,12 @@
+@@ -18,8 +18,14 @@
      kind?: ChatListItemKind;
      /** A photo URL; initials on a per-chat color otherwise. */
      avatar?: string;
@@ -98,12 +105,14 @@ diff --git a/lib/ChatList/types.d.ts b/lib/ChatList/types.d.ts
 +    avatarIdentity?: string;
      /** The newest message: its preview, time and (when it is yours) its sent / read checks. */
      lastMessage?: IMessage;
++    /** An optional leading glyph for the last-message preview. */
++    previewIcon?: React.ReactNode;
 +    /** A display-only preview shown when the chat has no message, draft or typing status. */
 +    emptyPreview?: string;
      unreadCount?: number;
      isPinned?: boolean;
      isMuted?: boolean;
-@@ -90,6 +94,8 @@
+@@ -90,6 +96,8 @@
      onReorderPinnedChats?: (ids: TChat['id'][]) => void;
      /** Shows the round new-chat button. */
      onPressNewChat?: () => void;
@@ -2537,6 +2546,19 @@ index 9f403f97cc094faf377a15c95e24d7c7e538fd09..5869765219b155d9cf6b92384f829d3d
 -//# sourceMappingURL=types.d.ts.map
 \ No newline at end of file
 +//# sourceMappingURL=types.d.ts.map
+diff --git a/lib/ChatList/utils.js b/lib/ChatList/utils.js
+--- a/lib/ChatList/utils.js
++++ b/lib/ChatList/utils.js
+@@ -53,7 +53,8 @@ export function getChatPreview(chat, labels, user) {
+     text: ''
+   };
+   const isMine = user != null && message.user?._id === user._id;
+-  const prefix = chat.kind === 'group' && !message.system ? `${isMine ? labels.chatListYou : firstName(message.user?.name)}: ` : undefined;
++  const sender = isMine ? labels.chatListYou : firstName(message.user?.name?.trim());
++  const prefix = chat.kind === 'group' && !message.system && sender ? `${sender}: ` : undefined;
+   const attachment = message.image ? labels.chatListPhoto : message.videoNote ? labels.videoMessage : message.video ? labels.video : message.audio ? labels.voiceMessage : message.file ? message.file.name || labels.chatListFile : message.location ? labels.location : undefined;
+   return {
+     prefix,
 diff --git a/lib/MessagesContainer/components/ScrollToBottomButton.d.ts b/lib/MessagesContainer/components/ScrollToBottomButton.d.ts
 index 8259a718874e23b2fd6e04709f736484b70be57d..6c6f8faa402c1100da4e28a48d23432ab804363d 100644
 --- a/lib/MessagesContainer/components/ScrollToBottomButton.d.ts

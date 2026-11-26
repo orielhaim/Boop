@@ -12,18 +12,19 @@ export function useAvatar(
   key: string | null | undefined,
   enabled = true,
   banner = false,
+  profile = false,
 ) {
   const { avatars } = useLocal();
   const focused = useIsFocused();
   useEffect(() => {
-    if (key && focused && enabled) return avatars.watch(key, banner);
-  }, [avatars, key, focused, enabled, banner]);
+    if (key && focused && enabled) return avatars.watch(key, banner, profile);
+  }, [avatars, key, focused, enabled, banner, profile]);
   return useSyncExternalStore(
     useCallback(
       (listener) => (key ? avatars.subscribe(key, listener) : () => {}),
       [avatars, key],
     ),
-    () => (key ? avatars.resolve(key, banner) : undefined),
+    () => (key ? avatars.resolve(key, banner, profile) : undefined),
   );
 }
 
@@ -47,10 +48,15 @@ export function useAvatarVisibility<T>(
     }: {
       viewableItems: { item: T; isViewable: boolean }[];
     }) => {
-      setVisible(
-        viewableItems.flatMap((item) =>
-          item.isViewable ? [key.current(item.item)] : [],
-        ),
+      const next = viewableItems.flatMap(({ item, isViewable }) => {
+        const peer = isViewable ? key.current(item) : "";
+        return peer ? [peer] : [];
+      });
+      setVisible((current) =>
+        current.length === next.length &&
+        current.every((peer, index) => peer === next[index])
+          ? current
+          : next,
       );
     },
     [],

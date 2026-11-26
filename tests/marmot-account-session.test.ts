@@ -1,7 +1,55 @@
 import { expect, test } from "bun:test";
-import { createMarmotSession } from "@/core/marmot/account-session";
+import {
+  createMarmotCatchUp,
+  createMarmotSession,
+} from "@/core/marmot/account-session";
 
 const discovery: string[] = [];
+
+test("returning to the app during an earlier sync schedules another catch-up", async () => {
+  const initial = Promise.withResolvers<void>();
+  const resumed = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  let active = true;
+  const sync = createMarmotCatchUp({
+    allowed: () => active,
+    async wake() {
+      calls.push("wake");
+    },
+    async catchUp() {
+      calls.push("sync");
+      if (calls.length === 1) await initial.promise;
+      else resumed.resolve();
+    },
+  });
+  sync.request();
+  active = false;
+  sync.pause();
+  sync.request(true);
+  expect(calls).toEqual(["sync"]);
+  active = true;
+  sync.request(true);
+  sync.request();
+  initial.resolve();
+  await resumed.promise;
+  expect(calls).toEqual(["sync", "wake", "sync"]);
+});
+
+test("foreground catch-up retries a transient failure without another app state change", async () => {
+  const recovered = Promise.withResolvers<void>();
+  let attempts = 0;
+  const sync = createMarmotCatchUp({
+    allowed: () => true,
+    async wake() {},
+    async catchUp() {
+      if (++attempts === 1) throw new Error("relay unavailable");
+      recovered.resolve();
+    },
+  });
+  sync.request(true);
+  await recovered.promise;
+  expect(attempts).toBe(2);
+});
 
 test("automatically recovers a transient open without a connectivity event", async () => {
   let attempts = 0;

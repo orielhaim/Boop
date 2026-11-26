@@ -23,6 +23,31 @@ import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
+  @Test fun attachmentHandoffProviderOpensOnlyRegisteredReadOnlyLeases() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val directory = File(context.noBackupFilesDir, "handoff-test-${UUID.randomUUID()}").apply { mkdir() }
+    val file = File(directory, "report 100%.pdf").apply { writeText("%PDF-1.7") }
+    val lease = UUID.randomUUID().toString()
+    try {
+      AttachmentHandoffProvider.register("owner", lease, file.path, file.name, "application/pdf")
+      assertNull(AttachmentHandoffProvider.uri(context, "other", lease))
+      val (uri, _) = checkNotNull(AttachmentHandoffProvider.uri(context, "owner", lease))
+      val resolver = context.contentResolver
+      assertEquals("application/pdf", resolver.getType(uri))
+      assertEquals("%PDF-1.7", resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() })
+      resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+        assertTrue(it.moveToFirst())
+        assertEquals(file.name, it.getString(0))
+      } ?: fail("Handoff file has no display name")
+      assertTrue(runCatching { resolver.openFileDescriptor(uri, "w")?.close() }.isFailure)
+      AttachmentHandoffProvider.release(lease)
+      assertTrue(runCatching { resolver.openInputStream(uri)?.close() }.isFailure)
+    } finally {
+      AttachmentHandoffProvider.release(lease)
+      directory.deleteRecursively()
+    }
+  }
+
   @Test fun sharedMediaUsesIndependentNativeHistoryCollections() = runBlocking {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val arguments = InstrumentationRegistry.getArguments()
@@ -363,6 +388,10 @@ class MarmotRelayTest {
           alice.key, direct, 24883uL, emptyList(), applicationEvent, "location-1",
         ))
         bob.receives(direct, alice.key, applicationEvent)
+        await("location becomes the latest chat preview") {
+          bob.kit.chatList(bob.key, false).single { it.groupIdHex == direct }
+            .lastMessage?.kind == 24883uL
+        }
         bob.kit.openConversationWindow(bob.key, direct, ConversationOpenModeFfi.AUTOMATIC, null, 30u, 15_000u).use { window ->
           await("application event in conversation projection") {
             window.snapshot()?.messages?.any { it.timeline.kind == 24883uL && it.timeline.plaintext == applicationEvent } == true
@@ -446,12 +475,28 @@ class MarmotRelayTest {
         }
         if (blossom?.startsWith("https://") == true) groupPhotoRoundTrip(alice, bob, group)
 
-        alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
-        await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
-        await("authenticated rename after creation") {
-          bob.kit.timelineMessages(bob.key, latestTimeline(group)).messages.any {
-            it.groupSystem?.systemType == "group_renamed"
+        val chatPreview = ChatListWindow(bob.kit.openChatListQueryWindow(
+          bob.key, ChatListViewQueryFfi(ChatListViewFfi.CHATS, emptyList()), 40u,
+        ))
+        try {
+          assertNotNull(chatPreview.initial())
+          alice.kit.updateGroupProfile(alice.key, group, "Renamed group", "New description")
+          await("canonical group profile") { bob.kit.groupDetails(bob.key, group).group.name == "Renamed group" }
+          withTimeout(15_000) {
+            while (true) {
+              val update = checkNotNull(chatPreview.next())
+              val rows = update["rows"] as? List<*>
+              val row = rows.orEmpty().filterIsInstance<Map<*, *>>().firstOrNull { it["id"] == group }
+              val preview = row?.get("preview") as? Map<*, *>
+              val system = preview?.get("system") as? Map<*, *>
+              if (system?.get("type") == "group_renamed") {
+                assertEquals("Renamed group", system["name"])
+                break
+              }
+            }
           }
+        } finally {
+          chatPreview.stop()
         }
         alice.kit.promoteAdmin(alice.key, group, bob.key)
         await("canonical admin promotion") { bob.kit.groupManagementState(bob.key, group).isSelfAdmin }
@@ -494,6 +539,21 @@ class MarmotRelayTest {
         }
         await("declinable Welcome") {
           bob.kit.chatList(bob.key, false).any { it.groupIdHex == declined && it.pendingConfirmation }
+        }
+        val requestText = "Message before accepting"
+        alice.kit.sendTextWithClientToken(alice.key, declined, requestText, "pending-invitation-message")
+        bob.receives(declined, alice.key, requestText)
+        val pending = ConversationWindow(bob.kit.openConversationWindow(
+          bob.key, declined, ConversationOpenModeFfi.LATEST, null, 12u, 15_000u,
+        ))
+        try {
+          val snapshot = checkNotNull(pending.initial())
+          assertEquals(true, snapshot["invited"])
+          assertEquals(false, snapshot["canSend"])
+          val rows = snapshot["messages"] as List<*>
+          assertTrue(rows.any { (it as? Map<*, *>)?.get("text") == requestText })
+        } finally {
+          pending.stop()
         }
         bob.kit.declineGroupInvite(bob.key, declined)
         await("declined invitation left the inbox") {
@@ -636,7 +696,10 @@ class MarmotRelayTest {
   }
 
   private suspend fun verifyWindowDelta(sender: Client, recipient: Client, group: String) {
-    val lastRead = recipient.kit.timelineMessages(recipient.key, latestTimeline(group)).messages.last()
+    val marker = "read marker fixture"
+    sender.kit.sendTextWithClientToken(sender.key, group, marker, "read-marker-fixture")
+    recipient.receives(group, sender.key, marker)
+    val lastRead = recipient.kit.timelineMessages(recipient.key, latestTimeline(group, marker)).messages.single()
     val marked = recipient.kit.markTimelineMessageRead(recipient.key, group, lastRead.messageIdHex)
     assertEquals(lastRead.messageIdHex, marked?.lastReadMessageIdHex)
     // Keep the next send past the read marker even when the relay fixture can
@@ -865,6 +928,11 @@ class MarmotRelayTest {
     recipient.receives(group, sender.key, caption)
     val row = recipient.kit.timelineMessages(recipient.key, TimelineMessageQueryFfi(group, caption, null, null, null,
       cursorGroupId = null, before = null, beforeMessageId = null, after = null, afterMessageId = null, limit = 30u)).messages.single()
+    val preview = checkNotNull(recipient.kit.chatList(recipient.key, false)
+      .single { it.groupIdHex == group }.lastMessage)
+    assertEquals(row.messageIdHex, preview.messageIdHex)
+    assertEquals(ChatListAttachmentKindFfi.FILE, preview.attachmentKind)
+    assertEquals(1u, preview.attachmentCount)
     assertEquals(directReply, row.replyToMessageIdHex)
     val attachment = row.media.single() as MediaAttachmentOutcomeFfi.Accepted
     assertEquals(listOf("boop-media", "0", payload.size.toString(), "", "", "file"),

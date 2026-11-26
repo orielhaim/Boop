@@ -129,44 +129,46 @@ function fixture(
   );
   profiles.setActive(true);
   profiles.read([key]);
-  const avatars = createAvatars(
-    db,
-    owner,
-    {
-      photoPolicy: () => context.policy,
-      isBlocked: () => context.blocked,
-      isContact: (key) =>
-        Boolean(
-          db
-            .select()
-            .from(schema.contacts)
-            .where(eq(schema.contacts.publicKey, key))
-            .get(),
-        ),
-    },
-    profiles,
-    disk,
-    {
-      download: (id, url, name) =>
-        new Promise((resolve) => {
-          requests.push({
-            id,
-            url,
-            name,
-            finish(size) {
-              cache.add(name);
-              resolve(size);
-            },
-          });
-        }),
-      cancel(id) {
-        cancelled.push(id);
+  const openAvatars = (directory = profiles) =>
+    createAvatars(
+      db,
+      owner,
+      {
+        photoPolicy: () => context.policy,
+        isBlocked: () => context.blocked,
+        isContact: (key) =>
+          Boolean(
+            db
+              .select()
+              .from(schema.contacts)
+              .where(eq(schema.contacts.publicKey, key))
+              .get(),
+          ),
       },
-    },
-    undefined,
-    () => current,
-    () => [],
-  );
+      directory,
+      disk,
+      {
+        download: (id, url, name) =>
+          new Promise((resolve) => {
+            requests.push({
+              id,
+              url,
+              name,
+              finish(size) {
+                cache.add(name);
+                resolve(size);
+              },
+            });
+          }),
+        cancel(id) {
+          cancelled.push(id);
+        },
+      },
+      undefined,
+      () => current,
+      () => [],
+    );
+  const avatars = openAvatars();
   avatars.setActive(true);
   function close() {
     profiles.setActive(false);
@@ -182,6 +184,7 @@ function fixture(
     },
     db,
     avatars,
+    reopen: () => openAvatars({ ...profiles, profile: () => undefined }),
     requests,
     cancelled,
     close,
@@ -242,6 +245,33 @@ test("a local override works under Nobody with zero image requests", async () =>
   }
 });
 
+test("a profile refresh only notifies the rows for that person", async () => {
+  const f = fixture("nobody", true);
+  const stopWatching = f.avatars.watch(key);
+  const stopBanner = f.avatars.watch(key, true);
+  const updated: string[] = [];
+  const stopUpdated = f.avatars.subscribe(key, () => updated.push(key));
+  const untouched = Array.from({ length: 24 }, (_, index) =>
+    (index + 1).toString(16).padStart(64, "0"),
+  );
+  const stops = untouched.map((peer) =>
+    f.avatars.subscribe(peer, () => updated.push(peer)),
+  );
+  try {
+    await Bun.sleep(0);
+    updated.length = 0;
+    f.profile(photo("https://photos.example.com/replacement.jpg"));
+    await Bun.sleep(0);
+    expect(updated).toEqual([key]);
+  } finally {
+    stops.forEach((stop) => stop());
+    stopUpdated();
+    stopBanner();
+    stopWatching();
+    f.close();
+  }
+});
+
 for (const change of ["policy", "block", "delete", "identity"] as const) {
   test(`${change} during download cancels and discards the late result`, async () => {
     const f = fixture("contacts", true);
@@ -296,33 +326,63 @@ test("cache hides on policy and source changes and reuses eligible validated byt
   }
 });
 
-test("banner downloads share the profile privacy gate and a visit grants temporary access", async () => {
+test("explicit photo and banner downloads finish after leaving and refresh on the next visit", async () => {
   const f = fixture("contacts", false);
   const banner = "https://photos.example.com/cover.jpg";
   try {
     f.profile({ ...photo(url), banner });
-    f.avatars.watch(key);
-    f.avatars.watch(key, true);
+    const stopPhoto = f.avatars.watch(key, false, true);
+    const stopBanner = f.avatars.watch(key, true, true);
     await Bun.sleep(150);
     expect(f.requests).toEqual([]);
 
-    const dismiss = f.avatars.allowVisit(key);
+    f.avatars.requestProfileImages(key);
     await Bun.sleep(150);
     expect(f.requests.map((request) => request.url).sort()).toEqual(
       [banner, url].sort(),
     );
+    stopPhoto();
+    stopBanner();
+    expect(f.cancelled).toEqual([]);
     for (const request of f.requests) request.finish(12);
     await Bun.sleep(20);
-    expect(f.avatars.resolve(key, true)).toStartWith("file:///cache/");
+    const firstPhoto = f.avatars.resolve(key, false, true);
+    const firstBanner = f.avatars.resolve(key, true, true);
+    expect(firstPhoto).toStartWith("file:///cache/");
+    expect(firstBanner).toStartWith("file:///cache/");
+    expect(f.avatars.resolve(key)).toBeUndefined();
 
-    dismiss();
-    expect(f.avatars.resolve(key, true)).toBeUndefined();
-    f.context.blocked = true;
-    f.avatars.allowVisit(key);
-    f.avatars.invalidate();
+    const reopened = f.reopen();
+    expect(reopened.resolve(key, false, true)).toBe(firstPhoto);
+    expect(reopened.resolve(key, true, true)).toBe(firstBanner);
+    expect(reopened.resolve(key)).toBeUndefined();
+
+    const nextPhoto = "https://photos.example.com/updated.jpg";
+    const nextBanner = "https://photos.example.com/updated-cover.jpg";
+    f.profile({ ...photo(nextPhoto), banner: nextBanner });
+    expect(f.avatars.resolve(key, false, true)).toBe(firstPhoto);
+    expect(f.avatars.resolve(key, true, true)).toBe(firstBanner);
     await Bun.sleep(150);
     expect(f.requests).toHaveLength(2);
-    expect(f.avatars.resolve(key)).toBeUndefined();
+    f.avatars.watch(key, false, true);
+    f.avatars.watch(key, true, true);
+    await Bun.sleep(150);
+    expect(
+      f.requests
+        .slice(2)
+        .map(({ url }) => url)
+        .sort(),
+    ).toEqual([nextPhoto, nextBanner].sort());
+    for (const request of f.requests.slice(2)) request.finish(12);
+    await Bun.sleep(20);
+    expect(f.avatars.resolve(key, false, true)).not.toBe(firstPhoto);
+    expect(f.avatars.resolve(key, true, true)).not.toBe(firstBanner);
+    f.context.blocked = true;
+    f.avatars.requestProfileImages(key);
+    f.avatars.invalidate();
+    await Bun.sleep(150);
+    expect(f.requests).toHaveLength(4);
+    expect(f.avatars.resolve(key, false, true)).toBeUndefined();
   } finally {
     f.close();
   }
@@ -345,11 +405,11 @@ test("an authored profile image survives clearing downloads without granting its
   }
 });
 
-test("a photo policy change revokes an explicit visit's in-flight download", async () => {
+test("a photo policy change revokes consent and cancels its in-flight download", async () => {
   const f = fixture("contacts", false);
   try {
-    f.avatars.watch(key);
-    const release = f.avatars.allowVisit(key);
+    f.avatars.watch(key, false, true);
+    f.avatars.requestProfileImages(key);
     await Bun.sleep(150);
     const request = f.requests[0];
     if (!request) throw new Error("Missing explicit request");
@@ -358,9 +418,11 @@ test("a photo policy change revokes an explicit visit's in-flight download", asy
     expect(f.cancelled).toEqual([request.id]);
     request.finish(200);
     await Bun.sleep(0);
-    expect(f.avatars.resolve(key)).toBeUndefined();
+    expect(f.avatars.resolve(key, false, true)).toBeUndefined();
     expect([...f.cache]).toEqual([]);
-    release();
+    f.context.policy = "contacts";
+    f.avatars.invalidate();
+    expect(f.avatars.profileImagesRequested(key)).toBe(false);
   } finally {
     f.close();
   }

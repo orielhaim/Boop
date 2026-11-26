@@ -670,8 +670,12 @@ export function createConversationCache({
         queue.stop();
         clearIdle();
       } else {
-        for (const entry of active.values())
-          if (entry.window) publish(entry, entry.window);
+        for (const entry of active.values()) {
+          const window = entry.window;
+          if (!window) continue;
+          publish(entry, window);
+          if (entry.window === window) window.refresh();
+        }
         pump();
       }
     },

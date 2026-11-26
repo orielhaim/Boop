@@ -45,6 +45,8 @@ import { HeadphonesIcon } from "phosphor-react-native/src/icons/Headphones";
 import { InfoIcon } from "phosphor-react-native/src/icons/Info";
 import { KeyIcon } from "phosphor-react-native/src/icons/Key";
 import { LockKeyIcon } from "phosphor-react-native/src/icons/LockKey";
+import { ChartBarIcon } from "phosphor-react-native/src/icons/ChartBar";
+import { StickerIcon } from "phosphor-react-native/src/icons/Sticker";
 import { MagnifyingGlassIcon } from "phosphor-react-native/src/icons/MagnifyingGlass";
 import { MicrophoneIcon } from "phosphor-react-native/src/icons/Microphone";
 import { MicrophoneSlashIcon } from "phosphor-react-native/src/icons/MicrophoneSlash";
@@ -187,6 +189,8 @@ const icons = {
   pictureInPicture: PictureInPictureIcon,
   history: ClockCounterClockwiseIcon,
   timedLock: LockKeyIcon,
+  poll: ChartBarIcon,
+  sticker: StickerIcon,
   fingerprint: FingerprintIcon,
   faceId: ScanIcon,
   lock: ShieldCheckIcon,

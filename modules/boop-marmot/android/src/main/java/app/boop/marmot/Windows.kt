@@ -284,9 +284,17 @@ private fun project(snapshot: ChatListWindowSnapshotFfi): Document = mapOf(
         SelectedChatPreviewFfi.Empty -> "empty"
       },
       "preview" to chat.lastMessage?.let {
+        val system = it.groupSystem?.takeIf { event -> event.provenance == GroupSystemEventProvenanceFfi.AUTHENTICATED_GROUP_STATE }
+        val hasText = !it.deleted && (it.kind == 9uL || it.kind == 1111uL)
         mapOf("id" to it.messageIdHex, "sender" to it.sender, "kind" to it.kind.toDouble(),
-          "text" to it.plaintext.takeUnless { _ -> it.deleted }, "expiresAt" to it.retentionExpiresAt?.toDouble(),
-          "content" to it.contentTokens.takeIf { _ -> !it.deleted && (it.kind == 9uL || it.kind == 1111uL) }?.document())
+          "senderName" to it.senderDisplayName, "deleted" to it.deleted,
+          "attachmentKind" to it.attachmentKind?.name?.lowercase(), "attachmentCount" to it.attachmentCount.toDouble(),
+          "attachmentPresentation" to it.attachmentPresentation,
+          "system" to system?.let { event -> mapOf("type" to event.systemType, "name" to event.name) },
+          "sticker" to (it.sticker != null), "delivery" to it.deliveryState.name.lowercase(),
+          "text" to it.plaintext.takeIf { _ -> hasText || (!it.deleted && it.kind == 1068uL) },
+          "expiresAt" to it.retentionExpiresAt?.toDouble(),
+          "content" to it.contentTokens.takeIf { _ -> hasText }?.document())
       },
       "draft" to (row.preview as? SelectedChatPreviewFfi.Draft)?.draft?.text,
     )

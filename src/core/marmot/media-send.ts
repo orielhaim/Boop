@@ -2,6 +2,67 @@ import { marmotErrorCode } from "./errors";
 import type { MarmotConversation, MarmotUpload } from "./native";
 import { videoFile } from "../video/types";
 
+export function localAttachmentUpload(
+  uri: string,
+  name: string | undefined,
+  mime: string | undefined,
+  kind: "image" | "video" | "file",
+): MarmotUpload {
+  const path = uri.startsWith("/")
+    ? uri
+    : decodeURIComponent(uri.match(/^file:(?:\/\/)?(\/[^/].*)$/u)?.[1] ?? "");
+  if (!path || path.includes("\0")) throw new Error("InvalidMediaPath");
+  const suggestedName = name ?? "";
+  const fallbackName =
+    kind === "image" ? "image.jpg" : kind === "video" ? "video.mp4" : "file";
+  const validName =
+    suggestedName.trim() &&
+    !suggestedName.includes("\0") &&
+    new TextEncoder().encode(suggestedName).length <= 255;
+  const type = mime?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const validMime =
+    /^[\w!#$%&'+.^`|~-]+\/[\w!#$%&'+.^`|~-]+$/u.test(type) &&
+    (kind === "file" || type.startsWith(`${kind}/`));
+  return {
+    path,
+    name: validName ? suggestedName : fallbackName,
+    type: validMime
+      ? type
+      : kind === "image"
+        ? "image/jpeg"
+        : kind === "video"
+          ? "video/mp4"
+          : "application/octet-stream",
+  };
+}
+
+export function createAttachmentUploadQueue() {
+  const jobs = new Map<string, AbortController>();
+  let tail = Promise.resolve();
+  return {
+    has: (token: string) => jobs.has(token),
+    enqueue(token: string, run: (signal: AbortSignal) => Promise<void>) {
+      if (jobs.has(token)) return Promise.resolve();
+      const controller = new AbortController();
+      jobs.set(token, controller);
+      const task = tail
+        .then(async () => {
+          controller.signal.throwIfAborted();
+          await run(controller.signal);
+        })
+        .finally(() => {
+          jobs.delete(token);
+        });
+      tail = task.catch(() => undefined);
+      return task;
+    },
+    cancel: (token: string) => jobs.get(token)?.abort(),
+    cancelAll() {
+      for (const controller of jobs.values()) controller.abort();
+    },
+  };
+}
+
 // Expo's native string maps cannot represent undefined values.
 export function mediaUploadArguments(files: readonly MarmotUpload[]) {
   return files.map(

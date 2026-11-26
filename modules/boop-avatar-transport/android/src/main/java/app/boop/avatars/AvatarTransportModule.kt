@@ -118,16 +118,17 @@ class AvatarTransportModule : Module() {
     }
 
     AsyncFunction("download") { id: String, url: String, output: String, expectedHash: String? ->
-      download(id, url, output, expectedHash, null)
+      download(id, url, output, expectedHash, null).size
     }
     AsyncFunction("downloadBlossom") { id: String, url: String, output: String, expectedHash: String, expectedSize: Int? ->
       downloadBlossom(id, url, output, expectedHash, expectedSize)
     }
     AsyncFunction("downloadNip05") { id: String, url: String, output: String ->
-      download(id, url, output, null, false, true)
+      download(id, url, output, null, false, true).size
     }
     AsyncFunction("downloadPreview") { id: String, url: String, output: String, image: Boolean ->
-      download(id, url, output, null, image)
+      val result = download(id, url, output, null, image)
+      mapOf("size" to result.size, "url" to result.url)
     }
     AsyncFunction("blossomCommand") { id: String, url: String, headers: Map<String, String>, body: String? ->
       val job = jobs[id] ?: throw IOException("Media operation missing")
@@ -316,7 +317,7 @@ class AvatarTransportModule : Module() {
   private fun hashAt(address: HttpUrl) =
     hashFilename.matchEntire(address.encodedPathSegments.last())?.groupValues?.get(1)
 
-  private fun mediaResponse(initial: HttpUrl, accept: String, hash: String?, job: Job): okhttp3.Response {
+  private fun mediaResponse(initial: HttpUrl, accept: String, hash: String?, job: Job, preview: Boolean): okhttp3.Response {
     var address = initial
     var redirects = 0
     while (true) {
@@ -325,10 +326,10 @@ class AvatarTransportModule : Module() {
       job.call = call
       if (job.cancelled.get()) call.cancel()
       val response = call.execute()
-      if (hash == null || response.code !in listOf(301, 302, 303, 307, 308)) return response
+      if ((hash == null && !preview) || response.code !in listOf(301, 302, 303, 307, 308)) return response
       response.use {
         val next = it.header("Location")?.let(address::resolve)
-        if (redirects >= 3 || next == null || !isBlossomAddress(next) || hashAt(next) != hash)
+        if (redirects >= 3 || next == null || !isBlossomAddress(next) || (hash != null && hashAt(next) != hash))
           throw IOException("MEDIA_REDIRECT")
         address = next
         redirects++
@@ -367,7 +368,9 @@ class AvatarTransportModule : Module() {
       else IOException(fallback, error)
   }
 
-  private fun download(id: String, url: String, output: String, expectedHash: String?, previewImage: Boolean?, nip05: Boolean = false): Int {
+  private data class PublicDownload(val size: Int, val url: String)
+
+  private fun download(id: String, url: String, output: String, expectedHash: String?, previewImage: Boolean?, nip05: Boolean = false): PublicDownload {
       val job = jobs[id] ?: throw IOException("Avatar operation missing")
       try {
         if (job.cancelled.get()) throw IOException("Avatar cancelled")
@@ -377,7 +380,7 @@ class AvatarTransportModule : Module() {
         val context = appContext.reactContext ?: throw IOException("No React context")
         val html = previewImage == false && !nip05
         val images = !html && !nip05
-        val limit = if (nip05) 64 * 1024 else if (html) 512 * 1024 else maxBytes
+        val limit = if (nip05) 64 * 1024 else if (html) 1024 * 1024 else maxBytes
         val root = if (previewImage != null) File(context.cacheDir, "link-previews")
           else File(context.filesDir, "avatar-cache")
         val extension = if (images) ".jpg" else if (html) ".html" else ".bin"
@@ -387,18 +390,19 @@ class AvatarTransportModule : Module() {
         val incoming = File(target.path + ".download")
         try {
           val digest = MessageDigest.getInstance("SHA-256")
-          mediaResponse(address, accept, redirectHash, job).use { response ->
+          val finalUrl = mediaResponse(address, accept, redirectHash, job, previewImage != null && !nip05).use { response ->
             if (response.code != 200) throw IOException("Avatar HTTP ${response.code}")
             val body = response.body ?: throw IOException("No avatar body")
             val mime = body.contentType()?.let { "${it.type}/${it.subtype}" }
-            if ((images && mime !in types) || (html && mime != "text/html") || (nip05 && mime != "application/json" && mime != "text/plain") || body.contentLength() > limit)
+            if ((images && mime !in types) || (html && mime != "text/html") || (nip05 && mime != "application/json" && mime != "text/plain") || (!html && body.contentLength() > limit))
               throw IOException("Unsupported avatar")
             body.byteStream().use { source ->
               incoming.outputStream().use { sink ->
                 val buffer = ByteArray(16 * 1024)
                 var total = 0
-                while (true) {
-                  val read = source.read(buffer)
+                while (!html || total < limit) {
+                  val length = if (html) minOf(buffer.size, limit - total) else buffer.size
+                  val read = source.read(buffer, 0, length)
                   if (read < 0) break
                   total += read
                   if (total > limit || job.cancelled.get()) throw IOException("Avatar size or cancellation")
@@ -407,13 +411,14 @@ class AvatarTransportModule : Module() {
                 }
               }
             }
+            response.request.url.toString()
           }
           val hash = digest.digest().joinToString("") { "%02x".format(it) }
           if (expectedHash != null && hash != expectedHash) throw IOException("MEDIA_INTEGRITY")
           if (!images) {
             if (job.cancelled.get() || incoming.length() < 1 || target.exists() ||
                 !incoming.renameTo(target)) throw IOException("Public document transfer failed")
-            return target.length().toInt()
+            return PublicDownload(target.length().toInt(), finalUrl)
           }
           val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(incoming)) { decoder, info, _ ->
             val width = info.size.width
@@ -435,7 +440,7 @@ class AvatarTransportModule : Module() {
           } finally {
             bitmap.recycle()
           }
-          return target.length().toInt()
+          return PublicDownload(target.length().toInt(), finalUrl)
         } finally {
           incoming.delete()
         }

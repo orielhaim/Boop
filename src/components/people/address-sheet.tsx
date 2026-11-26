@@ -13,11 +13,13 @@ import { space } from "@/theme";
 export function AddressSheetContent({
   address,
   showQr,
+  hideAddress = false,
   onShowQr,
 }: {
   address: string;
   showQr: boolean;
-  onShowQr: () => void;
+  hideAddress?: boolean;
+  onShowQr?: () => void;
 }) {
   const { t } = useTranslation(namespaces);
   const [copied, setCopied] = useState<boolean>();
@@ -35,9 +37,11 @@ export function AddressSheetContent({
     <>
       <GlassSheetTitle>{t("common:address")}</GlassSheetTitle>
       <View style={styles.body}>
-        <Ink selectable kind="caption" style={styles.address}>
-          {address}
-        </Ink>
+        {!hideAddress && (
+          <Ink selectable kind="caption" style={styles.address}>
+            {address}
+          </Ink>
+        )}
         {showQr && (
           <AnimatedQRCode
             value={uri}
@@ -67,7 +71,7 @@ export function AddressSheetContent({
               void Share.share({ message: uri }).catch(() => undefined);
             }}
           />
-          {!showQr && (
+          {!showQr && onShowQr && (
             <CompactAction
               icon="qr"
               iconOnly

@@ -72,6 +72,12 @@ export function FullPlayer() {
   const repeat = useStore(audio.store, (state) => state.repeat);
   const title = active?.metadata?.title || active?.track.title;
   const subtitle = active?.metadata?.artist || active?.track.subtitle;
+  const playbackAction =
+    active?.phase === "playing"
+      ? "pause"
+      : active?.phase === "loading"
+        ? "cancel"
+        : "play";
   return (
     <Animated.View style={[styles.entrance, entrance]}>
       <Screen
@@ -200,26 +206,14 @@ export function FullPlayer() {
                   onPress={() => void audio.player.previous()}
                   tone="plain"
                 />
-                <Action
-                  variant="prominent"
-                  accessibilityLabel={t(
-                    active.phase === "playing"
-                      ? "pause"
-                      : active.phase === "loading"
-                        ? "cancel"
-                        : "play",
-                  )}
+                <IconButton
+                  icon={playbackAction === "cancel" ? "close" : playbackAction}
+                  label={t(playbackAction)}
+                  tone="accent"
+                  iconSize={24}
                   disabled={blocked}
                   onPress={audio.player.toggle}
-                >
-                  {t(
-                    active.phase === "playing"
-                      ? "pause"
-                      : active.phase === "loading"
-                        ? "cancel"
-                        : "play",
-                  )}
-                </Action>
+                />
                 <IconButton
                   icon="skipNext"
                   label={t("next")}
