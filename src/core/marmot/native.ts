@@ -1,3 +1,13 @@
+import {
+  accountDevicesActivationSchema,
+  accountRecoveryStatusSchema,
+  chatHistoryImportSchema,
+  compromiseWarningSchema,
+  deviceLinkSnapshotSchema,
+  linkedDeviceSchema,
+  unrecognizedSignInSchema,
+  type DeviceSlot,
+} from "./device-contract";
 import { randomUUID } from "expo-crypto";
 import { requireNativeModule } from "expo-modules-core";
 import { z } from "zod";
@@ -274,6 +284,28 @@ const account = z.object({
   signedOut: z.boolean(),
   unlinked: z.boolean(),
 });
+const signOutFailure = z.object({ eventId: z.string(), reason: z.string() });
+const accountCleanup = z.object({
+  completed: z.boolean(),
+  reason: z.string().nullable(),
+});
+const signOutOutcome = z.object({
+  keyPackagesDeleted: z.number().int().nonnegative(),
+  keyPackageFailures: z.array(signOutFailure),
+  localCleanup: accountCleanup,
+});
+const wipeOutcome = z.object({
+  groupsLeft: z.number().int().nonnegative(),
+  groupLeaveFailures: z.array(
+    z.object({ groupId: z.string(), reason: z.string() }),
+  ),
+  keyPackagesDeleted: z.number().int().nonnegative(),
+  keyPackageFailures: z.array(signOutFailure),
+  localCleanup: accountCleanup,
+  localAccountRemoved: z.boolean(),
+  groupsLeftToSiblings: z.number().int().nonnegative(),
+  siblingsNotReached: z.boolean(),
+});
 const onboardingStep = z.enum([
   "profile",
   "follows",
@@ -282,6 +314,10 @@ const onboardingStep = z.enum([
   "single_device",
   "key_package",
 ]);
+const onboardingDeviceNotice = z.object({
+  discovery: z.enum(["none_found", "other_installation_possible", "unknown"]),
+  complete: z.boolean(),
+});
 const onboardingSnapshot = z.object({
   ready: z.boolean(),
   revision: z.string().regex(/^\d+$/),
@@ -293,9 +329,7 @@ const onboardingSnapshot = z.object({
       inconclusive: z.boolean(),
     })
     .nullish(),
-  deviceNotice: z
-    .object({ discovery: z.string(), complete: z.boolean() })
-    .nullish(),
+  deviceNotice: onboardingDeviceNotice.nullish(),
   steps: z.array(
     z.object({
       step: onboardingStep,
@@ -313,7 +347,10 @@ const onboardingSnapshot = z.object({
   ),
 });
 export type MarmotAccount = z.infer<typeof account>;
+export type SignOutOutcome = z.infer<typeof signOutOutcome>;
+export type WipeOutcome = z.infer<typeof wipeOutcome>;
 export type MarmotOnboarding = z.infer<typeof onboardingSnapshot>;
+export type OnboardingDeviceNotice = z.infer<typeof onboardingDeviceNotice>;
 export type OnboardingAction =
   | { action: "read" | "run" | "recover" | "cancel" | "cancelRepair" }
   | {
@@ -451,31 +488,6 @@ const uploadReceipt = z.object({
     )
     .max(16),
 });
-const deviceState = z.object({
-  state: z.string().nullish(),
-  code: z.array(z.string()),
-  stalled: z.boolean(),
-  prompts: z.array(
-    z.object({ id: z.string(), state: z.string(), code: z.array(z.string()) }),
-  ),
-  progress: z.array(
-    z.object({ slot: z.string(), remaining: z.number(), total: z.number() }),
-  ),
-  devices: z.array(
-    z.object({
-      slot: z.string(),
-      current: z.boolean(),
-      label: z.string(),
-      platform: z.string(),
-      client: z.string(),
-      removalPending: z.boolean(),
-    }),
-  ),
-});
-export type MarmotDeviceState = z.infer<typeof deviceState>;
-export type MarmotDeviceAction =
-  "start" | "match" | "cancel" | "link" | "decline" | "remove";
-
 const optionalText = z
   .string()
   .nullish()
@@ -517,8 +529,10 @@ const blockListSnapshot = z.object({
 });
 
 type Events = {
+  accountSecurityEvent: (event: unknown) => void;
   memoryPressure: () => void;
   blockedUsers: (event: { id: string; rows: unknown }) => void;
+  backupRestore: (event: { id: string; rows: unknown }) => void;
   relayLiveness: (event: { id: string; rows: unknown }) => void;
   directorySearchResults: (event: { id: string; rows: unknown }) => void;
   attachmentProgress: (event: {
@@ -567,6 +581,7 @@ type Bridge = {
     epoch: string | null,
   ): Promise<unknown>;
   selectSigner(key: string): Promise<unknown>;
+  releaseSignerAccount(key: string): Promise<void>;
   accountNetworkReady(key: string): Promise<boolean>;
   requestAvatarAssets(targets: string[]): Promise<unknown>;
   readAvatarAssets(references: string[]): Promise<unknown>;
@@ -588,7 +603,8 @@ type Bridge = {
   cancelObservation(id: string): void;
   removeAccount(key: string): Promise<void>;
   signInAccount(key: string): Promise<void>;
-  signOutAccount(key: string): Promise<void>;
+  signOutAccount(key: string, deleteKeyPackages: boolean): Promise<unknown>;
+  signOutAndWipeAccount(key: string): Promise<unknown>;
   resumeAccountSetup(): Promise<void>;
   openAccount(
     key: string,
@@ -620,6 +636,7 @@ type Bridge = {
   ): Promise<void>;
   reconnectMarmotRelay(url: string): Promise<void>;
   watchRelayLiveness(key: string, id: string): Promise<void>;
+  watchBackupRestore(owner: string, id: string): Promise<void>;
   backupState(): Promise<unknown>;
   beginBackup(): Promise<unknown>;
   backupAction(action: BackupAction, words: string[]): Promise<void>;
@@ -840,14 +857,64 @@ type Bridge = {
     expiresAt: number | null,
   ): Promise<void>;
   vote(group: string, id: string, choice: string[]): Promise<void>;
-  deviceState(): Promise<unknown>;
-  deviceAction(
-    action: MarmotDeviceAction,
-    target: string | null,
-    label: string | null,
+  startAccountSecurityEvents(
+    subscriptionId: string,
+    account: string,
+  ): Promise<void>;
+  stopAccountSecurityEvents(subscriptionId: string): Promise<void>;
+  linkedDevices(account: string): Promise<unknown>;
+  accountIsUnlinked(account: string): Promise<boolean>;
+  accountRecoveryStatus(account: string): Promise<unknown>;
+  deviceLinkSnapshot(account: string): Promise<unknown>;
+  startDeviceLink(account: string): Promise<unknown>;
+  cancelDeviceLink(account: string): Promise<unknown>;
+  confirmDeviceLinkMatch(account: string, code: string[]): Promise<unknown>;
+  linkDevice(
+    account: string,
+    prompt: string,
+    code: string[],
+    label: string,
     allChats: boolean,
     history: boolean,
+  ): Promise<unknown>;
+  declineDeviceLink(account: string, prompt: string): Promise<unknown>;
+  renameLinkedDevice(
+    account: string,
+    slot: DeviceSlot,
+    label: string,
   ): Promise<void>;
+  updateLinkedDeviceSettings(
+    account: string,
+    slot: DeviceSlot,
+    allChats: boolean | null,
+    history: boolean | null,
+    keep: boolean | null,
+  ): Promise<void>;
+  removeLinkedDevice(account: string, slot: DeviceSlot): Promise<void>;
+  unrecognizedSignIns(account: string): Promise<unknown>;
+  checkSignIns(account: string): Promise<unknown>;
+  answerSignIn(
+    account: string,
+    slot: DeviceSlot,
+    response: SignInResponse,
+  ): Promise<void>;
+  compromiseWarning(account: string): Promise<unknown>;
+  dismissCompromiseWarning(account: string): Promise<void>;
+  startFresh(account: string): Promise<void>;
+  startedFresh(account: string): Promise<boolean>;
+  chatHistoryImports(account: string): Promise<unknown>;
+  keyPackageRefreshOverdue(account: string): Promise<boolean>;
+  removedDeviceLeftoverChats(account: string): Promise<number>;
+  chatsClosedToLinkedDevices(account: string): Promise<number>;
+  resetDeviceGroupForRepair(account: string): Promise<unknown>;
+  rotateKeyPackage(account: string): Promise<void>;
+  dismissDeviceGroupMoveSibling(
+    account: string,
+    move: string,
+    slot: DeviceSlot,
+  ): Promise<unknown>;
+  accountDevicesActivation(account: string, group: string): Promise<unknown>;
+  enableAccountDevices(account: string, group: string): Promise<void>;
 };
 
 type Revision = z.infer<typeof windowRevision>;
@@ -955,7 +1022,7 @@ export const marmotBlocks = {
 };
 
 type ObservationEvent =
-  "directorySearchResults" | "relayLiveness" | "blockedUsers";
+  "directorySearchResults" | "relayLiveness" | "blockedUsers" | "backupRestore";
 
 function observeRows<T>(
   event: ObservationEvent,
@@ -965,7 +1032,12 @@ function observeRows<T>(
   receive: (rows: T) => void,
 ) {
   const bridge = native();
-  if (!bridge.prepareObservation(id, event === "blockedUsers"))
+  if (
+    !bridge.prepareObservation(
+      id,
+      event === "blockedUsers" || event === "backupRestore",
+    )
+  )
     throw new Error("AccountBusy");
   let closed = false;
   let listener: ReturnType<Bridge["addListener"]> | undefined;
@@ -995,7 +1067,7 @@ function observeRows<T>(
 }
 
 function observeAccount<T>(
-  event: "relayLiveness" | "blockedUsers",
+  event: "relayLiveness" | "blockedUsers" | "backupRestore",
   owner: string,
   schema: z.ZodType<T>,
   receive: (rows: T) => void,
@@ -1008,7 +1080,9 @@ function observeAccount<T>(
     (bridge) =>
       event === "relayLiveness"
         ? bridge.watchRelayLiveness(owner, id)
-        : bridge.watchBlockedUsers(owner, id),
+        : event === "blockedUsers"
+          ? bridge.watchBlockedUsers(owner, id)
+          : bridge.watchBackupRestore(owner, id),
     schema,
     receive,
   );
@@ -1093,10 +1167,18 @@ export const marmotAccounts = {
       .object({ name: z.string().nullish(), about: z.string().nullish() })
       .parse(await native().selectSigner(key));
   },
+  releaseSigner: (key: string) => native().releaseSignerAccount(key),
   networkReady: (key: string) => native().accountNetworkReady(key),
   remove: (key: string) => native().removeAccount(key),
   signIn: (key: string) => native().signInAccount(key),
-  signOut: (key: string) => native().signOutAccount(key),
+  async signOut(key: string, deleteKeyPackages = false) {
+    return signOutOutcome.parse(
+      await native().signOutAccount(key, deleteKeyPackages),
+    );
+  },
+  async signOutAndWipe(key: string) {
+    return wipeOutcome.parse(await native().signOutAndWipeAccount(key));
+  },
   resumeSetup: () => native().resumeAccountSetup(),
   shutdown: () => native().shutdownRuntime(),
   export: (key: string, password: string | null) =>
@@ -1313,6 +1395,11 @@ export const marmot = {
   async backupState() {
     return backupState.parse(await native().backupState());
   },
+  observeBackupRestore: (
+    owner: string,
+    receive: (state: MarmotBackupState) => void,
+    ended: (error: unknown) => void,
+  ) => observeAccount("backupRestore", owner, backupState, receive, ended),
   async beginBackup() {
     return recoveryWords.parse(await native().beginBackup());
   },
@@ -1738,14 +1825,196 @@ export const marmot = {
   ) => native().createPoll(group, question, options, multiple, expiresAt),
   vote: (group: string, id: string, choice: string[]) =>
     native().vote(group, id, choice),
-  async deviceState() {
-    return deviceState.parse(await native().deviceState());
+};
+
+export type SignInResponse = "notNow" | "reject" | "dismiss";
+
+const deviceEventKind = z.enum([
+  "linkedDevicesChanged",
+  "deviceLinkChanged",
+  "unrecognizedSignInsChanged",
+  "compromiseWarningChanged",
+  "chatHistoryImportsChanged",
+  "keyPackageRefreshOverdueChanged",
+  "recoveryStatusChanged",
+  "deviceUnlinked",
+  "ended",
+]);
+export type DeviceEventKind = z.infer<typeof deviceEventKind>;
+
+const accountSecurityEvent = z.object({
+  account: accountKey,
+  subscriptionId: z.string(),
+  kind: deviceEventKind,
+});
+
+export const marmotDevices = {
+  accountIsUnlinked: (account: string) => native().accountIsUnlinked(account),
+  async accountRecoveryStatus(account: string) {
+    return accountRecoveryStatusSchema.parse(
+      await native().accountRecoveryStatus(account),
+    );
   },
-  deviceAction: (
-    action: MarmotDeviceAction,
-    target: string | null = null,
-    label: string | null = null,
-    allChats = false,
-    history = false,
-  ) => native().deviceAction(action, target, label, allChats, history),
+  observe(account: string, receive: (kind: DeviceEventKind) => void) {
+    const bridge = native();
+    const subscriptionId = randomUUID();
+    let closed = false;
+    const listener = bridge.addListener("accountSecurityEvent", (raw) => {
+      const event = accountSecurityEvent.safeParse(raw);
+      if (
+        !closed &&
+        event.success &&
+        event.data.subscriptionId === subscriptionId &&
+        event.data.account === account
+      )
+        receive(event.data.kind);
+    });
+    const ready = bridge.startAccountSecurityEvents(subscriptionId, account);
+    return {
+      ready,
+      close() {
+        if (closed) return;
+        closed = true;
+        listener.remove();
+        // Startup can be crossing the bridge when the owner retires.
+        void bridge
+          .stopAccountSecurityEvents(subscriptionId)
+          .catch(() => undefined);
+        void ready
+          .then(
+            () => bridge.stopAccountSecurityEvents(subscriptionId),
+            () => undefined,
+          )
+          .catch(() => undefined);
+      },
+    };
+  },
+  async linkedDevices(account: string) {
+    return linkedDeviceSchema
+      .array()
+      .parse(await native().linkedDevices(account));
+  },
+  async deviceLinkSnapshot(account: string) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().deviceLinkSnapshot(account),
+    );
+  },
+  async startDeviceLink(account: string) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().startDeviceLink(account),
+    );
+  },
+  async cancelDeviceLink(account: string) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().cancelDeviceLink(account),
+    );
+  },
+  async confirmDeviceLinkMatch(account: string, code: string[]) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().confirmDeviceLinkMatch(account, code),
+    );
+  },
+  async linkDevice(
+    account: string,
+    prompt: string,
+    code: string[],
+    label: string,
+    allChats: boolean,
+    history: boolean,
+  ) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().linkDevice(
+        account,
+        prompt,
+        code,
+        label,
+        allChats,
+        history,
+      ),
+    );
+  },
+  async declineDeviceLink(account: string, prompt: string) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().declineDeviceLink(account, prompt),
+    );
+  },
+  renameLinkedDevice: (account: string, slot: DeviceSlot, label: string) =>
+    native().renameLinkedDevice(account, slot, label),
+  updateLinkedDeviceSettings: (
+    account: string,
+    slot: DeviceSlot,
+    allChats: boolean | null,
+    history: boolean | null,
+    keep: boolean | null,
+  ) =>
+    native().updateLinkedDeviceSettings(account, slot, allChats, history, keep),
+  removeLinkedDevice: (account: string, slot: DeviceSlot) =>
+    native().removeLinkedDevice(account, slot),
+  async unrecognizedSignIns(account: string) {
+    return unrecognizedSignInSchema
+      .array()
+      .parse(await native().unrecognizedSignIns(account));
+  },
+  async checkSignIns(account: string) {
+    return unrecognizedSignInSchema
+      .array()
+      .parse(await native().checkSignIns(account));
+  },
+  answerSignIn: (account: string, slot: DeviceSlot, response: SignInResponse) =>
+    native().answerSignIn(account, slot, response),
+  async compromiseWarning(account: string) {
+    return compromiseWarningSchema
+      .array()
+      .parse(await native().compromiseWarning(account));
+  },
+  dismissCompromiseWarning: (account: string) =>
+    native().dismissCompromiseWarning(account),
+  startFresh: (account: string) => native().startFresh(account),
+  async startedFresh(account: string) {
+    return z.boolean().parse(await native().startedFresh(account));
+  },
+  async chatHistoryImports(account: string) {
+    return chatHistoryImportSchema
+      .array()
+      .parse(await native().chatHistoryImports(account));
+  },
+  async keyPackageRefreshOverdue(account: string) {
+    return z.boolean().parse(await native().keyPackageRefreshOverdue(account));
+  },
+  async removedDeviceLeftoverChats(account: string) {
+    return z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(await native().removedDeviceLeftoverChats(account));
+  },
+  async chatsClosedToLinkedDevices(account: string) {
+    return z
+      .number()
+      .int()
+      .nonnegative()
+      .parse(await native().chatsClosedToLinkedDevices(account));
+  },
+  async resetDeviceGroupForRepair(account: string) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().resetDeviceGroupForRepair(account),
+    );
+  },
+  rotateKeyPackage: (account: string) => native().rotateKeyPackage(account),
+  async dismissDeviceGroupMoveSibling(
+    account: string,
+    move: string,
+    slot: DeviceSlot,
+  ) {
+    return deviceLinkSnapshotSchema.parse(
+      await native().dismissDeviceGroupMoveSibling(account, move, slot),
+    );
+  },
+  async accountDevicesActivation(account: string, group: string) {
+    return accountDevicesActivationSchema.parse(
+      await native().accountDevicesActivation(account, group),
+    );
+  },
+  enableAccountDevices: (account: string, group: string) =>
+    native().enableAccountDevices(account, group),
 };

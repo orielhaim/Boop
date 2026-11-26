@@ -12,13 +12,13 @@ export default function SettingsLayout() {
   return (
     <BlankStack screenOptions={push} screenLayout={navigationScene}>
       <BlankStack.Screen name="index" />
+      <BlankStack.Screen name="devices" />
       <BlankStack.Screen
         name="identity-keys"
         options={{ gestureEnabled: false }}
       />
       <BlankStack.Protected guard={chatsEnabled}>
         <BlankStack.Screen name="identity/backup" />
-        <BlankStack.Screen name="identity/devices" />
         <BlankStack.Screen name="language/translation/index" />
         <BlankStack.Screen name="language/translation/target" />
         <BlankStack.Screen name="language/translation/excluded" />

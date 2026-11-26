@@ -82,8 +82,9 @@ import {
 import {
   accountDownloadKey,
   accountSigner,
+  clearSelectedAccount,
   copyInstallationPreferences,
-  removeLocalAccount,
+  removeBoopAccountData,
   selectedAccount,
   selectAccount,
 } from "@/core/identity";
@@ -92,13 +93,17 @@ import {
   createMarmotCatchUp,
   createMarmotSession,
 } from "@/core/marmot/account-session";
+import { createDeviceController } from "@/core/marmot/device-controller";
 import { createMarmotViewport } from "@/core/marmot/viewport";
 import {
   marmot,
   marmotAccounts,
   marmotBlocks,
   marmotDirectory,
+  marmotDevices,
   marmotRelays,
+  type SignOutOutcome,
+  type WipeOutcome,
 } from "@/core/marmot/native";
 import { toNpub } from "@/core/identity/keys";
 import { messagingMetric } from "@/core/messaging/diagnostics";
@@ -134,13 +139,23 @@ import { purgeExpiredOpenedMessages } from "@/db/open-later";
 import { i18n, preferredLanguage, resolveLanguage } from "@/i18n";
 import { readLanguagePreference } from "@/i18n/preference";
 
+type AccountLifecycleAction = "signOut" | "remove";
+type AccountLifecycleState = {
+  phase: "idle" | "running" | "report" | "failed";
+  action: AccountLifecycleAction | null;
+  outcome: SignOutOutcome | WipeOutcome | null;
+  deleteKeyPackages: boolean | null;
+  error: "operation_failed" | "local_cleanup_failed" | null;
+  localDataPurged: boolean;
+};
+
 async function start() {
   const started = performance.now();
   const installation = await openDatabase();
   let db = installation;
   try {
     const initialRelays = initialAccountRelays;
-    const { account, accounts } = await selectedAccount(
+    const { account, accounts, previousAccount } = await selectedAccount(
       installation,
       initialRelays,
     );
@@ -156,21 +171,11 @@ async function start() {
         account.readiness === "publishing" ||
         account.readiness === "network_ready") &&
       (!setup || setup.ready);
-    if (account && !ready) {
-      for (const old of accounts) {
-        if (old.key !== account.key && !old.signedOut && !old.unlinked)
-          await marmotAccounts.signOut(old.key);
-      }
-    }
     const initialProfile = ready
       ? await marmotAccounts.selectSigner(account.key)
       : null;
     if (ready) {
       selectAccount(installation, account.key);
-      for (const old of accounts) {
-        if (old.key === account.key) continue;
-        await removeLocalAccount(old.key);
-      }
       db = await openDatabase(account.key);
       if (preference(db, "account.preferences.initialized") === null) {
         copyInstallationPreferences(installation, db);
@@ -199,8 +204,8 @@ async function start() {
         db,
         account,
         setup,
-        previousAccount: accounts.find((item) => item.key !== account?.key)
-          ?.key,
+        previousAccount:
+          previousAccount === account?.key ? undefined : previousAccount,
         relays: initialRelays,
         lock,
         theme: preference(db, "theme"),
@@ -209,13 +214,73 @@ async function start() {
     }
     const identity = { publicKey: account.key, npub: toNpub(account.key) };
     const retirement = new AbortController();
-    const isCurrent = () => !retirement.signal.aborted;
+    const accountRetired = new AbortController();
+    const accountLifecycle = createStore<AccountLifecycleState>(() => ({
+      phase: "idle",
+      action: null,
+      outcome: null,
+      deleteKeyPackages: null,
+      error: null,
+      localDataPurged: false,
+    }));
+    let current = true;
+    const isCurrent = () => current && !retirement.signal.aborted;
     const active = () =>
       isCurrent() &&
       AppState.currentState === "active" &&
       !lock.getState().locked;
     const signer = accountSigner(account.key, active);
     const downloadKey = await accountDownloadKey(account.key);
+    let stopObserving: (() => void) | undefined;
+    const deviceController = createDeviceController({
+      account: account.key,
+      canAct: active,
+      canSynchronize: () => chatPreferences.enabled(),
+      source: marmotDevices,
+      onUnlinked: () => {
+        void closeUnlinkedAccount().catch(() => accountRetired.abort());
+      },
+    });
+    let shutdownPromise: Promise<void> | undefined;
+    async function retireRuntime() {
+      if (shutdownPromise) return shutdownPromise;
+      current = false;
+      shutdownPromise = (async () => {
+        retirement.abort();
+        await Promise.resolve()
+          .then(() => calling.end())
+          .catch(() => undefined);
+        await Promise.resolve()
+          .then(() => deviceController.stop())
+          .catch(() => undefined);
+        for (const dispose of [
+          () => deviceAppState.remove(),
+          () => deviceNetworkState.remove(),
+          deviceLockState,
+          () => stopObserving?.(),
+        ]) {
+          await Promise.resolve()
+            .then(dispose)
+            .catch(() => undefined);
+        }
+        await Promise.allSettled([
+          audio.close(),
+          video.drain(),
+          retireRoundNotes(),
+          speech.beforeAccountClose(),
+          downloads.drain(),
+          torrents.dispose(),
+        ]);
+        await marmotSession.stop().catch(() => undefined);
+        downloadKey.fill(0);
+      })();
+      return shutdownPromise;
+    }
+    async function closeUnlinkedAccount() {
+      await retireRuntime();
+      await marmotAccounts.shutdown().catch(() => undefined);
+      accountRetired.abort();
+    }
     initializeTranslationPreferences(db, resolveLanguage(i18n.language));
     purgeExpiredOpenedMessages(db);
     const chatPreferences = createChatPreferences(db);
@@ -893,8 +958,6 @@ async function start() {
         downloads.beforeAccountClose(),
       ]);
     };
-    let stopObserving: (() => void) | undefined;
-
     function observeSession() {
       if (!isCurrent() || stopObserving) return;
       const databasePath =
@@ -1227,8 +1290,11 @@ async function start() {
             chatsEnabled = next;
             updateConversations();
             speech.sync();
-            if (next) connectMessaging();
-            else {
+            if (next) {
+              deviceController.reconnect();
+              connectMessaging();
+            } else {
+              deviceController.suspend();
               messagingCatchUp.pause();
               void marmotSession.stop(true).catch(() => undefined);
             }
@@ -1278,36 +1344,217 @@ async function start() {
       return stop;
     }
 
+    async function purgeRemovedAccountData() {
+      finishOnboarding(db);
+      const installation = await openDatabase();
+      try {
+        clearSelectedAccount(installation);
+      } finally {
+        installation.$client.closeSync();
+      }
+      await removeBoopAccountData(account.key);
+    }
+
+    const storedAccounts = accounts.filter(
+      (item) =>
+        item.key !== account.key &&
+        !item.unlinked &&
+        item.readiness !== "initializing" &&
+        item.readiness !== "recovery_required",
+    );
+    async function selectStoredAccount(key: string) {
+      if (!active() || accountLifecycle.getState().phase !== "idle")
+        throw new Error("AccountClosed");
+      const available = await marmotAccounts.list(initialRelays, null);
+      if (
+        !active() ||
+        !storedAccounts.some((item) => item.key === key) ||
+        !available.some((item) => item.key === key && !item.unlinked)
+      )
+        throw new Error("AccountClosed");
+      const installation = await openDatabase();
+      try {
+        if (!active()) throw new Error("AccountClosed");
+        selectAccount(installation, key);
+        await retireRuntime();
+        await marmotAccounts.shutdown();
+        accountRetired.abort();
+      } finally {
+        installation.$client.closeSync();
+      }
+    }
+
+    async function signOutCurrentDevice(deleteKeyPackages: boolean) {
+      const state = accountLifecycle.getState();
+      if (state.phase === "running") throw new Error("AccountBusy");
+      if (state.phase === "idle" && !active()) throw new Error("AccountClosed");
+      accountLifecycle.setState({
+        phase: "running",
+        action: "signOut",
+        outcome: null,
+        deleteKeyPackages,
+        error: null,
+      });
+      try {
+        await retireRuntime();
+        const outcome = await marmotAccounts.signOut(
+          account.key,
+          deleteKeyPackages,
+        );
+        accountLifecycle.setState({ phase: "report", outcome, error: null });
+        return outcome;
+      } catch {
+        accountLifecycle.setState({
+          phase: "failed",
+          error: "operation_failed",
+        });
+        throw new Error("AccountSignOutFailed");
+      }
+    }
+
+    async function removeCurrentDevice() {
+      const state = accountLifecycle.getState();
+      if (state.phase === "running") throw new Error("AccountBusy");
+      if (state.phase === "idle" && !active()) throw new Error("AccountClosed");
+      accountLifecycle.setState({
+        phase: "running",
+        action: "remove",
+        error: null,
+      });
+      try {
+        await retireRuntime();
+        let outcome =
+          state.action === "remove" &&
+          state.outcome &&
+          "localAccountRemoved" in state.outcome &&
+          state.outcome.localAccountRemoved
+            ? state.outcome
+            : await marmotAccounts.signOutAndWipe(account.key);
+        let localDataPurged = false;
+        if (outcome.localAccountRemoved) {
+          try {
+            await purgeRemovedAccountData();
+            localDataPurged = true;
+          } catch {
+            accountLifecycle.setState({
+              phase: "failed",
+              action: "remove",
+              outcome,
+              error: "local_cleanup_failed",
+              localDataPurged: false,
+            });
+            return outcome;
+          }
+        }
+        accountLifecycle.setState({
+          phase: "report",
+          action: "remove",
+          outcome,
+          error: null,
+          localDataPurged,
+        });
+        return outcome;
+      } catch {
+        accountLifecycle.setState({
+          phase: "failed",
+          error: "operation_failed",
+        });
+        throw new Error("AccountWipeFailed");
+      }
+    }
+
+    function finishAccountLifecycle() {
+      const state = accountLifecycle.getState();
+      if (state.phase !== "report" || state.action === null) return false;
+      if (
+        state.action === "signOut" &&
+        state.outcome &&
+        "localCleanup" in state.outcome &&
+        !state.outcome.localCleanup.completed
+      )
+        return false;
+      if (
+        state.action === "remove" &&
+        (!state.outcome ||
+          !("localAccountRemoved" in state.outcome) ||
+          !state.outcome.localAccountRemoved ||
+          !state.localDataPurged)
+      )
+        return false;
+      finishOnboarding(db);
+      accountRetired.abort();
+      return true;
+    }
+
+    const deviceAppState = AppState.addEventListener("change", (state) => {
+      if (state === "active") deviceController.reconnect();
+      else deviceController.suspend();
+    });
+    const deviceNetworkState = addNetworkStateListener(() =>
+      deviceController.reconnect(),
+    );
+    let deviceEligible = active();
+    const deviceLockState = lock.subscribe(() => {
+      const next = active();
+      if (next && !deviceEligible) deviceController.reconnect();
+      else if (!next && deviceEligible) deviceController.suspend();
+      deviceEligible = next;
+    });
+    try {
+      deviceController.start();
+      if (!active() || !chatPreferences.enabled()) deviceController.suspend();
+    } catch (error) {
+      deviceController.stop();
+      deviceAppState.remove();
+      deviceNetworkState.remove();
+      deviceLockState();
+      throw error;
+    }
     messagingMetric("local startup ready", { ms: performance.now() - started });
     return {
       status: "ready" as const,
       db,
       isCurrent,
       sessionEnded: retirement.signal,
+      accountRetired: accountRetired.signal,
+      accountLifecycle,
+      signOutCurrentDevice,
+      removeCurrentDevice,
+      storedAccounts,
+      selectStoredAccount,
+      finishAccountLifecycle,
+      retryAccountLifecycle: () => {
+        const state = accountLifecycle.getState();
+        if (state.action === "remove") return removeCurrentDevice();
+        if (state.action === "signOut")
+          return signOutCurrentDevice(state.deleteKeyPackages ?? true);
+        throw new Error("NoAccountLifecycleAction");
+      },
       initialProfile,
       async replaceIdentity(importToken: string, live: () => boolean) {
+        const retained = await marmotAccounts.list(initialRelays, null);
+        if (!active() || !live()) return false;
         const target = await marmotAccounts.install(
           { importToken },
           initialRelays,
         );
-        if (!live()) {
-          if (target !== account.key) await marmotAccounts.remove(target);
-          if (!chatPreferences.enabled()) await marmotSession.stop(true);
+        if (!active() || !live()) {
+          if (
+            target !== account.key &&
+            !retained.some((item) => item.key === target)
+          )
+            await marmotAccounts.remove(target);
+          if (isCurrent() && !chatPreferences.enabled())
+            await marmotSession.stop(true);
           return false;
         }
         if (target === account.key) return false;
         const installation = await openDatabase();
         try {
+          if (!active() || !live()) return false;
           copyInstallationPreferences(db, installation);
           selectAccount(installation, target);
-          retirement.abort();
-          calling.end();
-          stopObserving?.();
-          await Promise.all([downloads.drain(), torrents.dispose()]);
-          await Promise.all([audio.close(), video.drain(), retireRoundNotes()]);
-          await marmotSession.stop();
-          await marmotAccounts.signOut(account.key);
-          downloadKey.fill(0);
+          await retireRuntime();
           await marmotAccounts.shutdown();
           return true;
         } finally {
@@ -1328,6 +1575,7 @@ async function start() {
       video,
       roundNotes,
       observeSession,
+      deviceController,
       avatars,
       previews,
       mediaSdk,
@@ -1357,6 +1605,7 @@ async function start() {
 
 let appLock: AppLock | undefined;
 let initialization: ReturnType<typeof start> | undefined;
+const finishedDatabases = new WeakSet<object>();
 
 export function acceptsLiveLink() {
   const state = appLock?.getState();
@@ -1371,6 +1620,9 @@ export function initializeLocal() {
 }
 
 export function finishOnboarding(db: Awaited<ReturnType<typeof openDatabase>>) {
-  db.$client.closeSync();
+  if (!finishedDatabases.has(db)) {
+    db.$client.closeSync();
+    finishedDatabases.add(db);
+  }
   initialization = undefined;
 }

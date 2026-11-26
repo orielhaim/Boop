@@ -14,6 +14,7 @@ import {
 import { speechKeySlot } from "../speech/types";
 
 const selected = "account.selected";
+const previous = "account.previous";
 const settings = ["language", "theme", "haptics", "security.appLock"];
 const options = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -33,7 +34,11 @@ export function copyInstallationPreferences(
 }
 
 export function selectAccount(db: Database, account: string) {
-  setPreference(db, selected, account);
+  db.transaction((tx) => {
+    const current = preference(tx, selected);
+    if (current && current !== account) setPreference(tx, previous, current);
+    setPreference(tx, selected, account);
+  });
 }
 
 export function clearSelectedAccount(db: Database) {
@@ -44,28 +49,15 @@ export async function selectedAccount(db: Database, relays: MarmotRelays) {
   const accounts = await marmotAccounts.list(relays, null);
   const key = preference(db, selected);
   const account = accounts.find((candidate) => candidate.key === key);
+  const priorKey = preference(db, previous);
+  const prior = accounts.find((candidate) => candidate.key === priorKey);
   if (key && !account) throw new IdentityMismatchError();
-  if (!key && accounts.length > 1) throw new IdentityMismatchError();
-  // The import may commit its MDK checkpoint before Boop saves the selection.
-  if (
-    account &&
-    !account.signedOut &&
-    !account.unlinked &&
-    account.readiness !== "initializing"
-  ) {
-    const imports = accounts.filter(
-      (candidate) =>
-        candidate.key !== account.key &&
-        !candidate.signedOut &&
-        !candidate.unlinked &&
-        candidate.readiness === "initializing",
-    );
-    if (imports.length === 1) {
-      selectAccount(db, imports[0].key);
-      return { account: imports[0], accounts };
-    }
-  }
-  return { account: account ?? accounts[0], accounts };
+  if (!key && !prior && accounts.length > 1) throw new IdentityMismatchError();
+  return {
+    account: account ?? prior ?? accounts[0],
+    accounts,
+    previousAccount: prior?.key,
+  };
 }
 
 export class IdentityMismatchError extends Error {
@@ -109,17 +101,16 @@ export async function accountDownloadKey(account: string) {
   }
 }
 
-export async function removeLocalAccount(account: string) {
+export async function removeBoopAccountData(account: string) {
   const stored = await SecureStore.getItemAsync(downloadSlot(account), options);
   if (stored && /^[a-f0-9]{64}$/u.test(stored)) {
     const key = hexToBytes(stored);
     try {
-      const files = new Directory(
-        Paths.document,
-        "torrent-downloads",
-        bytesToHex(sha256(key)),
-      );
-      if (files.exists) files.delete();
+      const scope = bytesToHex(sha256(key));
+      for (const kind of ["torrent-downloads", "blossom-downloads"]) {
+        const files = new Directory(Paths.document, kind, scope);
+        if (files.exists) files.delete();
+      }
     } finally {
       key.fill(0);
     }
@@ -129,7 +120,11 @@ export async function removeLocalAccount(account: string) {
     SecureStore.deleteItemAsync(speechKeySlot(account), options),
   ]);
   await removeAccountDatabase(account);
+}
+
+export async function removeLocalAccount(account: string) {
   await marmotAccounts.remove(account);
+  await removeBoopAccountData(account);
 }
 
 export function accountSigner(

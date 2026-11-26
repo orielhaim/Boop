@@ -1,6 +1,8 @@
 import { speechHe } from "./speech-he";
+import { devicesHe } from "./devices-he";
 
 export const he = {
+  devices: devicesHe,
   speech: speechHe,
   translation: {
     excluded: "שפות שלא יתורגמו",
@@ -69,9 +71,12 @@ export const he = {
     setupRecommendedRelays: "בדיקת הממסרים המומלצים",
     setupOtherDevice:
       "ייתכן שהחשבון כבר בשימוש במכשיר אחר. אפשר לקשר אותו מההגדרות לאחר הכניסה.",
+    setupNoOtherDevice:
+      "לא נמצא מכשיר נוסף. אפשר לקשר מכשיר נוסף בהמשך דרך ההגדרות.",
     setupUnknownDevices:
       "Boop לא הצליחה להשלים את בדיקת המכשירים הנוספים. אפשר להמשיך ולקשר מכשירים בהמשך מההגדרות.",
     setupContinueAnyway: "המשך בכל זאת",
+    setupFinish: "סיום ההגדרה",
     setupReenter: "הזנה מחדש של מפתח הזהות",
     discardSetup: "הסרת החשבון מהמכשיר",
     discardSetupDetail:
@@ -308,21 +313,6 @@ export const he = {
       pollExpires: "סגירה לאחר מספר השעות הזה",
       pollMultiple: "אפשר לבחור כמה תשובות",
       pollClosed: "הסקר נסגר",
-      devices: "מכשירים מקושרים",
-      currentDevice: "המכשיר הזה",
-      startLink: "קישור המכשיר הזה",
-      matchCode: "הקודים זהים",
-      compareCode: "לפני האישור, יש להשוות את הסמלים בשני המכשירים.",
-      addToChats: "הוספת המכשיר לשיחות הזמינות",
-      bringHistory: "העברת היסטוריה זמינה",
-      deviceLabel: "שם המכשיר",
-      removeDevice: "הסרת מכשיר מקושר",
-      linkWaiting: "ממתין למכשיר האחר",
-      linkFailed: "הקישור הסתיים. אפשר להתחיל קישור חדש כדי לנסות שוב.",
-      deviceLinkPending:
-        "המכשיר עדיין משלים את הקישור. אפשר לנסות שוב כשהוא מוכן.",
-      deviceRemoving: "מסיר את המכשיר",
-      linkProgress: "הצטרפות לשיחות: {{done}} מתוך {{total}}",
       backupScope:
         "סים דיגיטלי משחזר את כתובת ה־Nostr שלך. כדי לשחזר היסטוריית שיחות MLS נדרש מכשיר מקושר או גיבוי הודעות זמין.",
       save: "שמירה",
@@ -1207,11 +1197,12 @@ export const he = {
     backupInput: "הדבקת ncryptsec,‏ nsec או מפתח הקסדצימלי של 32 בתים",
     backupFile: "בחירת קובץ גיבוי",
     checkIdentity: "בדיקת זהות",
-    replaceIdentity: "החלפת הזהות ואיפוס הנתונים המקומיים",
+    replaceIdentity: "מעבר לזהות הזאת",
     replacementWarning:
-      "בסיום הכניסה לזהות החלופית יימחקו מהמכשיר המפתח הנוכחי, הצ׳אטים, אנשי הקשר, היסטוריית השיחות ונתוני הפרטיות. כדי להשתמש שוב בזהות הנוכחית, יש לייצא אותה תחילה.",
+      "בסיום הכניסה תוחלף הזהות הפעילה. Boop שומרת את הזהות הנוכחית ואת הנתונים המקומיים שלה במכשיר.",
     sameIdentity: "זו הזהות הפעילה שלך. הנתונים המקומיים לא השתנו.",
     currentIdentity: "הזהות הנוכחית",
+    storedIdentities: "זהויות במכשיר הזה",
     importedIdentity: "הזהות המיובאת",
     backupFailed:
       "לא ניתן לפתוח או לשמור את גיבוי מפתח הזהות. כדאי לבדוק את הגיבוי ואת הסיסמה ולנסות שוב.",

@@ -15,6 +15,8 @@ import { Icon, Ink, Screen, tapFeedback } from "@/components/ui/kit";
 import { namespaces } from "@/i18n";
 import { useLocal } from "@/services/local-context";
 import { useTheme } from "@/theme";
+import { CountBadge } from "@/components/kinetik/count-badge";
+import { countSecurityItems } from "@/components/devices/presentation";
 
 const categoryRows = [
   {
@@ -54,6 +56,12 @@ const categoryRows = [
     route: "/settings/identity",
   },
   {
+    category: "devices",
+    titleKey: "devices:title",
+    detailKey: "devices:category",
+    route: "/settings/devices",
+  },
+  {
     category: "privacy",
     titleKey: "settings:privacy",
     detailKey: "settings:categoryPrivacyHelp",
@@ -88,11 +96,13 @@ function CategoryRow({
   category,
   title,
   detail,
+  count,
   onPress,
 }: {
   category: SettingsCategory;
   title: string;
   detail: string;
+  count?: number;
   onPress: () => void;
 }) {
   return (
@@ -100,6 +110,7 @@ function CategoryRow({
       title={title}
       detail={detail}
       leading={<CategoryIcon category={category} />}
+      trailing={count ? <CountBadge count={count} size="compact" /> : undefined}
       onPress={onPress}
       showChevron={false}
     />
@@ -108,7 +119,10 @@ function CategoryRow({
 
 export default function Settings() {
   const { t } = useTranslation(namespaces);
-  const { identity, profileEditor } = useLocal();
+  const { identity, profileEditor, deviceController } = useLocal();
+  const attention = countSecurityItems(
+    useSyncExternalStore(deviceController.subscribe, deviceController.getState),
+  );
   const {
     photo: publishedPhoto,
     name,
@@ -171,8 +185,8 @@ export default function Settings() {
 
       {[
         categoryRows.slice(0, 5),
-        categoryRows.slice(5, 8),
-        categoryRows.slice(8),
+        categoryRows.slice(5, 9),
+        categoryRows.slice(9),
       ].map((group) => (
         <ListGroup key={group[0]?.category} dividers="none">
           {group.map((row) => (
@@ -180,7 +194,12 @@ export default function Settings() {
               key={row.category}
               category={row.category}
               title={t(row.titleKey)}
-              detail={t(row.detailKey)}
+              detail={
+                row.category === "devices" && attention
+                  ? t("devices:attentionCount", { count: attention })
+                  : t(row.detailKey)
+              }
+              count={row.category === "devices" ? attention : undefined}
               onPress={() => router.push(row.route)}
             />
           ))}

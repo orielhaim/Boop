@@ -10,6 +10,7 @@ export const settingsCategories = [
   "storage",
   "language",
   "identity",
+  "devices",
   "privacy",
   "connections",
   "plugins",
@@ -42,6 +43,10 @@ const categories = {
   identity: {
     icon: "key",
     colors: ["#8699D3", "#4F61A7"],
+  },
+  devices: {
+    icon: "devices",
+    colors: ["#749CE6", "#4059AC"],
   },
   privacy: {
     icon: "lock",

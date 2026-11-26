@@ -1,6 +1,8 @@
 import { speechEn } from "./speech-en";
+import { devicesEn } from "./devices-en";
 
 export const en = {
+  devices: devicesEn,
   speech: speechEn,
   translation: {
     onDevice: "On-device translation",
@@ -71,9 +73,12 @@ export const en = {
     setupRecommendedRelays: "Review recommended relays",
     setupOtherDevice:
       "This account may already be in use on another device. Link that device from Settings after signing in.",
+    setupNoOtherDevice:
+      "No other device was found. You can link another device from Settings later.",
     setupUnknownDevices:
       "Boop couldn’t finish checking for other devices. You can continue and link devices from Settings later.",
     setupContinueAnyway: "Continue anyway",
+    setupFinish: "Finish setup",
     setupReenter: "Enter identity key again",
     discardSetup: "Remove account from this device",
     discardSetupDetail:
@@ -315,21 +320,6 @@ export const en = {
       pollExpires: "Close after this many hours",
       pollMultiple: "Allow multiple choices",
       pollClosed: "Poll closed",
-      devices: "Linked devices",
-      currentDevice: "This device",
-      startLink: "Link this device",
-      matchCode: "The codes match",
-      compareCode: "Compare these symbols on both devices before confirming.",
-      addToChats: "Add this device to available chats",
-      bringHistory: "Transfer available history",
-      deviceLabel: "Device name",
-      removeDevice: "Remove linked device",
-      linkWaiting: "Waiting for the other device",
-      linkFailed: "The device link has ended. Start a new link to try again.",
-      deviceLinkPending:
-        "This device is still finishing the link. Try again after it is ready.",
-      deviceRemoving: "Removing device",
-      linkProgress: "Joining chats: {{done}} of {{total}}",
       backupScope:
         "An identity key backup restores your Nostr address. MLS conversation history requires a linked device or an available messaging backup.",
       save: "Save",
@@ -1231,12 +1221,13 @@ export const en = {
     backupInput: "Paste ncryptsec, nsec, or a 32-byte hexadecimal key",
     backupFile: "Choose backup file",
     checkIdentity: "Check identity",
-    replaceIdentity: "Replace identity and reset local data",
+    replaceIdentity: "Switch to this identity",
     replacementWarning:
-      "Finish signing in to the replacement identity to remove the current key, chats, contacts, call history, and privacy data from this device. Export your current identity first if you want to use it again.",
+      "Finish signing in to switch identities. Boop keeps this identity and its local data on this device.",
     sameIdentity:
       "This matches your active identity. No local data was changed.",
     currentIdentity: "Current identity",
+    storedIdentities: "Identities on this device",
     importedIdentity: "Imported identity",
     backupFailed:
       "Couldn’t open or save the identity key backup. Check the backup and password, then try again.",

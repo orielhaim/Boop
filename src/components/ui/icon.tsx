@@ -10,6 +10,7 @@ import { ArrowRightIcon } from "phosphor-react-native/src/icons/ArrowRight";
 import { ArrowSquareOutIcon } from "phosphor-react-native/src/icons/ArrowSquareOut";
 import { ArrowsOutSimpleIcon } from "phosphor-react-native/src/icons/ArrowsOutSimple";
 import { ArrowUpRightIcon } from "phosphor-react-native/src/icons/ArrowUpRight";
+import { AndroidLogoIcon } from "phosphor-react-native/src/icons/AndroidLogo";
 import { BackspaceIcon } from "phosphor-react-native/src/icons/Backspace";
 import { BellIcon } from "phosphor-react-native/src/icons/Bell";
 import { BellSlashIcon } from "phosphor-react-native/src/icons/BellSlash";
@@ -28,6 +29,9 @@ import { ClosedCaptioningIcon } from "phosphor-react-native/src/icons/ClosedCapt
 import { CopyIcon } from "phosphor-react-native/src/icons/Copy";
 import { DotsThreeIcon } from "phosphor-react-native/src/icons/DotsThree";
 import { DotsSixVerticalIcon } from "phosphor-react-native/src/icons/DotsSixVertical";
+import { DesktopIcon } from "phosphor-react-native/src/icons/Desktop";
+import { DeviceMobileIcon } from "phosphor-react-native/src/icons/DeviceMobile";
+import { DevicesIcon } from "phosphor-react-native/src/icons/Devices";
 import { DownloadSimpleIcon } from "phosphor-react-native/src/icons/DownloadSimple";
 import { EnvelopeIcon } from "phosphor-react-native/src/icons/Envelope";
 import { FileIcon } from "phosphor-react-native/src/icons/File";
@@ -111,6 +115,10 @@ import { directionFor, resolveLanguage } from "@/i18n";
 import { useTheme } from "@/theme";
 
 const icons = {
+  androidDevice: AndroidLogoIcon,
+  desktopDevice: DesktopIcon,
+  mobileDevice: DeviceMobileIcon,
+  devices: DevicesIcon,
   phone: PhoneIcon,
   chat: ChatCircleIcon,
   calendar: CalendarBlankIcon,

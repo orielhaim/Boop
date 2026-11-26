@@ -59,6 +59,7 @@ import {
   type MarmotGroupDisposition,
   type MarmotMemberOutcome,
 } from "@/core/marmot/native";
+import type { AccountDevicesActivation } from "@/core/marmot/device-contract";
 import { contactByKey } from "@/db/queries";
 import { contacts } from "@/db/schema";
 import { namespaces, resolveLanguage } from "@/i18n";
@@ -586,6 +587,7 @@ export function MarmotGroupDetailsScreen({
     isCurrent,
     chatPreferences,
     conversations,
+    deviceController,
   } = useLocal();
   const translateError = useMarmotError();
   const [busy, setBusy] = useState(false);
@@ -599,6 +601,14 @@ export function MarmotGroupDetailsScreen({
   const [profileTab, setProfileTab] = useState<"info" | "members" | "media">(
     "info",
   );
+  const focused = useIsFocused();
+  const deviceControllerState = useSyncExternalStore(
+    deviceController.subscribe,
+    deviceController.getState,
+  );
+  const [deviceActivation, setDeviceActivation] =
+    useState<AccountDevicesActivation>();
+  const [deviceActivationError, setDeviceActivationError] = useState(false);
   const sharedMediaScrollPosition = useRef(0);
   const [showInvite, setShowInvite] = useState(false);
   const [profileDraft, setProfileDraft] = useState<{
@@ -662,6 +672,34 @@ export function MarmotGroupDetailsScreen({
   const member = details?.membership === "member" && !details.pendingInvitation;
   const canEdit = Boolean(member && details?.canEdit);
   const isGroup = details?.kind !== "direct";
+  const canReadDeviceActivation = Boolean(
+    focused &&
+    !editing &&
+    member &&
+    isGroup &&
+    deviceControllerState.connection === "observing" &&
+    !lock.getState().locked &&
+    AppState.currentState === "active",
+  );
+  useEffect(() => {
+    if (!canReadDeviceActivation) return;
+    let active = true;
+    void deviceController
+      .accountDevicesActivation(id)
+      .then((value) => {
+        if (active && isCurrent() && !lock.getState().locked) {
+          setDeviceActivation(value);
+          setDeviceActivationError(false);
+        }
+      })
+      .catch(() => {
+        if (active && isCurrent() && !lock.getState().locked)
+          setDeviceActivationError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [canReadDeviceActivation, deviceController, details, id, isCurrent, lock]);
   const photo =
     member && privacy.photoPolicy() !== "nobody" ? details?.image : undefined;
   const cachedPhoto = usePreparedGroupAvatar(
@@ -1274,6 +1312,88 @@ export function MarmotGroupDetailsScreen({
   const groupTabBar = (
     <ProfileTabs value={profileTab} onChange={setProfileTab} tabs={groupTabs} />
   );
+  const ownGroupMember = details.members.find((person) => person.self);
+  const activationKind =
+    deviceActivation?.kind === "eligible" && !ownGroupMember?.admin
+      ? "notAdmin"
+      : deviceActivation?.kind;
+  const activationDetail = (() => {
+    if (deviceActivationError) return t("messages:marmot.accountError");
+    switch (activationKind) {
+      case "eligible":
+        return t("devices:eligible");
+      case "notAdmin":
+        return t("devices:notAdmin");
+      case "alreadyEnabled":
+        return t("devices:alreadyEnabled");
+      case "legacyGroup":
+        return t("devices:legacyGroup");
+      case "membersNeedUpdate":
+        return t("devices:membersNeedUpdate");
+      case "devicesNeedReplacement":
+        return t("devices:devicesNeedReplacement");
+      case "deviceLimitExceeded":
+        return t("devices:deviceLimitExceeded");
+      case "unsupported":
+        return t("messages:marmot.accountError");
+      default:
+        return undefined;
+    }
+  })();
+  const accountDevices = member &&
+    isGroup &&
+    !editing &&
+    (deviceActivation || deviceActivationError) && (
+      <ListGroup title={t("devices:groupSupport")}>
+        <ListRow
+          title={
+            activationKind === "eligible" && ownGroupMember?.admin
+              ? t("devices:groupEnable")
+              : (activationDetail ?? t("devices:groupSupport"))
+          }
+          detail={
+            activationKind === "eligible" && ownGroupMember?.admin
+              ? t("devices:groupEnableHelp")
+              : undefined
+          }
+          icon="connection"
+          disabled={
+            busy ||
+            deviceControllerState.operation !== null ||
+            !canReadDeviceActivation ||
+            activationKind !== "eligible" ||
+            !ownGroupMember?.admin
+          }
+          onPress={() =>
+            void dialog.show({
+              title: t("devices:groupEnable"),
+              message: t("devices:groupEnableHelp"),
+              tone: "danger",
+              dismissible: false,
+              actions: [
+                { label: t("common:cancel"), tone: "cancel" },
+                {
+                  label: t("devices:groupEnable"),
+                  tone: "danger",
+                  onSelect: () =>
+                    void update(async () => {
+                      await deviceController.enableAccountDevices(id);
+                      const current =
+                        await deviceController.accountDevicesActivation(id);
+                      if (
+                        isCurrent() &&
+                        !lock.getState().locked &&
+                        AppState.currentState === "active"
+                      )
+                        setDeviceActivation(current);
+                    }),
+                },
+              ],
+            })
+          }
+        />
+      </ListGroup>
+    );
   const groupInfoContent = (callStatus?: ReactNode) => (
     <>
       {callStatus}
@@ -1283,6 +1403,7 @@ export function MarmotGroupDetailsScreen({
         </Ink>
       )}
       {notice}
+      {accountDevices}
       <ListGroup title={t("messages:marmot.groupInformation")}>
         {details.createdAt ? (
           <ListRow

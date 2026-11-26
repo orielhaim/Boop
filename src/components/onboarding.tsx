@@ -90,7 +90,8 @@ export function Onboarding(props: {
         initial={props.data.setup}
         previousAccount={props.data.previousAccount}
         db={props.data.db}
-        complete={() => {
+        lock={lock}
+        complete={async () => {
           finishOnboarding(props.data.db);
           props.onComplete();
         }}

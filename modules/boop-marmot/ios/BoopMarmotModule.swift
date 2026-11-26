@@ -28,6 +28,8 @@ public final class BoopMarmotModule: Module {
   }
   private var sharedMediaCursors: [String: (scope: String, cursor: SharedMediaCursor)] = [:]
   private var sharedMediaVersions: [String: (scope: String, version: SharedMediaVersion)] = [:]
+  private let securityObservationLock = NSLock()
+  private var securityObservations: [String: (account: String, events: EventsSubscription, task: Task<Void, Never>)] = [:]
   private struct Observation {
     let accountScoped: Bool
     var task: Task<Void, Error>?
@@ -77,7 +79,7 @@ public final class BoopMarmotModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BoopMarmot")
-    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers")
+    Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers", "backupRestore", "accountSecurityEvent")
     OnAppEntersBackground {
       self.directoryLock.withLock { self.observations.values.filter { !$0.accountScoped }.forEach { $0.task?.cancel() } }
       let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
@@ -99,6 +101,12 @@ public final class BoopMarmotModule: Module {
 
     AsyncFunction("listAccounts") { (general: [String], discovery: [String], origin: String?) async throws -> [Document] in
       try await protocolCall { try await self.runtime.listAccounts(general: general, discovery: discovery, origin: origin) }
+    }
+    AsyncFunction("startAccountSecurityEvents") { (subscriptionId: String, account: String) async throws in
+      try await self.startAccountSecurityEvents(subscriptionId, account)
+    }
+    AsyncFunction("stopAccountSecurityEvents") { (subscriptionId: String) async in
+      await self.stopAccountSecurityEvents(subscriptionId)
     }
     AsyncFunction("prepareIdentityImport") { (token: String, input: String, password: String) async throws -> String in
       try await protocolCall {
@@ -167,7 +175,10 @@ public final class BoopMarmotModule: Module {
           try Task.checkCancellation()
           if case .error = update.trigger { continue }
           let rows = (update.newResults + update.updatedResults).prefix(48).map(searchResultDocument)
-          if !rows.isEmpty { self.sendEvent("directorySearchResults", ["id": id, "rows": rows]) }
+          if !rows.isEmpty {
+            try await self.withSigner(owner) { _ in () }
+            self.sendEvent("directorySearchResults", ["id": id, "rows": rows])
+          }
         }
       }
     }
@@ -199,14 +210,28 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("removeAccount") { (key: String) async throws in
       try await protocolCall { try await self.runtime.remove(key) }
     }
-    AsyncFunction("signOutAccount") { (key: String) async throws in
-      try await protocolCall { try await self.runtime.signOut(key) }
+    AsyncFunction("signOutAccount") { (key: String, deleteKeyPackages: Bool) async throws -> Document in
+      try await protocolCall {
+        let outcome = try await self.runtime.signOut(key, deleteKeyPackages: deleteKeyPackages)
+        await self.stopAccountSecurityEvents(for: key)
+        return signOutOutcomeWire(outcome)
+      }
+    }
+    AsyncFunction("signOutAndWipeAccount") { (key: String) async throws -> Document in
+      try await protocolCall {
+        let outcome = try await self.runtime.signOutAndWipe(key)
+        await self.stopAccountSecurityEvents(for: key)
+        return wipeOutcomeWire(outcome)
+      }
     }
     AsyncFunction("resumeAccountSetup") { () async throws in
       try await protocolCall { try await self.runtime.resumeSetup() }
     }
     AsyncFunction("signInAccount") { (key: String) async throws in
       try await protocolCall { try await self.runtime.signIn(key) }
+    }
+    AsyncFunction("releaseSignerAccount") { (key: String) async throws in
+      try await protocolCall { try await self.runtime.releaseSigner(key) }
     }
     AsyncFunction("openAccount") { (key: String, general: [String], discovery: [String], mediaOrigin: String?) async throws -> String in
       try await protocolCall { try await self.runtime.open(key: key, general: general, discovery: discovery, mediaOrigin: mediaOrigin) }
@@ -267,17 +292,18 @@ public final class BoopMarmotModule: Module {
       try await self.withObservation(id) {
         let stream = try await self.withSigner(key) { try await $0.subscribeRelayLiveness(accountRef: key) }
         defer { stream.cancel() }
-        func emit(_ rows: [RelayLivenessFfi]) {
+        func emit(_ rows: [RelayLivenessFfi]) async throws {
+          try await self.withSigner(key) { _ in () }
           self.sendEvent("relayLiveness", ["id": id, "rows": rows.map { row -> Document in
             ["url": row.url, "status": wireName(row.status), "lastError": bridgeValue(row.lastError),
              "lastAttempt": bridgeValue(row.lastAttemptUnix.map { Double($0) })]
           }])
         }
         try Task.checkCancellation()
-        emit(stream.snapshot())
+        try await emit(stream.snapshot())
         while let rows = try await withTaskCancellationHandler(operation: { try await stream.next() }, onCancel: { stream.cancel() }) {
           try Task.checkCancellation()
-          emit(rows)
+          try await emit(rows)
         }
       }
     }
@@ -288,6 +314,34 @@ public final class BoopMarmotModule: Module {
         return ["enabled": settings.enabled, "thisDeviceWrites": settings.thisDeviceWrites,
           "phase": wireName(restore.phase), "operation": bridgeValue(restore.operation),
           "imported": Double(restore.importedEvents), "failed": Double(restore.failedArchives) + Double(restore.failedBundles)]
+      }
+    }
+    AsyncFunction("watchBackupRestore") { (owner: String, id: String) async throws in
+      try await self.withObservation(id) {
+        let stream = try await self.withSigner(owner, foreground: false) {
+          try await $0.watchBackupRestore(accountRef: owner)
+        }
+        func emit(_ restore: BackupRestoreStatusFfi) async throws {
+          try Task.checkCancellation()
+          let settings = try await self.withSigner(owner, foreground: false) {
+            try await $0.backupSettings(accountRef: owner)
+          }
+          self.sendEvent("backupRestore", ["id": id, "rows": [
+            "enabled": settings.enabled,
+            "thisDeviceWrites": settings.thisDeviceWrites,
+            "phase": wireName(restore.phase),
+            "operation": bridgeValue(restore.operation),
+            "imported": Double(restore.importedEvents),
+            "failed": Double(restore.failedArchives) + Double(restore.failedBundles),
+          ]])
+        }
+        try Task.checkCancellation()
+        guard let initial = stream.snapshot() else { throw problem("BackupRestoreUnavailable") }
+        try await emit(initial)
+        while let status = try await stream.nextCancellable() {
+          try Task.checkCancellation()
+          try await emit(status)
+        }
       }
     }
     AsyncFunction("beginBackup") { () async throws -> Document in
@@ -348,20 +402,17 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("pageWindow") { (id: String, generation: String, sequence: String, direction: String) async throws -> Document in
       try await protocolCall {
-        let window = try await self.runtime.window(id)
-        return try await window.page(revision: revision(generation, sequence), direction: direction)
+        try await self.runtime.pageWindow(id, generation: generation, sequence: sequence, direction: direction)
       }
     }
     AsyncFunction("anchorWindow") { (id: String, generation: String, sequence: String, target: String) async throws -> Document in
       try await protocolCall {
-        let window = try await self.runtime.window(id)
-        return try await window.anchor(revision: revision(generation, sequence), target: target)
+        try await self.runtime.anchorWindow(id, generation: generation, sequence: sequence, target: target)
       }
     }
     AsyncFunction("jumpToMessage") { (id: String, generation: String, sequence: String, target: String) async throws -> Document in
       try await protocolCall {
-        let window = try await self.runtime.window(id)
-        return try await window.jump(revision: revision(generation, sequence), target: target)
+        try await self.runtime.jumpToMessage(id, generation: generation, sequence: sequence, target: target)
       }
     }
 
@@ -1258,53 +1309,164 @@ public final class BoopMarmotModule: Module {
     AsyncFunction("vote") { (group: String, message: String, selected: [String]) async throws in
       try await self.withAccount { _ = try await $0.castPollVote(accountRef: $1, groupIdHex: group, pollEventId: message, optionIds: selected) }
     }
-    AsyncFunction("deviceState") { () async throws -> Document in
-      try await self.withAccount { kit, account in
-        let snapshot = try await kit.deviceLinkSnapshot(accountRef: account)
-        let devices = try await kit.linkedDevices(accountRef: account)
-        var code = [String]()
-        if case .comparing(let entries)? = snapshot.newDevice { code = entries.map(\.emoji) }
-        return [
-          "state": bridgeValue(snapshot.newDevice.map(wireCase)), "code": code,
-          "prompts": snapshot.prompts.map { prompt -> Document in
-            var code = [String]()
-            if case .comparing(let entries) = prompt.state { code = entries.map(\.emoji) }
-            return ["id": prompt.promptId, "state": wireCase(prompt.state), "code": code]
-          },
-          "stalled": snapshot.deviceGroupStalled,
-          "progress": snapshot.chatProgress.map { row -> Document in
-            ["slot": row.slotIdHex, "remaining": Int(row.remaining), "total": Int(row.total)]
-          },
-          "devices": devices.map { device -> Document in
-            ["slot": device.slotIdHex, "current": device.isThisDevice, "label": device.label,
-              "platform": device.platform, "client": device.client, "removalPending": device.removalPending]
-          },
-        ]
+    AsyncFunction("accountIsUnlinked") { (account: String) async throws -> Bool in
+      try await protocolCall { try await self.runtime.accountIsUnlinked(account) }
+    }
+    AsyncFunction("accountRecoveryStatus") { (account: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        accountRecoveryStatusWire(try await kit.accountRecoveryStatus(accountRef: account))
       }
     }
-    AsyncFunction("deviceAction") { (action: String, target: String?, label: String?, allChats: Bool, history: Bool) async throws in
-      try await self.withAccount { kit, account in
-        switch action {
-        case "start": _ = try await kit.startDeviceLink(accountRef: account)
-        case "match": _ = try await kit.confirmDeviceLinkMatch(accountRef: account)
-        case "cancel": _ = try await kit.cancelDeviceLink(accountRef: account)
-        case "link":
-          guard let target else { throw problem("InvalidDevice") }
-          _ = try await kit.linkDevice(accountRef: account, promptId: target, label: label ?? "", addToAllChats: allChats, bringHistory: history)
-        case "decline":
-          guard let target else { throw problem("InvalidDevice") }
-          _ = try await kit.declineDeviceLink(accountRef: account, promptId: target)
-        case "remove":
-          guard let target else { throw problem("InvalidDevice") }
-          try await kit.removeLinkedDevice(accountRef: account, slotIdHex: target)
-        default: throw problem("InvalidDeviceAction")
+    AsyncFunction("linkedDevices") { (account: String) async throws -> [Document] in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.linkedDevices(accountRef: account).map(linkedDeviceWire)
+      }
+    }
+    AsyncFunction("deviceLinkSnapshot") { (account: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.deviceLinkSnapshot(accountRef: account))
+      }
+    }
+    AsyncFunction("startDeviceLink") { (account: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.startDeviceLink(accountRef: account))
+      }
+    }
+    AsyncFunction("cancelDeviceLink") { (account: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.cancelDeviceLink(accountRef: account))
+      }
+    }
+    AsyncFunction("confirmDeviceLinkMatch") { (account: String, code: [String]) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        guard case .some(.comparing(let current)) = (try await kit.deviceLinkSnapshot(accountRef: account)).newDevice,
+              current.map(\.emoji) == code else { throw problem("PairingChanged") }
+        return deviceLinkSnapshotWire(try await kit.confirmDeviceLinkMatch(accountRef: account))
+      }
+    }
+    AsyncFunction("linkDevice") { (account: String, prompt: String, code: [String], label: String, allChats: Bool, history: Bool) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        let state = try await kit.deviceLinkSnapshot(accountRef: account).prompts.first { $0.promptId == prompt }?.state
+        guard case .some(.comparing(let current)) = state,
+              current.map(\.emoji) == code else { throw problem("PairingChanged") }
+        return deviceLinkSnapshotWire(try await kit.linkDevice(accountRef: account, promptId: prompt, label: label, addToAllChats: allChats, bringHistory: history))
+      }
+    }
+    AsyncFunction("declineDeviceLink") { (account: String, prompt: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.declineDeviceLink(accountRef: account, promptId: prompt))
+      }
+    }
+    AsyncFunction("renameLinkedDevice") { (account: String, slot: String, label: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.renameLinkedDevice(accountRef: account, slotIdHex: slot, label: label)
+      }
+    }
+    AsyncFunction("updateLinkedDeviceSettings") { (account: String, slot: String, allChats: Bool?, history: Bool?, keep: Bool?) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.updateLinkedDeviceSettings(accountRef: account, slotIdHex: slot, addToAllChats: allChats, bringHistory: history, keepWhileInactive: keep)
+      }
+    }
+    AsyncFunction("removeLinkedDevice") { (account: String, slot: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.removeLinkedDevice(accountRef: account, slotIdHex: slot)
+      }
+    }
+    AsyncFunction("unrecognizedSignIns") { (account: String) async throws -> [Document] in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.unrecognizedSignIns(accountRef: account).map(unrecognizedSignInWire)
+      }
+    }
+    AsyncFunction("checkSignIns") { (account: String) async throws -> [Document] in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.checkSignIns(accountRef: account).map(unrecognizedSignInWire)
+      }
+    }
+    AsyncFunction("answerSignIn") { (account: String, slot: String, response: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        let answer: SignInResponseFfi
+        switch response {
+        case "notNow": answer = .notNow
+        case "reject": answer = .reject
+        case "dismiss": answer = .dismiss
+        default: throw problem("InvalidSignInResponse")
         }
+        try await kit.answerSignIn(accountRef: account, slotIdHex: slot, response: answer)
+      }
+    }
+    AsyncFunction("compromiseWarning") { (account: String) async throws -> [Document] in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.compromiseWarning(accountRef: account).map(compromiseWarningWire)
+      }
+    }
+    AsyncFunction("dismissCompromiseWarning") { (account: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.dismissCompromiseWarning(accountRef: account)
+      }
+    }
+    AsyncFunction("startFresh") { (account: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.startFresh(accountRef: account)
+      }
+    }
+    AsyncFunction("startedFresh") { (account: String) async throws -> Bool in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.startedFresh(accountRef: account)
+      }
+    }
+    AsyncFunction("chatHistoryImports") { (account: String) async throws -> [Document] in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.chatHistoryImports(accountRef: account).map(chatHistoryImportWire)
+      }
+    }
+    AsyncFunction("keyPackageRefreshOverdue") { (account: String) async throws -> Bool in
+      try await self.withSecurityAccount(account) { kit in
+        try await kit.keyPackageRefreshOverdue(accountRef: account)
+      }
+    }
+    AsyncFunction("removedDeviceLeftoverChats") { (account: String) async throws -> Int in
+      try await self.withSecurityAccount(account) { kit in
+        Int(try await kit.removedDeviceLeftoverChats(accountRef: account))
+      }
+    }
+    AsyncFunction("chatsClosedToLinkedDevices") { (account: String) async throws -> Int in
+      try await self.withSecurityAccount(account) { kit in
+        Int(try await kit.chatsClosedToLinkedDevices(accountRef: account))
+      }
+    }
+    AsyncFunction("resetDeviceGroupForRepair") { (account: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.resetDeviceGroupForRepair(accountRef: account))
+      }
+    }
+    AsyncFunction("rotateKeyPackage") { (account: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        _ = try await kit.rotateKeyPackage(accountRef: account)
+      }
+    }
+    AsyncFunction("dismissDeviceGroupMoveSibling") { (account: String, move: String, slot: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        deviceLinkSnapshotWire(try await kit.dismissDeviceGroupMoveSibling(accountRef: account, moveId: move, slotIdHex: slot))
+      }
+    }
+    AsyncFunction("accountDevicesActivation") { (account: String, group: String) async throws -> Document in
+      try await self.withSecurityAccount(account) { kit in
+        accountDevicesActivationWire(try await kit.accountDevicesActivation(accountRef: account, groupIdHex: group))
+      }
+    }
+    AsyncFunction("enableAccountDevices") { (account: String, group: String) async throws in
+      try await self.withSecurityAccount(account) { kit in
+        _ = try await kit.enableAccountDevices(accountRef: account, groupIdHex: group)
       }
     }
     OnDestroy { Task { try? await self.closeAccount(closeRuntime: true) } }
   }
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
+    if closeRuntime {
+      let ids = securityObservationLock.withLock { Array(securityObservations.keys) }
+      for id in ids { await stopAccountSecurityEvents(id) }
+    }
     defer {
       historyLock.withLock {
         sharedMediaCursors.removeAll()
@@ -1369,6 +1531,96 @@ public final class BoopMarmotModule: Module {
         throw error
       }
     }
+  }
+
+  private func withSecurityAccount<T>(_ key: String, _ call: (Marmot) async throws -> T) async throws -> T {
+    try await protocolCall {
+      guard self.attachmentLock.withLock({ self.isForeground }) else { throw problem("AccountClosed") }
+      let kit = try await self.runtime.beginSecurityAccountCall(key)
+      do {
+        let result = try await call(kit)
+        await self.runtime.endCall()
+        return result
+      } catch {
+        await self.runtime.endCall()
+        throw error
+      }
+    }
+  }
+
+  private func startAccountSecurityEvents(_ id: String, _ account: String) async throws {
+    let (events, unlinked) = try await runtime.beginSecurityEvents(account)
+    await stopAccountSecurityEvents(id)
+    securityObservationLock.withLock {
+      let task = Task { [weak self] in
+        do {
+          while !Task.isCancelled, let event = try await events.nextCancellable() {
+            guard !Task.isCancelled, let module = self else { break }
+            guard let (eventAccount, kind) = module.securityEvent(event), eventAccount == account else { continue }
+            module.sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": kind])
+          }
+        } catch {
+          // Closing the runtime or canceling the task ends the receive.
+        }
+        guard let self else { return }
+        let removed = self.securityObservationLock.withLock {
+          guard let current = self.securityObservations[id], current.events === events else { return false }
+          self.securityObservations.removeValue(forKey: id)
+          return true
+        }
+        if removed { self.sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": "ended"]) }
+      }
+      securityObservations[id] = (account, events, task)
+    }
+    // Subscription is established before the persisted-state read in Runtime;
+    // queued events cover an unlink racing this initial snapshot.
+    if unlinked { sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": "deviceUnlinked"]) }
+  }
+
+  private func stopAccountSecurityEvents(_ id: String) async {
+    let observation = securityObservationLock.withLock { securityObservations.removeValue(forKey: id) }
+    guard let observation else { return }
+    observation.task.cancel()
+    await observation.task.value
+    sendEvent("accountSecurityEvent", ["account": observation.account, "subscriptionId": id, "kind": "ended"])
+  }
+
+  private func stopAccountSecurityEvents(for account: String) async {
+    let ids = securityObservationLock.withLock {
+      securityObservations.filter { $0.value.account == account }.map(\.key)
+    }
+    for id in ids { await stopAccountSecurityEvents(id) }
+  }
+
+  private func securityEvent(_ event: MarmotEventFfi) -> (String, String)? {
+    switch event {
+    case .linkedDevicesChanged(let accountIdHex, _): return (accountIdHex, "linkedDevicesChanged")
+    case .keyPackageRefreshOverdueChanged(let accountIdHex, _): return (accountIdHex, "keyPackageRefreshOverdueChanged")
+    case .unrecognizedSignInsChanged(let accountIdHex, _): return (accountIdHex, "unrecognizedSignInsChanged")
+    case .compromiseWarningChanged(let accountIdHex, _): return (accountIdHex, "compromiseWarningChanged")
+    case .deviceLinkChanged(let accountIdHex, _): return (accountIdHex, "deviceLinkChanged")
+    case .chatHistoryImportsChanged(let accountIdHex, _): return (accountIdHex, "chatHistoryImportsChanged")
+    case .recoveryStatusChanged(let accountIdHex, _): return (accountIdHex, "recoveryStatusChanged")
+    case .deviceUnlinked(let accountIdHex, _): return (accountIdHex, "deviceUnlinked")
+    default: return nil
+    }
+  }
+
+  private func signOutOutcomeWire(_ outcome: SignOutOutcomeFfi) -> Document {
+    ["keyPackagesDeleted": Int(outcome.keyPackagesDeleted),
+      "keyPackageFailures": outcome.keyPackageFailures.map { ["eventId": $0.eventIdHex, "reason": $0.reason] },
+      "localCleanup": ["completed": outcome.localCleanup.completed, "reason": bridgeValue(outcome.localCleanup.reason)]]
+  }
+
+  private func wipeOutcomeWire(_ outcome: WipeOutcomeFfi) -> Document {
+    ["groupsLeft": Int(outcome.groupsLeft),
+      "groupLeaveFailures": outcome.groupLeaveFailures.map { ["groupId": $0.groupIdHex, "reason": $0.reason] },
+      "keyPackagesDeleted": Int(outcome.keyPackagesDeleted),
+      "keyPackageFailures": outcome.keyPackageFailures.map { ["eventId": $0.eventIdHex, "reason": $0.reason] },
+      "localCleanup": ["completed": outcome.localCleanup.completed, "reason": bridgeValue(outcome.localCleanup.reason)],
+      "localAccountRemoved": outcome.localCleanup.completed,
+      "groupsLeftToSiblings": Int(outcome.groupsLeftToSiblings),
+      "siblingsNotReached": outcome.siblingsNotReached]
   }
 
   private func withAccount<T>(_ call: (Marmot, String) async throws -> T) async throws -> T {
@@ -1554,11 +1806,13 @@ private actor Runtime {
   private var changingAccount = false
   private var transitionWaiters: [CheckedContinuation<Void, Never>] = []
   private var windows: [String: NativeWindow] = [:]
+  private var windowGenerations: [String: UUID] = [:]
   private var latestWindows: [String: Document] = [:]
   private var observers: [String: Task<Void, Never>] = [:]
 
   func account() throws -> Account {
     guard let active, !changingAccount else { throw problem("AccountClosed") }
+    guard try availableSigner(active.kit, active.key) else { throw problem("AccountSignedOut") }
     return active
   }
 
@@ -1609,8 +1863,33 @@ private actor Runtime {
   func beginSignerCall(_ key: String) throws -> Marmot {
     guard signerAccount == key else { throw problem("AccountClosed") }
     let kit = try existingRuntime()
+    guard try availableSigner(kit, key) else { throw problem("AccountSignedOut") }
     activeCalls += 1
     return kit
+  }
+
+  func beginSecurityAccountCall(_ key: String) throws -> Marmot {
+    guard signerAccount == key else { throw problem("AccountClosed") }
+    let kit = try existingRuntime()
+    guard try availableSigner(kit, key) else { throw problem("AccountSignedOut") }
+    activeCalls += 1
+    return kit
+  }
+
+  func beginSecurityEvents(_ key: String) throws -> (EventsSubscription, Bool) {
+    guard signerAccount == key else { throw problem("AccountClosed") }
+    let kit = try existingRuntime()
+    let events = kit.subscribeEvents()
+    return (events, try accountIsUnlinked(key))
+  }
+
+  func accountIsUnlinked(_ key: String) throws -> Bool {
+    guard signerAccount == key else { throw problem("AccountClosed") }
+    let kit = try existingRuntime()
+    guard let summary = try kit.listAccounts().first(where: { $0.accountIdHex == key && $0.localSigning }) else {
+      throw problem("IdentityMismatch")
+    }
+    return summary.unlinked
   }
 
   func endCall() {
@@ -1798,13 +2077,31 @@ private actor Runtime {
     try await startRuntime(kit)
   }
 
-  func signOut(_ key: String) async throws {
+  func signOut(_ key: String, deleteKeyPackages: Bool) async throws -> SignOutOutcomeFfi {
     let kit = try existingRuntime()
     guard active?.key != key else { throw problem("AccountBusy") }
     changingAccount = true
     defer { endTransition() }
     if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
-    _ = try await kit.signOut(accountRef: key, deleteKeyPackages: false)
+    let outcome = try await kit.signOut(accountRef: key, deleteKeyPackages: deleteKeyPackages)
+    if signerAccount == key { signerAccount = nil }
+    return outcome
+  }
+
+  func signOutAndWipe(_ key: String) async throws -> WipeOutcomeFfi {
+    let kit = try existingRuntime()
+    guard active?.key != key else { throw problem("AccountBusy") }
+    changingAccount = true
+    defer { endTransition() }
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
+    let outcome = try await kit.signOutAndWipe(accountRef: key)
+    if signerAccount == key { signerAccount = nil }
+    return outcome
+  }
+
+  func releaseSigner(_ key: String) throws {
+    guard active?.key != key, activeCalls == 0 else { throw problem("AccountBusy") }
+    if signerAccount == key { signerAccount = nil }
   }
 
   func signIn(_ key: String) async throws {
@@ -1856,7 +2153,48 @@ private actor Runtime {
 
   func window(_ id: String) throws -> NativeWindow {
     guard let window = windows[id] else { throw problem("WindowClosed") }
+    guard let active, !changingAccount, windowGenerations[id] == active.generation,
+      try availableSigner(active.kit, active.key) else { throw problem("AccountSignedOut") }
     return window
+  }
+
+  func pageWindow(_ id: String, generation: String, sequence: String, direction: String) async throws -> Document {
+    _ = try beginAccountCall()
+    do {
+      let selected = try window(id)
+      let result = try await selected.page(revision: revision(generation, sequence), direction: direction)
+      endCall()
+      return result
+    } catch {
+      endCall()
+      throw error
+    }
+  }
+
+  func anchorWindow(_ id: String, generation: String, sequence: String, target: String) async throws -> Document {
+    _ = try beginAccountCall()
+    do {
+      let selected = try window(id)
+      let result = try await selected.anchor(revision: revision(generation, sequence), target: target)
+      endCall()
+      return result
+    } catch {
+      endCall()
+      throw error
+    }
+  }
+
+  func jumpToMessage(_ id: String, generation: String, sequence: String, target: String) async throws -> Document {
+    _ = try beginAccountCall()
+    do {
+      let selected = try window(id)
+      let result = try await selected.jump(revision: revision(generation, sequence), target: target)
+      endCall()
+      return result
+    } catch {
+      endCall()
+      throw error
+    }
   }
 
   func openChatList(id: String, view: String, invitations: Bool, search: String?) async throws -> Document {
@@ -1929,9 +2267,10 @@ private actor Runtime {
   }
 
   private func install(_ window: NativeWindow, id: String, account: Account) async throws -> Document {
-    guard active?.generation == account.generation else {
+    guard active?.generation == account.generation,
+      try availableSigner(account.kit, account.key) else {
       await window.cancel()
-      throw problem("AccountClosed")
+      throw problem("AccountSignedOut")
     }
     guard windows[id] == nil, windows.count < 16 else {
       await window.cancel()
@@ -1943,10 +2282,12 @@ private actor Runtime {
     }
     latestWindows[id] = initial
     windows[id] = window
+    windowGenerations[id] = account.generation
     return initial
   }
 
   func windowSnapshot(_ id: String) throws -> Document {
+    _ = try window(id)
     guard let latest = latestWindows[id] else { throw problem("WindowClosed") }
     return latest
   }
@@ -1958,6 +2299,7 @@ private actor Runtime {
       do {
         while !Task.isCancelled, let snapshot = try await window.next() {
           guard !Task.isCancelled else { return }
+          _ = try self.window(id)
           let previous = latestWindows.updateValue(snapshot, forKey: id)
           if let previous, let delta = windowDelta(previous, snapshot) {
             notify("windowChanged", ["id": id, "delta": delta])
@@ -1974,6 +2316,7 @@ private actor Runtime {
 
   func closeWindow(_ id: String) async {
     latestWindows.removeValue(forKey: id)
+    windowGenerations.removeValue(forKey: id)
     let handle = windows.removeValue(forKey: id)
     let observer = observers.removeValue(forKey: id)
     observer?.cancel()
@@ -1992,8 +2335,17 @@ private func errorCode(_ error: Error) -> String {
     if case .InvalidIdentity(let details) = error, details == "identity backup exceeds the supported scrypt cost" {
       return "BackupCost"
     }
-    if case .Runtime(let details) = error, details == "device group refused: device_link_pending" {
-      return "DeviceLinkPending"
+    if case .Runtime(let details) = error {
+      switch details {
+      case "device group refused: device_group_busy": return "DeviceGroupBusy"
+      case "device group refused: device_link_pending": return "DeviceLinkPending"
+      case "device group refused: roster_unavailable": return "DeviceRosterUnavailable"
+      case "device group refused: key_packages_unreachable": return "DeviceDiscoveryUnavailable"
+      case "device group refused: unknown_prompt": return "PairingChanged"
+      case "device group refused: sign_in_unknown", "device group refused: sign_in_answered",
+           "device group refused: sign_in_answered_elsewhere", "device group refused: sign_in_unanswered": return "SignInChanged"
+      default: return "Runtime"
+      }
     }
     if let label = Mirror(reflecting: error).children.first?.label { return label }
     let name = String(describing: error).prefix { $0.isLetter || $0.isNumber || $0 == "_" }

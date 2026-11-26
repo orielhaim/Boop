@@ -34,6 +34,16 @@ adb reverse tcp:19311 tcp:19311
 
 For attachments, run `bun scripts/marmot-test-blossom.ts`, forward its port, and add `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The fixture checks explicit download, cancellation, and retry. Quote each instrumentation argument in PowerShell.
 
+### Account devices
+
+MDK owns device slots, the trusted group, roster, sign-in decisions, and pairing state. An account public key identifies the identity, and device slots identify individual installations. The protected account in `src/services/local.ts` owns the device controller. It subscribes before reading projections, refreshes them on native events, and discards results from retired streams and accounts. The Devices screen shares that controller with Settings and the account-security banner. An import uses the same controller and pairing view once MDK completes account setup.
+
+When App Lock activates, pause presentation and command admission while continuing to observe native unlink. When Chats is disconnected, keep Devices and local account actions available and pause reads that would restart the MDK chat worker. Those reads and remote device actions resume when Chats reconnects. `checkSignIns` reports relay failure separately from an empty result.
+
+Treat a native unlink as an account retirement. Deny new admitted work, stop account-bound services, retire media leases and windows, and reopen the startup flow using the durable native account summary. Reversible sign-out retains local data. A wipe first lets MDK coordinate departure and delete native data, then removes Boop-owned per-account data after native removal succeeds. Display incomplete remote cleanup separately.
+
+Run the controller and wire tests with `bun test ./tests/mdk-device-controller.test.ts ./tests/mdk-device-contract.test.ts`. For a controlled-relay pairing and unlink round trip, select `app.boop.marmot.MarmotRelayTest#linkedDeviceRemovalStopsReopenedDeviceAndWipesNativeAccount` using `android.testInstrumentationRunnerArguments.class`. The test creates new local stores and its own identity.
+
 For Torrents, run the following from the project root. Run `:boop-plugins:connectedDebugAndroidTest` from `android` on the selected device.
 
 ```sh

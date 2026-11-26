@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 const version = "0.19.0";
@@ -16,6 +24,16 @@ if (platform !== "android" && platform !== "ios")
   throw new Error(
     "Usage: bun scripts/fetch-marmotkit.ts android|ios [Android ABIs]",
   );
+const swiftSupport =
+  platform === "ios"
+    ? await readFile(
+        join(moduleRoot, "swift-support", "DeviceSubscriptions.swift"),
+        "utf8",
+      )
+    : "";
+const platformProvenance = swiftSupport
+  ? provenance + createHash("sha256").update(swiftSupport).digest("hex") + "\n"
+  : provenance;
 
 const androidTargets = new Map([
   ["arm64-v8a", "aarch64-linux-android"],
@@ -59,7 +77,11 @@ async function androidAbiReady(abi: string) {
   return (await exists(abiLibrary(abi))) && (await matches(abiStamp(abi)));
 }
 async function built() {
-  if (!(await matches(stamp))) return false;
+  if (
+    !(await exists(stamp)) ||
+    (await readFile(stamp, "utf8")) !== platformProvenance
+  )
+    return false;
   if (platform === "ios")
     return (
       await Promise.all([
@@ -161,6 +183,7 @@ if (platform === "ios") {
     await cp(join(crate, "output", name), join(dest, name), {
       recursive: true,
     });
+  await appendFile(join(dest, "MarmotKit.swift"), "\n" + swiftSupport);
 } else if (!isWindows) {
   run(
     [
@@ -308,5 +331,5 @@ for (const abi of abis) {
     throw new Error(`MarmotKit build did not produce ${abi}`);
   await writeFile(abiStamp(abi), provenance);
 }
-await writeFile(stamp, provenance);
+await writeFile(stamp, platformProvenance);
 console.info(dest);

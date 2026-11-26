@@ -28,10 +28,12 @@ class MarmotRelayTest {
     val directory = File(context.noBackupFilesDir, "handoff-test-${UUID.randomUUID()}").apply { mkdir() }
     val file = File(directory, "report 100%.pdf").apply { writeText("%PDF-1.7") }
     val lease = UUID.randomUUID().toString()
+    val generation = UUID.randomUUID().toString()
     try {
-      AttachmentHandoffProvider.register("owner", lease, file.path, file.name, "application/pdf")
-      assertNull(AttachmentHandoffProvider.uri(context, "other", lease))
-      val (uri, _) = checkNotNull(AttachmentHandoffProvider.uri(context, "owner", lease))
+      AttachmentHandoffProvider.activate("owner", generation)
+      assertTrue(AttachmentHandoffProvider.register("owner", generation, lease, file.path, file.name, "application/pdf"))
+      assertNull(AttachmentHandoffProvider.uri(context, "other", generation, lease))
+      val (uri, _) = checkNotNull(AttachmentHandoffProvider.uri(context, "owner", generation, lease))
       val resolver = context.contentResolver
       assertEquals("application/pdf", resolver.getType(uri))
       assertEquals("%PDF-1.7", resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() })
@@ -42,7 +44,12 @@ class MarmotRelayTest {
       assertTrue(runCatching { resolver.openFileDescriptor(uri, "w")?.close() }.isFailure)
       AttachmentHandoffProvider.release(lease)
       assertTrue(runCatching { resolver.openInputStream(uri)?.close() }.isFailure)
+      assertTrue(AttachmentHandoffProvider.register("owner", generation, lease, file.path, file.name, "application/pdf"))
+      AttachmentHandoffProvider.retire("owner", generation)
+      assertNull(AttachmentHandoffProvider.uri(context, "owner", generation, lease))
+      assertTrue(runCatching { resolver.openInputStream(uri)?.close() }.isFailure)
     } finally {
+      AttachmentHandoffProvider.retire("owner", generation)
       AttachmentHandoffProvider.release(lease)
       directory.deleteRecursively()
     }
@@ -168,6 +175,142 @@ class MarmotRelayTest {
         }
       }
     } finally { directory.deleteRecursively() }
+  }
+
+  @Test fun linkedDeviceRemovalStopsReopenedDeviceAndWipesNativeAccount() = runBlocking {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val arguments = InstrumentationRegistry.getArguments()
+    val relay = checkNotNull(arguments.getString("relay"))
+    val context = instrumentation.targetContext
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "device-unlink-${UUID.randomUUID()}")
+    val primary = Client(File(root, "primary"), relay, null)
+    val joining = Client(File(root, "joining"), relay, null)
+    var events: EventsSubscription? = null
+    var unlinkEvent: kotlinx.coroutines.Deferred<MarmotEventFfi.DeviceUnlinked>? = null
+    try {
+      primary.start()
+      await("primary identity ready") {
+        primary.kit.accountSetupReadiness(primary.key) == AccountSetupReadinessFfi.NETWORK_READY
+      }
+      assertTrue(primary.kit.linkedDevices(primary.key).none { !it.isThisDevice })
+      assertTrue(primary.kit.deviceLinkSnapshot(primary.key).prompts.isEmpty())
+      assertTrue(primary.kit.checkSignIns(primary.key).isEmpty())
+
+      // Exercise native secret export and import in separate account databases.
+      joining.start(primary.kit.revealNsec(primary.key))
+      await("joining identity ready") {
+        joining.kit.accountSetupReadiness(joining.key) == AccountSetupReadinessFfi.NETWORK_READY
+      }
+      assertEquals(primary.key, joining.key)
+      assertTrue(joining.kit.linkedDevices(joining.key).none { !it.isThisDevice })
+      assertTrue(joining.kit.deviceLinkSnapshot(joining.key).prompts.isEmpty())
+      await("unrecognized sign-in found on an existing installation") {
+        primary.kit.checkSignIns(primary.key).any { it.signedIn }
+      }
+
+      joining.kit.startDeviceLink(joining.key)
+      await("real device pair comparison") {
+        joining.kit.deviceLinkSnapshot(joining.key).newDevice is NewDeviceLinkStateFfi.Comparing &&
+          primary.kit.deviceLinkSnapshot(primary.key).prompts.any { it.state is DeviceLinkPromptStateFfi.Comparing }
+      }
+      val joiningCode = (joining.kit.deviceLinkSnapshot(joining.key).newDevice as NewDeviceLinkStateFfi.Comparing).code
+      val prompt = primary.kit.deviceLinkSnapshot(primary.key).prompts.single { it.state is DeviceLinkPromptStateFfi.Comparing }
+      assertEquals(7, joiningCode.size)
+      assertEquals(joiningCode, (prompt.state as DeviceLinkPromptStateFfi.Comparing).code)
+      joining.kit.confirmDeviceLinkMatch(joining.key)
+      primary.kit.linkDevice(primary.key, prompt.promptId, "Remote unlink fixture", false, false)
+      await("paired device roster") {
+        primary.kit.linkedDevices(primary.key).any { !it.isThisDevice && it.label == "Remote unlink fixture" } &&
+          joining.kit.linkedDevices(joining.key).any { !it.isThisDevice }
+      }
+
+      val slot = primary.kit.linkedDevices(primary.key).single { !it.isThisDevice }.slotIdHex
+      assertEquals(slot, joining.kit.linkedDevices(joining.key).single { it.isThisDevice }.slotIdHex)
+      assertTrue(slot != primary.key)
+
+      suspend fun commitRosterChange(stage: String, change: suspend () -> Unit) {
+        await(stage) {
+          try {
+            change()
+            true
+          } catch (error: MarmotKitException.Runtime) {
+            if (error.details != "device group refused: device_group_busy") throw error
+            primary.kit.runDueMaintenance(primary.key)
+            false
+          }
+        }
+      }
+      commitRosterChange("rename linked installation") {
+        primary.kit.renameLinkedDevice(primary.key, slot, "Renamed device fixture")
+      }
+      await("native roster reports the new label") {
+        primary.kit.linkedDevices(primary.key).any { it.slotIdHex == slot && it.label == "Renamed device fixture" }
+      }
+      commitRosterChange("patch one linked-device setting") {
+        primary.kit.updateLinkedDeviceSettings(primary.key, slot, null, null, true)
+      }
+      await("native roster reports sparse settings change") {
+        primary.kit.linkedDevices(primary.key).any {
+          it.slotIdHex == slot && it.keepWhileInactive && !it.addToAllChats && !it.bringHistory
+        }
+      }
+      // Match MDK's removal fixture: settle target maintenance before taking
+      // it offline, so a later target update cannot supersede the removal.
+      joining.kit.catchUpAccounts()
+      joining.kit.runDueMaintenance(joining.key)
+      joining.close()
+      await("pairing settled before unlink") {
+        try {
+          primary.kit.removeLinkedDevice(primary.key, slot)
+          true
+        } catch (error: MarmotKitException.Runtime) {
+          if (error.details != "device group refused: device_link_pending") throw error
+          false
+        }
+      }
+      // removeLinkedDevice records intent and may return while the device
+      // group still needs a maintenance turn to commit it.
+      await("removal committed on primary roster") {
+        primary.kit.runDueMaintenance(primary.key)
+        primary.kit.linkedDevices(primary.key).none { it.slotIdHex == slot }
+      }
+      // Reopen the same native account database after the removal is on the
+      // relay. Subscribe before runtime start, which reconciles linked-device
+      // removals before its account catch-up.
+      joining.start(beforeStart = { kit -> events = kit.subscribeEvents() })
+      val stream = checkNotNull(events)
+      unlinkEvent = async {
+        withTimeout(45_000) {
+          while (true) {
+            when (val event = stream.next() ?: error("MDK event stream ended before unlink")) {
+              is MarmotEventFfi.DeviceUnlinked -> if (event.accountIdHex == joining.key) return@withTimeout event
+              else -> Unit
+            }
+          }
+          error("unreachable")
+        }
+      }
+      await("persisted remote unlink status") {
+        joining.kit.listAccounts().single { it.accountIdHex == joining.key }.unlinked
+      }
+      assertEquals(joining.key, withTimeout(45_000) { checkNotNull(unlinkEvent).await() }.accountIdHex)
+      assertTrue(runCatching { joining.kit.signInAccount(joining.key) }.isFailure)
+      val unsigned = JSONObject().put("pubkey", joining.key).put("created_at", 1).put("kind", 1)
+        .put("tags", org.json.JSONArray()).put("content", "rejected after remote unlink")
+      assertTrue(runCatching { joining.kit.signNostrEvent(joining.key, unsigned.toString()) }.isFailure)
+
+      val outcome = joining.kit.signOutAndWipe(joining.key)
+      assertTrue("local cleanup must be reported", outcome.localCleanup.completed)
+      assertFalse(joining.kit.listAccounts().any { it.accountIdHex == joining.key })
+      assertTrue(primary.kit.listAccounts().single { it.accountIdHex == primary.key }.localSigning)
+    } finally {
+      unlinkEvent?.cancel()
+      events?.close()
+      joining.close()
+      primary.close()
+      root.deleteRecursively()
+    }
   }
 
   @Test fun sparseProfileEditsUseAccountRelaysAndSurviveReopen() = runBlocking {
@@ -1190,7 +1333,11 @@ class MarmotRelayTest {
     lateinit var key: String
       private set
 
-    suspend fun start(identity: String? = null, messaging: Boolean = true) {
+    suspend fun start(
+      identity: String? = null,
+      messaging: Boolean = true,
+      beforeStart: ((Marmot) -> Unit)? = null,
+    ) {
       val opened = Marmot.newWithConfiguration(
         rootPath = directory.canonicalPath,
         relayUrls = listOf(relay),
@@ -1206,6 +1353,7 @@ class MarmotRelayTest {
         ),
       )
       running = opened
+      beforeStart?.invoke(opened)
       if (messaging) opened.start()
       if (!::key.isInitialized) {
         val relays = listOf(relay)

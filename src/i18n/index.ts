@@ -20,6 +20,7 @@ export const namespaces = [
   "speech",
   "downloads",
   "audio",
+  "devices",
 ] as const satisfies readonly (keyof (typeof resources)["en"])[];
 
 export const languages = ["en", "he"] as const;

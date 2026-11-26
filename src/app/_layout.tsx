@@ -18,11 +18,13 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { AppState, Modal, View } from "react-native";
+import { ActivityIndicator, AppState, Modal, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { CallIndicator } from "@/components/calls/call-indicator";
+import { DeviceBadge } from "@/components/devices/presentation";
+import { DeviceSecurityBanner } from "@/components/devices/security-banner";
 import { GlassProvider } from "@/components/glassyui/glass-provider";
 import { MarmotChatLists } from "@/components/messages/marmot-chat-lists";
 import { IdentitySheetProvider } from "@/components/people/identity-sheet";
@@ -32,7 +34,7 @@ import { OpeningButton } from "@/components/opening/controls";
 import { OpeningCurtain } from "@/components/opening/curtain";
 import { glassStackBack } from "@/components/ui/back-button";
 import { DialogBoundary, useDialog } from "@/components/ui/dialog";
-import { Ink } from "@/components/ui/kit";
+import { Action, Ink, Screen } from "@/components/ui/kit";
 import { ScreenInsets } from "@/components/ui/screen-insets";
 import { IncompatibleDatabaseError } from "@/db";
 import { preference } from "@/db/queries";
@@ -44,7 +46,7 @@ import {
 } from "@/i18n";
 import { applyLanguage, initializeLanguage } from "@/i18n/direction";
 import { readLanguagePreference } from "@/i18n/preference";
-import { initializeLocal } from "@/services/local";
+import { finishOnboarding, initializeLocal } from "@/services/local";
 import { Onboarding } from "@/components/onboarding";
 import { IdentityMismatchError } from "@/core/identity";
 import { LocalContext, type LocalServices } from "@/services/local-context";
@@ -74,6 +76,9 @@ export default function RootLayout() {
 }
 
 type LocalResult = Awaited<ReturnType<typeof initializeLocal>>;
+type AccountLifecycleState = ReturnType<
+  LocalServices["accountLifecycle"]["getState"]
+>;
 type Startup =
   | { phase: "boot" }
   | {
@@ -152,6 +157,27 @@ function Boot() {
     startup.phase === "loaded" && startup.data.status === "ready"
       ? startup.data
       : undefined;
+  const lifecycleSubscribe = useCallback(
+    (listener: () => void) =>
+      ready?.accountLifecycle.subscribe(listener) ?? (() => {}),
+    [ready],
+  );
+  const lifecycleSnapshot = useCallback(
+    () =>
+      ready?.accountLifecycle.getState() ?? {
+        phase: "idle",
+        action: null,
+        outcome: null,
+        deleteKeyPackages: null,
+        error: null,
+        localDataPurged: false,
+      },
+    [ready],
+  );
+  const accountLifecycle = useSyncExternalStore(
+    lifecycleSubscribe,
+    lifecycleSnapshot,
+  );
   const failed = startup.phase === "failed" ? startup.failure : undefined;
   const covered = !handedOff || (!welcome && !revealed);
   const lock = ready?.lock;
@@ -188,6 +214,17 @@ function Boot() {
     setAttempt((value) => value + 1);
   }
 
+  useEffect(() => {
+    if (!ready) return;
+    const onUnlinked = () => {
+      finishOnboarding(ready.db);
+      restart();
+    };
+    ready.accountRetired.addEventListener("abort", onUnlinked, { once: true });
+    if (ready.accountRetired.aborted) onUnlinked();
+    return () => ready.accountRetired.removeEventListener("abort", onUnlinked);
+  }, [ready]);
+
   return (
     <GlassProvider
       choice={selected}
@@ -214,7 +251,11 @@ function Boot() {
               }
             >
               {ready ? (
-                <ProtectedApplication data={ready} />
+                accountLifecycle.phase === "idle" ? (
+                  <ProtectedApplication data={ready} />
+                ) : (
+                  <AccountLifecycleGate data={ready} state={accountLifecycle} />
+                )
               ) : (
                 <ScreenInsets padding={space.xxl} style={styles.boot}>
                   <OpeningMark />
@@ -282,6 +323,125 @@ function BootSurface({ children }: { children: ReactNode }) {
   );
 }
 
+function AccountLifecycleGate({
+  data,
+  state,
+}: {
+  data: LocalServices;
+  state: AccountLifecycleState;
+}) {
+  const { t } = useTranslation(namespaces);
+  const running = state.phase === "running";
+  const retryable =
+    state.phase === "failed" ||
+    (state.action === "signOut" &&
+      state.outcome !== null &&
+      !state.outcome.localCleanup.completed) ||
+    (state.action === "remove" &&
+      state.outcome !== null &&
+      "localAccountRemoved" in state.outcome &&
+      !state.outcome.localAccountRemoved);
+  const title =
+    state.action === "remove" ? t("devices:wipe") : t("devices:signOut");
+  return (
+    <Screen topInset>
+      <Ink kind="heading" accessibilityRole="header">
+        {running
+          ? t(
+              state.action === "remove"
+                ? "devices:lifecycleRemoving"
+                : "devices:lifecycleSigningOut",
+            )
+          : title}
+      </Ink>
+      {running ? <ActivityIndicator /> : null}
+      {state.phase === "failed" ? (
+        <Ink accessibilityLiveRegion="polite">
+          {t("devices:operationFailed")}
+        </Ink>
+      ) : null}
+      {state.action === "signOut" && state.outcome ? (
+        <>
+          <Ink>
+            {t("devices:lifecycleKeyPackagesDeleted", {
+              count: state.outcome.keyPackagesDeleted,
+            })}
+          </Ink>
+          {state.outcome.keyPackageFailures.length ? (
+            <Ink>
+              {t("devices:lifecycleKeyPackageFailures", {
+                count: state.outcome.keyPackageFailures.length,
+              })}
+            </Ink>
+          ) : null}
+          {state.outcome.localCleanup.completed ? (
+            <Ink>{t("devices:lifecycleLocalCleanupComplete")}</Ink>
+          ) : (
+            <Ink>{t("devices:lifecycleLocalCleanupFailed")}</Ink>
+          )}
+        </>
+      ) : null}
+      {state.action === "remove" &&
+      state.outcome &&
+      "groupsLeft" in state.outcome ? (
+        <>
+          <Ink>
+            {t("devices:lifecycleGroupsLeft", {
+              count: state.outcome.groupsLeft,
+            })}
+          </Ink>
+          {state.outcome.groupLeaveFailures.length ? (
+            <Ink>
+              {t("devices:lifecycleGroupFailures", {
+                count: state.outcome.groupLeaveFailures.length,
+              })}
+            </Ink>
+          ) : null}
+          {state.outcome.groupsLeftToSiblings > 0 ? (
+            <Ink>
+              {t("devices:lifecycleGroupsLeftToSiblings", {
+                count: state.outcome.groupsLeftToSiblings,
+              })}
+            </Ink>
+          ) : null}
+          <Ink>
+            {t("devices:lifecycleKeyPackagesDeleted", {
+              count: state.outcome.keyPackagesDeleted,
+            })}
+          </Ink>
+          {state.outcome.keyPackageFailures.length ? (
+            <Ink>
+              {t("devices:lifecycleKeyPackageFailures", {
+                count: state.outcome.keyPackageFailures.length,
+              })}
+            </Ink>
+          ) : null}
+          {state.outcome.siblingsNotReached ? (
+            <Ink>{t("devices:lifecycleSiblingsNotReached")}</Ink>
+          ) : null}
+          {state.outcome.localAccountRemoved && state.localDataPurged ? (
+            <Ink>{t("devices:lifecycleAccountRemoved")}</Ink>
+          ) : (
+            <Ink>{t("devices:lifecycleLocalCleanupFailed")}</Ink>
+          )}
+        </>
+      ) : null}
+      {!running && retryable ? (
+        <Action
+          onPress={() => void data.retryAccountLifecycle().catch(() => {})}
+        >
+          {t("devices:retry")}
+        </Action>
+      ) : null}
+      {!running && !retryable && state.phase === "report" ? (
+        <Action onPress={() => data.finishAccountLifecycle()}>
+          {t("devices:done")}
+        </Action>
+      ) : null}
+    </Screen>
+  );
+}
+
 function ProtectedApplication({ data }: { data: LocalServices }) {
   const dialog = useDialog();
   const { t, i18n } = useTranslation(namespaces);
@@ -294,7 +454,28 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
     data.chatPreferences.enabled,
   );
   const state = useSyncExternalStore(lock.subscribe, lock.getState);
-  const obscured = state.enabled && (state.locked || !state.active);
+  const callActive = useSyncExternalStore(
+    (listener) => calling.store.subscribe(listener),
+    () => {
+      const call = calling.store.getState().call;
+      return Boolean(call && call.phase !== "ended");
+    },
+  );
+  const retired = useSyncExternalStore(
+    (listener) => {
+      data.sessionEnded.addEventListener("abort", listener);
+      return () => data.sessionEnded.removeEventListener("abort", listener);
+    },
+    () => data.sessionEnded.aborted,
+  );
+  const remotelyUnlinked = useSyncExternalStore(
+    data.deviceController.subscribe,
+    () => data.deviceController.getState().connection === "unlinked",
+  );
+  const obscured =
+    remotelyUnlinked ||
+    retired ||
+    (state.enabled && (state.locked || !state.active));
   const { observeSession } = data;
 
   useEffect(() => {
@@ -373,6 +554,7 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
                 obscured ? "no-hide-descendants" : "auto"
               }
             >
+              {!obscured && !callActive && <DeviceSecurityBanner />}
               <Stack
                 screenOptions={({ navigation }) => ({
                   ...glassStackBack(navigation.goBack),
@@ -412,7 +594,24 @@ function ProtectedApplication({ data }: { data: LocalServices }) {
         statusBarTranslucent
         navigationBarTranslucent
       >
-        <LockScreen lock={lock} state={state} />
+        {remotelyUnlinked ? (
+          <ScreenInsets
+            padding={space.xxl}
+            style={[styles.boot, { backgroundColor: colors.background }]}
+          >
+            <DeviceBadge mode="warning" size={72} />
+            <Ink
+              kind="heading"
+              accessibilityRole="header"
+              style={styles.center}
+            >
+              {t("messenger:setupUnlinked")}
+            </Ink>
+            <ActivityIndicator color={colors.accent} />
+          </ScreenInsets>
+        ) : (
+          <LockScreen lock={lock} state={state} />
+        )}
       </Modal>
     </LocalContext.Provider>
   );

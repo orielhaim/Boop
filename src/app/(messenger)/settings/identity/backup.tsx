@@ -28,7 +28,7 @@ import { useLocal } from "@/services/local-context";
 export default function MarmotBackups() {
   const { t } = useTranslation(namespaces);
   const dialog = useDialog();
-  const { lock, marmotSession } = useLocal();
+  const { identity, lock, marmotSession } = useLocal();
   const id = useId();
   const [state, setState] = useState<MarmotBackupState>();
   const [setup, setSetup] = useState<MarmotRecoveryWords>();
@@ -51,8 +51,13 @@ export default function MarmotBackups() {
     useCallback(() => {
       const token = {};
       screen.current = token;
-      let timer: ReturnType<typeof setTimeout>;
+      let stopBackupWatch: (() => void) | undefined;
+      let startingBackupWatch = false;
       let blurred = false;
+      const available = () =>
+        screen.current === token &&
+        AppState.currentState === "active" &&
+        !lock.getState().locked;
       async function unprotect() {
         if (blurred)
           await disableAppSwitcherProtectionAsync().catch(() => undefined);
@@ -72,17 +77,49 @@ export default function MarmotBackups() {
           await unprotect();
         }
       })();
-      async function refresh() {
+      async function refreshOnce() {
+        if (!available()) return;
         try {
           await marmotSession.ready();
           const next = await marmot.backupState();
-          if (screen.current === token) setState(next);
+          if (available()) setState(next);
         } catch {
-          if (screen.current === token)
-            setNotice(t("messages:marmot.accountError"));
+          if (available()) setNotice(t("messages:marmot.accountError"));
         }
-        if (screen.current === token)
-          timer = setTimeout(() => void refresh(), 2_000);
+      }
+      async function observe() {
+        if (startingBackupWatch || stopBackupWatch) return;
+        startingBackupWatch = true;
+        try {
+          await marmotSession.ready();
+          if (!available()) {
+            startingBackupWatch = false;
+            return;
+          }
+          const stop = marmot.observeBackupRestore(
+            identity.publicKey,
+            (next) => {
+              if (!available()) return;
+              setState(next);
+              setNotice("");
+            },
+            () => {
+              startingBackupWatch = false;
+              stopBackupWatch = undefined;
+              if (available()) setNotice(t("messages:marmot.accountError"));
+            },
+          );
+          if (screen.current === token) {
+            startingBackupWatch = false;
+            stopBackupWatch = stop;
+          } else {
+            startingBackupWatch = false;
+            stop();
+          }
+        } catch {
+          startingBackupWatch = false;
+          if (available()) setNotice(t("messages:marmot.accountError"));
+        }
       }
       const cancelSecret = () => {
         clear();
@@ -90,21 +127,30 @@ export default function MarmotBackups() {
       };
       const app = AppState.addEventListener("change", (next) => {
         if (next !== "active") cancelSecret();
+        else {
+          void refreshOnce();
+          void observe();
+        }
       });
       const locked = lock.subscribe(() => {
         if (lock.getState().locked) cancelSecret();
+        else {
+          void refreshOnce();
+          void observe();
+        }
       });
-      void refresh();
+      void observe();
       return () => {
         screen.current = null;
-        clearTimeout(timer);
+        stopBackupWatch?.();
+        stopBackupWatch = undefined;
         app.remove();
         locked();
         setProtectedScreen(false);
         cancelSecret();
         void unprotect();
       };
-    }, [clear, id, lock, marmotSession, t]),
+    }, [clear, id, identity.publicKey, lock, marmotSession, t]),
   );
 
   async function perform(work: (available: () => boolean) => Promise<void>) {

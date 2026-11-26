@@ -6,22 +6,39 @@ import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useIdentitySheet } from "@/components/people/identity-sheet";
+import { useDialog } from "@/components/ui/dialog";
 import {
   SettingsDescription,
   ListGroup,
   ListRow,
 } from "@/components/ui/list-group";
 import { Action, Icon, Ink, Screen } from "@/components/ui/kit";
+import { toNpub } from "@/core/identity/keys";
 import { namespaces } from "@/i18n";
 import { useChatsEnabled, useLocal } from "@/services/local-context";
 import { space } from "@/theme";
 
 export default function Identity() {
   const { t } = useTranslation(namespaces);
-  const { identity } = useLocal();
+  const { identity, storedAccounts, selectStoredAccount } = useLocal();
   const chats = useChatsEnabled();
   const showSheet = useIdentitySheet();
+  const dialog = useDialog();
   const [notice, setNotice] = useState("");
+
+  function switchAccount(key: string) {
+    void dialog.show({
+      title: t("security:replaceIdentity"),
+      message: t("security:replacementWarning"),
+      actions: [
+        { label: t("common:cancel"), tone: "cancel" },
+        {
+          label: t("security:replaceIdentity"),
+          run: async () => selectStoredAccount(key),
+        },
+      ],
+    });
+  }
 
   async function copy() {
     try {
@@ -40,20 +57,30 @@ export default function Identity() {
       compact
       navigationHeader={<ScreenHeader title={t("settings:identity")} />}
     >
-      <ListGroup>
-        {chats && (
-          <ListRow
-            title={t("messages:marmot.devices")}
-            onPress={() => router.push("./identity/devices")}
-          />
-        )}
-        {chats && (
+      {chats && (
+        <ListGroup>
           <ListRow
             title={t("messages:marmot.backups")}
             onPress={() => router.push("./identity/backup")}
           />
-        )}
-      </ListGroup>
+        </ListGroup>
+      )}
+      {storedAccounts.length > 0 && (
+        <ListGroup title={t("security:storedIdentities")}>
+          {storedAccounts.map((account) => {
+            const address = toNpub(account.key);
+            return (
+              <ListRow
+                key={account.key}
+                icon="key"
+                title={`${address.slice(0, 14)}…${address.slice(-8)}`}
+                detail={account.signedOut ? t("messenger:signIn") : undefined}
+                onPress={() => switchAccount(account.key)}
+              />
+            );
+          })}
+        </ListGroup>
+      )}
       <ListGroup title={t("settings:publicAddress")}>
         <Ink selectable style={styles.key}>
           {identity.npub}
