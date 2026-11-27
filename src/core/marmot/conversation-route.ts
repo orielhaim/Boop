@@ -42,33 +42,6 @@ export function marmotChatScene({
   } as const;
 }
 
-export function retainRecentConversation<
-  State extends {
-    index: number;
-    routes: readonly (Route & { isPreloaded?: boolean })[];
-  },
->(before: State, after: State): State {
-  const current = before.routes[before.index];
-  if (
-    !current ||
-    after.index !== before.index - 1 ||
-    after.routes[after.index]?.name !== "(tabs)" ||
-    marmotChatScene(current)?.kind !== "conversation" ||
-    (current.params &&
-      ("view" in current.params || "messageTarget" in current.params))
-  )
-    return after;
-  return {
-    ...after,
-    routes: [
-      ...after.routes.filter(
-        (route, index) => index <= after.index || route.name !== current.name,
-      ),
-      { ...current, isPreloaded: true },
-    ],
-  };
-}
-
 export function conversationWindowActive(
   { routes, index }: { routes: readonly Route[]; index: number },
   routeKey: string,

@@ -1,6 +1,5 @@
 import { AudioFrame } from "@/components/audio/mini-player";
-import { isActionHandled } from "expo-router";
-import type { ComponentProps } from "react";
+import { chatStackRouter } from "@/components/navigation/chat-stack-router";
 import { Platform } from "react-native";
 import {
   BlankStack,
@@ -17,7 +16,6 @@ import { useTheme } from "@/theme";
 import {
   marmotChatScene,
   profileMorphParam,
-  retainRecentConversation,
 } from "@/core/marmot/conversation-route";
 import { useChatsEnabled } from "@/services/local-context";
 import { VideoFrame, videoNavigationScene } from "@/components/video/host";
@@ -43,33 +41,6 @@ const audioPlayerOptions: BlankStackNavigationOptions = {
 
 export const unstable_settings = { anchor: "(tabs)" };
 
-const keepRecentChat: NonNullable<
-  ComponentProps<typeof BlankStack>["UNSTABLE_router"]
-> = (router) => ({
-  getStateForAction(state, action, options) {
-    const warm = state.routes
-      .slice(state.index + 1)
-      .find((route) => route.name === "chat/[key]");
-    // The prepared or last viewed conversation owns the single warm slot.
-    if (
-      action.type === "PRELOAD" &&
-      action.payload &&
-      "name" in action.payload &&
-      action.payload.name === "chat/[key]" &&
-      warm
-    )
-      return { state, affectedRouteKey: warm.key };
-    const result = router.getStateForAction(state, action, options);
-    if (!isActionHandled(result) || action.type !== "POP") return result;
-    const next = retainRecentConversation(state, result.state);
-    if (next === result.state) return result;
-    return {
-      ...result,
-      state: next,
-    };
-  },
-});
-
 export default function MessengerLayout() {
   const chats = useChatsEnabled();
   const { reduceMotion } = useTheme();
@@ -81,7 +52,9 @@ export default function MessengerLayout() {
       <VideoFrame>
         <ChatNavigationProvider>
           <BlankStack
-            UNSTABLE_router={Platform.OS === "web" ? undefined : keepRecentChat}
+            UNSTABLE_router={
+              Platform.OS === "web" ? undefined : chatStackRouter
+            }
             screenOptions={push}
             screenLayout={videoNavigationScene}
             sceneContainer={ChatSceneBackdrop}

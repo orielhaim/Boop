@@ -1945,3 +1945,287 @@ index 4c2e7bb..6ed05be 100644
  };
  
  export type AnimationStateCallback = (state: AnimationState) => void;
+diff --git a/src/components/boundary/utils/destination-signals.ts b/src/components/boundary/utils/destination-signals.ts
+index 57abba5..8fec3c4 100644
+--- a/src/components/boundary/utils/destination-signals.ts
++++ b/src/components/boundary/utils/destination-signals.ts
+@@ -20,6 +20,7 @@ export type InitialDestinationMeasurementSignal = {
+ 
+ export const getInitialDestinationMeasurementSignal = (params: {
+ 	enabled: boolean;
++	canWaitForMeasurement: boolean;
+ 	pairKey?: ScreenPairKey;
+ 	linkId: string;
+ 	group?: string;
+@@ -30,6 +31,7 @@ export const getInitialDestinationMeasurementSignal = (params: {
+ 	"worklet";
+ 	const {
+ 		enabled,
++		canWaitForMeasurement,
+ 		pairKey,
+ 		linkId,
+ 		group,
+@@ -41,6 +43,10 @@ export const getInitialDestinationMeasurementSignal = (params: {
+ 		return null;
+ 	}
+ 
++	if (!canWaitForMeasurement) {
++		return { pairKey: pairKey ?? null, action: "release" };
++	}
++
+ 	if (!pairKey) {
+ 		return { pairKey: null, action: "wait" };
+ 	}
+diff --git a/src/components/boundary/hooks/lifecycles/use-initial-destination-measurement.ts b/src/components/boundary/hooks/lifecycles/use-initial-destination-measurement.ts
+index ae52b98..fb3a943 100644
+--- a/src/components/boundary/hooks/lifecycles/use-initial-destination-measurement.ts
++++ b/src/components/boundary/hooks/lifecycles/use-initial-destination-measurement.ts
+@@ -10,6 +10,7 @@ import { scheduleOnUI } from "react-native-worklets";
+ import { useBlankStackStore } from "../../../../navigators/blank-stack/state/blank-stack.provider";
+ import { useBuilderStore } from "../../../../providers/builder";
+ import { useMotionStore } from "../../../../providers/motion";
++import { LifecycleTransitionRequestKind } from "../../../../providers/motion/hooks/use-transition-values";
+ import {
+ 	createScreenPairKey,
+ 	getSourceScreenKeyFromPairKey,
+@@ -72,7 +73,22 @@ export const useInitialDestinationMeasurement = ({
+ 				.map((scene) => scene.route.key),
+ 		[stackScenes],
+ 	);
+-	const progress = useMotionStore((store) => store.state.transitionProgress);
++	const {
++		transitionProgress,
++		progressSettled,
++		closing,
++		pendingLifecycleRequestKind,
++	} = useMotionStore((store) => store.state);
++
++	const canWaitForMeasurement = useCallback(() => {
++		"worklet";
++		return (
++			transitionProgress.get() <= 0 &&
++			!!progressSettled.get() &&
++			!closing.get() &&
++			pendingLifecycleRequestKind.get() !== LifecycleTransitionRequestKind.Close
++		);
++	}, [closing, pendingLifecycleRequestKind, progressSettled, transitionProgress]);
+ 
+ 	const { blockLifecycleStart, unblockLifecycleStart } = useMotionStore(
+ 		(store) => store.state.actions,
+@@ -115,7 +131,7 @@ export const useInitialDestinationMeasurement = ({
+ 		// The progress check and block claim must share one UI-thread operation.
+ 		// Otherwise a JS-thread layout effect can observe zero, enqueue the block,
+ 		// and let the opening animation start before that block reaches the UI thread.
+-		if (progress.get() > 0 || isBlockingLifecycleStart.get()) {
++		if (!canWaitForMeasurement() || isBlockingLifecycleStart.get()) {
+ 			return;
+ 		}
+ 
+@@ -127,7 +143,7 @@ export const useInitialDestinationMeasurement = ({
+ 		currentScreenKey,
+ 		hasFinishedInitialMeasurement,
+ 		isBlockingLifecycleStart,
+-		progress,
++		canWaitForMeasurement,
+ 		tag,
+ 	]);
+ 
+@@ -161,10 +177,6 @@ export const useInitialDestinationMeasurement = ({
+ 				return null;
+ 			}
+ 
+-			if (progress.get() > 0) {
+-				return null;
+-			}
+-
+ 			const retryTick = retryToken.get();
+ 			const sourceScreenKey = getMatchingSourceScreenKey(
+ 				tag,
+@@ -177,6 +189,7 @@ export const useInitialDestinationMeasurement = ({
+ 				: undefined;
+ 			const signal = getInitialDestinationMeasurementSignal({
+ 				enabled: destinationEnabled,
++				canWaitForMeasurement: canWaitForMeasurement(),
+ 				pairKey,
+ 				linkId: linkKey,
+ 				group,
+diff --git a/lib/module/components/boundary/utils/destination-signals.js b/lib/module/components/boundary/utils/destination-signals.js
+index 6db6f21..971c9cd 100644
+--- a/lib/module/components/boundary/utils/destination-signals.js
++++ b/lib/module/components/boundary/utils/destination-signals.js
+@@ -6,6 +6,7 @@ export const getInitialDestinationMeasurementSignal = params => {
+ 
+   const {
+     enabled,
++    canWaitForMeasurement,
+     pairKey,
+     linkId,
+     group,
+@@ -16,6 +17,9 @@ export const getInitialDestinationMeasurementSignal = params => {
+   if (!enabled) {
+     return null;
+   }
++  if (!canWaitForMeasurement) {
++    return { pairKey: pairKey ?? null, action: "release" };
++  }
+   if (!pairKey) {
+     return {
+       pairKey: null,
+diff --git a/lib/module/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js b/lib/module/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
+index 1b4a4f9..433f26d 100644
+--- a/lib/module/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
++++ b/lib/module/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
+@@ -6,6 +6,7 @@ import { scheduleOnUI } from "react-native-worklets";
+ import { useBlankStackStore } from "../../../../navigators/blank-stack/state/blank-stack.provider";
+ import { useBuilderStore } from "../../../../providers/builder";
+ import { useMotionStore } from "../../../../providers/motion";
++import { LifecycleTransitionRequestKind } from "../../../../providers/motion/hooks/use-transition-values";
+ import { createScreenPairKey, getSourceScreenKeyFromPairKey } from "../../../../stores/bounds/helpers/link-pairs.helpers";
+ import { getEntry, getMatchingSourceScreenKey } from "../../../../stores/bounds/internals/entries";
+ import { getLink } from "../../../../stores/bounds/internals/links";
+@@ -43,7 +44,17 @@ export const useInitialDestinationMeasurement = ({
+   // A retained closing screen can still have registered boundaries, but it
+   // cannot own a new transition link.
+   const closingSourceScreenKeys = useMemo(() => stackScenes.filter(scene => scene.activity === "closing").map(scene => scene.route.key), [stackScenes]);
+-  const progress = useMotionStore(store => store.state.transitionProgress);
++  const {
++    transitionProgress,
++    progressSettled,
++    closing,
++    pendingLifecycleRequestKind
++  } = useMotionStore(store => store.state);
++  const canWaitForMeasurement = useCallback(() => {
++    "worklet";
++
++    return transitionProgress.get() <= 0 && !!progressSettled.get() && !closing.get() && pendingLifecycleRequestKind.get() !== LifecycleTransitionRequestKind.Close;
++  }, [closing, pendingLifecycleRequestKind, progressSettled, transitionProgress]);
+   const {
+     blockLifecycleStart,
+     unblockLifecycleStart
+@@ -74,12 +85,12 @@ export const useInitialDestinationMeasurement = ({
+     // The progress check and block claim must share one UI-thread operation.
+     // Otherwise a JS-thread layout effect can observe zero, enqueue the block,
+     // and let the opening animation start before that block reaches the UI thread.
+-    if (progress.get() > 0 || isBlockingLifecycleStart.get()) {
++    if (!canWaitForMeasurement() || isBlockingLifecycleStart.get()) {
+       return;
+     }
+     blockLifecycleStart();
+     isBlockingLifecycleStart.set(1);
+-  }, [blockLifecycleStart, canReceiveDestination, currentScreenKey, hasFinishedInitialMeasurement, isBlockingLifecycleStart, progress, tag]);
++  }, [blockLifecycleStart, canReceiveDestination, currentScreenKey, hasFinishedInitialMeasurement, isBlockingLifecycleStart, canWaitForMeasurement, tag]);
+   useLayoutEffect(() => {
+     if (!canReceiveDestination) {
+       return;
+@@ -97,14 +108,12 @@ export const useInitialDestinationMeasurement = ({
+     if (!canReceiveDestination || hasFinishedInitialMeasurement.get() || isBlockingLifecycleStart.get() <= 0) {
+       return null;
+     }
+-    if (progress.get() > 0) {
+-      return null;
+-    }
+     const retryTick = retryToken.get();
+     const sourceScreenKey = getMatchingSourceScreenKey(tag, currentScreenKey, preferredSourceScreenKey, closingSourceScreenKeys);
+     const pairKey = sourceScreenKey ? createScreenPairKey(sourceScreenKey, currentScreenKey) : undefined;
+     const signal = getInitialDestinationMeasurementSignal({
+       enabled: destinationEnabled,
++      canWaitForMeasurement: canWaitForMeasurement(),
+       pairKey,
+       linkId: linkKey,
+       group,
+diff --git a/lib/commonjs/components/boundary/utils/destination-signals.js b/lib/commonjs/components/boundary/utils/destination-signals.js
+index cbb4d4a..99e43b0 100644
+--- a/lib/commonjs/components/boundary/utils/destination-signals.js
++++ b/lib/commonjs/components/boundary/utils/destination-signals.js
+@@ -10,6 +10,7 @@ const getInitialDestinationMeasurementSignal = params => {
+ 
+   const {
+     enabled,
++    canWaitForMeasurement,
+     pairKey,
+     linkId,
+     group,
+@@ -20,6 +21,9 @@ const getInitialDestinationMeasurementSignal = params => {
+   if (!enabled) {
+     return null;
+   }
++  if (!canWaitForMeasurement) {
++    return { pairKey: pairKey ?? null, action: "release" };
++  }
+   if (!pairKey) {
+     return {
+       pairKey: null,
+diff --git a/lib/commonjs/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js b/lib/commonjs/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
+index 59c46b6..aea2011 100644
+--- a/lib/commonjs/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
++++ b/lib/commonjs/components/boundary/hooks/lifecycles/use-initial-destination-measurement.js
+@@ -10,6 +10,7 @@ var _reactNativeWorklets = require("react-native-worklets");
+ var _blankStack = require("../../../../navigators/blank-stack/state/blank-stack.provider");
+ var _builder = require("../../../../providers/builder");
+ var _motion = require("../../../../providers/motion");
++var _useTransitionValues = require("../../../../providers/motion/hooks/use-transition-values");
+ var _linkPairs = require("../../../../stores/bounds/helpers/link-pairs.helpers");
+ var _entries = require("../../../../stores/bounds/internals/entries");
+ var _links = require("../../../../stores/bounds/internals/links");
+@@ -46,7 +47,17 @@ const useInitialDestinationMeasurement = ({
+   // A retained closing screen can still have registered boundaries, but it
+   // cannot own a new transition link.
+   const closingSourceScreenKeys = (0, _react.useMemo)(() => stackScenes.filter(scene => scene.activity === "closing").map(scene => scene.route.key), [stackScenes]);
+-  const progress = (0, _motion.useMotionStore)(store => store.state.transitionProgress);
++  const {
++    transitionProgress,
++    progressSettled,
++    closing,
++    pendingLifecycleRequestKind
++  } = (0, _motion.useMotionStore)(store => store.state);
++  const canWaitForMeasurement = (0, _react.useCallback)(() => {
++    "worklet";
++
++    return transitionProgress.get() <= 0 && !!progressSettled.get() && !closing.get() && pendingLifecycleRequestKind.get() !== _useTransitionValues.LifecycleTransitionRequestKind.Close;
++  }, [closing, pendingLifecycleRequestKind, progressSettled, transitionProgress]);
+   const {
+     blockLifecycleStart,
+     unblockLifecycleStart
+@@ -77,12 +88,12 @@ const useInitialDestinationMeasurement = ({
+     // The progress check and block claim must share one UI-thread operation.
+     // Otherwise a JS-thread layout effect can observe zero, enqueue the block,
+     // and let the opening animation start before that block reaches the UI thread.
+-    if (progress.get() > 0 || isBlockingLifecycleStart.get()) {
++    if (!canWaitForMeasurement() || isBlockingLifecycleStart.get()) {
+       return;
+     }
+     blockLifecycleStart();
+     isBlockingLifecycleStart.set(1);
+-  }, [blockLifecycleStart, canReceiveDestination, currentScreenKey, hasFinishedInitialMeasurement, isBlockingLifecycleStart, progress, tag]);
++  }, [blockLifecycleStart, canReceiveDestination, currentScreenKey, hasFinishedInitialMeasurement, isBlockingLifecycleStart, canWaitForMeasurement, tag]);
+   (0, _react.useLayoutEffect)(() => {
+     if (!canReceiveDestination) {
+       return;
+@@ -100,14 +111,12 @@ const useInitialDestinationMeasurement = ({
+     if (!canReceiveDestination || hasFinishedInitialMeasurement.get() || isBlockingLifecycleStart.get() <= 0) {
+       return null;
+     }
+-    if (progress.get() > 0) {
+-      return null;
+-    }
+     const retryTick = retryToken.get();
+     const sourceScreenKey = (0, _entries.getMatchingSourceScreenKey)(tag, currentScreenKey, preferredSourceScreenKey, closingSourceScreenKeys);
+     const pairKey = sourceScreenKey ? (0, _linkPairs.createScreenPairKey)(sourceScreenKey, currentScreenKey) : undefined;
+     const signal = (0, _destinationSignals.getInitialDestinationMeasurementSignal)({
+       enabled: destinationEnabled,
++      canWaitForMeasurement: canWaitForMeasurement(),
+       pairKey,
+       linkId: linkKey,
+       group,
+diff --git a/lib/typescript/components/boundary/utils/destination-signals.d.ts b/lib/typescript/components/boundary/utils/destination-signals.d.ts
+index 390258a..6f1faed 100644
+--- a/lib/typescript/components/boundary/utils/destination-signals.d.ts
++++ b/lib/typescript/components/boundary/utils/destination-signals.d.ts
+@@ -6,6 +6,7 @@ export type InitialDestinationMeasurementSignal = {
+ };
+ export declare const getInitialDestinationMeasurementSignal: (params: {
+     enabled: boolean;
++    canWaitForMeasurement: boolean;
+     pairKey?: ScreenPairKey;
+     linkId: string;
+     group?: string;
