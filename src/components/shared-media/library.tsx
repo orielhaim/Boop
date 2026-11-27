@@ -83,7 +83,9 @@ type VisualFilter = "all" | "photos" | "videos";
 type SenderPreset = "anySender" | "sent" | "received";
 type SenderFilter = SenderPreset | { key: string };
 export type SharedMediaScope =
-  { kind: "account" } | { kind: "direct" | "group"; group: string };
+  | { kind: "account" }
+  | { kind: "group"; group: string }
+  | { kind: "direct"; group: string | null | undefined };
 type ListRow =
   | { kind: "controls"; key: "controls" }
   | { kind: "month"; key: string; title: string }
@@ -150,6 +152,7 @@ export function SharedMediaLibrary({
   onAnimatedScroll,
   scrollPositionRef,
   active = true,
+  showLoadingPlaceholder = true,
 }: {
   scope: SharedMediaScope;
   header?: ReactNode;
@@ -157,6 +160,7 @@ export function SharedMediaLibrary({
   onAnimatedScroll?: ScrollHandlerProcessed;
   scrollPositionRef?: { current: number };
   active?: boolean;
+  showLoadingPlaceholder?: boolean;
 }) {
   const { t, i18n } = useTranslation(["messages", "common", "downloads"]);
   const locale = resolveLanguage(i18n.resolvedLanguage);
@@ -180,7 +184,13 @@ export function SharedMediaLibrary({
     category === "visual"
       ? [2, 3, 5][density] + (width >= 700 ? 2 : width >= 560 ? 1 : 0)
       : 1;
-  const group = scope.kind === "account" ? undefined : scope.group;
+  const group =
+    scope.kind === "account" ? undefined : (scope.group ?? undefined);
+  const hasHistoryScope = scope.kind === "account" || group !== undefined;
+  const baseQuery = useMemo(
+    () => (hasHistoryScope ? { group } : undefined),
+    [group, hasHistoryScope],
+  );
   const sender =
     typeof senderFilter === "object" ? senderFilter.key : undefined;
   const senderKey = senderFilter === "sent" ? identity.publicKey : sender;
@@ -203,7 +213,7 @@ export function SharedMediaLibrary({
     interactive,
     unavailable,
     waiting,
-  } = useLibrary(group, query, active);
+  } = useLibrary(baseQuery, query, active);
   const downloadLayout = useSyncExternalStore(
     downloads.subscribe,
     downloads.layout,
@@ -729,7 +739,8 @@ export function SharedMediaLibrary({
               void collection?.next();
           }}
           renderItem={({ item }) => {
-            if (item.kind === "controls") return categoryBar;
+            if (item.kind === "controls")
+              return hasHistoryScope ? categoryBar : tabs;
             if (item.kind === "month")
               return (
                 <Ink
@@ -774,9 +785,7 @@ export function SharedMediaLibrary({
             );
           }}
           ListFooterComponent={
-            !interactive &&
-            !unavailable &&
-            !waiting ? undefined : unavailable || state.phase === "error" ? (
+            unavailable || (interactive && state.phase === "error") ? (
               <Empty
                 icon="warning"
                 detail=""
@@ -792,7 +801,17 @@ export function SharedMediaLibrary({
                   {t("common:retry")}
                 </Action>
               </Empty>
-            ) : state.phase === "loading" ? (
+            ) : !hasHistoryScope ? (
+              scope.kind === "direct" && scope.group === null ? (
+                <View style={styles.empty}>
+                  <QuietState
+                    icon="media"
+                    title={t("messages:sharedMedia.empty")}
+                  />
+                </View>
+              ) : undefined
+            ) : !interactive && !waiting ? undefined : state.phase ===
+              "loading" ? (
               historyRows.length ? (
                 <View
                   style={styles.loading}
@@ -800,7 +819,7 @@ export function SharedMediaLibrary({
                 >
                   <ActivityIndicator color={colors.accent} />
                 </View>
-              ) : (
+              ) : showLoadingPlaceholder || hasSearch ? (
                 <LibrarySkeleton
                   columns={columns}
                   grid={category === "visual"}
@@ -808,7 +827,7 @@ export function SharedMediaLibrary({
                   label={t("common:checking")}
                   interactive={interactive}
                 />
-              )
+              ) : undefined
             ) : state.more ? (
               <View style={styles.loading}>
                 {hasSearch && (

@@ -16,7 +16,6 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   AccessibilityInfo,
-  ActivityIndicator,
   Keyboard,
   Linking,
   useWindowDimensions,
@@ -194,8 +193,7 @@ function ProfileContent({
     privacyRevision: number;
     id: string | null;
   }>();
-  const [tabChoice, setSelectedTab] = useState<"media" | "groups">("groups");
-  const [visitedMedia, setVisitedMedia] = useState(false);
+  const [tabChoice, setSelectedTab] = useState<"media" | "groups">("media");
   const mediaScrollPosition = useRef(0);
   const mediaConversation =
     conversationRecord?.peer === publicKey &&
@@ -204,17 +202,14 @@ function ProfileContent({
     !restricted
       ? conversationRecord.id
       : undefined;
-  const mediaAvailable =
-    typeof mediaConversation === "string" &&
-    chatsEnabled &&
-    lockState.active &&
-    !lockState.locked &&
-    sessionStatus === "ready";
+  const mediaGroup =
+    lockState.active && !lockState.locked && sessionStatus === "ready"
+      ? mediaConversation
+      : undefined;
   const hasMediaTab = chatsEnabled && !restricted;
   const selectedTab = hasMediaTab ? tabChoice : "groups";
   const showingMedia = selectedTab === "media";
   const showingGroups = selectedTab === "groups";
-  const showingLibrary = showingMedia && mediaAvailable;
 
   useEffect(() => {
     let current = true;
@@ -641,14 +636,7 @@ function ProfileContent({
     </View>
   );
   const profileTabs = (
-    <ProfileTabs
-      tabs={tabs}
-      value={selectedTab}
-      onChange={(tab) => {
-        if (tab === "media") setVisitedMedia(true);
-        setSelectedTab(tab);
-      }}
-    />
+    <ProfileTabs tabs={tabs} value={selectedTab} onChange={setSelectedTab} />
   );
   function renderOverview(motion: typeof profileMotion, active: boolean) {
     return (
@@ -766,20 +754,12 @@ function ProfileContent({
       bounces={!profileMotion.reduceMotion}
       overScrollMode={profileMotion.reduceMotion ? "auto" : "never"}
     >
-      {renderOverview(profileMotion, !showingLibrary)}
+      {renderOverview(profileMotion, showingGroups)}
       <Animated.View style={profileMotion.body}>{profileTabs}</Animated.View>
       <Animated.View style={[styles.body, profileMotion.body]}>
-        {showingMedia ? (
-          mediaConversation === undefined ? (
-            <ActivityIndicator />
-          ) : (
-            <QuietState icon="media" title={t("messages:sharedMedia.empty")} />
-          )
-        ) : showingGroups ? (
-          chatsEnabled &&
-          !restricted &&
-          canManageProfile && <PersonGroups publicKey={publicKey} />
-        ) : null}
+        {showingGroups && chatsEnabled && !restricted && canManageProfile && (
+          <PersonGroups publicKey={publicKey} />
+        )}
         {showingGroups && (!chatsEnabled || restricted) && (
           <QuietState icon="people" title={t("common:unavailable")} />
         )}
@@ -791,12 +771,12 @@ function ProfileContent({
     <Screen scroll={false} topInset>
       <View style={styles.pages}>
         <View
-          pointerEvents={showingLibrary ? "none" : "auto"}
-          accessibilityElementsHidden={showingLibrary}
+          pointerEvents={showingMedia ? "none" : "auto"}
+          accessibilityElementsHidden={showingMedia}
           importantForAccessibility={
-            showingLibrary ? "no-hide-descendants" : "auto"
+            showingMedia ? "no-hide-descendants" : "auto"
           }
-          style={[styles.profileLayer, showingLibrary && styles.hiddenLayer]}
+          style={[styles.profileLayer, showingMedia && styles.hiddenLayer]}
         >
           {profileMotion.android && !profileMotion.reduceMotion ? (
             <GestureDetector gesture={profileMotion.androidGesture}>
@@ -806,22 +786,24 @@ function ProfileContent({
             profilePage
           )}
         </View>
-        {visitedMedia && mediaAvailable && mediaConversation && (
+        {/* Warm the first page while Groups is visible. Media actions still require focus. */}
+        {hasMediaTab && (
           <View
-            pointerEvents={showingLibrary ? "auto" : "none"}
-            accessibilityElementsHidden={!showingLibrary}
+            pointerEvents={showingMedia ? "auto" : "none"}
+            accessibilityElementsHidden={!showingMedia}
             importantForAccessibility={
-              showingLibrary ? "auto" : "no-hide-descendants"
+              showingMedia ? "auto" : "no-hide-descendants"
             }
-            style={[styles.profileLayer, !showingLibrary && styles.hiddenLayer]}
+            style={[styles.profileLayer, !showingMedia && styles.hiddenLayer]}
           >
             <SharedMediaLibrary
-              scope={{ kind: "direct", group: mediaConversation }}
-              header={renderOverview(mediaMotion, showingLibrary)}
+              scope={{ kind: "direct", group: mediaGroup }}
+              header={renderOverview(mediaMotion, showingMedia)}
               tabs={profileTabs}
               onAnimatedScroll={mediaMotion.onScroll}
               scrollPositionRef={mediaScrollPosition}
-              active={showingLibrary && focused}
+              active={showingMedia && focused}
+              showLoadingPlaceholder={false}
             />
           </View>
         )}

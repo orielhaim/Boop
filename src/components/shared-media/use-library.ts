@@ -128,7 +128,7 @@ function createLibraryMedia(
 }
 
 export function useLibrary(
-  group: string | undefined,
+  baseQuery: SharedMediaQuery | undefined,
   query: SharedMediaQuery | undefined,
   active: boolean,
 ) {
@@ -154,8 +154,12 @@ export function useLibrary(
     chatPreferences.enabled,
   );
   const authorized =
-    foreground && !locked && enabled && blockListReady && status === "ready";
-  const baseQuery = useMemo(() => ({ group }), [group]);
+    baseQuery !== undefined &&
+    foreground &&
+    !locked &&
+    enabled &&
+    blockListReady &&
+    status === "ready";
   const browse = useCollection(baseQuery, authorized, revision);
   const browsing = useSyncExternalStore(
     browse?.subscribe ?? subscribeNothing,
