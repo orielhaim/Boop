@@ -1,0 +1,2 @@
+[crate-roots]
+boop_social = ".."

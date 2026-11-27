@@ -1,0 +1,56 @@
+[package]
+name = "boop-social"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "boop-social-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+async-wsocket = { version = "=0.17.0", default-features = false }
+async-trait = "0.1.89"
+fs2 = "0.4.3"
+futures = "0.3.31"
+nostr = { version = "=0.45.7", features = ["os-rng"] }
+nostr-sdk = "=0.45.6"
+nostrdb = { version = "=0.9.0", git = "https://github.com/orielhaim/nostrdb-rs.git", rev = "ebc991ec01fa7e24121d03a38b7ab795daf1b82d" }
+rusqlite = { version = "=0.43.0", default-features = false, features = [
+  "bundled-sqlcipher-vendored-openssl",
+] }
+thiserror = "2.0"
+tokio = { version = "1.48", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "net",
+  "time",
+] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = [
+  "handshake",
+  "rustls-tls-webpki-roots",
+] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+uniffi = { version = "=0.33.0", default-features = false, features = [
+  "macro-scaffolding",
+] }
+url = "2.5"
+zeroize = "1.8"
+
+[dev-dependencies]
+nostr-sdk = { version = "=0.45.6", features = ["local-relay"] }
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

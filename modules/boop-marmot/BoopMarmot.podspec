@@ -19,6 +19,7 @@ Pod::Spec.new do |s|
   s.swift_version = '5.9'
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
+  s.dependency 'BoopSocial'
   s.source_files = 'ios/*.swift', "#{sdk}/MarmotKit.swift"
   s.vendored_frameworks = "#{sdk}/MarmotKit.xcframework"
   s.resource_bundles = { 'BoopMarmotPrivacy' => ["#{sdk}/PrivacyInfo.xcprivacy"] }

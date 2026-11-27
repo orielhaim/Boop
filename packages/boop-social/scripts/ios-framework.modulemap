@@ -1,0 +1,4 @@
+framework module BoopSocialFFI {
+    header "BoopSocialFFI.h"
+    export *
+}

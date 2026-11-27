@@ -1,4 +1,5 @@
 import AVFoundation
+import BoopSocial
 import ExpoModulesCore
 import Foundation
 import ImageIO
@@ -8,6 +9,8 @@ private let attachmentStallTimeout: TimeInterval = 180
 
 public final class BoopMarmotModule: Module {
   private let runtime = Runtime()
+  private let socialOwnerLock = NSLock()
+  private var storedSocialOwner: SocialNativeOwner?
   private var draftStages: Set<String> = [] // Guarded by uploadLock.
   private let uploadLock = NSLock()
   private let attachmentLock = NSLock()
@@ -82,21 +85,24 @@ public final class BoopMarmotModule: Module {
     Events("windowChanged", "windowClosed", "attachmentProgress", "directorySearchResults", "relayLiveness", "blockedUsers", "backupRestore", "accountSecurityEvent")
     OnAppEntersBackground {
       self.directoryLock.withLock { self.observations.values.filter { !$0.accountScoped }.forEach { $0.task?.cancel() } }
-      let pending = self.attachmentLock.withLock { () -> [AttachmentCancellation] in
+      let (pending, generation) = self.attachmentLock.withLock { () -> ([AttachmentCancellation], UInt64) in
         self.isForeground = false
         self.foregroundGeneration &+= 1
-        return Array(self.attachmentAdmissions.values)
+        return (Array(self.attachmentAdmissions.values), self.foregroundGeneration)
       }
+      Task { try? await self.existingSocialHost()?.setForeground(false, generation: generation) }
       Task {
         await self.runtime.discardImport()
         for attempt in pending { await attempt.cancel() }
       }
     }
     OnAppBecomesActive {
-      self.attachmentLock.withLock {
+      let generation = self.attachmentLock.withLock {
         self.isForeground = true
         self.foregroundGeneration &+= 1
+        return self.foregroundGeneration
       }
+      Task { try? await self.existingSocialHost()?.setForeground(true, generation: generation) }
     }
 
     AsyncFunction("listAccounts") { (general: [String], discovery: [String], origin: String?) async throws -> [Document] in
@@ -208,10 +214,15 @@ public final class BoopMarmotModule: Module {
       try await self.withSigner(key) { try $0.accountSetupReadiness(accountRef: key) == .networkReady }
     }
     AsyncFunction("removeAccount") { (key: String) async throws in
-      try await protocolCall { try await self.runtime.remove(key) }
+      try await protocolCall {
+        await self.existingSocialHost()?.retire(account: key)
+        try await self.runtime.remove(key)
+        try await self.cleanupSocialAccount(key)
+      }
     }
     AsyncFunction("signOutAccount") { (key: String, deleteKeyPackages: Bool) async throws -> Document in
       try await protocolCall {
+        await self.existingSocialHost()?.retire(account: key)
         let outcome = try await self.runtime.signOut(key, deleteKeyPackages: deleteKeyPackages)
         await self.stopAccountSecurityEvents(for: key)
         return signOutOutcomeWire(outcome)
@@ -219,9 +230,23 @@ public final class BoopMarmotModule: Module {
     }
     AsyncFunction("signOutAndWipeAccount") { (key: String) async throws -> Document in
       try await protocolCall {
+        await self.existingSocialHost()?.retire(account: key)
         let outcome = try await self.runtime.signOutAndWipe(key)
+        let socialCleanup: Document
+        if outcome.localCleanup.completed {
+          do {
+            try await self.cleanupSocialAccount(key)
+            socialCleanup = ["completed": true, "reason": NSNull()]
+          } catch {
+            socialCleanup = ["completed": false, "reason": "SocialCleanupFailedAfterAccountRemoval"]
+          }
+        } else {
+          socialCleanup = ["completed": false, "reason": "MarmotCleanupIncomplete"]
+        }
         await self.stopAccountSecurityEvents(for: key)
-        return wipeOutcomeWire(outcome)
+        var wire = wipeOutcomeWire(outcome)
+        wire["socialCleanup"] = socialCleanup
+        return wire
       }
     }
     AsyncFunction("resumeAccountSetup") { () async throws in
@@ -231,7 +256,10 @@ public final class BoopMarmotModule: Module {
       try await protocolCall { try await self.runtime.signIn(key) }
     }
     AsyncFunction("releaseSignerAccount") { (key: String) async throws in
-      try await protocolCall { try await self.runtime.releaseSigner(key) }
+      try await protocolCall {
+        await self.existingSocialHost()?.retire(account: key)
+        try await self.runtime.releaseSigner(key)
+      }
     }
     AsyncFunction("openAccount") { (key: String, general: [String], discovery: [String], mediaOrigin: String?) async throws -> String in
       try await protocolCall { try await self.runtime.open(key: key, general: general, discovery: discovery, mediaOrigin: mediaOrigin) }
@@ -1463,6 +1491,10 @@ public final class BoopMarmotModule: Module {
   }
 
   private func closeAccount(closeRuntime: Bool = false, pauseMessaging: Bool = false) async throws {
+    if closeRuntime, let owner = existingSocialHost() {
+      do { try await owner.shutdown() }
+      catch { NSLog("[BoopMarmot] Social shutdown failed: %@", String(describing: error)) }
+    }
     if closeRuntime {
       let ids = securityObservationLock.withLock { Array(securityObservations.keys) }
       for id in ids { await stopAccountSecurityEvents(id) }
@@ -1533,6 +1565,75 @@ public final class BoopMarmotModule: Module {
     }
   }
 
+  private func socialHost() -> SocialNativeOwner {
+    socialOwnerLock.withLock {
+      if let current = storedSocialOwner { return current }
+      let created = SocialNativeOwner(runtime: runtime, foreground: { [weak self] in
+        guard let self else { return false }
+        return self.attachmentLock.withLock { self.isForeground }
+      })
+      storedSocialOwner = created
+      return created
+    }
+  }
+
+  private func existingSocialHost() -> SocialNativeOwner? {
+    socialOwnerLock.withLock { storedSocialOwner }
+  }
+
+  private func socialStorageRoot(create: Bool) throws -> URL {
+    let base = try FileManager.default.url(
+      for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+    )
+    let root = base.appendingPathComponent("boop-social", isDirectory: true)
+    if create {
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      var mutableRoot = root
+      try mutableRoot.setResourceValues(values)
+    }
+    return root
+  }
+
+  private func cleanupSocialAccount(_ account: String) async throws {
+    guard account.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+      throw problem("SocialCleanupFailedAfterAccountRemoval")
+    }
+    do {
+      let root = try socialStorageRoot(create: false)
+      let accountDirectory = root.appendingPathComponent(account, isDirectory: true)
+      if let owner = existingSocialHost() {
+        try await owner.removeAccount(account, storageRoot: root.path)
+      } else if FileManager.default.fileExists(atPath: accountDirectory.path) {
+        let cleanupOwner = SocialNativeOwner(runtime: runtime, foreground: { false })
+        try await cleanupOwner.removeAccount(account, storageRoot: root.path)
+        try await cleanupOwner.shutdown()
+      }
+      try SocialStorageKey.remove(account: account)
+    } catch {
+      throw problem("SocialCleanupFailedAfterAccountRemoval")
+    }
+  }
+
+  /// Bootstrap and policy updates are native-owner APIs; no JavaScript route is registered.
+  func activateSocialForNativeOwner(account: String) async throws -> SocialSession {
+    let owner = socialHost()
+    try await withSigner(account) { _ in () }
+    let root = try socialStorageRoot(create: true)
+    let (foreground, generation) = attachmentLock.withLock { (isForeground, foregroundGeneration) }
+    var key = try SocialStorageKey.load(account: account)
+    defer { key.resetBytes(in: 0..<key.count) }
+    return try await owner.activate(
+      account: account, storageRoot: root.path, storageKey: key,
+      foreground: foreground, foregroundGeneration: generation
+    )
+  }
+
+  func setSocialAuthorizationForNativeOwner(current: SocialSession, enabled: Bool, unlocked: Bool) async throws {
+    try await existingSocialHost()?.setPolicy(current: current, enabled: enabled, unlocked: unlocked)
+  }
+
   private func withSecurityAccount<T>(_ key: String, _ call: (Marmot) async throws -> T) async throws -> T {
     try await protocolCall {
       guard self.attachmentLock.withLock({ self.isForeground }) else { throw problem("AccountClosed") }
@@ -1557,6 +1658,9 @@ public final class BoopMarmotModule: Module {
           while !Task.isCancelled, let event = try await events.nextCancellable() {
             guard !Task.isCancelled, let module = self else { break }
             guard let (eventAccount, kind) = module.securityEvent(event), eventAccount == account else { continue }
+            if kind == "deviceUnlinked" {
+              Task { await module.existingSocialHost()?.retire(account: account) }
+            }
             module.sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": kind])
           }
         } catch {
@@ -1574,7 +1678,10 @@ public final class BoopMarmotModule: Module {
     }
     // Subscription is established before the persisted-state read in Runtime;
     // queued events cover an unlink racing this initial snapshot.
-    if unlinked { sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": "deviceUnlinked"]) }
+    if unlinked {
+      Task { await existingSocialHost()?.retire(account: account) }
+      sendEvent("accountSecurityEvent", ["account": account, "subscriptionId": id, "kind": "deviceUnlinked"])
+    }
   }
 
   private func stopAccountSecurityEvents(_ id: String) async {
@@ -1781,7 +1888,7 @@ private func groupImageInput(_ path: String) throws -> Data {
   return bytes
 }
 
-private actor Runtime {
+actor Runtime {
   struct Account {
     let generation = UUID()
     let key: String
@@ -1866,6 +1973,30 @@ private actor Runtime {
     guard try availableSigner(kit, key) else { throw problem("AccountSignedOut") }
     activeCalls += 1
     return kit
+  }
+
+  func socialEligible(_ key: String) throws -> Bool {
+    guard signerAccount == key else { return false }
+    return try availableSigner(existingRuntime(), key)
+  }
+
+  func socialSignEvent(
+    account: String, unsignedJson: String, foreground: @Sendable () -> Bool
+  ) async throws -> String {
+    guard foreground() else { throw problem("AccountClosed") }
+    let kit = try beginSignerCall(account)
+    do {
+      let signature = try await kit.signNostrEvent(accountRef: account, unsignedJson: unsignedJson)
+      let stillEligible: Bool
+      if foreground() { stillEligible = try socialEligible(account) }
+      else { stillEligible = false }
+      guard stillEligible else { throw problem("AccountClosed") }
+      endCall()
+      return signature
+    } catch {
+      endCall()
+      throw error
+    }
   }
 
   func beginSecurityAccountCall(_ key: String) throws -> Marmot {
@@ -2099,9 +2230,10 @@ private actor Runtime {
     return outcome
   }
 
-  func releaseSigner(_ key: String) throws {
-    guard active?.key != key, activeCalls == 0 else { throw problem("AccountBusy") }
+  func releaseSigner(_ key: String) async throws {
+    guard active?.key != key else { throw problem("AccountBusy") }
     if signerAccount == key { signerAccount = nil }
+    if activeCalls > 0 { await withCheckedContinuation { drained = $0 } }
   }
 
   func signIn(_ key: String) async throws {

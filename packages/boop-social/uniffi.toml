@@ -1,0 +1,9 @@
+[bindings.kotlin]
+package_name = "app.boop.social.ffi"
+cdylib_name = "boop_social"
+android = true
+
+[bindings.swift]
+module_name = "BoopSocial"
+ffi_module_name = "BoopSocialFFI"
+ffi_module_filename = "BoopSocialFFI"
