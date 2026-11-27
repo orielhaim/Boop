@@ -9,21 +9,33 @@ version = '1.0.0'
 def patch = file('../mdk-0.19.0.patch')
 def revision = java.security.MessageDigest.getInstance('SHA-256').digest(patch.bytes).encodeHex().toString()
 def sdk = file("../sdk/marmotkit-android-0.19.0-boop-${revision.take(12)}")
+def abis = project.findProperty('reactNativeArchitectures') ?: 'armeabi-v7a,arm64-v8a,x86,x86_64'
 def prepareMarmotKit = tasks.register('prepareMarmotKit', Exec) {
   workingDir file('../../..')
-  commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android',
-    project.findProperty('reactNativeArchitectures') ?: 'armeabi-v7a,arm64-v8a,x86,x86_64'
+  commandLine 'bun', 'scripts/fetch-marmotkit.ts', 'android', abis
+}
+def socialAbiSet = java.security.MessageDigest.getInstance('SHA-256')
+  .digest(abis.toString().getBytes('UTF-8')).encodeHex().toString().take(12)
+def socialSdk = layout.buildDirectory.dir("generated/boopSocial/${socialAbiSet}").get().asFile
+def prepareBoopSocial = tasks.register('prepareBoopSocial', Exec) {
+  workingDir file('../../..')
+  // The SDK checks the toolchain, source, ABI and artifact hashes on every invocation.
+  commandLine 'bun', 'packages/boop-social/scripts/build-native.ts', 'android', abis,
+    socialSdk.absolutePath
+  environment 'BOOP_SOCIAL_NDK_VERSION', rootProject.ext.ndkVersion.toString()
 }
 
 android {
   namespace 'app.boop.marmot'
   sourceSets.main.java.srcDir(sdk.toPath().resolve('kotlin').toFile())
   sourceSets.main.jniLibs.srcDir(sdk.toPath().resolve('jniLibs').toFile())
+  sourceSets.main.java.srcDir(new File(socialSdk, 'kotlin'))
+  sourceSets.main.jniLibs.srcDir(new File(socialSdk, 'jniLibs'))
   defaultConfig.consumerProguardFiles('marmot.pro')
   defaultConfig.testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
 }
 
-tasks.named('preBuild') { dependsOn prepareMarmotKit }
+tasks.named('preBuild') { dependsOn prepareMarmotKit, prepareBoopSocial }
 
 dependencies {
   implementation 'net.java.dev.jna:jna:5.18.1@aar'

@@ -3,11 +3,12 @@ package app.boop.marmot
 import android.graphics.Bitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ipf.marmotkit.*
+import app.boop.social.ffi.SocialCancellation
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.URI
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URI
 import java.net.HttpURLConnection
 import java.util.UUID
 import kotlinx.coroutines.async
@@ -23,6 +24,98 @@ import org.junit.Test
 import org.json.JSONObject
 
 class MarmotRelayTest {
+  @Test fun socialBindingsSignAndVerifyThroughTheMdkHostWithoutSharingRuntime() = runBlocking {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    BoopMarmotModule.initializeBindings(context)
+    val root = File(context.noBackupFilesDir, "social-host-${UUID.randomUUID()}").apply { mkdirs() }
+    val relay = InstrumentationRegistry.getArguments().getString("relay")?.let(::controlledLoopbackRelay)
+    val setupRelays = listOf(relay ?: "ws://127.0.0.1:1")
+    val kit = Marmot.newWithConfiguration(
+      File(root, "mdk").canonicalPath,
+      setupRelays,
+      MarmotOptions(
+        relayPolicy = RelayPolicyFfi.ALLOW_LOOPBACK,
+        deployment = marmotDeploymentNeutral().copy(keychainService = "app.boop.test.${root.name}"),
+      ),
+    )
+    val profile = UserProfileMetadataFfi("Social host fixture", "Social host fixture", null, null, null, null, null)
+    var social: SocialNativeOwner? = null
+    var account: String? = null
+    var storageKey: ByteArray? = null
+    try {
+      kit.start()
+      val createdAccount = kit.createIdentityWithInitialProfile(profile, setupRelays, setupRelays, setupRelays).account.accountIdHex
+      account = createdAccount
+      val key = SocialStorageKey.load(context, createdAccount)
+      storageKey = key
+      val roundTrip = SocialStorageKey.load(context, createdAccount)
+      assertArrayEquals(key, roundTrip)
+      roundTrip.fill(0)
+      val owner = SocialNativeOwner(
+        storageRoot = File(root, "social").canonicalPath,
+        allowLoopbackRelay = relay != null,
+        accountEligible = { requested ->
+          kit.listAccounts().any { it.accountIdHex == requested && it.localSigning && !it.signedOut && !it.unlinked }
+        },
+        signWithMdk = { requested, event -> kit.signNostrEvent(requested, event) },
+      )
+      social = owner
+      val session = owner.activate(createdAccount, key, foreground = true)
+      assertTrue(runCatching { SocialCancellation().use { session.signNote("Denied while Social is disabled", it) } }.isFailure)
+      owner.setAuthorization(session, enabled = true, unlocked = false)
+      assertTrue(runCatching { SocialCancellation().use { session.signNote("Denied while the app is locked", it) } }.isFailure)
+      owner.setAuthorization(session, enabled = true, unlocked = true)
+
+      val signed = SocialCancellation().use { session.signNote("Signed by the active MDK identity", it) }
+      val signedEvent = JSONObject(signed)
+      assertEquals(createdAccount, signedEvent.getString("pubkey"))
+      assertEquals(1, signedEvent.getInt("kind"))
+      assertEquals(128, signedEvent.getString("sig").length)
+      SocialCancellation().use { session.ingestEvent(signed, it) }
+      assertTrue(session.recentNotes(10u).any { JSONObject(it).getString("id") == signedEvent.getString("id") })
+
+      if (relay != null) {
+        val published = SocialCancellation().use {
+          session.publishNote(relay, "Published through the controlled local relay", it)
+        }
+        val publishedId = JSONObject(published).getString("id")
+        val cached = checkNotNull(session.cachedEvent(publishedId))
+        assertEquals(publishedId, JSONObject(cached).getString("id"))
+        assertEquals(createdAccount, JSONObject(cached).getString("pubkey"))
+        assertTrue(session.recentNotes(10u).any { JSONObject(it).getString("id") == publishedId })
+      }
+
+      owner.retire(createdAccount)
+      assertTrue(runCatching { SocialCancellation().use { session.signNote("Denied after retirement", it) } }.isFailure)
+      val later = JSONObject().put("pubkey", createdAccount).put("created_at", 1).put("kind", 1)
+        .put("tags", org.json.JSONArray()).put("content", "MDK remains independently usable")
+      assertEquals(128, kit.signNostrEvent(createdAccount, later.toString()).length)
+
+      val replacement = owner.activate(createdAccount, key, foreground = true)
+      owner.setAuthorization(session, enabled = true, unlocked = true)
+      assertTrue(runCatching { SocialCancellation().use { replacement.signNote("Stale authorization", it) } }.isFailure)
+    } finally {
+      try { social?.shutdown() } finally {
+        storageKey?.fill(0)
+        account?.let { runCatching { SocialStorageKey.remove(context, it) } }
+        try { kit.shutdownAndClose() } finally { root.deleteRecursively() }
+      }
+    }
+  }
+
+  private fun controlledLoopbackRelay(value: String): String {
+    val uri = URI(value)
+    val host = checkNotNull(uri.host) { "Invalid controlled relay URL" }
+    val octets = host.split('.')
+    val ipv4Loopback = octets.size == 4 && octets.first() == "127" &&
+      octets.all { octet -> octet.toIntOrNull()?.let { it in 0..255 && it.toString() == octet } == true }
+    assertTrue("relay runner argument must use a literal loopback address", ipv4Loopback || host == "[::1]" || host == "::1")
+    assertTrue("relay runner argument must use ws on an explicit port", uri.scheme == "ws" && uri.port in 1..65535)
+    assertNull(uri.userInfo)
+    assertNull(uri.fragment)
+    return value
+  }
+
   @Test fun attachmentHandoffProviderOpensOnlyRegisteredReadOnlyLeases() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val directory = File(context.noBackupFilesDir, "handoff-test-${UUID.randomUUID()}").apply { mkdir() }

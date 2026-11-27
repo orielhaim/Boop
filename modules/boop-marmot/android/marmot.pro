@@ -5,6 +5,9 @@
 -keep class dev.ipf.marmotkit.** implements com.sun.jna.Callback { *; }
 -keep class dev.ipf.marmotkit.** extends com.sun.jna.Structure { *; }
 -keepnames class dev.ipf.marmotkit.MarmotKitException$*
+-keep interface app.boop.social.ffi.** extends com.sun.jna.Library { *; }
+-keep class app.boop.social.ffi.** implements com.sun.jna.Callback { *; }
+-keep class app.boop.social.ffi.** extends com.sun.jna.Structure { *; }
 -keep class io.crates.keyring.Keyring { *; }
 
 # JNA's desktop window helpers reference AWT. MarmotKit uses JNA only for native bindings on Android.

@@ -15,6 +15,7 @@ import android.media.ThumbnailUtils
 import android.util.Size
 import android.os.SystemClock
 import android.util.Log
+import app.boop.social.ffi.SocialSession
 import dev.ipf.marmotkit.*
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
@@ -56,6 +57,10 @@ class BoopMarmotModule : Module() {
   private var attachmentHandoff: CompletableDeferred<Unit>? = null
   private var session: Session? = null
   private var signerAccount: String? = null
+  private var signerGeneration = 0L
+  private var socialSignerCalls = 0
+  private var socialSignerCallsDrained = CompletableDeferred(Unit)
+  @Volatile private var socialOwner: SocialNativeOwner? = null
   private var marmotRuntime: Marmot? = null
   private var identityImport: Pair<String, PreparedIdentityImport>? = null
   private var runtimeConfiguration: RuntimeConfiguration? = null
@@ -112,11 +117,14 @@ class BoopMarmotModule : Module() {
     }
     OnStopObserving("memoryPressure") { stopMemoryPressure() }
     OnActivityEntersForeground {
-      foregroundGeneration.incrementAndGet()
+      val generation = foregroundGeneration.incrementAndGet()
       downloadsForeground = true
+      socialOwner?.setForeground(true, generation)
     }
     OnActivityEntersBackground {
       downloadsForeground = false
+      val generation = foregroundGeneration.incrementAndGet()
+      socialOwner?.setForeground(false, generation)
       observations.forEach { (id, observation) ->
         if (!observation.accountScoped && observations.remove(id, observation)) observation.ticket.cancel()
       }
@@ -234,6 +242,7 @@ class BoopMarmotModule : Module() {
           kit.localAccountKeyPackages(key)
           val profile = kit.userProfile(key)
           signerAccount = key
+          signerGeneration++
           mapOf("name" to (profile?.displayName ?: profile?.name), "about" to profile?.about)
         }
       }
@@ -305,36 +314,52 @@ class BoopMarmotModule : Module() {
       withSigner(key) { it.accountSetupReadiness(key) == AccountSetupReadinessFfi.NETWORK_READY }
     }
     AsyncFunction("removeAccount") Coroutine { key: String ->
+      socialOwner?.retire(key)
+      awaitSocialSignerCalls()
       lifecycle.withLock {
         protocol {
           if (closingAccount || signerAccount == key || session?.account == key) throw problem("AccountBusy")
           (marmotRuntime ?: throw problem("AccountClosed")).removeAccount(key)
         }
       }
+      cleanupSocialAccount(key)
     }
     AsyncFunction("signOutAccount") Coroutine { key: String, deleteKeyPackages: Boolean ->
+      socialOwner?.retire(key)
+      awaitSocialSignerCalls()
       lifecycle.withLock {
         protocol {
           if (session?.account == key || closingAccount) throw problem("AccountBusy")
           val outcome = (marmotRuntime ?: throw problem("AccountClosed")).signOut(key, deleteKeyPackages)
           securityObservations.filterValues { it.account == key }.keys.toList().forEach(::stopAccountSecurityEventsLocked)
-          if (signerAccount == key) signerAccount = null
+          if (signerAccount == key) { signerAccount = null; signerGeneration++ }
           signOutOutcomeWire(outcome)
         }
       }
     }
     AsyncFunction("signOutAndWipeAccount") Coroutine { key: String ->
       if (session?.account != null && session?.account != key) throw problem("AccountBusy")
+      socialOwner?.retire(key)
+      awaitSocialSignerCalls()
       shutdown()
-      lifecycle.withLock {
+      val outcome = lifecycle.withLock {
         protocol {
           if (closingAccount || session != null) throw problem("AccountBusy")
           val outcome = (marmotRuntime ?: throw problem("AccountClosed")).signOutAndWipe(key)
           securityObservations.filterValues { it.account == key }.keys.toList().forEach(::stopAccountSecurityEventsLocked)
-          if (signerAccount == key) signerAccount = null
-          wipeOutcomeWire(outcome)
+          if (signerAccount == key) { signerAccount = null; signerGeneration++ }
+          outcome
         }
       }
+      val socialCleanup = if (outcome.localCleanup.completed) {
+        runCatching { cleanupSocialAccount(key) }.fold(
+          onSuccess = { mapOf("completed" to true, "reason" to null) },
+          onFailure = { mapOf("completed" to false, "reason" to "SocialCleanupFailedAfterAccountRemoval") },
+        )
+      } else {
+        mapOf("completed" to false, "reason" to "MarmotCleanupIncomplete")
+      }
+      wipeOutcomeWire(outcome).toMutableMap().apply { put("socialCleanup", socialCleanup) }
     }
     AsyncFunction("resumeAccountSetup").Coroutine<Unit> {
       lifecycle.withLock { protocol { startRuntime(marmotRuntime ?: throw problem("AccountClosed")) } }
@@ -343,10 +368,12 @@ class BoopMarmotModule : Module() {
       lifecycle.withLock { protocol { (marmotRuntime ?: throw problem("AccountClosed")).signInAccount(key); Unit } }
     }
     AsyncFunction("releaseSignerAccount") Coroutine { key: String ->
+      socialOwner?.retire(key)
+      awaitSocialSignerCalls()
       lifecycle.withLock {
         protocol {
           if (session?.account == key || closingAccount) throw problem("AccountBusy")
-          if (signerAccount == key) signerAccount = null
+          if (signerAccount == key) { signerAccount = null; signerGeneration++ }
           Unit
         }
       }
@@ -1429,15 +1456,32 @@ class BoopMarmotModule : Module() {
   }
 
   private suspend fun shutdown(closeRuntime: Boolean = false, pauseMessaging: Boolean = false) = withContext(NonCancellable + Dispatchers.IO) {
+    if (closeRuntime) {
+      val owner = socialOwner
+      try {
+        owner?.shutdown()
+      } catch (error: Throwable) {
+        Log.w("BoopMarmot", "Social shutdown failed", error)
+      } finally {
+        if (owner != null) synchronized(this@BoopMarmotModule) {
+          if (socialOwner === owner) socialOwner = null
+        }
+      }
+    }
     shutdownTurn.withLock {
       val work = lifecycle.withLock {
         closingAccount = true
+        if (closeRuntime && signerAccount != null) {
+          signerAccount = null
+          signerGeneration++
+        }
         directoryWork.keys.toList()
       }
       observations.values.toList().also { observations.clear() }.forEach { it.ticket.cancel() }
       work.forEach { it.cancel() }
       try {
         work.joinAll()
+        awaitSocialSignerCalls()
         drain(pauseMessaging, closeRuntime)
       } finally {
         accountAttachmentHistoryCursors.values.forEach { it.cursor.destroy() }
@@ -1637,6 +1681,8 @@ class BoopMarmotModule : Module() {
     protocol {
       if (closingAccount) throw problem("AccountBusy")
       val configuration = RuntimeConfiguration(general, discovery, mediaOrigin)
+      if (marmotRuntime != null && runtimeConfiguration != configuration && socialSignerCalls != 0)
+        throw problem("AccountBusy")
       val kit = if (marmotRuntime != null && (!reconfigure || runtimeConfiguration == configuration)) {
         checkNotNull(marmotRuntime)
       } else {
@@ -1700,6 +1746,100 @@ class BoopMarmotModule : Module() {
       }
     }
 
+  private fun nativeSocialOwner(): SocialNativeOwner {
+    socialOwner?.let { return it }
+    val context = appContext.reactContext?.applicationContext ?: throw problem("AccountClosed")
+    return synchronized(this) {
+      socialOwner ?: SocialNativeOwner(
+        storageRoot = File(context.noBackupFilesDir, "boop-social").absolutePath,
+        accountEligible = { key ->
+          withSigner(key) { kit ->
+            kit.listAccounts().any {
+              it.accountIdHex == key && it.localSigning && !it.signedOut && !it.unlinked
+            }
+          }
+        },
+        signWithMdk = { key, event ->
+          signSocialEventWithMdk(key, event)
+        },
+      ).also { socialOwner = it }
+    }
+  }
+
+  private suspend fun awaitSocialSignerCalls() {
+    val drained = lifecycle.withLock { socialSignerCallsDrained }
+    drained.await()
+  }
+
+  private suspend fun cleanupSocialAccount(account: String) {
+    val context = appContext.reactContext?.applicationContext ?: throw problem("SocialCleanupFailedAfterAccountRemoval")
+    if (!Regex("[0-9a-f]{64}").matches(account)) throw problem("SocialCleanupFailedAfterAccountRemoval")
+    val root = File(context.noBackupFilesDir, "boop-social")
+    val accountRoot = File(root, account)
+    try {
+      if (socialOwner != null || accountRoot.exists()) {
+        (socialOwner ?: nativeSocialOwner()).removeAccount(account)
+      }
+      SocialStorageKey.remove(context, account)
+    } catch (_: Throwable) {
+      throw problem("SocialCleanupFailedAfterAccountRemoval")
+    }
+  }
+
+  private data class SocialSignerLease(val kit: Marmot, val generation: Long)
+
+  private suspend fun signSocialEventWithMdk(account: String, event: String): String = protocol {
+    val lease = lifecycle.withLock {
+      if (closingAccount || !downloadsForeground || signerAccount != account) throw problem("AccountClosed")
+      val kit = marmotRuntime ?: throw problem("AccountClosed")
+      requireEligibleAccount(kit, account)
+      if (socialSignerCalls++ == 0) socialSignerCallsDrained = CompletableDeferred()
+      SocialSignerLease(kit, signerGeneration)
+    }
+    try {
+      val signature = lease.kit.signNostrEvent(account, event)
+      val stillAuthorized = lifecycle.withLock {
+        if (closingAccount || !downloadsForeground || signerAccount != account || signerGeneration != lease.generation) {
+          false
+        } else {
+          runCatching { requireEligibleAccount(lease.kit, account) }.isSuccess
+        }
+      }
+      if (!stillAuthorized) throw problem("AccountClosed")
+      signature
+    } finally {
+      withContext(NonCancellable) {
+        lifecycle.withLock {
+          socialSignerCalls--
+          if (socialSignerCalls == 0) socialSignerCallsDrained.complete(Unit)
+        }
+      }
+    }
+  }
+
+  /** Bootstrap and policy updates are native-owner APIs; no JavaScript route is registered. */
+  internal suspend fun activateSocialForNativeOwner(account: String): SocialSession {
+    val context = appContext.reactContext?.applicationContext ?: throw problem("AccountClosed")
+    withSigner(account) { Unit }
+    val owner = nativeSocialOwner()
+    val storageKey = withContext(Dispatchers.IO) { SocialStorageKey.load(context, account) }
+    try {
+      return owner.activate(
+        account, storageKey, downloadsForeground, foregroundGeneration.get(),
+      )
+    } finally {
+      storageKey.fill(0)
+    }
+  }
+
+  internal fun setSocialAuthorizationForNativeOwner(current: SocialSession, enabled: Boolean, unlocked: Boolean) {
+    socialOwner?.setAuthorization(current, enabled, unlocked)
+  }
+
+  internal suspend fun retireSocialForNativeOwner(account: String? = null) {
+    socialOwner?.retire(account)
+  }
+
   internal suspend fun <T> withSecurityAccount(key: String, work: suspend (Marmot) -> T): T = lifecycle.withLock {
     protocol {
       if (closingAccount || !downloadsForeground || signerAccount != key) throw problem("AccountClosed")
@@ -1747,7 +1887,10 @@ class BoopMarmotModule : Module() {
                 else -> continue
               }
               if (eventAccount == account) {
-                if (event is MarmotEventFfi.DeviceUnlinked) AttachmentHandoffProvider.retire(account)
+                if (event is MarmotEventFfi.DeviceUnlinked) {
+                  AttachmentHandoffProvider.retire(account)
+                  socialOwner?.retire(account)
+                }
                 sendEvent("accountSecurityEvent", mapOf("account" to account, "subscriptionId" to id, "kind" to kind))
               }
             }
@@ -1761,7 +1904,10 @@ class BoopMarmotModule : Module() {
         job.start()
         val summary = kit.listAccounts().singleOrNull { it.accountIdHex == account && it.localSigning }
           ?: run { stopAccountSecurityEventsLocked(id); throw problem("IdentityMismatch") }
-        if (summary.unlinked) sendEvent("accountSecurityEvent", mapOf("account" to account, "subscriptionId" to id, "kind" to "deviceUnlinked"))
+        if (summary.unlinked) {
+          socialOwner?.retire(account)
+          sendEvent("accountSecurityEvent", mapOf("account" to account, "subscriptionId" to id, "kind" to "deviceUnlinked"))
+        }
       }
     }
   }

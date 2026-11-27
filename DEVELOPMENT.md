@@ -36,6 +36,18 @@ adb reverse tcp:19311 tcp:19311
 
 For attachments, run `bun scripts/marmot-test-blossom.ts`, forward its port, and add `-Pandroid.testInstrumentationRunnerArguments.blossom=<origin>`. The fixture checks explicit download, cancellation, and retry. Quote each instrumentation argument in PowerShell.
 
+### Social native foundation
+
+The Social SDK builds independently under [packages/boop-social](packages/boop-social/README.md). The Marmot Expo library packages both native SDKs and links the Kotlin and Swift adapters against each SDK's own generated bindings.
+
+From the `android` directory, build the development APK and native test APK for the intended ABI.
+
+```sh
+./gradlew :app:assembleDebug :boop-marmot:assembleDebugAndroidTest -PreactNativeArchitectures=x86_64
+```
+
+The `MarmotRelayTest#socialBindingsSignAndVerifyThroughTheMdkHostWithoutSharingRuntime` fixture uses a generated MDK account. It exercises the generated Kotlin callback, Rust verification, a committed cache read and MDK signing after Social retirement. With the existing `relay` runner argument set to a literal loopback WebSocket URL, the fixture also covers publication and receipt through the Social SDK.
+
 ### Account devices
 
 MDK owns device slots, the trusted group, roster, sign-in decisions, and pairing state. An account public key identifies the identity, and device slots identify individual installations. The protected account in `src/services/local.ts` owns the device controller. It subscribes before reading projections, refreshes them on native events, and discards results from retired streams and accounts. The Devices screen shares that controller with Settings and the account-security banner. An import uses the same controller and pairing view once MDK completes account setup.
